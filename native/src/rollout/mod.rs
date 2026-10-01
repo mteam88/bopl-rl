@@ -10657,7 +10657,8 @@ impl RolloutWorld {
                         let radius = slot.base.dash.radius;
                         let (position, up) = (self.player_info_pose(index, radius))
                             .unwrap_or((self.players[index].base.position, Vec2::UP));
-                        self.sync_form_entry(index, position, up, Vec2::ZERO, data.dash.hurtbox_extents);
+                        let extents = data.dash.hurtbox_extents;
+                        self.sync_form_entry(index, position, up, Vec2::ZERO, extents);
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
@@ -11461,31 +11462,12 @@ impl RolloutWorld {
                             aim,
                             ..GunState::default()
                         };
-                        slot.base.rotation = Fix::ZERO;
-                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
-                        // UpdateScale the radius it places the body with.
-                        slot.scale_form(
+                        self.gun_form_enter(
+                            index,
                             data.freeze.hurtbox_extents,
                             data.freeze.radius,
                             data.freeze.collider_offset,
                         );
-                        slot.base.radius = slot.forms[s].physics_radius();
-                        if grounded {
-                            if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position =
-                                    platform.surface.position(slot.base.local, slot.base.radius);
-                            }
-                            slot.base.velocity = Vec2::ZERO;
-                            slot.base.external_velocity = Vec2::ZERO;
-                        } else {
-                            slot.form_gravity[s] = Fix::from_f32(0.03);
-                            slot.base.velocity *= Fix::from_f32(0.1);
-                            slot.base.external_velocity *= Fix::from_f32(0.1);
-                            slot.base.ground = None;
-                        }
-                        self.players[index]
-                            .sync_gun_hurtbox(data.freeze.collider_offset, &self.platforms);
-                        self.sync_gun_entry(index, data.freeze.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.freeze_tick(index, action, data);
                         return;
@@ -11516,31 +11498,12 @@ impl RolloutWorld {
                             aim,
                             ..GunState::default()
                         };
-                        slot.base.rotation = Fix::ZERO;
-                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
-                        // UpdateScale the radius it places the body with.
-                        slot.scale_form(
+                        self.gun_form_enter(
+                            index,
                             data.blink.hurtbox_extents,
                             data.blink.radius,
                             data.blink.collider_offset,
                         );
-                        slot.base.radius = slot.forms[s].physics_radius();
-                        if grounded {
-                            if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position =
-                                    platform.surface.position(slot.base.local, slot.base.radius);
-                            }
-                            slot.base.velocity = Vec2::ZERO;
-                            slot.base.external_velocity = Vec2::ZERO;
-                        } else {
-                            slot.form_gravity[s] = Fix::from_f32(0.03);
-                            slot.base.velocity *= Fix::from_f32(0.1);
-                            slot.base.external_velocity *= Fix::from_f32(0.1);
-                            slot.base.ground = None;
-                        }
-                        self.players[index]
-                            .sync_gun_hurtbox(data.blink.collider_offset, &self.platforms);
-                        self.sync_gun_entry(index, data.blink.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.blink_tick(index, action, data);
                         return;
@@ -11576,27 +11539,12 @@ impl RolloutWorld {
                             aim,
                             ..GunState::default()
                         };
-                        slot.base.rotation = Fix::ZERO;
-                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
-                        // UpdateScale the radius it places the body with.
-                        slot.scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
-                        slot.base.radius = slot.forms[s].physics_radius();
-                        if grounded {
-                            if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position =
-                                    platform.surface.position(slot.base.local, slot.base.radius);
-                            }
-                            slot.base.velocity = Vec2::ZERO;
-                            slot.base.external_velocity = Vec2::ZERO;
-                        } else {
-                            slot.form_gravity[s] = Fix::from_f32(0.03);
-                            slot.base.velocity *= Fix::from_f32(0.1);
-                            slot.base.external_velocity *= Fix::from_f32(0.1);
-                            slot.base.ground = None;
-                        }
-                        self.players[index]
-                            .sync_gun_hurtbox(ray.collider_offset, &self.platforms);
-                        self.sync_gun_entry(index, ray.hurtbox_extents);
+                        self.gun_form_enter(
+                            index,
+                            ray.hurtbox_extents,
+                            ray.radius,
+                            ray.collider_offset,
+                        );
                         self.form_entry_turn(data, index);
                         self.scale_ray_tick(index, action, data);
                         return;
@@ -11627,37 +11575,21 @@ impl RolloutWorld {
                             aim,
                             ..GunState::default()
                         };
-                        slot.base.rotation = Fix::ZERO;
-                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
-                        // UpdateScale the radius it places the body with.
-                        slot.scale_form(
+                        self.gun_form_enter(
+                            index,
                             data.duplicator.hurtbox_extents,
                             data.duplicator.radius,
                             data.duplicator.collider_offset,
                         );
-                        slot.base.radius = slot.forms[s].physics_radius();
                         if grounded {
-                            if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position =
-                                    platform.surface.position(slot.base.local, slot.base.radius);
-                            }
-                            slot.base.velocity = Vec2::ZERO;
-                            slot.base.external_velocity = Vec2::ZERO;
                             // Duplicator's authored PlayerPhysics radius
                             // differs from the ordinary slime. SyncPhysicsTo
                             // changes Player.Position immediately while the
                             // disabled SlimeController retains ability_origin.
+                            let slot = &mut self.players[index];
                             slot.reported_position = slot.base.position;
                             slot.reported_tick = self.tick;
-                        } else {
-                            slot.form_gravity[s] = Fix::from_f32(0.03);
-                            slot.base.velocity *= Fix::from_f32(0.1);
-                            slot.base.external_velocity *= Fix::from_f32(0.1);
-                            slot.base.ground = None;
                         }
-                        self.players[index]
-                            .sync_gun_hurtbox(data.duplicator.collider_offset, &self.platforms);
-                        self.sync_gun_entry(index, data.duplicator.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.duplicator_tick(index, action, data);
                         return;
@@ -11704,41 +11636,12 @@ impl RolloutWorld {
                             data.magnet.radius,
                             data.magnet.collider_offset,
                         );
-                        slot.base.radius = form.physics_radius();
+                        let radius = form.physics_radius();
+                        let offset = form.offset;
                         slot.base.constants = data.magnet.constants.clone();
-                        slot.base.rotation = Fix::ZERO;
-                        if grounded {
-                            if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position = platform
-                                    .surface
-                                    .position(slot.base.local, slot.base.radius);
-                            }
-                            slot.base.velocity = Vec2::ZERO;
-                            slot.base.external_velocity = Vec2::ZERO;
-                        } else {
-                            slot.form_gravity[s] = Fix::from_f32(0.03);
-                            slot.base.velocity *= Fix::from_f32(0.1);
-                            slot.base.external_velocity *= Fix::from_f32(0.1);
-                            slot.base.ground = None;
-                        }
-                        // OnEnterAbility's hurtbox.UpdatePhysicsPositions runs
-                        // on the synced pose, before `body.rotation = Fix.Zero`;
-                        // that box is what later updaters see this pass.
-                        if slot.magnet_entity != usize::MAX {
-                            let right = if grounded { slot.base.up.perp_cw() } else { Vec2::RIGHT };
-                            let form = &slot.forms[s];
-                            let center = slot.base.position + right.complex_mul(form.offset);
-                            let extents = data::surface_extents(data.magnet.hurtbox_extents);
-                            let collider = form.hurtbox(center, right, extents);
-                            let row = &mut self.entities[slot.magnet_entity];
-                            row.x = center.x.raw();
-                            row.y = center.y.raw();
-                            row.right_x = collider.right.x.raw();
-                            row.right_y = collider.right.y.raw();
-                            row.up_x = collider.up.x.raw();
-                            row.up_y = collider.up.y.raw();
-                            self.sync_form_box(index, collider);
-                        }
+                        let extents = data::surface_extents(data.magnet.hurtbox_extents);
+                        self.form_enter(index, radius, offset, extents);
+                        self.aim_form_entry_tail(index);
                         // OnEnterAbility ends with `body.rotation = Fix.Zero`
                         // (MagnetGun.cs:325), and FixTransform's rotation
                         // setter rebuilds up and right from that angle
@@ -11779,17 +11682,8 @@ impl RolloutWorld {
                         // synced hurtbox.
                         let slot = &mut self.players[index];
                         slot.base.sync_collider();
-                        // BowTransform.OnEnterAbility then unrotates the body and
-                        // drops its external velocity; an airborne one keeps a
-                        // tenth of both (BowTransform.cs:86-102).
-                        slot.base.rotation = Fix::ZERO;
-                        if slot.base.grounded {
-                            slot.base.external_velocity = Vec2::ZERO;
-                        } else {
-                            slot.form_gravity[s] = Fix::from_f32(0.03);
-                            slot.base.velocity *= Fix::from_f32(0.1);
-                            slot.base.external_velocity *= Fix::from_f32(0.1);
-                        }
+                        self.aim_form_entry_tail(index);
+                        let slot = &mut self.players[index];
                         // Ability.UpdateSim publishes the body SyncPhysicsTo
                         // placed; a grown slime's larger radius moves it.
                         slot.reported_position = slot.base.position;
@@ -29956,8 +29850,44 @@ impl RolloutWorld {
         self.sync_form_entry(index, slot.base.position, slot.base.up, offset, extents);
     }
 
+    /// GunTransform.OnEnterAbility (GunTransform.cs:62-82): Ability.EnterAbility
+    /// scales the box, SyncPhysicsTo places the body at the radius UpdateScale
+    /// gives it, and the hurtbox syncs to that pose before the aiming tail.
+    fn gun_form_enter(&mut self, index: usize, extents: Vec2, radius: Fix, offset: Vec2) {
+        let slot = &mut self.players[index];
+        slot.scale_form(extents, radius, offset);
+        let radius = slot.forms[slot.active_slot].physics_radius();
+        self.sync_physics_to_player_info(index, radius);
+        self.players[index].sync_gun_hurtbox(offset, &self.platforms);
+        self.sync_gun_entry(index, extents);
+        self.aim_form_entry_tail(index);
+    }
+
+    /// What BowTransform, GunTransform and MagnetGun.OnEnterAbility do after
+    /// their sync: the body unrotated and without external velocity, or, in
+    /// the air, at a tenth of PlayerInfo's velocities under 0.03 gravity
+    /// (BowTransform.cs:90-102, GunTransform.cs:69-80, MagnetGun.cs:296-325).
+    fn aim_form_entry_tail(&mut self, index: usize) {
+        let slot = &mut self.players[index];
+        slot.base.rotation = Fix::ZERO;
+        if slot.base.grounded {
+            slot.base.external_velocity = Vec2::ZERO;
+        } else {
+            slot.form_gravity[slot.active_slot] = Fix::from_f32(0.03);
+            slot.base.velocity *= Fix::from_f32(0.1);
+            slot.base.external_velocity *= Fix::from_f32(0.1);
+        }
+    }
+
     /// hurtBox.UpdatePhysicsPositions for a form body at `position`, `up`.
-    fn sync_form_entry(&mut self, index: usize, position: Vec2, up: Vec2, offset: Vec2, extents: Vec2) {
+    fn sync_form_entry(
+        &mut self,
+        index: usize,
+        position: Vec2,
+        up: Vec2,
+        offset: Vec2,
+        extents: Vec2,
+    ) {
         let slot = &self.players[index];
         let right = up.perp_cw();
         let rotation = if up == Vec2::UP { Fix::ZERO } else { right.normalized_angle() };
