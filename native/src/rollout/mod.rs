@@ -7145,8 +7145,11 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let held = std::mem::take(&mut slot.obs_state_held_this_tick);
         let disabled = std::mem::take(&mut slot.obs_state_disabled_this_tick);
-        // SlimeController.suppressInput zeroes inputVector and flag5
-        // (SlimeController.cs:806-814).
+        // SlimeController.suppressInput zeroes inputVector, fix and flag5
+        // (SlimeController.cs:806-814), but `fix2` was already taken from the
+        // stick, so a slime held still by a rewind still faces right on the
+        // ground when the stick points into it.
+        let pressed = dir;
         let dir = if std::mem::take(&mut slot.obs_input_suppressed_this_tick) {
             Vec2::ZERO
         } else {
@@ -7183,6 +7186,7 @@ impl RolloutWorld {
             &mut slot.facing_right,
             &mut slot.prev_input_align,
             dir,
+            pressed,
             held,
             animates,
         );
@@ -7198,6 +7202,7 @@ impl RolloutWorld {
         facing_right: &mut bool,
         prev_align: &mut Fix,
         dir: Vec2,
+        pressed: Vec2,
         held: bool,
         animates: bool,
     ) {
@@ -7316,7 +7321,7 @@ impl RolloutWorld {
         let align = ground_align; // rightward ground tangent, computed above
         // `fix2` is taken from the same pre-Move frame as `fix`
         // (SlimeController.cs:797), against the raw stick.
-        let into_ground = pre_up.dot(dir) < Fix::ZERO;
+        let into_ground = pre_up.dot(pressed) < Fix::ZERO;
         let moving = dir != Vec2::ZERO
             && (align.abs() >= Fix::from_f32(0.2)
                 || (into_ground && align.abs() >= Fix::from_f32(0.01)));
@@ -10369,9 +10374,11 @@ impl RolloutWorld {
                     slot.state_ticks = 0;
                 }
             }
-            // OldUpdate publishes the body position (SlimeController.cs:712).
+            // OldUpdate publishes the body position (SlimeController.cs:712)
+            // and reads the ground frame for its state switch.
             slot.reported_position = slot.base.position;
             slot.reported_tick = tick;
+            slot.base.capture_pre_move(&self.platforms);
             slot.obs_input_suppressed_this_tick = true;
             self.advance_slime_cooldowns(index);
             // The same loop runs the rope abilities' UpdateCooldowns, which
@@ -37878,6 +37885,7 @@ impl RolloutWorld {
                     &mut clone.state_ticks,
                     &mut clone.facing_right,
                     &mut clone.prev_input_align,
+                    movement,
                     movement,
                     false,
                     !stopped,
