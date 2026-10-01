@@ -7573,6 +7573,17 @@ impl RolloutWorld {
         // wave therefore applies its first time-zero impulse before a
         // Duplicator copy advances and before map home springs, while its
         // same-tick UpdateSim impulse runs after them.
+        // ShakablePlatform.Init reruns the UpdateBounds a new platform's
+        // StickyRoundedRectangle.Awake ran over the prefab or copied shape
+        // (ShakablePlatform.cs:104-111), in Updater's Init walk.
+        for i in 0..self.platforms.len() {
+            if self.platforms[i].active
+                && self.platform_dynamics[i].appended == self.tick
+                && self.platform_updater_order(data, i).contains(&data::PlatformUpdater::ShakablePlatform)
+            {
+                self.update_surface_bounds(i);
+            }
+        }
         if has(ABILITY_GUST) {
             self.shockwaves_init(false, data);
         }
@@ -7581,16 +7592,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_DUPLICATOR) {
             self.duplicated_objects_tick();
-            // ShakablePlatform.Init reruns a new Duplicator copy's UpdateBounds
-            // (ShakablePlatform.cs:106-111) ahead of its first updater pass.
-            for i in 0..self.platforms.len() {
-                if self.platforms[i].active
-                    && self.platform_dynamics[i].init_tick == Some(self.tick)
-                    && self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some()
-                {
-                    self.update_surface_bounds(i);
-                }
-            }
         }
         // Updatables earlier than a TimeStop effect observe the scale from
         // the start of the pass. DetPhysics observes any scale written by the
@@ -18876,6 +18877,9 @@ impl RolloutWorld {
             return;
         }
         let source = self.engines[engine_index];
+        // RocketEngineInit calls srr.UpdateBounds() before it reads the
+        // boulder's perimeter (RocketEngine.cs:86-88).
+        self.update_surface_bounds(platform_index);
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
         let desired_rotation = parent_rotation
@@ -19051,6 +19055,9 @@ impl RolloutWorld {
         let desired_right = Vec2::angle(desired_rotation);
         let desired_up = desired_right.perp();
         let probe = old_root - desired_up * Fix::from_int(1000);
+        // SpikeAttack.Initialize calls attachedGround.UpdateBounds() before it
+        // reads the boulder's perimeter (SpikeAttack.cs:66-69).
+        self.update_surface_bounds(platform_index);
         let closest = self.platforms[platform_index]
             .surface
             .closest_point(probe)
@@ -19124,6 +19131,8 @@ impl RolloutWorld {
                 };
                 self.ropes[rope_index].physics.segment[endpoint]
             });
+        // boulderSrr.UpdateBounds() precedes AttachToPlatform (MachoThrow2.cs:592).
+        self.update_surface_bounds(platform_index);
         let local = Fix::from_f32(0.5);
         let new_position = self.platforms[platform_index]
             .surface
@@ -19176,13 +19185,18 @@ impl RolloutWorld {
             inverse_mass: data.macho_throw.boulder_body.inverse_mass.raw(),
             ..CEntity::default()
         }, Vec2::ZERO);
+        // StickyRoundedRectangle.Awake's UpdateBounds runs inside
+        // InstantiateFixed, before the Scale writes and ManualInit, so its
+        // cached extents and radius are the prefab's startExtents and
+        // startRadius (StickyRoundedRectangle.cs:93-108,
+        // DPhysicsRoundedRect.cs:55-62, 351-361) until a later UpdateBounds.
         let surface = Surface {
             center: position,
             right: Vec2::RIGHT,
             up: Vec2::UP,
-            extents: data::surface_extents(extents),
+            extents: data.macho_throw.boulder_extents,
             radius,
-            bounds_radius: radius,
+            bounds_radius: data.macho_throw.boulder_radius,
         };
         let platform_index = self.platforms.len();
         let ice = self.players[owner].macho_boulder_ice[self.players[owner].active_slot];
