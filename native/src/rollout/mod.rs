@@ -41666,10 +41666,15 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                if pushing {
+                // A form left in the pass it was entered (a magnet steal) never
+                // published active, but EnterAbility gave it its owner and
+                // DetPhysics syncs its frozen transform.
+                let exited_now =
+                    slot.form_frozen.is_some_and(|f| f.tick == self.tick && f.entity == push_e);
+                if pushing || exited_now {
                     push_box.owner = slot.base.id;
                 }
-                if (alive && pushing) || was_active {
+                if (alive && pushing) || was_active || exited_now {
                     let (root, rotation) = if pushing {
                         (synced, rotation)
                     } else {
