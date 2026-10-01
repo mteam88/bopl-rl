@@ -2702,6 +2702,8 @@ pub struct Shockwave {
     pub black_hole_indices: [usize; 50],
     /// The spawned prefab's first Updater slot.
     pub hierarchy_base: u32,
+    /// The pass Shockwave.UpdateSim last took its Updater turn.
+    pub stepped_tick: Option<u32>,
 }
 impl Default for Shockwave {
     fn default() -> Self {
@@ -2732,6 +2734,7 @@ impl Default for Shockwave {
             black_hole_count: 0,
             black_hole_indices: [usize::MAX; 50],
             hierarchy_base: 0,
+            stepped_tick: None,
         }
     }
 }
@@ -4234,6 +4237,7 @@ struct PlatformScratch {
     arrow_landings: Vec<(usize, CallbackKey, Part)>,
     pickup_order: Vec<usize>,
     spike_order: Vec<usize>,
+    wave_order: Vec<(u32, bool, usize)>,
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
@@ -4322,6 +4326,7 @@ impl PlatformScratch {
             wall_contacts: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
             spike_order: Vec::with_capacity(16),
+            wave_order: Vec::with_capacity(16),
             missile_contacts: Vec::with_capacity(256),
             callback_hits: Vec::with_capacity(16),
             ray_hits: Vec::with_capacity(192),
@@ -7662,11 +7667,8 @@ impl RolloutWorld {
         if has(ABILITY_THROW) {
             self.macho_boulders_remove_drowned();
         }
-        if has(ABILITY_GUST) {
-            self.shockwaves_update(false, data, DT, 0..deferred_to);
-        }
-        if has(ABILITY_METEOR) {
-            self.shockwaves_update(true, data, DT, 0..deferred_to);
+        if has(ABILITY_GUST) || has(ABILITY_METEOR) {
+            self.shockwaves_update(data, 0..deferred_to);
         }
         if has(ABILITY_REVIVAL) {
             self.revival_marker_bodies_tick();
@@ -8423,6 +8425,13 @@ impl RolloutWorld {
                 push(100_000_000 + spike.hierarchy_base, 24, i);
             }
         }
+        for (kind, waves) in [(25, &self.gust_waves[..]), (26, &self.meteor_waves[..])] {
+            for (i, wave) in waves.iter().enumerate() {
+                if wave.active && wave.registered && wave.stepped_tick != Some(tick) {
+                    push(100_000_000 + wave.hierarchy_base, kind, i);
+                }
+            }
+        }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
                 && missile.registered
@@ -8487,6 +8496,7 @@ impl RolloutWorld {
                 22 => self.teleport_object_effect_step(index, data, updater_dt),
                 23 => self.blink_clone_tunnel_step(index, data, updater_dt),
                 24 => self.spike_attack_step(data, updater_dt, index),
+                25 | 26 => self.shockwave_step(kind == 26, index, data),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -23415,29 +23425,43 @@ impl RolloutWorld {
         }
     }
 
-    /// Steps the waves with hierarchy in `hierarchy`.
-    fn shockwaves_update(
-        &mut self,
-        meteor: bool,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        hierarchy: std::ops::Range<u32>,
-    ) {
-        for wave_index in 0..self.shockwaves(meteor).len() {
-            let wave = self.shockwaves(meteor)[wave_index];
-            if wave.active && wave.registered && hierarchy.contains(&wave.hierarchy_base) {
-                // The older updatables have taken their turns: a Poke Ball's
-                // capture hop has set its velocity, and a
-                // DuplicatePlatformEffect has rescaled its source, whose live
-                // radius the wave reads. A newer Tack or hammer takes the
-                // impulse at its own turn.
-                let dt = DT * self.player_time_scale;
-                self.run_spawned_before(data, dt, 100_000_000 + wave.hierarchy_base);
-                // Shockwave uses Updater's raw simDeltaTime for its curve
-                // clock; it never opts into GameTime.FixedDeltaTime.
-                self.shockwave_apply(meteor, wave_index, updater_dt, true, data);
+    /// Shockwave.UpdateSim for the Gust and Meteor waves with hierarchy in
+    /// `hierarchy`, in hierarchy order.
+    fn shockwaves_update(&mut self, data: &data::RolloutData, hierarchy: std::ops::Range<u32>) {
+        let mut order = std::mem::take(&mut self.scratch.wave_order);
+        order.clear();
+        for meteor in [false, true] {
+            for (index, wave) in self.shockwaves(meteor).iter().enumerate() {
+                if wave.active && wave.registered && hierarchy.contains(&wave.hierarchy_base) {
+                    order.push((wave.hierarchy_base, meteor, index));
+                }
             }
         }
+        order.sort_unstable();
+        for &(_, meteor, index) in &order {
+            self.shockwave_step(meteor, index, data);
+        }
+        self.scratch.wave_order = order;
+    }
+
+    /// One wave's Shockwave.UpdateSim turn.
+    fn shockwave_step(&mut self, meteor: bool, wave_index: usize, data: &data::RolloutData) {
+        let tick = self.tick;
+        let wave = &mut self.shockwaves(meteor)[wave_index];
+        if !wave.active || !wave.registered || wave.stepped_tick == Some(tick) {
+            return;
+        }
+        wave.stepped_tick = Some(tick);
+        let hierarchy_base = wave.hierarchy_base;
+        // The older updatables have taken their turns: a Poke Ball's
+        // capture hop has set its velocity, and a DuplicatePlatformEffect
+        // has rescaled its source, whose live radius the wave reads. A newer
+        // Tack or hammer takes the impulse at its own turn.
+        let dt = DT * self.player_time_scale;
+        self.run_spawned_before(data, dt, 100_000_000 + hierarchy_base);
+        // Shockwave uses Updater's raw simDeltaTime for its curve clock; it
+        // never opts into GameTime.FixedDeltaTime.
+        self.shockwave_apply(meteor, wave_index, DT, true, data);
     }
 
     fn shockwave_apply(
@@ -31283,8 +31307,7 @@ impl RolloutWorld {
             }
             if let Some(from) = updaters_from.filter(|&from| from < effect.hierarchy_base) {
                 self.ability_pickups_tick_before(effect.hierarchy_base, data, updater_dt);
-                self.shockwaves_update(false, data, DT, from..effect.hierarchy_base);
-                self.shockwaves_update(true, data, DT, from..effect.hierarchy_base);
+                self.shockwaves_update(data, from..effect.hierarchy_base);
                 updaters_from = Some(effect.hierarchy_base);
             }
             if !effect.active || effect.born_tick >= self.tick || effect.early_tick == Some(self.tick)
@@ -31299,8 +31322,7 @@ impl RolloutWorld {
         }
         if let Some(from) = updaters_from {
             self.ability_pickups_tick_remaining(data, updater_dt);
-            self.shockwaves_update(false, data, DT, from..u32::MAX);
-            self.shockwaves_update(true, data, DT, from..u32::MAX);
+            self.shockwaves_update(data, from..u32::MAX);
         }
         self.scratch.item_order = order;
     }
