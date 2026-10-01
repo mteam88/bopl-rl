@@ -4101,6 +4101,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Missile
             | ActiveAbility::Dash
             | ActiveAbility::Platform
+            | ActiveAbility::Rock
     )
 }
 
@@ -13971,6 +13972,18 @@ impl RolloutWorld {
                 info.position = slot.base.position;
                 info.velocity = slot.base.velocity;
                 info.external_velocity = slot.base.external_velocity;
+            }
+            ActiveAbility::Rock => {
+                // BounceBall.ExitAbility (BounceBall.cs:231-252).
+                let (min, max) = rock_scale_bounds();
+                let slot = &mut self.players[index];
+                let s = slot.rock_slot();
+                slot.forms[s].write_circle_scale(slot.rock.exit_scale, min, max);
+                slot.base.rotation = Fix::ZERO;
+                let velocity = slot.rock.body.velocity;
+                info.facing_right = velocity.x >= Fix::ZERO;
+                info.position = slot.base.position;
+                info.velocity = velocity;
             }
             ActiveAbility::Magnet => {
                 // MagnetGun.ExitAbility (MagnetGun.cs:356-373).
@@ -39112,24 +39125,7 @@ impl RolloutWorld {
             if st.exiting {
                 st.exit_time += dt;
                 if st.exit_time > data.rock.exit_time {
-                    let exit_scale = st.exit_scale;
-                    let velocity = st.body.velocity;
-                    // BounceBall.ExitAbility: body.Scale = exitScale.
-                    circle.write_circle_scale(exit_scale, min, max);
-                    let slot = &mut self.players[index];
-                    slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                    slot.set_ordinary_body_scale(slot.player_scale);
-                    slot.restore_slime_radius();
-                    slot.base.velocity = velocity;
-                    slot.base.external_velocity = Vec2::ZERO;
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
-                    slot.base.grounded = false;
-                    slot.facing_right = velocity.x >= Fix::ZERO;
-                    slot.reported_position = slot.base.position;
-                    slot.reported_tick = self.tick;
-                    slot.exit_to_fall(terrain!(self));
-                    slot.base.sync_collider();
+                    self.exit_form(index);
                     // EnterFall's wall raycast runs RemoveDestroyedColliders
                     // (PlayerPhysics.cs:511-513), so a collider a collision
                     // callback destroyed this pass is gone before export.
