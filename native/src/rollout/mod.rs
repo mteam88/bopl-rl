@@ -10903,15 +10903,6 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_PUSH => {
-                        let ground = self.players[index]
-                            .base
-                            .ground
-                            .expect("ground-only Push has an attached platform");
-                        let platform_index = self
-                            .platforms
-                            .iter()
-                            .position(|platform| platform.id == ground)
-                            .expect("Push ground is live");
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Push);
@@ -10920,11 +10911,10 @@ impl RolloutWorld {
                         slot.telemetry.ability_activations[s] += 1;
                         slot.push = PushState::default();
                         // Ability.EnterAbility scales the box, then
-                        // PlayerPhysics.SyncPhysicsTo(PlayerInfo) UpdateScales
-                        // the form's radius and places the form from the
-                        // slime's LocalPlatformPos at that radius, aligned to
-                        // the ground. The form's Ability.UpdateSim publishes
-                        // that collider position later in this updater pass.
+                        // ControlPlatform.OnEnterAbility syncs the ground-only
+                        // form (ControlPlatform.cs:82-86). The form's
+                        // Ability.UpdateSim publishes that collider position
+                        // later in this updater pass.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
                         form.set_scale_offset(
@@ -10933,24 +10923,15 @@ impl RolloutWorld {
                             data.push.radius,
                             data.push.collider_offset,
                         );
-                        slot.base.radius = form.physics_radius();
-                        let platform = &self.platforms[platform_index];
-                        slot.base.position = platform.surface.position(slot.base.local, slot.base.radius);
-                        slot.base.align(platform);
-                        // ControlPlatform.OnEnterAbility then moves the form's
-                        // box to that placement plus its offset
-                        // (hurtbox.UpdatePhysicsPositions), which later
-                        // updaters this pass (BlackHole) read.
+                        let (radius, offset) = (form.physics_radius(), form.offset);
+                        let extents = data::surface_extents(data.push.hurtbox_extents);
+                        self.form_enter(index, radius, offset, extents);
+                        // The box later updaters this pass (BlackHole) read.
+                        let slot = &mut self.players[index];
                         slot.base.sync_collider();
-                        slot.base.collider.center = slot.base.position
-                            + slot.base.up.perp_cw().complex_mul(slot.forms[s].offset);
+                        slot.base.collider.center =
+                            slot.base.position + slot.base.up.perp_cw().complex_mul(offset);
                         slot.base.synced = slot.base.collider;
-                        let collider = slot.forms[s].hurtbox(
-                            slot.base.collider.center,
-                            Vec2::angle(slot.base.rotation),
-                            data::surface_extents(data.push.hurtbox_extents),
-                        );
-                        Self::sync_form_row(&mut self.entities, slot.push_entity, DetCollider::Box(collider));
                         slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
@@ -11077,34 +11058,13 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_ROLL => {
-                        let grounded = self.players[index].base.grounded;
-                        // Ability.EnterAbility scales the slot's circle, and
-                        // SyncPhysicsTo's UpdateScale its PlayerPhysics radius,
-                        // before placing the body.
-                        let roll_physics_radius = {
-                            let slot = &mut self.players[index];
-                            let scale = slot.player_scale;
-                            let form = &mut slot.forms[s];
-                            form.set_circle_scale_physics(
-                                scale,
-                                data.roll.radius,
-                                data.roll.physics_radius,
-                            );
-                            form.physics_radius()
-                        };
-                        let form_position = if grounded {
-                            let base = &self.players[index].base;
-                            base.ground
-                                .and_then(|ground| {
-                                    self.platforms.iter().find(|platform| platform.id == ground)
-                                })
-                                .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, roll_physics_radius)
-                                })
-                        } else {
-                            self.players[index].base.position
-                        };
                         let slot = &mut self.players[index];
+                        // Ability.EnterAbility scales the slot's circle, and
+                        // SyncPhysicsTo's UpdateScale its PlayerPhysics radius.
+                        let scale = slot.player_scale;
+                        let form = &mut slot.forms[s];
+                        form.set_circle_scale_physics(scale, data.roll.radius, data.roll.physics_radius);
+                        let physics = form.physics_radius();
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Roll);
                         slot.active_slot = s;
@@ -11115,31 +11075,19 @@ impl RolloutWorld {
                             charging: true,
                             ..RollState::default()
                         };
-                        slot.base.position = form_position;
-                        slot.base.radius = roll_physics_radius;
                         slot.base.constants = data.roll.constants.clone();
-                        slot.base.rotation = if grounded {
-                            slot.base.rotation
-                        } else {
-                            Fix::ZERO
-                        };
-                        if !grounded {
-                            slot.base.up = Vec2::UP;
-                            slot.base.ground = None;
-                            slot.base.grounded_speed = Fix::ZERO;
-                            slot.base.velocity.x = Fix::ZERO;
-                        } else {
-                            slot.base.velocity = Vec2::ZERO;
-                        }
-                        // Roll.OnEnterAbility syncs its hurtbox to the
-                        // SyncPhysicsTo pose (Roll.cs:175-176).
                         let (radius, offset) =
                             slot.form_circle(slot.roll_entity, data.roll.radius, Vec2::ZERO);
-                        slot.sync_entry_circle(&mut self.entities, &self.platforms, form_position, radius, offset);
+                        self.form_enter_circle(index, physics, radius, offset);
+                        // Roll.OnEnterAbility (Roll.cs:177-186).
+                        let slot = &mut self.players[index];
                         slot.base.external_velocity *= Fix::from_f64(0.2);
+                        if !slot.base.grounded {
+                            slot.base.velocity.x = Fix::ZERO;
+                        }
                         // Ability.UpdateSim publishes the newly positioned
                         // Roll collider later in this same updater pass.
-                        slot.reported_position = form_position;
+                        slot.reported_position = slot.base.position;
                         slot.reported_tick = self.tick;
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
@@ -11257,8 +11205,6 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.base.velocity = Vec2::ZERO;
-                        slot.base.external_velocity = Vec2::ZERO;
                         slot.cast_spell = CastSpellState {
                             phase: if grounded { 0 } else { 1 },
                             ..CastSpellState::default()
@@ -11267,29 +11213,13 @@ impl RolloutWorld {
                         // Ability.UpdateSim scales it again this pass, in
                         // `time_stop_cast_tick`.
                         slot.scale_time_stop_circle(data);
-                        // SyncPhysicsTo's UpdateScale brings the form's own
-                        // PlayerPhysics radius to the new scale, and seats a
-                        // grounded form with it.
-                        slot.base.radius = slot.forms[s].physics_radius();
-                        if !grounded {
-                            slot.base.rotation = Fix::ZERO;
-                            slot.base.up = Vec2::UP;
-                            slot.base.grounded = false;
-                            slot.base.ground = None;
-                            slot.base.grounded_speed = Fix::ZERO;
-                        } else if let Some(platform) = slot.base.platform(&self.platforms) {
-                            // PlayerPhysics.SyncPhysicsTo seats a grounded form
-                            // at the slime's surface local, not at a position a
-                            // player push moved off it, and aligns it to the
-                            // normal there; the form's PlayerPhysics never
-                            // syncs its rotation to the platform again.
-                            slot.base.position = platform.surface.position(slot.base.local, slot.base.radius);
-                            slot.base.align(platform);
-                        }
-                        let slot = &mut self.players[index];
+                        let physics = slot.forms[s].physics_radius();
                         let (radius, offset) = slot.time_stop_circle(data);
-                        let position = slot.base.position;
-                        slot.sync_entry_circle(&mut self.entities, &self.platforms, position, radius, offset);
+                        // CastSpell.OnEnterAbility (CastSpell.cs:130-133).
+                        self.form_enter_circle(index, physics, radius, offset);
+                        let slot = &mut self.players[index];
+                        slot.base.velocity = Vec2::ZERO;
+                        slot.base.external_velocity = Vec2::ZERO;
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
@@ -11685,8 +11615,13 @@ impl RolloutWorld {
                         slot.scale_form_circle(data.gust.hurtbox_radius, data.gust.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.gust_entity, data.gust.hurtbox_radius, data.gust.collider_offset);
-                        let position = slot.base.position;
-                        slot.sync_entry_circle(&mut self.entities, &self.platforms, position, radius, offset);
+                        let (physics, position) = (slot.forms[s].physics_radius(), slot.base.position);
+                        // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
+                        // sync places the circle, then the body returns to
+                        // PlayerInfo's position (EnterAbilityOffset is zero).
+                        self.form_enter_circle(index, physics, radius, offset);
+                        let slot = &mut self.players[index];
+                        slot.base.position = position;
                         // QuickSpell synchronizes the copied PlayerInfo,
                         // ungrounds by the standard 0.05-unit separation and
                         // then clears both velocity channels.
@@ -11727,8 +11662,13 @@ impl RolloutWorld {
                         slot.scale_form_circle(data.revival.hurtbox_radius, data.revival.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.revival_entity, data.revival.hurtbox_radius, data.revival.collider_offset);
-                        let position = slot.base.position;
-                        slot.sync_entry_circle(&mut self.entities, &self.platforms, position, radius, offset);
+                        let (physics, position) = (slot.forms[s].physics_radius(), slot.base.position);
+                        // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
+                        // sync places the circle, then the body returns to
+                        // PlayerInfo's position (EnterAbilityOffset is zero).
+                        self.form_enter_circle(index, physics, radius, offset);
+                        let slot = &mut self.players[index];
+                        slot.base.position = position;
                         let surface = attached_ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                             .map(|platform| &platform.surface);
@@ -29835,6 +29775,17 @@ impl RolloutWorld {
     }
 
     /// hurtBox.UpdatePhysicsPositions for a form body at `position`, `up`.
+    /// A circle form's OnEnterAbility: SyncPhysicsTo(PlayerInfo), then the
+    /// circle's UpdatePhysicsPositions at `position + right * offset`
+    /// (Roll.cs:175-176, CastSpell.cs:130-131, QuickSpell.cs:79-80).
+    fn form_enter_circle(&mut self, index: usize, physics: Fix, radius: Fix, offset: Vec2) {
+        self.sync_physics_to_player_info(index, physics);
+        let slot = &self.players[index];
+        let center = slot.base.position + slot.base.up.perp_cw().complex_mul(offset);
+        let entity = Self::hurtbox_entity(slot);
+        Self::sync_form_row(&mut self.entities, entity, DetCollider::Circle(Circle { center, radius }));
+    }
+
     fn sync_form_entry(
         &mut self,
         index: usize,
