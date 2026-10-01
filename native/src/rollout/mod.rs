@@ -19272,10 +19272,13 @@ impl RolloutWorld {
         let desired_right = Vec2::RIGHT;
         let desired_up = Vec2::UP;
         let local = Fix::ZERO;
-        let root = self.platforms[platform_index]
-            .surface
-            .position(local, Fix::ZERO)
-            + desired_up * source.surface_offset;
+        // Nothing calls UpdateBounds on the fresh boulder before
+        // RepositionOnParent, so its StickyRoundedRectangle still holds the
+        // bounds its Awake read: the prefab's unscaled startExtents.
+        let mut bounds = self.platforms[platform_index].surface.clone();
+        bounds.extents = data.macho_throw.boulder_extents;
+        bounds.bounds_radius = data.macho_throw.boulder_radius;
+        let root = bounds.position(local, Fix::ZERO) + desired_up * source.surface_offset;
         let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = desired_right.complex_mul(inverse_basis);
         let relative_center = (root - parent_position).complex_mul(inverse_basis)
