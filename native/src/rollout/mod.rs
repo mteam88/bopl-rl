@@ -3121,7 +3121,6 @@ impl UngroundBody<'_> {
                 );
                 slot.obs_state = STATE_FALL;
                 slot.state_ticks = 0;
-                slot.ragdoll = RagdollState::default();
                 rotation
             }
             Self::Form(slot) => {
@@ -3147,7 +3146,6 @@ impl UngroundBody<'_> {
                 );
                 clone.obs_state = STATE_FALL;
                 clone.state_ticks = 0;
-                clone.ragdoll = RagdollState::default();
                 rotation
             }
         }
@@ -37958,7 +37956,6 @@ impl RolloutWorld {
                 if slot.obs_state != STATE_FALL {
                     slot.obs_state = STATE_FALL;
                     slot.state_ticks = 0;
-                    slot.ragdoll = RagdollState::default();
                 }
             }
         }
