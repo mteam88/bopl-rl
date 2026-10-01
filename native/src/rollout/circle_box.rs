@@ -107,6 +107,21 @@ impl RolloutWorld {
         sweep_rank(&self.entities, self.swept_min(Swept::Part(part)), self.part_entity(part))
     }
 
+    /// Any collider's place in SortAndSweep's order.
+    pub(super) fn swept_rank(&self, collider: Swept) -> SweepRank {
+        let entity = match collider {
+            Swept::Part(part) => self.part_entity(part),
+            Swept::Player(i) => Some(Self::hurtbox_entity(&self.players[i])),
+            Swept::Clone(i) => self.abilityless_clones[i].entity,
+            Swept::Arrow(i) => self.arrows[i].entity,
+            Swept::DuplicatedRock(i) => self.duplicated_rocks[i].entity,
+            Swept::Pickup(i) => self.ability_pickups[i].entity,
+            Swept::Row(entity) => Some(entity),
+            Swept::Water => None,
+        };
+        sweep_rank(&self.entities, self.swept_min(collider), entity)
+    }
+
     /// A wall's place in SortAndSweep's order, from the collider the
     /// broadphase bounded.
     pub(super) fn wall_rank(&self, platform: usize) -> SweepRank {
