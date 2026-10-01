@@ -20981,9 +20981,6 @@ impl RolloutWorld {
             );
         }
         let slot = &mut self.players[index];
-        for generation in &mut slot.ability_generation {
-            *generation = generation.wrapping_add(1);
-        }
         // The fresh ability instances carry their prefab cooldowns, not
         // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
         for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
@@ -21493,9 +21490,6 @@ impl RolloutWorld {
         }
 
         let slot = &mut self.players[index];
-        for generation in &mut slot.ability_generation {
-            *generation = generation.wrapping_add(1);
-        }
         // The fresh ability instances carry their prefab cooldowns, not
         // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
         for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
@@ -36803,6 +36797,12 @@ impl RolloutWorld {
         slot.portal_blue = [None; 3];
         slot.portal_orange = [None; 3];
         slot.spike_attacks = [None; 3];
+        // A shot or item of a destroyed instance finds it IsDestroyed, which
+        // DestroyFix sets at once (Updater.cs:89-96, PortalShot.cs:92), even
+        // when a clone takes the slot this pass.
+        for generation in &mut slot.ability_generation {
+            *generation = generation.wrapping_add(1);
+        }
         // So does PlatformTransform's srrBuffer: the platform stays, but a
         // replacement slime's fresh ability starts with an empty buffer.
         for spawn in &mut self.spawned {
