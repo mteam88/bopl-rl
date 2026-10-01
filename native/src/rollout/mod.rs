@@ -24292,21 +24292,24 @@ impl RolloutWorld {
         let mut body = data.missile.spark_body;
         body.orientation = rotation;
         body.velocity = self.players[index].base.up * data.missile.projectile_start_speed;
+        // Fire runs from the animator's callback, before Ability.UpdateSim
+        // assigns this pass's Player.Scale, so the form's transform still has
+        // the scale its box was last given (SparkShot.cs:111-113).
+        let scale = self.players[index].forms[self.players[index].active_slot].scale;
         let missile = GuidedMissile {
             active: true,
             born_tick: self.tick,
             hierarchy_base,
             owner: index,
             position: self.players[index].base.position
-                + (data.missile.projectile_offset * self.players[index].player_scale)
-                    .complex_mul(right),
+                + (data.missile.projectile_offset * scale).complex_mul(right),
             body,
             up,
-            scale: self.players[index].player_scale,
+            scale,
             // SparkShot.Fire writes Scale before DPhysicsBox.Init, so it
             // lands in startExtents.
             inverse_extents: {
-                let extents = data.missile.spark_extents * self.players[index].player_scale;
+                let extents = data.missile.spark_extents * scale;
                 Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
             },
             ..GuidedMissile::default()
@@ -46198,7 +46201,8 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let start = world.players[0].base.position;
-        world.players[0].player_scale = Fix::from_int(2);
+        let slot = world.players[0].active_slot;
+        world.players[0].forms[slot].scale = Fix::from_int(2);
         world.players[0].base.rotation = Fix::ZERO;
 
         let missile = world.spawn_guided_missile(0, data::get());
