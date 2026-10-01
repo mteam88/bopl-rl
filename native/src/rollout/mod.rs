@@ -16861,15 +16861,11 @@ impl RolloutWorld {
             // only about a twentieth of a unit before halting. The port
             // integrated that velocity undamped, so a cast entered at speed
             // kept sliding and had travelled 0.4-0.56 units too far by the
-            // time the boundary caught it.
-            let slot = &mut self.players[index];
-            crate::player_physics::air_movement(
-                &mut slot.base.velocity,
-                Fix::ZERO,
-                slot.base.constants.air_accel,
-                slot.base.constants.max_speed,
-            )
-            .expect("valid Black Hole air constants");
+            // time the boundary caught it. Move then raycasts again with
+            // attach on the damped velocity (PlayerPhysics.cs:237-238), so a
+            // form PlayerPhysics' own raycast missed can still land this pass,
+            // staying in the form.
+            self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
         }
         self.form_body_step(index);
         let slot = &mut self.players[index];
