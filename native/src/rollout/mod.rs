@@ -14169,6 +14169,8 @@ impl RolloutWorld {
         slot.restore_slime_radius();
         let ground = (info.ground.filter(|_| info.grounded))
             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id));
+        // attachToGround still reads a destroyed ground's normal.
+        let lost_up = slot.dead_ground(tick).map(|surface| surface.normal(info.position));
         if let Some(platform) = ground {
             let position = platform.surface.position(info.local, info.radius);
             if let Ok(local) = platform.surface.local_position(position, slot.base.radius) {
@@ -14192,16 +14194,17 @@ impl RolloutWorld {
         }
         if slot.base.grounded {
             // EnterStop or EnterIdle; attachToGround starts the land and turns
-            // a slime set down on a ceiling (SlimeController.cs:1126-1134).
+            // a slime set down on a ceiling, whatever became of the packet's
+            // ground (SlimeController.cs:1126-1134).
             slot.obs_state_held_this_tick = true;
             (slot.obs_state, slot.state_ticks) =
                 if info.enter_turn { (STATE_STOP, STOP_TICKS + 2) } else { (STATE_IDLE, 0) };
-            if info.just_landed
-                && let Some(platform) = ground
-            {
+            if info.just_landed && (info.ground.is_some() || lost_up.is_some()) {
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
-                if platform.surface.normal(slot.base.position).y < Fix::ZERO {
+                let position = slot.base.position;
+                let up = ground.map(|platform| platform.surface.normal(position)).or(lost_up);
+                if up.is_some_and(|up| up.y < Fix::ZERO) {
                     slot.facing_right = !slot.facing_right;
                 }
             }
