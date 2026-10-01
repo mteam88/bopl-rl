@@ -33632,6 +33632,12 @@ impl RolloutWorld {
         if slot.respawn_ticks > 0 {
             return Some(slot.base.position);
         }
+        // So does a Revival death's clone, from its SpawnClone at the marker,
+        // though it registers only on the next pass (PlayerCollision.cs:140-152,
+        // SlimeController.cs:611-627).
+        if slot.revival_clone_pending {
+            return Some(slot.revival_clone_position);
+        }
         // A TeleportedObjectEffect newer than the hammer reenables the player
         // after the hammer's UpdateSim on its release pass.
         let released_later = slot.teleport_effect_released_tick == Some(self.tick)
