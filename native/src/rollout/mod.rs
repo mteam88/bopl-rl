@@ -2322,6 +2322,11 @@ pub struct AbilitylessClone {
     pub drowned_tick: u32,
     /// The Updater pass in which the clone's updaters last took their turn.
     pub updater_ran_tick: Option<u32>,
+    /// Its PlayerCollision.wasKilledThisFrame (PlayerCollision.cs:449-470).
+    pub was_killed_tick: Option<u32>,
+    /// The pass a callback's killPlayer DestroyFix'd the clone, which leaves
+    /// it active until the pass ends (Updater.cs:89-110).
+    pub destroyed_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -9893,7 +9898,7 @@ impl RolloutWorld {
                 .position(|clone| clone.active && clone.entity == Some(entity))
                 && !self.abilityless_clones[clone].poke_invulnerable
             {
-                self.kill_abilityless_clone(clone, killer, CAUSE_EATEN);
+                self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::Updater, false);
             }
         } else if self.players[eating.victim].deaths == eating.victim_deaths
             && self.playable(eating.victim)
@@ -17984,7 +17989,7 @@ impl RolloutWorld {
                 grow(self, Fix::ZERO);
                 let clone = &self.abilityless_clones[index];
                 let (entity, alive) = (clone.entity, clone.active);
-                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER);
+                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, KillRoute::Callback, false);
                 // A callback casualty stays visible as destroyed until the
                 // next pass's DetPhysics.Simulate drops it.
                 if let Some(entity) = entity.filter(|_| alive) {
@@ -28738,6 +28743,8 @@ impl RolloutWorld {
             pass_start: (u32::MAX, Vec2::ZERO),
             drowned_tick: u32::MAX,
             updater_ran_tick: None,
+            was_killed_tick: None,
+            destroyed_tick: None,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -34896,7 +34903,7 @@ impl RolloutWorld {
             // DetPhysics removes all killed colliders before contacts.
             self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
             if victim_is_clone {
-                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER);
+                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER, KillRoute::Updater, false);
             } else {
                 self.kill(victim, killer, CAUSE_OTHER, false, false);
             }
@@ -35212,7 +35219,8 @@ impl RolloutWorld {
                     self.kill(body, player_id(&self.players, owner), CAUSE_OTHER, false, false);
                 }
                 MjolnirVictim::Clone(clone_index) => {
-                    self.kill_abilityless_clone(clone_index, player_id(&self.players, owner), CAUSE_OTHER);
+                    let killer = player_id(&self.players, owner);
+                    self.kill_abilityless_clone(clone_index, killer, CAUSE_OTHER, KillRoute::Updater, false);
                 }
             }
         }
@@ -39026,7 +39034,7 @@ impl RolloutWorld {
             // water/bounds effect too.
             self.next_spawn_hierarchy += data::get().player.boundary_effect_updatable_count;
             self.abilityless_clones[clone_index].drowned_tick = self.tick;
-            self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
+            self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::Updater, false);
             return;
         }
         self.abilityless_clones[clone_index].base.move_collider();
@@ -39114,39 +39122,70 @@ impl RolloutWorld {
         }
     }
 
-    fn kill_abilityless_clone(&mut self, clone_index: usize, killer: u32, cause: u32) {
-        if !self.abilityless_clones[clone_index].active {
-            return;
-        }
+    /// The clone's own PlayerCollision.killPlayer (PlayerCollision.cs:102-221),
+    /// with the guards of the route that reached it, as kill_with mirrors the
+    /// slime's.
+    fn kill_abilityless_clone(
+        &mut self,
+        clone_index: usize,
+        killer: u32,
+        cause: u32,
+        route: KillRoute,
+        spawn_effect: bool,
+    ) {
+        let tick = self.tick;
         let owner = self.abilityless_clones[clone_index].owner;
-        if let Some(row) = self.abilityless_clones[clone_index].entity.and_then(|entity| self.entities.get(entity)) {
-            let tag = self.scratch.updater_hierarchy;
-            self.scratch.position_calls.push((tag, PositionCall::Gone(None), row.id, 0));
-        }
-        // The clone's own PlayerCollision.killPlayer takes the Revival branch
-        // while the player has markers: SpawnClone copies its empty ability
-        // list to a clone at every marker (PlayerCollision.cs:138-160), as a
-        // body's death does.
-        if !self.abilityless_clones[clone_index].poke_invulnerable
-            && self
-                .players
-                .iter()
-                .any(|body| body.owner == owner && body.revival_markers.iter().any(Option::is_some))
-            && let Some(body) = self.promote_abilityless_clone(clone_index)
-        {
-            self.kill(body, killer, cause, false, false);
+        // activeSelf: a live clone, or one a callback's killPlayer destroyed
+        // earlier this pass, which then has nothing left to tear down.
+        let destroyed = self.abilityless_clones[clone_index].destroyed_tick == Some(tick);
+        if !self.abilityless_clones[clone_index].active && !destroyed {
             return;
         }
-        // PlayerCollision.killPlayer lets go of the body's rope first.
-        let clone = &mut self.abilityless_clones[clone_index];
-        if clone.grip.rope.is_some() {
-            let top = clone.grip.top;
-            rope_abilities::attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, None, top, 0);
+        // KillPlayerOnCollision's guards (PlayerCollision.cs:305-316, 449-470).
+        if route == KillRoute::OnCollide {
+            if self.abilityless_clones[clone_index].was_killed_tick == Some(tick)
+                || self.players[owner].bodies_alive <= 0
+            {
+                return;
+            }
+            self.abilityless_clones[clone_index].was_killed_tick = Some(tick);
         }
-        self.abilityless_clones[clone_index].active = false;
-        self.abilityless_clones[clone_index].base.alive = false;
-        if let Some(entity) = self.abilityless_clones[clone_index].entity {
-            self.entities[entity].flags = E_REMOVED;
+        if route != KillRoute::Updater {
+            self.abilityless_clones[clone_index].destroyed_tick = Some(tick);
+        }
+        if spawn_effect && self.players[owner].extra_life != REVIVE_BEING {
+            self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+        }
+        if !destroyed {
+            if let Some(row) = self.abilityless_clones[clone_index].entity.and_then(|entity| self.entities.get(entity)) {
+                let tag = self.scratch.updater_hierarchy;
+                self.scratch.position_calls.push((tag, PositionCall::Gone(None), row.id, 0));
+            }
+            // The clone's killPlayer takes the Revival branch while the player
+            // has markers: SpawnClone copies its empty ability list to a clone
+            // at every marker (PlayerCollision.cs:138-160), as a body's death
+            // does.
+            if !self.abilityless_clones[clone_index].poke_invulnerable
+                && self
+                    .players
+                    .iter()
+                    .any(|body| body.owner == owner && body.revival_markers.iter().any(Option::is_some))
+                && let Some(body) = self.promote_abilityless_clone(clone_index)
+            {
+                self.kill(body, killer, cause, false, false);
+                return;
+            }
+            // PlayerCollision.killPlayer lets go of the body's rope first.
+            let clone = &mut self.abilityless_clones[clone_index];
+            if clone.grip.rope.is_some() {
+                let top = clone.grip.top;
+                rope_abilities::attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, None, top, 0);
+            }
+            self.abilityless_clones[clone_index].active = false;
+            self.abilityless_clones[clone_index].base.alive = false;
+            if let Some(entity) = self.abilityless_clones[clone_index].entity {
+                self.entities[entity].flags = E_REMOVED;
+            }
         }
         // The clone's killPlayer takes the stock branch as the player's last
         // body, spawning the replacement before Player.Kill
@@ -39996,7 +40035,7 @@ impl RolloutWorld {
                     .iter()
                     .position(|clone| clone.active && clone.entity == Some(entity))
                 {
-                    self.kill_abilityless_clone(clone, roller_id, CAUSE_OTHER);
+                    self.kill_abilityless_clone(clone, roller_id, CAUSE_OTHER, KillRoute::OnCollide, true);
                     continue;
                 }
                 self.player_form_target_callback(entity, center, roller, data);
@@ -40170,10 +40209,7 @@ impl RolloutWorld {
     fn clone_collision_kill(&mut self, index: usize, killer: u32, cause: u32) {
         let entity = self.abilityless_clones[index].entity;
         let alive = self.abilityless_clones[index].active;
-        if alive {
-            self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
-        }
-        self.kill_abilityless_clone(index, killer, cause);
+        self.kill_abilityless_clone(index, killer, cause, KillRoute::OnCollide, true);
         // A callback casualty stays visible as destroyed until the next
         // pass's DetPhysics.Simulate drops it.
         if let Some(entity) = entity.filter(|_| alive) {
