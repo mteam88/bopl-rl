@@ -28663,17 +28663,20 @@ impl RolloutWorld {
                 DetCollider::Circle(Circle { center: pickup.synced_center, radius: pickup.radius }),
             );
         }
-        // An arrow and a thrown item stand where this pass's physics put them.
+        // An arrow stands where this pass's physics put it.
         if let Some(arrow) =
             self.arrows.iter().find(|arrow| arrow.active && arrow.registered && arrow.entity == Some(entity))
         {
             return (!self.blink_object_hidden(Some(entity)))
                 .then_some(DetCollider::Circle(Circle { center: arrow.position, radius: arrow.collider_radius }));
         }
+        // A thrown item's circle is where the last Simulate left it: a Mine's
+        // shake or a settled peel's UpdateSim moves only the FixTransform.
         if let Some(item) = self.thrown_items.iter().find(|item| item.active && item.entity == Some(entity)) {
             let row = self.entities[entity];
+            let center = Self::thrown_item_collider_center(&self.entities, self.tick, item);
             return (row_is_active(&row) && !self.blink_object_hidden(Some(entity)))
-            .then_some(DetCollider::Circle(Circle { center: item.position, radius: item.collider_radius }));
+                .then_some(DetCollider::Circle(Circle { center, radius: item.collider_radius }));
         }
         // A Tesla line's box is on its node; its row carries only the centre.
         // A node evicted this tick keeps its lightning until the pass ends.
