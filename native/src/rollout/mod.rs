@@ -1244,6 +1244,11 @@ pub struct SpawnedTeslaNode {
     pub connected: bool,
     pub lethal: bool,
     pub enter_ticks: u32,
+    /// The passes a connected parent's own orb SpriteAnimator has run its
+    /// EnterOrb. Out of the hierarchy it pauses while `enter_ticks` keeps the
+    /// child's count, so a parent hidden mid-load is that much further from
+    /// ActivateLightning (SimpleSparkNode.cs:199-200, MonoUpdatable.cs:27-30).
+    pub orb_ticks: u32,
     /// Ticks left on an EnterOrb whose connection broke first. The orb's own
     /// animator still runs it out and its callback makes the node lethal
     /// until the next UpdateSim finds it unconnected.
@@ -14906,7 +14911,7 @@ impl RolloutWorld {
         let enter = data::get().tesla.enter_ticks;
         let elapsed = self.tesla_nodes[node_index].enter_ticks;
         if !self.tesla_nodes[node_index].lethal {
-            self.tesla_nodes[node_index].orb_enter_left = enter + 1 - elapsed;
+            self.tesla_nodes[node_index].orb_enter_left = enter + 1 - self.tesla_nodes[node_index].orb_ticks;
         }
         // Once this connection's EnterOrb on the child has ended, a child
         // that is not lethal is loading in its own connection instead, and
@@ -14921,6 +14926,7 @@ impl RolloutWorld {
         self.tesla_nodes[node_index].connected = false;
         self.tesla_node_unlit(node_index);
         self.tesla_nodes[node_index].enter_ticks = 0;
+        self.tesla_nodes[node_index].orb_ticks = 0;
         self.destroy_tesla_line(node_index, deferred);
         if let Some(child) = child
             && child < self.tesla_nodes.len()
@@ -15996,6 +16002,7 @@ impl RolloutWorld {
         let hierarchy_base = self.register_prefab(data.prefab("Chain_Lightning"));
         self.tesla_nodes[node_index].connected = true;
         self.tesla_nodes[node_index].enter_ticks = 0;
+        self.tesla_nodes[node_index].orb_ticks = 0;
         self.tesla_nodes[node_index].orb_enter_left = 0;
         self.tesla_nodes[child_index].orb_enter_left = 0;
         self.tesla_nodes[node_index].line_hierarchy_base = hierarchy_base;
@@ -16074,7 +16081,7 @@ impl RolloutWorld {
             // (SimpleSparkNode.cs:112-131, 199-200).
             if !destroyed
                 && !self.tesla_nodes[node_index].lethal
-                && self.tesla_nodes[node_index].enter_ticks > data.tesla.enter_ticks
+                && self.tesla_nodes[node_index].orb_ticks > data.tesla.enter_ticks
             {
                 self.tesla_nodes[node_index].lethal = true;
                 self.set_tesla_line_flag(node_index, E_ACTIVE, true);
@@ -16208,6 +16215,9 @@ impl RolloutWorld {
             return;
         }
         let node = &mut self.tesla_nodes[node_index];
+        if node.connected && node.child.is_some() {
+            node.orb_ticks += 1;
+        }
         if node.orb_enter_left > 0 {
             node.orb_enter_left -= 1;
             node.lethal |= node.orb_enter_left == 0;
@@ -19264,6 +19274,7 @@ impl RolloutWorld {
         node.connected = false;
         node.lethal = false;
         node.enter_ticks = 0;
+        node.orb_ticks = 0;
         if let Some(entity) = node.entity {
             self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
             self.entities[entity].layer = data.tesla.node_layer;
