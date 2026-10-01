@@ -4688,7 +4688,6 @@ pub struct RolloutWorld {
     pub engines: Vec<SpawnedEngine>,
     pub tesla_nodes: Vec<SpawnedTeslaNode>,
     pub destroyed_tesla_lines: Vec<DestroyedTeslaLine>,
-    pub retired_tesla_contacts: Vec<SpawnedTeslaNode>,
     pub meteor_smears: Vec<MeteorSmear>,
     pub meteor_waves: Vec<Shockwave>,
     pub frozen_solids: Vec<FrozenSolidState>,
@@ -4876,7 +4875,6 @@ impl RolloutWorld {
             engines: Vec::with_capacity(32),
             tesla_nodes: Vec::with_capacity(32),
             destroyed_tesla_lines: Vec::with_capacity(32),
-            retired_tesla_contacts: Vec::with_capacity(8),
             meteor_smears: Vec::with_capacity(16),
             meteor_waves: Vec::with_capacity(16),
             frozen_solids: Vec::with_capacity(32),
@@ -4991,8 +4989,6 @@ impl RolloutWorld {
         self.tesla_nodes.clone_from(&src.tesla_nodes);
         self.destroyed_tesla_lines
             .clone_from(&src.destroyed_tesla_lines);
-        self.retired_tesla_contacts
-            .clone_from(&src.retired_tesla_contacts);
         self.meteor_smears.clone_from(&src.meteor_smears);
         self.meteor_waves.clone_from(&src.meteor_waves);
         self.frozen_solids.clone_from(&src.frozen_solids);
@@ -5104,7 +5100,6 @@ impl RolloutWorld {
             engines: _,
             tesla_nodes: _,
             destroyed_tesla_lines: _,
-            retired_tesla_contacts: _,
             meteor_smears: _,
             meteor_waves: _,
             frozen_solids: _,
@@ -5243,7 +5238,6 @@ impl RolloutWorld {
         self.engines.clear();
         self.tesla_nodes.clear();
         self.destroyed_tesla_lines.clear();
-        self.retired_tesla_contacts.clear();
         self.meteor_smears.clear();
         self.meteor_waves.clear();
         self.frozen_solids.clear();
@@ -13351,7 +13345,6 @@ impl RolloutWorld {
         if self
             .tesla_nodes
             .iter()
-            .chain(&self.retired_tesla_contacts)
             .any(|node| node.entity == Some(entity) || node.line_entity == Some(entity))
         {
             return (0, true, CAUSE_OTHER);
@@ -15014,7 +15007,6 @@ impl RolloutWorld {
         // RemoveCircleFromComposite then rebuilds root + the surviving pair
         // while preserving that temporary composite's velocity.
         if let Some(oldest) = evicted {
-            self.retired_tesla_contacts.push(self.tesla_nodes[oldest]);
             self.remove_tesla_node(oldest, true);
         }
         self.platforms_changed();
@@ -16461,48 +16453,23 @@ impl RolloutWorld {
     }
 
     fn tesla_contacts(&mut self) {
-        // PlayerCollision kills in DetPhysics' callback order: Circle/Circle,
-        // then Circle/Box, then Box/Box pairs, each in sort-and-sweep order.
+        // Smoke collides with the Explosion-layer lightning but not with the
+        // node's LethalTerrain or NonLethalTerrain circle.
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-        let mut victims: [Option<CallbackKey>; MAX_BODIES] = [None; MAX_BODIES];
-        let live_nodes = self.tesla_nodes.len();
-        for (node_index, node) in self
-            .tesla_nodes
-            .iter()
-            .chain(&self.retired_tesla_contacts)
-            .copied()
-            .enumerate()
-        {
-            if !node.active
-                || node.macho_carried
-                || !node.lethal
-                || (node_index < live_nodes
-                    && self.attached_hidden(node.platform_index, node.entity))
-            {
+        for node_index in 0..self.tesla_nodes.len() {
+            if !self.line_part(node_index) {
                 continue;
             }
-            let node_circle = Circle {
-                center: node.collider_center,
-                radius: node.radius,
-            };
-            // SortAndSweep pairs the node by its bounding box from before this
-            // pass's contacts pushed its platform; the manifold tests where
-            // they left it.
-            let swept_node = Swept::Part(Part::Node(node_index));
-            let line = node.line_entity.filter(|&entity| row_is_active(&self.entities[entity])).map(|entity| OrientedBox {
+            let node = &self.tesla_nodes[node_index];
+            let line = OrientedBox {
                 center: node.line_center,
                 right: node.line_right,
                 up: node.line_up,
-                inverse_extents: self.entity_inverse_extents[entity],
-            });
-            // Smoke collides with the Explosion-layer line but not with the
-            // node's LethalTerrain or NonLethalTerrain circle.
+                inverse_extents: self.entity_inverse_extents[node.line_entity.expect("lit line")],
+            };
             for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                let Some(line) = line else {
-                    break;
-                };
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
@@ -16521,119 +16488,7 @@ impl RolloutWorld {
                     self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
-            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.hittable(player_index) {
-                    continue;
-                }
-                let slot = &self.players[player_index];
-                let entity = match slot.active {
-                    ActiveAbility::None => slot.body_entity,
-                    ActiveAbility::Dash => slot.dash_entity,
-                    ActiveAbility::Bow => slot.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => slot.throw_entity,
-                    ActiveAbility::Mine => slot.mine_entity,
-                    ActiveAbility::Rock => slot.rock_entity,
-                    ActiveAbility::Roll => slot.roll_entity,
-                    ActiveAbility::Meteor => slot.meteor_entity,
-                    ActiveAbility::Push => slot.push_entity,
-                    ActiveAbility::Freeze => slot.freeze_entity,
-                    ActiveAbility::Blink => slot.blink_entity,
-                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
-                    ActiveAbility::Duplicator => slot.duplicator_entity,
-                    ActiveAbility::Magnet => slot.magnet_entity,
-                    ActiveAbility::Spike => slot.spike_entity,
-                    ActiveAbility::Engine => slot.engine_entity,
-                    ActiveAbility::Tesla => slot.tesla_entity,
-                    ActiveAbility::TimeStop => slot.time_stop_entity,
-                    ActiveAbility::Gust => slot.gust_entity,
-                    ActiveAbility::Revival => slot.revival_entity,
-                    ActiveAbility::BlackHole => slot.black_hole_entity,
-                    ActiveAbility::Throw => slot.macho_throw_entity,
-                    ActiveAbility::Drill => slot.drill_entity,
-                    ActiveAbility::Beam => slot.beam_entity,
-                    ActiveAbility::Platform => slot.circle_entity,
-                };
-                if !self.collides(entity) {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let paired = self.swept_pair(swept_node, Swept::Player(player_index));
-                let player = sweep_rank(&self.entities, self.player_sweep_min(player_index), Some(entity));
-                let (node_pass, node_hit, line_hit) = if row.kind == 0 {
-                    let player = Circle {
-                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                        radius: Fix::from_raw(row.radius),
-                    };
-                    (
-                        GROUP_CC,
-                        paired && crate::physics::contact::circle_circle(node_circle, player).is_some(),
-                        line.is_some_and(|line| {
-                            crate::physics::contact::circle_box(player, line).is_some()
-                        }),
-                    )
-                } else {
-                    let player_box = Self::row_box(&self.entity_inverse_extents, entity, row);
-                    (
-                        GROUP_CB,
-                        paired && crate::physics::contact::circle_box(node_circle, player_box).is_some(),
-                        line.is_some_and(|line| {
-                            let line_rank = sweep_rank(&self.entities, box_min(line), None);
-                            swept_box_box(player_box, player, line, line_rank).is_some()
-                        }),
-                    )
-                };
-                // The lightning line has no entity row; among equal minima it
-                // is placed after the rows.
-                let pair = |pass: u8, other_min: Fix, other: Option<usize>| {
-                    let (later, earlier) =
-                        sweep_pair(player, sweep_rank(&self.entities, other_min, other));
-                    (pass, later, earlier)
-                };
-                let node_min = self.swept_min(swept_node);
-                // A live node's pair with a slime's or form's collider, the
-                // Rock form's circle included, queues from the Circle/Circle
-                // and Circle/Box groups.
-                // RingBuffer.Add DestroyFixes an evicted node, whose circle
-                // stays in this pass's DetPhysics; PlayerCollision refuses a
-                // destroyed collider (PlayerCollision.cs:313), so only its
-                // lightning, a separate object, still kills.
-                let retired = node_index >= live_nodes;
-                let rock = self.players[player_index].active == ActiveAbility::Rock && self.playable(player_index);
-                let grouped = !retired
-                    && (self.node_body_grouped(node_index, player_index) || (rock && self.node_part(node_index, true)));
-                let node_key = (node_hit && !grouped && !retired).then(|| pair(node_pass, node_min, node.entity));
-                // A live node's lightning meets a slime's or form's collider
-                // in the groups.
-                let line_grouped = node_index < live_nodes
-                    && self.line_part(node_index)
-                    && (rock || self.body_part_circle(player_index).is_some());
-                let line_key = line
-                    .filter(|_| line_hit && !line_grouped)
-                    .map(|line| pair(node_pass + 1, box_min(line), None));
-                if let Some(key) = [*victim, node_key, line_key].into_iter().flatten().min() {
-                    *victim = Some(key);
-                }
-            }
         }
-        for (player_index, victim) in victims.iter().enumerate().take(self.players.len()) {
-            if let Some(key) = *victim {
-                // Both prefabs carry Explosion and an IPlayerIdHolder, but
-                // SimpleSparkNode/StretchableLightning never assign
-                // Explosion.PlayerOwnerId. PlayerCollision therefore uses
-                // its zero default for kill attribution even though the RL
-                // entity row publishes the holder's actual owner.
-                let slime = self.players[player_index].active == ActiveAbility::None;
-                let hit = CallbackHit::Kill { player: player_index, killer: 0, cause: CAUSE_OTHER, slime };
-                self.scratch.callback_hits.push((key, hit));
-            }
-        }
-        self.retired_tesla_contacts.clear();
     }
 
     fn revival_tick(&mut self, index: usize, data: &data::RolloutData) {
@@ -23591,7 +23446,6 @@ impl RolloutWorld {
                         } else if self
                             .tesla_nodes
                             .iter()
-                            .chain(&self.retired_tesla_contacts)
                             .any(|node| node.entity == Some(entity) || node.line_entity == Some(entity))
                         {
                             // SimpleSparkNode and StretchableLightning never
@@ -29666,20 +29520,11 @@ impl RolloutWorld {
             .then_some(DetCollider::Circle(Circle { center: item.position, radius: item.collider_radius }));
         }
         // A Tesla line's box is on its node; its row carries only the centre.
-        // A node evicted this tick stays in DetPhysics until the pass ends.
-        let live_nodes = self.tesla_nodes.len();
-        if let Some((node_index, node)) = self
-            .tesla_nodes
-            .iter()
-            .chain(&self.retired_tesla_contacts)
-            .enumerate()
-            .find(|(_, node)| node.active && node.line_entity == Some(entity))
-        {
-            let on = node.lethal
-                && row_is_active(&self.entities[entity])
-                && !node.macho_carried
-                && !(node_index < live_nodes && self.attached_hidden(node.platform_index, node.entity));
-            return on.then_some(DetCollider::Box(OrientedBox {
+        // A node evicted this tick keeps its lightning until the pass ends.
+        if let Some((node_index, node)) = self.tesla_nodes.iter().enumerate().find(|(_, node)| {
+            (node.active || node.destroyed_tick == Some(self.tick)) && node.line_entity == Some(entity)
+        }) {
+            return self.line_part(node_index).then_some(DetCollider::Box(OrientedBox {
                 center: node.line_center,
                 right: node.line_right,
                 up: node.line_up,
@@ -43160,31 +43005,6 @@ mod tests {
             Vec2::new(Fix::ZERO, Fix::from_int(4))
         );
         assert_eq!(world.players[0].timers, [Fix::ZERO; 3]);
-    }
-
-    #[test]
-    fn evicted_tesla_node_does_not_kill() {
-        let mut world = RolloutWorld::new();
-        world.reset(&test_config()).unwrap();
-        let entity = world.players[1].body_entity;
-        let position = Vec2::new(
-            Fix::from_raw(world.entities[entity].x),
-            Fix::from_raw(world.entities[entity].y),
-        );
-        world.retired_tesla_contacts.push(SpawnedTeslaNode {
-            active: true,
-            lethal: true,
-            collider_center: position,
-            scale: Fix::ONE,
-            radius: data::get().tesla.node_radius,
-            ..SpawnedTeslaNode::default()
-        });
-
-        world.tesla_contacts();
-        world.run_callback_hits(data::get());
-
-        assert_eq!(world.players[1].deaths, 0);
-        assert!(world.retired_tesla_contacts.is_empty());
     }
 
     #[test]

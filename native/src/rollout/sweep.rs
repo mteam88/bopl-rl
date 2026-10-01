@@ -80,10 +80,7 @@ impl RolloutWorld {
         };
         fill(&mut sweep.items, self.thrown_items.len(), &|i| self.current_bounds(Swept::Part(Part::Item(i)), data));
         fill(&mut sweep.shots, self.portal_shots.len(), &|i| self.current_bounds(Swept::Part(Part::Shot(i)), data));
-        // A node evicted this tick stays in DetPhysics until the pass removes
-        // it; the retired copies follow the live nodes.
-        let nodes = self.tesla_nodes.len() + self.retired_tesla_contacts.len();
-        fill(&mut sweep.nodes, nodes, &|i| self.current_bounds(Swept::Part(Part::Node(i)), data));
+        fill(&mut sweep.nodes, self.tesla_nodes.len(), &|i| self.current_bounds(Swept::Part(Part::Node(i)), data));
         fill(&mut sweep.engines, self.engines.len(), &|i| self.current_bounds(Swept::Part(Part::Engine(i)), data));
         fill(&mut sweep.spikes, self.spike_attacks.len(), &|i| self.current_bounds(Swept::Part(Part::Spike(i)), data));
         fill(&mut sweep.missiles, self.guided_missiles.len(), &|i| {
@@ -107,10 +104,6 @@ impl RolloutWorld {
             {
                 let center = self.spike_attacks[i].collider_center;
                 [center, center]
-            }
-            Swept::Part(Part::Node(i)) if i >= self.tesla_nodes.len() => {
-                let node = &self.retired_tesla_contacts[i - self.tesla_nodes.len()];
-                bounds(node.collider_center, Vec2::new(node.radius, node.radius))
             }
             Swept::Part(Part::Rock(i)) => self.current_bounds(Swept::Player(i), data),
             Swept::Part(Part::Pickup(i)) => self.current_bounds(Swept::Pickup(i), data),

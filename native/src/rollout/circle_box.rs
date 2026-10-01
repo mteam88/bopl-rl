@@ -513,22 +513,19 @@ impl RolloutWorld {
                     && node.body.inverse_mass >= Fix::ZERO))
     }
 
-    /// Whether the groups test a live Tesla node against a slime's or form's
-    /// collider, so the pair's callbacks queue there.
-    pub(super) fn node_body_grouped(&self, node: usize, player: usize) -> bool {
-        self.body_part_circle(player).is_some_and(|circle| self.node_part(node, circle))
-    }
-
-    /// Whether a live node's lit, enabled lightning is a part of the
-    /// Circle/Box and Box/Box groups. The line of a node evicted this pass
-    /// still meets its pairs in tesla_contacts.
+    /// Whether a node's lit, enabled lightning is a part of the Circle/Box
+    /// and Box/Box groups. RingBuffer.Add DestroyFixes an evicted node
+    /// (RingBuffer.cs:60), but its lightning goes only with the deferred
+    /// OnDestroyUpdatable (SimpleSparkNode.cs:140-157), so it still meets its
+    /// pairs this pass.
     pub(super) fn line_part(&self, i: usize) -> bool {
         let node = &self.tesla_nodes[i];
-        node.active
-            && node.lethal
-            && !node.macho_carried
-            && !self.attached_hidden(node.platform_index, node.entity)
-            && node.line_entity.is_some_and(|entity| row_is_active(&self.entities[entity]))
+        let present = if node.active {
+            !node.macho_carried && !self.attached_hidden(node.platform_index, node.entity)
+        } else {
+            node.destroyed_tick == Some(self.tick)
+        };
+        present && node.lethal && node.line_entity.is_some_and(|entity| row_is_active(&self.entities[entity]))
     }
 
     /// Whether an abilityless clone's collider is in this Simulate's pairs,
