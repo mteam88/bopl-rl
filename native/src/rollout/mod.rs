@@ -12642,6 +12642,10 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.reported_position = slot.base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+            } else if self.players[index].active == ActiveAbility::Platform {
+                // The form's PlayerBody (hierarchy 6) then drifts it by the
+                // velocity a pull such as Magnet's gave it (PlayerBody.cs:245).
+                self.form_body_step(index);
             }
             return;
         }
