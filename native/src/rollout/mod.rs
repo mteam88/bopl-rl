@@ -10708,7 +10708,14 @@ impl RolloutWorld {
                         form.set_scale(scale, data.dash.hurtbox_extents, data.player.radius);
                         slot.base.dash.radius = form.physics_radius();
                         slot.base.dash.inverse_extents = form.inverse_extents;
-                        let position = slot.base.position;
+                        // Dash.OnEnterAbility syncs its hitbox after SyncPhysicsTo
+                        // re-places a grounded form at its own radius (Dash.cs:94-95).
+                        let radius = slot.base.dash.radius;
+                        let base = &self.players[index].base;
+                        let position = base
+                            .platform(&self.platforms)
+                            .filter(|_| base.grounded)
+                            .map_or(base.position, |platform| platform.surface.position(base.local, radius));
                         self.sync_form_entry(index, position, Vec2::ZERO, data.dash.hurtbox_extents);
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
