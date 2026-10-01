@@ -532,13 +532,14 @@ pub(super) fn rope_pool() -> Vec<RolloutRope> {
     assert_eq!(source.web_miss_cooldown, WEB_MISS_COOLDOWN);
     assert_eq!(source.web_release_boost, WEB_RELEASE_BOOST);
     assert_eq!(source.web_grounded_pop, WEB_GROUNDED_POP);
-    (0..ROPE_POOL).map(|_| empty_rope()).collect()
+    Vec::with_capacity(ROPE_POOL)
 }
 
-pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
-    for rope in ropes {
-        *rope = empty_rope();
-    }
+/// RopeBodyList's 128 bodies, held up to the last one AddRope has handed
+/// out: the bodies past it are all still fresh, so walks over the pool
+/// skip them alike.
+pub(super) fn reset_rope_pool(ropes: &mut Vec<RolloutRope>) {
+    ropes.clear();
 }
 
 impl RolloutWorld {
@@ -566,11 +567,16 @@ impl RolloutWorld {
         platform_local: Fix,
         hierarchy: u32,
     ) -> usize {
-        let index = self
-            .ropes
-            .iter()
-            .position(|rope| !rope.physics.enabled && !rope.disabled_this_frame)
-            .expect("RopeBody pool exhausted");
+        // RopeBodyList.AddRope takes the first body neither enabled nor
+        // disabled this frame.
+        let index = match self.ropes.iter().position(|rope| !rope.physics.enabled && !rope.disabled_this_frame) {
+            Some(index) => index,
+            None => {
+                assert!(self.ropes.len() < ROPE_POOL, "RopeBody pool exhausted");
+                self.ropes.push(empty_rope());
+                self.ropes.len() - 1
+            }
+        };
         self.next_rope_number += 1;
         let mut segment_ids = [0; MAX_SEGMENTS - 1];
         for id in segment_ids.iter_mut().take(SEGMENTS - 1) {
@@ -1632,6 +1638,9 @@ impl RolloutWorld {
         } else {
             self.rope_rectangles
                 .extend(self.platforms.iter().map(|platform| platform.collider));
+        }
+        if !self.ropes.iter().any(|rope| rope.physics.enabled) {
+            return;
         }
         // SortAndSweep*_ropes sweeps the axis along which the rounded
         // rectangles alone spread widest about the mean of every active
