@@ -4084,6 +4084,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Spike
             | ActiveAbility::Engine
             | ActiveAbility::Tesla
+            | ActiveAbility::BlackHole
     )
 }
 
@@ -10068,12 +10069,7 @@ impl RolloutWorld {
                 ..ExitInfo::default()
             };
             let info = self.form_exit_ability(index, handed);
-            // Ability.ExitAbility deactivates the form where its exit left
-            // it, and DetPhysics syncs that FixTransform to its box.
-            let slot = &mut self.players[index];
-            let entity = Self::hurtbox_entity(slot);
-            slot.sync_form_pose();
-            slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
+            self.freeze_form_pose(index);
             self.ability_exit(index, info);
         } else if active != ActiveAbility::None {
             // PlayerPhysics.DropPlatformTest hands the form's IAbilityComponent
@@ -14134,6 +14130,14 @@ impl RolloutWorld {
                 info.external_velocity = Vec2::ZERO;
                 info.facing_right = slot.facing_right;
             }
+            ActiveAbility::BlackHole => {
+                // BlackHoleClap.ExitAbility (BlackHoleClap.cs:153-166) leaves
+                // the body's rotation, so the frozen form keeps it.
+                self.freeze_form_pose(index);
+                let slot = &self.players[index];
+                info.take_body(&slot.base);
+                info.facing_right = slot.facing_right;
+            }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
         info
@@ -14141,8 +14145,23 @@ impl RolloutWorld {
 
     /// A form's parameterless ExitAbility(): ExitAbility(default(AbilityExitInfo)).
     fn exit_form(&mut self, index: usize) {
-        let info = self.form_exit_ability(index, ExitInfo::default());
+        self.exit_form_with(index, ExitInfo::default());
+    }
+
+    /// A form's ExitAbility(info) on a packet its caller filled in.
+    fn exit_form_with(&mut self, index: usize, info: ExitInfo) {
+        let info = self.form_exit_ability(index, info);
         self.ability_exit(index, info);
+    }
+
+    /// Ability.ExitAbility deactivates the form where its exit left it, and
+    /// DetPhysics syncs that FixTransform, rotation and all, to its box.
+    fn freeze_form_pose(&mut self, index: usize) {
+        let tick = self.tick;
+        let slot = &mut self.players[index];
+        let entity = Self::hurtbox_entity(slot);
+        slot.sync_form_pose();
+        slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
     }
 
     /// The landing exit BowTransform, GunTransform and MagnetGun make when
@@ -17008,12 +17027,22 @@ impl RolloutWorld {
                 }
             } else {
                 // BlackHoleClap's lost-ground exit zeroes the form body's
-                // rotation and hands over isFacingRight true.
+                // rotation and hands an airborne packet, isFacingRight true,
+                // straight to Ability.ExitAbility (BlackHoleClap.cs:135-148).
                 let slot = &mut self.players[index];
-                slot.facing_right = true;
                 slot.base.rotation = Fix::ZERO;
                 slot.base.up = Vec2::UP;
-                self.exit_black_hole_form(index, false);
+                let base = &slot.base;
+                let info = ExitInfo {
+                    position: base.position,
+                    velocity: base.velocity,
+                    external_velocity: base.external_velocity,
+                    radius: base.radius,
+                    facing_right: true,
+                    ..ExitInfo::default()
+                };
+                self.freeze_form_pose(index);
+                self.ability_exit(index, info);
                 return;
             }
         } else {
@@ -17097,8 +17126,7 @@ impl RolloutWorld {
                 cast.phase = 1;
                 cast.ticks = 0;
             } else {
-                let grounded = self.players[index].base.grounded;
-                self.exit_black_hole_form(index, grounded);
+                self.exit_form(index);
                 return;
             }
         }
@@ -17118,41 +17146,6 @@ impl RolloutWorld {
             return;
         }
         self.black_hole_form_motion(index, data);
-    }
-
-    fn exit_black_hole_form(&mut self, index: usize, grounded: bool) {
-        let tick = self.tick;
-        let slot = &mut self.players[index];
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.base.constants = data::get().player.constants.clone();
-        // The exit re-places or levels only the slime; the form's frozen
-        // FixTransform keeps its rotation and up.
-        let entity = slot.black_hole_entity;
-        slot.sync_form_pose();
-        slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
-        if grounded && slot.base.ground.is_some() {
-            slot.obs_state = STATE_IDLE;
-            slot.state_ticks = 0;
-            let position = slot.base.position;
-            self.sync_exit_to_ground(index);
-            let slot = &mut self.players[index];
-            slot.reported_position = position;
-            slot.reported_tick = self.tick;
-            return;
-        } else {
-            slot.restore_slime_radius();
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.base.grounded = false;
-            slot.exit_to_fall(terrain!(self));
-            // SlimeController.ExitAbility assigns Player.Scale to the hurtbox.
-            slot.set_ordinary_body_scale(slot.player_scale);
-            let position = slot.base.position;
-            let s = slot.entity_slot(entity);
-            slot.forms[s].pose.position = position;
-        }
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
     }
 
     /// The collider radius `BlackHole.Init` registers. `Init` calls
