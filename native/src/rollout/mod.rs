@@ -4277,6 +4277,12 @@ enum CallbackHit {
     ItemDetonate { item: usize, count: usize },
     /// Mine.OnCollide with an igniter: an armed mine starts its anticipation.
     MineIgnite { item: usize },
+    /// BounceBall.OnCollide with a collider of `layer` (BounceBall.cs:310-323).
+    RockBounce { rock: usize, normal: Vec2, layer: u32 },
+    /// One side of a narrow-phase manifold: the receiver's
+    /// collisionCallback.OnCollide with the other collider, dispatched by the
+    /// receiver's kind (DetPhysics.cs:2406-2438, 3202-3205).
+    Collide { receiver: Part, other: Part, contact: Contact },
     /// DynamicAbilityPickup.OnCollide with a slime's or an abilityless
     /// clone's box, whose hurtbox row was `body` when the pair was found.
     Pickup { pickup: usize, taker: PickupTaker, body: usize },
@@ -4386,7 +4392,6 @@ struct PlatformScratch {
     cc_contacts: Vec<(Part, Part, Contact)>,
     /// Each arrow's StickTo contacts in the Circle/Circle and Circle/Box
     /// groups, by callback key.
-    arrow_landings: Vec<(usize, CallbackKey, Part)>,
     pickup_order: Vec<usize>,
     spike_order: Vec<usize>,
     wave_order: Vec<(UpdaterKey, bool, usize)>,
@@ -4474,7 +4479,6 @@ impl PlatformScratch {
         PlatformScratch {
             item_order: Vec::with_capacity(192),
             cc_contacts: Vec::with_capacity(256),
-            arrow_landings: Vec::with_capacity(16),
             wall_contacts: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
             spike_order: Vec::with_capacity(16),
@@ -16582,21 +16586,24 @@ impl RolloutWorld {
             }
             // Mine.Igniters holds the line's layer but not LethalTerrain, so
             // only the line lights a mine.
-            for mine in &mut self.thrown_items {
+            // Mine.OnCollide runs from the callback queue at the pair's
+            // Circle/Box place.
+            for item in 0..self.thrown_items.len() {
                 let Some(line) = line else {
                     break;
                 };
+                let mine = self.thrown_items[item];
                 if !mine.active || mine.ability != ABILITY_MINE || !matches!(mine.phase, 1 | 2) {
                     continue;
                 }
                 let mine_circle = Circle {
                     center: mine.position,
-                    radius: thrown_item_radius(data, *mine),
+                    radius: thrown_item_radius(data, mine),
                 };
                 if crate::physics::contact::circle_box(mine_circle, line).is_some() {
-                    mine.time_since_anticipation =
-                        data.mine.anticipation_duration * Fix::from_f64(0.8);
-                    mine.phase = 3;
+                    let line_rank = sweep_rank(&self.entities, box_min(line), None);
+                    let (later, earlier) = sweep_pair(self.part_rank(Part::Item(item)), line_rank);
+                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), CallbackHit::MineIgnite { item }));
                 }
             }
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
@@ -17612,56 +17619,6 @@ impl RolloutWorld {
                 }
             }
         }
-    }
-
-    /// BlackHole.OnCollide queued for a pair the Circle/Circle group found
-    /// on the positions the Circle/RoundedRect corrections left. The callback
-    /// reads the other collider's inverse mass, a composite child's being its
-    /// CompositeBody's (BlackHole.cs:447).
-    fn queue_black_hole_pair(&mut self, hole: usize, other: Part) {
-        let hole_rank = self.part_rank(Part::Hole(hole));
-        let (target, inverse_mass) = match other {
-            Part::Arrow(i) => (HoleTarget::Arrow(i), self.arrows[i].inverse_mass),
-            Part::Pickup(i) => {
-                let pickup = self.ability_pickups[i];
-                if pickup.entity.and_then(|entity| self.detphysics_collider(entity)).is_none() {
-                    return;
-                }
-                (HoleTarget::Pickup(i), pickup.body.inverse_mass)
-            }
-            Part::Item(i) => {
-                let item = self.thrown_items[i];
-                if !item.entity.is_some_and(|entity| self.collides(entity)) {
-                    return;
-                }
-                (HoleTarget::Item(i), item.body.inverse_mass)
-            }
-            Part::Shot(i) => (HoleTarget::Shot(i), self.portal_shots[i].body.inverse_mass),
-            Part::DuplicatedRock(i) => (HoleTarget::DuplicatedRock(i), self.duplicated_rocks[i].body.inverse_mass),
-            Part::Node(i) => {
-                let platform = self.tesla_nodes[i].platform_index;
-                (HoleTarget::Node(i), self.platform_dynamics[platform].body.inverse_mass)
-            }
-            Part::Hole(i) => (HoleTarget::Hole(i), -Fix::ONE),
-            // Grow reads the Rock's BounceBall body.
-            Part::Rock(player) => {
-                let slot = &self.players[player];
-                if !self.playable_slot(slot) || slot.out || !self.collides(slot.rock_entity) {
-                    return;
-                }
-                let hit = CallbackHit::BlackHole {
-                    hole,
-                    target: HoleTarget::Player(player, false),
-                    inverse_mass: slot.rock.body.inverse_mass,
-                };
-                self.queue_callback_hit(player, true, hole_rank, hit);
-                return;
-            }
-            Part::Hook(_) | Part::Engine(_) | Part::Spike(_) | Part::Missile(_) => unreachable!(),
-        };
-        let (later, earlier) = sweep_pair(hole_rank, self.part_rank(other));
-        let hit = CallbackHit::BlackHole { hole, target, inverse_mass };
-        self.scratch.callback_hits.push(((GROUP_CC, later, earlier), hit));
     }
 
     /// BlackHole.OnCollide (BlackHole.cs:445-593), run from DetPhysics'
@@ -35046,11 +35003,6 @@ impl RolloutWorld {
                 radius: arrow.collider_radius,
             };
             let arrow_rank = self.part_rank(Part::Arrow(i));
-            // Arrow.OnCollide with each StickTo pair; the first to run lands
-            // it. Its wall pairs queued in circle_wall_group.
-            for &(_, key, part) in self.scratch.arrow_landings.iter().filter(|&&(a, ..)| a == i) {
-                landings.push((key, CallbackHit::ArrowLand { arrow: i, wall: None, part: Some(part) }));
-            }
 
             // The retained rows give every form's collider with the pose
             // DetPhysics synchronized; a Rock form's circle is a part.
@@ -35140,7 +35092,6 @@ impl RolloutWorld {
                 }
             }
         }
-        self.scratch.arrow_landings.clear();
         self.scratch.callback_hits.extend(landings);
     }
 
@@ -36303,135 +36254,142 @@ impl RolloutWorld {
         let mut hits = std::mem::take(&mut self.scratch.callback_hits);
         hits.sort_by_key(|&(key, _)| key);
         for &(_, hit) in &hits {
-            match hit {
-                CallbackHit::ArrowKill { victim, owner, arrow, slime } => self.arrow_kill(victim, owner, arrow, slime),
-                CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
-                CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
-                CallbackHit::FormTarget { entity, caster } => {
-                    self.form_target_on_collide(entity, caster, Vec2::ZERO, PassPhase::Callback, data);
+            self.run_callback_hit(hit, data);
+        }
+        hits.clear();
+        self.scratch.callback_hits = hits;
+    }
+
+    /// One entry of DetPhysics' callback queue (DetPhysics.cs:3202-3205).
+    fn run_callback_hit(&mut self, hit: CallbackHit, data: &data::RolloutData) {
+        match hit {
+            CallbackHit::ArrowKill { victim, owner, arrow, slime } => self.arrow_kill(victim, owner, arrow, slime),
+            CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
+            CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
+            CallbackHit::FormTarget { entity, caster } => {
+                self.form_target_on_collide(entity, caster, Vec2::ZERO, PassPhase::Callback, data);
+            }
+            CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
+            CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
+            CallbackHit::MjolnirWall { item, wall } => self.mjolnir_wall_callback(item, wall, data),
+            CallbackHit::TackWall { item, normal } => self.tack_wall_callback(item, normal),
+            CallbackHit::PokeCapture { item, victim, clone } => {
+                let ball = self.thrown_items[item];
+                if !ball.active || !ball.launched || ball.capture_victim.is_some() {
+                    return;
                 }
-                CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
-                CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
-                CallbackHit::MjolnirWall { item, wall } => self.mjolnir_wall_callback(item, wall, data),
-                CallbackHit::TackWall { item, normal } => self.tack_wall_callback(item, normal),
-                CallbackHit::PokeCapture { item, victim, clone } => {
-                    let ball = self.thrown_items[item];
-                    if !ball.active || !ball.launched || ball.capture_victim.is_some() {
-                        continue;
+                if clone {
+                    if self.abilityless_clones[victim].active && self.abilityless_clones[victim].base.alive {
+                        self.capture_poke_clone(item, victim, data);
                     }
-                    if clone {
-                        if self.abilityless_clones[victim].active && self.abilityless_clones[victim].base.alive {
-                            self.capture_poke_clone(item, victim, data);
-                        }
-                    } else if self.players[victim].base.alive {
-                        self.capture_poke_victim(item, victim, data, false);
+                } else if self.players[victim].base.alive {
+                    self.capture_poke_victim(item, victim, data, false);
+                }
+            }
+            CallbackHit::Kill { player, killer, cause, slime } => {
+                if self.player_collision_active(player, slime) {
+                    self.kill(player, killer, cause, true, true);
+                }
+            }
+            CallbackHit::Pickup { pickup, taker, body } => {
+                self.grant_ability_pickup(pickup, taker, body, data);
+            }
+            CallbackHit::RopeHook { rope, target } => self.rope_hook_collide(rope, target),
+            CallbackHit::MissileBlast { missile } => {
+                // Every pair explodes, a destroyed missile included, but
+                // not while a Magnet holds it (Missile.cs:181-192).
+                let missile_state = self.guided_missiles[missile];
+                if missile_state.magnet_hold_ticks < 0 {
+                    self.spawn_missile_explosion(
+                        missile_state.position,
+                        missile_state.owner,
+                        false,
+                        missile_state.scale,
+                        data,
+                    );
+                    self.destroy_guided_missile(missile, true);
+                }
+            }
+            CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause),
+            CallbackHit::SpikeKnock { spike, player, entity, point } => {
+                if !self.hittable(player) {
+                    return;
+                }
+                let direction = (point - self.spike_attack_root(spike)).normalized_safe();
+                let row = &mut self.entities[entity];
+                let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy))
+                    + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
+                row.vx = velocity.x.raw();
+                row.vy = velocity.y.raw();
+                self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
+            }
+            CallbackHit::SpikeShove { spike, target, point } => {
+                // Off the wall layer, so knockAwayStr, pushed from the
+                // target's synced FixTransform (SpikeAttack.cs:116-141).
+                if self.player_time_scale < Fix::from_f32(0.01)
+                    || self.spike_attacks[spike].time >= data.spike.push_time
+                    || self.part_destroyed(target)
+                {
+                    return;
+                }
+                let direction = (point - self.spike_attack_root(spike)).normalized_safe();
+                self.part_add_force_at(target, direction * data.spike.knock_player, point);
+                self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
+            }
+            CallbackHit::SlimeCollide { slime, other, lower } => {
+                self.slime_collide(slime, other, lower);
+            }
+            CallbackHit::Squish { clone, index } => self.squish(clone, index),
+            CallbackHit::BlackHole { hole, target, inverse_mass } => {
+                self.black_hole_collide(hole, target, inverse_mass, data);
+            }
+            CallbackHit::SpikeWallKnock { spike, wall, point, wall_layer } => {
+                if self.player_time_scale < Fix::from_f32(0.01)
+                    || self.spike_attacks[spike].time >= data.spike.push_time
+                    || self.entities[self.platform_entities[wall]].flags & E_DESTROYED != 0
+                {
+                    return;
+                }
+                let strength = if wall_layer { data.spike.knock_wall } else { data.spike.knock_player };
+                let direction = (point - self.spike_attack_root(spike)).normalized_safe();
+                let wall_arm = (point - self.platforms[wall].surface.center).normalized_safe();
+                self.platform_dynamics[wall]
+                    .body
+                    .apply_impulse(direction * strength, wall_arm);
+                self.spike_attack_self_push(spike, point, strength, data);
+            }
+            CallbackHit::RockBounce { rock, normal, layer } => self.rock_on_collide(rock, normal, layer),
+            CallbackHit::Collide { receiver, other, contact } => self.on_collide(receiver, other, contact, data),
+            CallbackHit::MineIgnite { item } => {
+                let mine = &mut self.thrown_items[item];
+                if mine.active && matches!(mine.phase, 1 | 2) {
+                    mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f64(0.8);
+                    mine.phase = 3;
+                }
+            }
+            CallbackHit::ItemDetonate { item, count } => {
+                let state = self.thrown_items[item];
+                if !state.active {
+                    return;
+                }
+                if state.ability == ABILITY_SMOKE {
+                    if state.detonates_on_owner {
+                        self.detonate_smoke(item, true, data);
                     }
-                }
-                CallbackHit::Kill { player, killer, cause, slime } => {
-                    if self.player_collision_active(player, slime) {
-                        self.kill(player, killer, cause, true, true);
-                    }
-                }
-                CallbackHit::Pickup { pickup, taker, body } => {
-                    self.grant_ability_pickup(pickup, taker, body, data);
-                }
-                CallbackHit::RopeHook { rope, target } => self.rope_hook_collide(rope, target),
-                CallbackHit::MissileBlast { missile } => {
-                    // Every pair explodes, a destroyed missile included, but
-                    // not while a Magnet holds it (Missile.cs:181-192).
-                    let missile_state = self.guided_missiles[missile];
-                    if missile_state.magnet_hold_ticks < 0 {
-                        self.spawn_missile_explosion(
-                            missile_state.position,
-                            missile_state.owner,
-                            false,
-                            missile_state.scale,
+                } else {
+                    self.detonate_grenade(item, true, data);
+                    for _ in 1..count {
+                        self.spawn_grenade_explosion(
+                            state.position,
+                            state.owner,
+                            true,
+                            state.scale,
                             data,
                         );
-                        self.destroy_guided_missile(missile, true);
-                    }
-                }
-                CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause),
-                CallbackHit::SpikeKnock { spike, player, entity, point } => {
-                    if !self.hittable(player) {
-                        continue;
-                    }
-                    let direction = (point - self.spike_attack_root(spike)).normalized_safe();
-                    let row = &mut self.entities[entity];
-                    let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy))
-                        + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
-                    row.vx = velocity.x.raw();
-                    row.vy = velocity.y.raw();
-                    self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
-                }
-                CallbackHit::SpikeShove { spike, target, point } => {
-                    // Off the wall layer, so knockAwayStr, pushed from the
-                    // target's synced FixTransform (SpikeAttack.cs:116-141).
-                    if self.player_time_scale < Fix::from_f32(0.01)
-                        || self.spike_attacks[spike].time >= data.spike.push_time
-                        || self.part_destroyed(target)
-                    {
-                        continue;
-                    }
-                    let direction = (point - self.spike_attack_root(spike)).normalized_safe();
-                    self.part_add_force_at(target, direction * data.spike.knock_player, point);
-                    self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
-                }
-                CallbackHit::SlimeCollide { slime, other, lower } => {
-                    self.slime_collide(slime, other, lower);
-                }
-                CallbackHit::Squish { clone, index } => self.squish(clone, index),
-                CallbackHit::BlackHole { hole, target, inverse_mass } => {
-                    self.black_hole_collide(hole, target, inverse_mass, data);
-                }
-                CallbackHit::SpikeWallKnock { spike, wall, point, wall_layer } => {
-                    if self.player_time_scale < Fix::from_f32(0.01)
-                        || self.spike_attacks[spike].time >= data.spike.push_time
-                        || self.entities[self.platform_entities[wall]].flags & E_DESTROYED != 0
-                    {
-                        continue;
-                    }
-                    let strength = if wall_layer { data.spike.knock_wall } else { data.spike.knock_player };
-                    let direction = (point - self.spike_attack_root(spike)).normalized_safe();
-                    let wall_arm = (point - self.platforms[wall].surface.center).normalized_safe();
-                    self.platform_dynamics[wall]
-                        .body
-                        .apply_impulse(direction * strength, wall_arm);
-                    self.spike_attack_self_push(spike, point, strength, data);
-                }
-                CallbackHit::MineIgnite { item } => {
-                    let mine = &mut self.thrown_items[item];
-                    if mine.active && matches!(mine.phase, 1 | 2) {
-                        mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f64(0.8);
-                        mine.phase = 3;
-                    }
-                }
-                CallbackHit::ItemDetonate { item, count } => {
-                    let state = self.thrown_items[item];
-                    if !state.active {
-                        continue;
-                    }
-                    if state.ability == ABILITY_SMOKE {
-                        if state.detonates_on_owner {
-                            self.detonate_smoke(item, true, data);
-                        }
-                    } else {
-                        self.detonate_grenade(item, true, data);
-                        for _ in 1..count {
-                            self.spawn_grenade_explosion(
-                                state.position,
-                                state.owner,
-                                true,
-                                state.scale,
-                                data,
-                            );
-                        }
                     }
                 }
             }
         }
-        hits.clear();
-        self.scratch.callback_hits = hits;
     }
 
     /// The orb at Beam's staff tip is an Explosion circle (orbAnim.prefab,
@@ -38613,6 +38571,7 @@ impl RolloutWorld {
         let mut victims = [usize::MAX; MAX_BODIES * MAX_BODIES];
         let mut killers = [0u32; MAX_BODIES * MAX_BODIES];
         let mut rock_ranks = [(Fix::ZERO, 0u32, 0usize); MAX_BODIES * MAX_BODIES];
+        let mut bounces = [(0usize, Vec2::ZERO, 0u32); MAX_BODIES * MAX_BODIES];
         let mut victim_count = 0usize;
         for rock_index in 0..self.players.len() {
             if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
@@ -38638,7 +38597,7 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    self.rock_on_collide(rock_index, contact.normal, self.entities[entity].layer);
+                    bounces[victim_count] = (rock_index, contact.normal, self.entities[entity].layer);
                     victims[victim_count] = victim;
                     killers[victim_count] = self.players[rock_index].base.id;
                     rock_ranks[victim_count] = sweep_rank(
@@ -38663,8 +38622,9 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    self.rock_on_collide(rock_index, contact.normal, self.entities[entity].layer);
-                    // The clone's box callback, in the pair's Circle/Box place.
+                    // The Rock's BounceBall callback and the clone's box
+                    // callback, in the pair's Circle/Box place, the circle's
+                    // first.
                     let killer = self.players[rock_index].base.id;
                     let cause = if self.abilityless_clones[clone_index].base.id == killer {
                         CAUSE_ACCIDENT
@@ -38673,21 +38633,32 @@ impl RolloutWorld {
                     };
                     let clone_rank = sweep_rank(&self.entities, self.swept_min(Swept::Clone(clone_index)), Some(entity));
                     let (later, earlier) = sweep_pair(self.player_sweep_rank(rock_index), clone_rank);
-                    let hit = CallbackHit::CloneKill { clone: clone_index, killer, cause };
-                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
+                    let kill = CallbackHit::CloneKill { clone: clone_index, killer, cause };
+                    let layer = self.entities[entity].layer;
+                    let bounce = CallbackHit::RockBounce { rock: rock_index, normal: contact.normal, layer };
+                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), bounce));
+                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), kill));
                 }
             }
         }
         // The victim's PlayerCollision callback kills it, in DetPhysics'
-        // callback order with every other hitbox kill of this pass.
+        // callback order with every other hitbox kill of this pass, and the
+        // Rock's BounceBall callback bounces it: against a box the circle's
+        // callback runs first, against a circle the earlier-sorted side's
+        // (DetPhysics.cs:3068-3071, 3109-3112).
         for victim_offset in 0..victim_count {
-            self.queue_callback_kill(
-                victims[victim_offset],
-                true,
-                rock_ranks[victim_offset],
-                killers[victim_offset],
-                CAUSE_OTHER,
-            );
+            let victim = victims[victim_offset];
+            let rock_rank = rock_ranks[victim_offset];
+            let (rock, normal, layer) = bounces[victim_offset];
+            let bounce = CallbackHit::RockBounce { rock, normal, layer };
+            let rock_first = !self.player_is_circle(victim) || rock_rank < self.player_sweep_rank(victim);
+            if rock_first {
+                self.queue_callback_hit(victim, true, rock_rank, bounce);
+            }
+            self.queue_callback_kill(victim, true, rock_rank, killers[victim_offset], CAUSE_OTHER);
+            if !rock_first {
+                self.queue_callback_hit(victim, true, rock_rank, bounce);
+            }
         }
     }
 

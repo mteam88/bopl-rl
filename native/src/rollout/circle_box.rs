@@ -498,47 +498,14 @@ impl RolloutWorld {
                 if let Some(contact) = self.part_collider(circle).contact(self.part_collider(part)) {
                     let (later, earlier) = sweep_pair(circle_rank, rank);
                     contacts.push(((GROUP_CB, later, earlier), circle, part, contact));
-                    self.note_arrow_landing(circle, part, (GROUP_CB, later, earlier), data);
                 }
             }
         }
         contacts.sort_by_key(|&(key, ..)| key);
+        // PrepareCollisionCallBacks: the circle is A, so its OnCollide queues
+        // first, then the box's.
         for &(key, circle, part, contact) in &contacts {
-            // PrepareCollisionCallBacks: the circle's OnCollide, then the box's.
-            if let Part::Item(item) = circle
-                && self.thrown_items[item].ability == ABILITY_SMOKE
-            {
-                // SmokeGrenadeExplode2 goes off on any layer but a
-                // Projectile that does not ignite explosives.
-                self.scratch.callback_hits.push((key, CallbackHit::ItemDetonate { item, count: 1 }));
-            }
-            // BlackHole.OnCollide reads the collider's inverseMass, a
-            // composite child's CompositeBody's.
-            if let Part::Hole(hole) = circle {
-                let target = match part {
-                    Part::Engine(i) => HoleTarget::Engine(i),
-                    Part::Spike(i) => HoleTarget::Spike(i),
-                    Part::Missile(i) => HoleTarget::Missile(i),
-                    _ => unreachable!(),
-                };
-                let inverse_mass = match self.part_composite(part) {
-                    Some(platform) => self.platform_dynamics[platform].body.inverse_mass,
-                    None => self.part_body(part).inverse_mass,
-                };
-                let hit = CallbackHit::BlackHole { hole, target, inverse_mass };
-                self.scratch.callback_hits.push((key, hit));
-            }
-            match part {
-                Part::Spike(spike) => {
-                    let hit = CallbackHit::SpikeShove { spike, target: circle, point: contact.point };
-                    self.scratch.callback_hits.push((key, hit));
-                }
-                // Missile.OnCollide ignores RigidBodyAffector (Missile.cs:183).
-                Part::Missile(missile) if self.part_layer(circle, data) != LAYER_RIGID_BODY_AFFECTOR => {
-                    self.scratch.callback_hits.push((key, CallbackHit::MissileBlast { missile }));
-                }
-                _ => {}
-            }
+            self.queue_collide(key, circle, part, contact);
         }
         for &(_, circle, part, contact) in &contacts {
             self.resolve_parts(circle, part, contact);
@@ -696,20 +663,6 @@ impl RolloutWorld {
         arrow.active && arrow.registered && !self.blink_object_hidden(arrow.entity)
     }
 
-    /// Arrow.OnCollide lands on a StickTo layer, but not on a Player-layer
-    /// collider without a BoplBody (Arrow.cs:87-96): of the Player-layer
-    /// parts only a Rock form has one.
-    fn note_arrow_landing(&mut self, a: Part, b: Part, key: CallbackKey, data: &data::RolloutData) {
-        let (arrow, other) = match (a, b) {
-            (Part::Arrow(arrow), other) | (other, Part::Arrow(arrow)) => (arrow, other),
-            _ => return,
-        };
-        let layer = self.part_layer(other, data);
-        if ARROW_STICK_TO & (1 << layer) != 0 && (layer != LAYER_PLAYER || matches!(other, Part::Rock(_))) {
-            self.scratch.arrow_landings.push((arrow, key, other));
-        }
-    }
-
     /// ResolveCollision on each side's body, a composite child's
     /// CompositeBody at CompositeBody.position, then PositionalCorrection on
     /// each side's own inverse mass.
@@ -789,7 +742,6 @@ impl RolloutWorld {
                 parts.push(Part::Hole(i));
             }
         }
-        self.scratch.arrow_landings.clear();
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
@@ -808,36 +760,71 @@ impl RolloutWorld {
                 }
                 if let Some(contact) = self.part_collider(prior).contact(self.part_collider(current)) {
                     contacts.push((prior, current, contact));
-                    let (later, earlier) = sweep_pair(self.part_rank(prior), self.part_rank(current));
-                    self.note_arrow_landing(prior, current, (GROUP_CC, later, earlier), data);
                 }
             }
         }
         // PrepareCollisionCallBacks queues every pair's callbacks before the
         // first ResolveCollision (DetPhysics.cs:3068-3071), the
         // earlier-sorted side's first.
-        for &(a, b, _) in &contacts {
-            for (side, other) in [(a, b), (b, a)] {
-                if let Part::Hole(hole) = side {
-                    self.queue_black_hole_pair(hole, other);
-                    continue;
-                }
+        for &(a, b, contact) in &contacts {
+            let (later, earlier) = sweep_pair(self.part_rank(a), self.part_rank(b));
+            self.queue_collide((GROUP_CC, later, earlier), a, b, contact);
+        }
+        for &(a, b, contact) in &contacts {
+            self.resolve_parts(a, b, contact);
+        }
+        self.scratch.cb_parts = parts;
+        self.scratch.cc_contacts = contacts;
+    }
+
+    /// PrepareCollisionCallBacks for one manifold: A's OnCollide with B as the
+    /// collider, then B's with A, both with the manifold's normal and point
+    /// (DetPhysics.cs:2406-2438). Only colliders whose OnCollide the rollout
+    /// models queue.
+    pub(super) fn queue_collide(&mut self, key: CallbackKey, a: Part, b: Part, contact: Contact) {
+        for (receiver, other) in [(a, b), (b, a)] {
+            if matches!(
+                receiver,
+                Part::Hole(_) | Part::Item(_) | Part::Rock(_) | Part::Arrow(_) | Part::Hook(_) | Part::Spike(_) | Part::Missile(_)
+            ) {
+                self.scratch.callback_hits.push((key, CallbackHit::Collide { receiver, other, contact }));
+            }
+        }
+    }
+
+    /// The receiver's collisionCallback.OnCollide, run from DetPhysics' queue
+    /// (DetPhysics.cs:3202-3205).
+    pub(super) fn on_collide(&mut self, receiver: Part, other: Part, contact: Contact, data: &data::RolloutData) {
+        match receiver {
+            Part::Hole(hole) => self.black_hole_on_collide(hole, other, data),
+            Part::Item(item) => match self.thrown_items[item].ability {
                 // SmokeGrenadeExplode2 goes off on any collider but a
                 // Projectile that does not ignite explosives, as a portal
                 // shot's or an arrow's (SmokeGrenadeExplode2.cs:63-78,
                 // Arrow.prefab IgnitesExplosives 0). The hook is on the Rope
                 // layer, so a Smoke it touches goes off.
-                if let Part::Item(item) = side
-                    && self.thrown_items[item].ability == ABILITY_SMOKE
-                    && !matches!(other, Part::Shot(_) | Part::Arrow(_))
-                {
-                    let (later, earlier) = sweep_pair(self.part_rank(a), self.part_rank(b));
-                    let hit = CallbackHit::ItemDetonate { item, count: 1 };
-                    self.scratch.callback_hits.push(((GROUP_CC, later, earlier), hit));
+                ABILITY_SMOKE if !matches!(other, Part::Shot(_) | Part::Arrow(_)) => {
+                    self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
                 }
-                let Part::Hook(rope) = side else {
-                    continue;
-                };
+                // Mine.OnCollide: an arrow is an igniter, and the Mine sees
+                // the contact whether or not the arrow landed first
+                // (Mine.cs:227-235).
+                ABILITY_MINE if matches!(other, Part::Arrow(_)) => {
+                    self.run_callback_hit(CallbackHit::MineIgnite { item }, data);
+                }
+                _ => {}
+            },
+            Part::Rock(rock) => self.rock_on_collide(rock, contact.normal, self.part_layer(other, data)),
+            // Arrow.OnCollide lands on a StickTo layer, but not on a
+            // Player-layer collider without a BoplBody (Arrow.cs:87-96): of
+            // the Player-layer parts only a Rock form has one.
+            Part::Arrow(arrow) => {
+                let layer = self.part_layer(other, data);
+                if ARROW_STICK_TO & (1 << layer) != 0 && (layer != LAYER_PLAYER || matches!(other, Part::Rock(_))) {
+                    self.arrow_land(arrow, None, Some(other), data);
+                }
+            }
+            Part::Hook(rope) => {
                 let target = match other {
                     Part::Item(i) => HookTarget::Item(i),
                     Part::Shot(i) => HookTarget::Shot(i),
@@ -850,48 +837,58 @@ impl RolloutWorld {
                         if body_player == self.players[self.ropes[rope].owner].owner
                             || body_player == self.ropes[rope].hook_end_player
                         {
-                            continue;
+                            return;
                         }
                         HookTarget::Player(player)
                     }
                     Part::Arrow(i) => HookTarget::Arrow(i),
                     // A hook on a Duplicator copy has no rope parent here yet.
-                    Part::DuplicatedRock(_) => continue,
-                    Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) | Part::Hole(_) => unreachable!(),
+                    Part::DuplicatedRock(_) => return,
+                    Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) | Part::Hole(_) => return,
                 };
-                self.queue_hook_hit(rope, GROUP_CC, self.part_rank(other), target);
+                self.rope_hook_collide(rope, target);
             }
-        }
-        for &(a, b, contact) in &contacts {
-            self.resolve_parts(a, b, contact);
-            for (side, other) in [(a, b), (b, a)] {
-                // BounceBall.OnCollide: a Rock bounces off another
-                // Player-layer collider, and a tenth as hard off a
-                // Projectile, unless it hangs on a rope (BounceBall.cs:310-322).
-                // Both callbacks get the manifold's normal.
-                if let Part::Rock(rock) = side {
-                    let scale = match self.part_layer(other, data) {
-                        LAYER_PLAYER => Fix::ONE,
-                        LAYER_PROJECTILE => Fix::from_f32(0.1),
-                        _ => continue,
-                    };
-                    if self.players[rock].rope.is_none() {
-                        self.players[rock].rock.body.force +=
-                            contact.normal * data.rock.player_collision_bounce * scale * Fix::from_int(60);
-                    }
-                }
-                // Mine.OnCollide: an arrow is an igniter, and the Mine sees
-                // the contact whether or not the arrow landed first.
-                if let (Part::Item(item), Part::Arrow(_)) = (side, other) {
-                    let mine = &mut self.thrown_items[item];
-                    if mine.ability == ABILITY_MINE && matches!(mine.phase, 1 | 2) {
-                        mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f64(0.8);
-                        mine.phase = 3;
-                    }
-                }
+            Part::Spike(spike) => {
+                let hit = CallbackHit::SpikeShove { spike, target: other, point: contact.point };
+                self.run_callback_hit(hit, data);
             }
+            // Missile.OnCollide ignores RigidBodyAffector (Missile.cs:183).
+            Part::Missile(missile) if self.part_layer(other, data) != LAYER_RIGID_BODY_AFFECTOR => {
+                self.run_callback_hit(CallbackHit::MissileBlast { missile }, data);
+            }
+            _ => {}
         }
-        self.scratch.cb_parts = parts;
-        self.scratch.cc_contacts = contacts;
+    }
+
+    /// BlackHole.OnCollide with a collider of a narrow-phase group. It reads
+    /// the collider's inverse mass when it runs, a composite child's being
+    /// its CompositeBody's, and a Rock form's its BounceBall body's
+    /// (BlackHole.cs:445-458).
+    pub(super) fn black_hole_on_collide(&mut self, hole: usize, other: Part, data: &data::RolloutData) {
+        let (target, inverse_mass) = match other {
+            Part::Arrow(i) => (HoleTarget::Arrow(i), self.arrows[i].inverse_mass),
+            Part::Pickup(i) => (HoleTarget::Pickup(i), self.ability_pickups[i].body.inverse_mass),
+            Part::Item(i) => (HoleTarget::Item(i), self.thrown_items[i].body.inverse_mass),
+            Part::Shot(i) => (HoleTarget::Shot(i), self.portal_shots[i].body.inverse_mass),
+            Part::DuplicatedRock(i) => (HoleTarget::DuplicatedRock(i), self.duplicated_rocks[i].body.inverse_mass),
+            Part::Hole(i) => (HoleTarget::Hole(i), -Fix::ONE),
+            Part::Rock(player) => (HoleTarget::Player(player, false), self.players[player].rock.body.inverse_mass),
+            Part::Node(i) => (HoleTarget::Node(i), self.platform_dynamics[self.tesla_nodes[i].platform_index].body.inverse_mass),
+            Part::Engine(_) | Part::Spike(_) | Part::Missile(_) => {
+                let target = match other {
+                    Part::Engine(i) => HoleTarget::Engine(i),
+                    Part::Spike(i) => HoleTarget::Spike(i),
+                    Part::Missile(i) => HoleTarget::Missile(i),
+                    _ => unreachable!(),
+                };
+                let inverse_mass = match self.part_composite(other) {
+                    Some(platform) => self.platform_dynamics[platform].body.inverse_mass,
+                    None => self.part_body(other).inverse_mass,
+                };
+                (target, inverse_mass)
+            }
+            Part::Hook(_) => return,
+        };
+        self.black_hole_collide(hole, target, inverse_mass, data);
     }
 }
