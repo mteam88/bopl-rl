@@ -37036,8 +37036,15 @@ impl RolloutWorld {
                     | ActiveAbility::Throw
                     | ActiveAbility::Roll
             );
-        if self.is_time_stopped_for(index) && !runs_frozen {
+        let stopped = self.is_time_stopped_for(index) && !runs_frozen;
+        if stopped {
             self.scratch.frozen_turns |= 1 << index;
+        }
+        // A slime that is not playable (parked for a stock choice, in its
+        // spawn animation, waiting to revive) has PlayerPhysics disabled
+        // (SlimeController.cs:518, 624), so Time Stop changes nothing for it
+        // but its FixedDeltaTime and SpriteAnimator: it takes its usual turn.
+        if stopped && self.playable(index) {
             if self.players[index].active == ActiveAbility::Beam {
                 // Beam.UpdateSim holds its orb before its time-stop return
                 // (Beam.cs:719-731).
@@ -37099,58 +37106,29 @@ impl RolloutWorld {
                 }
                 return;
             }
-            if matches!(
-                self.players[index].active,
-                ActiveAbility::Gust | ActiveAbility::TimeStop
-            ) && !self.players[index].base.grounded
-            {
-                // QuickSpell/CastSpell return at their airborne
-                // time-stop gate before gravity, aerial movement, or
-                // external-velocity damping.
-                self.players[index].reported_position = self.players[index].base.position;
-                self.players[index].reported_tick = self.tick;
-                return;
+            // The forms left here (Dash, Rock, Revival, Gust, Time Stop) hide
+            // the slime with its PlayerPhysics and SlimeController and run no
+            // gravity of their own: ApplyGravity is off on the Dash, Gust,
+            // Revival and Time stop prefabs. Their PlayerBody moves by
+            // Velocity times the zero FixedDeltaTime but still damps the
+            // external velocity (PlayerBody.cs:245-247); CastSpell's grounded
+            // branch first spends it along the surface with no time-stop gate
+            // (CastSpell.cs:187-189). Rock is a BoplBody that DetPhysics
+            // integrates with a zero delta, and has no PlayerBody.
+            match self.players[index].active {
+                ActiveAbility::Rock => {}
+                ActiveAbility::TimeStop
+                    if self.players[index].base.grounded && !self.ground_gone(index) =>
+                {
+                    self.players[index].base.move_along_current_platform(terrain!(self));
+                    self.players[index].base.external_velocity *= Fix::from_f64(0.95);
+                }
+                _ => self.players[index].base.external_velocity *= Fix::from_f64(0.95),
             }
-            // PlayerPhysics and SlimeController still run. Their motion
-            // helpers apply unscaled gravity and air damping, but every
-            // position/raycast delta receives GameTime.FixedDeltaTime=0.
-            let input = self.players[index].last_movement_input;
-            let pushing = self.players[index].active == ActiveAbility::Push;
-            let base = &mut self.players[index].base;
-            if !base.grounded {
-                let space = base.space;
-                crate::player_physics::apply_gravity(
-                    &mut base.velocity,
-                    base.constants.gravity_accel,
-                    base.constants.gravity_modifier,
-                    base.constants.gravity_max_fall_speed,
-                    space,
-                )
-                .expect("valid movement gravity constants");
-                crate::player_physics::air_movement(
-                    &mut base.velocity,
-                    input.x,
-                    base.constants.air_accel,
-                    base.constants.max_speed,
-                )
-                .expect("valid movement air constants");
-            } else if input == Vec2::ZERO {
-                base.grounded_speed *= base.constants.friction;
-            }
-            base.external_velocity *= if pushing {
-                // ControlPlatform performs this damping before its
-                // time-stop early return.
-                Fix::from_f64(0.8)
-            } else {
-                Fix::from_f64(0.95)
-            };
-            // SlimeController.OldUpdate publishes Player.Position with no
-            // time-stop gate, but only a live controller does: a destroyed
-            // slime, parked for a stock choice or out, publishes nothing.
-            if self.players[index].base.alive && !stock_clone_spawned {
-                self.publish_ability_position(index);
-            }
+            // Ability.UpdateSim publishes Player.Position with no time-stop
+            // gate (Ability.cs:136).
             if !stock_clone_spawned {
+                self.publish_ability_position(index);
                 self.record_position_call(index);
             }
             return;
@@ -40173,6 +40151,12 @@ impl RolloutWorld {
             // OldUpdate continues cooldowns during ReSpawnFast's suppressed
             // animation, but movement and ability input remain disabled.
             self.advance_slime_cooldowns(index);
+            // The spawn animation's SpriteAnimator calls Spawn at its end
+            // (SlimeController.cs:531), and holds while time is stopped for
+            // the player.
+            if !self.animates(index) {
+                return;
+            }
             let slot = &mut self.players[index];
             slot.respawn_spawn_ticks -= 1;
             if slot.respawn_spawn_ticks == 0 {
