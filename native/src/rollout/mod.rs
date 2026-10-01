@@ -4090,6 +4090,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Roll
             | ActiveAbility::Meteor
             | ActiveAbility::Throw
+            | ActiveAbility::Mine
     )
 }
 
@@ -10079,8 +10080,6 @@ impl RolloutWorld {
             // each ExitAbility writes its own fields over it before the slime
             // restores from it.
             match active {
-                // ThrowItem leaves externalVelocity default (ThrowItem.cs:158-174).
-                ActiveAbility::Mine => slot.base.external_velocity = Vec2::ZERO,
                 // The rest hand on the body's velocities and the facing the slot
                 // already holds: PlayerInfo.isFacingRight, or a localScale.x that
                 // follows it (Roll.cs:214, BlackHoleClap.cs:157, ThrowItem2.cs:198).
@@ -14102,6 +14101,20 @@ impl RolloutWorld {
                 info.take_body(&slot.base);
                 info.external_velocity = external;
                 info.facing_right = slot.macho_throw.facing_right;
+            }
+            ActiveAbility::Mine => {
+                // ThrowItem.ExitAbility (ThrowItem.cs:158-174) keeps the
+                // packet's velocities. The frozen form keeps the pose the
+                // landing or a moving ground left it with.
+                let slot = &mut self.players[index];
+                slot.throw_item.collider_rotation = slot.base.rotation;
+                slot.throw_item.collider_right = slot.base.up.perp_cw();
+                let (velocity, external) = (info.velocity, info.external_velocity);
+                info.take_body(&slot.base);
+                info.velocity = velocity;
+                info.external_velocity = external;
+                info.just_landed = info.grounded;
+                info.facing_right = slot.facing_right;
             }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
@@ -24543,35 +24556,7 @@ impl RolloutWorld {
                 data.mine.air_exit_ticks
             };
             if self.players[index].throw_item.ticks + 1 > exit_ticks {
-                let grounded = self.players[index].base.grounded;
-                let slot = &mut self.players[index];
-                slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                // A form fired from the ground exits with the Fire's
-                // knockback; SyncPhysicsTo drops it again if the slime is
-                // restored onto a live ground (ThrowItem.cs:194,
-                // PlayerPhysics.cs:554-582).
-                if slot.throw_item.fired_from_ground {
-                    slot.base.velocity = slot.throw_item.exit_velocity;
-                }
-                // Ability.ExitAbility publishes before EnterFall's landing
-                // raycasts move the restored slime. The frozen form keeps
-                // the transform a moving ground left it with last pass.
-                slot.reported_position = slot.base.position;
-                slot.throw_item.collider_rotation = slot.base.rotation;
-                slot.throw_item.collider_right = slot.base.up.perp_cw();
-                slot.reported_tick = self.tick;
-                if grounded {
-                    slot.begin_land(true);
-                } else {
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
-                    slot.restore_slime_radius();
-                    slot.exit_to_fall(terrain!(self));
-                    slot.set_ordinary_body_scale(slot.player_scale);
-                }
-                if grounded {
-                    self.sync_exit_to_ground(index);
-                }
+                self.exit_mine(index);
                 return;
             }
         }
@@ -24728,14 +24713,7 @@ impl RolloutWorld {
                     slot.throw_item.collider_right = slot.base.up.perp_cw();
                     return;
                 }
-                let slot = &mut self.players[index];
-                slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                slot.begin_land(true);
-                slot.reported_position = slot.base.position;
-                // The landing aligned the form before ExitAbility froze it.
-                slot.throw_item.collider_rotation = slot.base.rotation;
-                slot.throw_item.collider_right = slot.base.up.perp_cw();
-                self.sync_exit_to_ground(index);
+                self.exit_mine(index);
             } else {
                 slot.throw_item.collider_right = slot.base.up.perp_cw();
                 self.form_body_step(index);
@@ -24905,6 +24883,19 @@ impl RolloutWorld {
         }
         self.players[index].reported_position = self.players[index].base.position;
         true
+    }
+
+    /// ThrowItem's ExitAbility() (ThrowItem.cs:190-197): a form fired from
+    /// the ground leaves with the Fire's knockback.
+    fn exit_mine(&mut self, index: usize) {
+        let slot = &self.players[index];
+        let velocity = if slot.throw_item.fired_from_ground {
+            slot.throw_item.exit_velocity
+        } else {
+            slot.base.velocity
+        };
+        let external_velocity = slot.base.external_velocity;
+        self.exit_form_with(index, ExitInfo { velocity, external_velocity, ..ExitInfo::default() });
     }
 
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
