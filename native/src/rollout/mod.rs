@@ -10653,14 +10653,11 @@ impl RolloutWorld {
                         slot.base.dash.radius = form.physics_radius();
                         slot.base.dash.inverse_extents = form.inverse_extents;
                         // Dash.OnEnterAbility syncs its hitbox after SyncPhysicsTo
-                        // re-places a grounded form at its own radius (Dash.cs:94-95).
+                        // (Dash.cs:94-95); readyDash then places the body itself.
                         let radius = slot.base.dash.radius;
-                        let base = &self.players[index].base;
-                        let position = base
-                            .platform(&self.platforms)
-                            .filter(|_| base.grounded)
-                            .map_or(base.position, |platform| platform.surface.position(base.local, radius));
-                        self.sync_form_entry(index, position, Vec2::ZERO, data.dash.hurtbox_extents);
+                        let (position, up) = (self.player_info_pose(index, radius))
+                            .unwrap_or((self.players[index].base.position, Vec2::UP));
+                        self.sync_form_entry(index, position, up, Vec2::ZERO, data.dash.hurtbox_extents);
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
@@ -10693,20 +10690,7 @@ impl RolloutWorld {
                             );
                             form.physics_radius()
                         };
-                        let base = &self.players[index].base;
-                        let (form_position, form_rotation) = base
-                            .ground
-                            .filter(|_| base.grounded)
-                            .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                            .map_or((base.position, Fix::ZERO), |platform| {
-                                let position = platform.surface.position(base.local, form_radius);
-                                let right = platform.surface.normal(position).perp_cw();
-                                (position, right.normalized_angle())
-                            });
                         let slot = &mut self.players[index];
-                        slot.base.position = form_position;
-                        slot.base.rotation = form_rotation;
-                        slot.base.radius = form_radius;
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, match ability {
                             ABILITY_TACK => ActiveAbility::Tack,
@@ -10718,6 +10702,9 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
+                        let extents = throw_config(data, ability).hurtbox_extents;
+                        self.form_enter(index, form_radius, Vec2::ZERO, extents);
+                        let slot = &mut self.players[index];
                         let grounded = slot.base.grounded;
                         slot.throw_item = ThrowItemState {
                             grounded,
@@ -10725,21 +10712,8 @@ impl RolloutWorld {
                             collider_rotation: slot.base.rotation,
                             ..ThrowItemState::default()
                         };
-                        let collider = slot.forms[s].hurtbox(
-                            form_position,
-                            Vec2::angle(slot.base.rotation),
-                            throw_config(data, ability).hurtbox_extents,
-                        );
-                        self.sync_form_box(index, collider);
-                        let slot = &mut self.players[index];
-                        if grounded {
-                            slot.base.velocity = Vec2::ZERO;
-                        } else {
+                        if !grounded {
                             slot.base.velocity *= Fix::from_f32(0.1);
-                            // The form's own PlayerPhysics starts with no
-                            // attached ground (PlayerPhysics.cs:549), so a
-                            // Teleport's UnGround has nothing to push off from.
-                            slot.base.ground = None;
                         }
                         self.form_entry_turn(data, index);
                         self.throw_item_tick(index, action, data);
@@ -11189,30 +11163,22 @@ impl RolloutWorld {
                         // form with.
                         self.players[index].active_slot = s;
                         self.scale_meteor_form(index, data);
-                        let form_position = if grounded {
-                            let base = &self.players[index].base;
-                            base.ground
-                                .and_then(|ground| {
-                                    self.platforms.iter().find(|platform| platform.id == ground)
-                                })
-                                .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, base.radius)
-                                })
-                        } else {
-                            self.players[index].base.position
-                        };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Meteor);
-                        slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.base.position = form_position;
                         slot.base.constants = data.meteor.constants.clone();
+                        let form = slot.forms[s];
+                        let offset = if form.scale == Fix::ZERO { data.meteor.collider_offset } else { form.offset };
+                        let extents = data::surface_extents(data.meteor.hurtbox_extents);
+                        self.form_enter(index, self.players[index].base.radius, offset, extents);
+                        // MeteorSmash.OnEnterAbility then stills and unrotates
+                        // the body (MeteorSmash.cs:130-136).
+                        let slot = &mut self.players[index];
+                        let form_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
-                        // OnEnterAbility zeroes body.rotation, which resets
-                        // the FixTransform basis the hurtbox offset turns by.
                         slot.base.rotation = Fix::ZERO;
                         slot.base.up = Vec2::UP;
                         slot.meteor = MeteorState {
@@ -11226,14 +11192,6 @@ impl RolloutWorld {
                             grounded_entry: grounded,
                             ..MeteorState::default()
                         };
-                        let form = self.players[index].forms[s];
-                        let offset = if form.scale == Fix::ZERO { data.meteor.collider_offset } else { form.offset };
-                        self.sync_form_entry(
-                            index,
-                            form_position,
-                            offset,
-                            data::surface_extents(data.meteor.hurtbox_extents),
-                        );
                         self.form_entry_turn(data, index);
                         self.meteor_tick(index, action, data);
                         // OnEnterAbility places the hitbox at the synced
@@ -11262,42 +11220,30 @@ impl RolloutWorld {
                             );
                             form.physics_radius()
                         };
-                        let form_position = if grounded {
-                            let base = &self.players[index].base;
-                            base.ground
-                                .and_then(|ground| {
-                                    self.platforms.iter().find(|platform| platform.id == ground)
-                                })
-                                .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, form_radius)
-                                })
-                        } else {
-                            self.players[index].base.position
-                        };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Mine);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
+                        let (rotation, up) = (slot.base.rotation, slot.base.up);
+                        let form = slot.forms[s];
+                        let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
+                        let extents = data::surface_extents(data.mine.hurtbox_extents);
+                        self.form_enter(index, form_radius, offset, extents);
+                        // ThrowItem.OnEnterAbility then hands the body PlayerInfo's
+                        // rotation (ThrowItem.cs:116-118).
+                        let slot = &mut self.players[index];
+                        slot.base.rotation = rotation;
+                        slot.base.up = up;
                         slot.throw_item = ThrowItemState {
                             grounded,
                             direction: Vec2::UP,
-                            collider_rotation: slot.base.rotation,
-                            collider_right: slot.base.up.perp_cw(),
+                            collider_rotation: rotation,
+                            collider_right: up.perp_cw(),
                             gravity_modifier: if grounded { Fix::ZERO } else { Fix::ONE },
                             ..ThrowItemState::default()
                         };
-                        slot.base.position = form_position;
-                        slot.base.radius = form_radius;
-                        let form = slot.forms[s];
-                        let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
-                        self.sync_form_entry(
-                            index,
-                            form_position,
-                            offset,
-                            data::surface_extents(data.mine.hurtbox_extents),
-                        );
                         self.form_entry_turn(data, index);
                         self.mine_throw_tick(index, action, data);
                         return;
@@ -11827,44 +11773,27 @@ impl RolloutWorld {
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
                         form.set_scale(scale, data.bow.hurtbox_extents, data.player.radius);
-                        slot.base.radius = form.physics_radius();
+                        let radius = form.physics_radius();
+                        self.form_enter(index, radius, Vec2::ZERO, data.bow.hurtbox_extents);
+                        // Later updaters this pass (BlackHole's pull) see the
+                        // synced hurtbox.
+                        let slot = &mut self.players[index];
+                        slot.base.sync_collider();
+                        // BowTransform.OnEnterAbility then unrotates the body and
+                        // drops its external velocity; an airborne one keeps a
+                        // tenth of both (BowTransform.cs:86-102).
+                        slot.base.rotation = Fix::ZERO;
                         if slot.base.grounded {
-                            // SyncPhysicsTo(PlayerInfo) re-derives the body
-                            // from the surface local with no self-imposed
-                            // velocity (PlayerPhysics.cs:526-535), and
-                            // OnEnterAbility clears the external one
-                            // (BowTransform.cs:91): this pass's PlayerBody
-                            // integration does not move the Bow.
-                            let platforms: &[Platform] = &self.platforms;
-                            if let Some(platform) = slot.base.platform(platforms) {
-                                slot.base.position =
-                                    platform.surface.position(slot.base.local, slot.base.radius);
-                            }
-                            slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
-                            slot.form_gravity[s] = Fix::from_f32(0.03); // BowTransform.cs:95
+                            slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
-                            // The Bow's own PlayerPhysics starts with no
-                            // attached ground (PlayerPhysics.cs:548), so a
-                            // later UnGround has nothing to push off from.
-                            slot.base.ground = None;
                         }
-                        // OnEnterAbility syncs the hurtbox to the entry pose
-                        // (BowTransform.cs:86-87); later updaters this pass
-                        // (BlackHole's pull) see it there.
-                        slot.base.sync_collider();
                         // Ability.UpdateSim publishes the body SyncPhysicsTo
                         // placed; a grown slime's larger radius moves it.
                         slot.reported_position = slot.base.position;
                         slot.reported_tick = self.tick;
-                        // BowTransform follows Ability in the prefab updater
-                        // list, so a newly enabled Bow updates later in this
-                        // same pass (like Dash, unlike a newly instantiated
-                        // projectile which is deferred).
-                        let position = self.players[index].base.position;
-                        self.sync_form_entry(index, position, Vec2::ZERO, data.bow.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.bow_tick(index, action, data);
                         return;
@@ -29982,17 +29911,54 @@ impl RolloutWorld {
         }
     }
 
-    /// OnEnterAbility's PlayerPhysics.SyncPhysicsTo pose, which the entry arm
-    /// has already placed the body at: a grounded form aligned to the normal
-    /// there, an airborne one unrotated. hurtbox.UpdatePhysicsPositions then
-    /// puts the box at `position + right * offset`.
-    fn sync_form_entry(&mut self, index: usize, position: Vec2, offset: Vec2, extents: Vec2) {
+    /// Where PlayerPhysics.SyncPhysicsTo(PlayerInfo) puts a grounded form of
+    /// `radius` (PlayerPhysics.cs:525-552): at the slime's local on its
+    /// attachedGround, a destroyed one included, and that ground's normal
+    /// there. None for an airborne slime, or one whose ground has gone.
+    fn player_info_pose(&self, index: usize, radius: Fix) -> Option<(Vec2, Vec2)> {
+        let base = &self.players[index].base;
+        let surface = (base.platform(&self.platforms).map(|platform| &platform.surface))
+            .or_else(|| self.players[index].dead_ground(self.tick))
+            .filter(|_| base.grounded)?;
+        let position = surface.position(base.local, radius);
+        Some((position, surface.normal(position)))
+    }
+
+    /// PlayerPhysics.SyncPhysicsTo(PlayerInfo) on a form's own PlayerPhysics,
+    /// the mirror of `ability_exit`. The shared body still holds the
+    /// PlayerInfo SlimeController.EnterAbility read off the slime
+    /// (SlimeController.cs:643-680), and UpdateScale has brought the form to
+    /// `radius`. A grounded form drops its self-imposed velocity and keeps the
+    /// rest; an airborne one keeps position and velocities, unrotated and
+    /// with no ground.
+    fn sync_physics_to_player_info(&mut self, index: usize, radius: Fix) {
+        let pose = self.player_info_pose(index, radius);
+        let slot = &mut self.players[index];
+        slot.base.radius = radius;
+        if let Some((position, up)) = pose {
+            slot.base.position = position;
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.align_to(up);
+        } else if !slot.base.grounded {
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+        }
+    }
+
+    /// OnEnterAbility's SyncPhysicsTo(PlayerInfo), then its
+    /// hurtBox.UpdatePhysicsPositions: the box at the body, `offset` along the
+    /// body's right, which later queries this pass read.
+    fn form_enter(&mut self, index: usize, radius: Fix, offset: Vec2, extents: Vec2) {
+        self.sync_physics_to_player_info(index, radius);
         let slot = &self.players[index];
-        let up = slot
-            .base
-            .platform(&self.platforms)
-            .filter(|_| slot.base.grounded)
-            .map_or(Vec2::UP, |platform| platform.surface.normal(position));
+        self.sync_form_entry(index, slot.base.position, slot.base.up, offset, extents);
+    }
+
+    /// hurtBox.UpdatePhysicsPositions for a form body at `position`, `up`.
+    fn sync_form_entry(&mut self, index: usize, position: Vec2, up: Vec2, offset: Vec2, extents: Vec2) {
+        let slot = &self.players[index];
         let right = up.perp_cw();
         let rotation = if up == Vec2::UP { Fix::ZERO } else { right.normalized_angle() };
         let collider = slot.forms[slot.active_slot].hurtbox(
