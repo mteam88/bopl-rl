@@ -26054,7 +26054,9 @@ impl RolloutWorld {
     /// DetPhysics.CollideBox (DetPhysics.cs:1667-1715): walks circles, boxes
     /// and rounded rects in registration order and writes each active one on
     /// a `mask` layer the box touches, by PhysTools' boolean tests, until
-    /// `hits` is full. Returns the count.
+    /// `hits` is full. It purges nothing: a collider DestroyFix marked stays
+    /// in the walk until RemoveDestroyedColliders drops it, and IsActive
+    /// alone decides. Returns the count.
     fn collide_box(&self, query: OrientedBox, mask: u32, hits: &mut [usize]) -> usize {
         let mut count = 0;
         for kind in 0..3u32 {
@@ -26062,7 +26064,7 @@ impl RolloutWorld {
                 if row.kind != kind
                     || row.layer >= 32
                     || mask & (1u32 << row.layer) == 0
-                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
+                    || row.flags & E_REMOVED != 0
                     || self.left_form_row(entity)
                 {
                     continue;
