@@ -2169,9 +2169,6 @@ pub struct MeteorSmear {
 pub struct PushState {
     pub ticks: u32,
     pub channeling: bool,
-    /// FixTransform.right used by DPhysicsBox's centre sync. Its exact vector
-    /// can differ slightly from rebuilding the scalar rotation through LUTs.
-    pub collider_up: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -8075,9 +8072,7 @@ impl RolloutWorld {
                     slot.beam.collider_up = slot.base.up();
                     slot.beam.collider_rotation = slot.base.rotation();
                 }
-                if self.players[index].active == ActiveAbility::Push {
-                    self.players[index].push.collider_up = self.players[index].base.up();
-                } else if matches!(
+                if matches!(
                     self.players[index].active,
                     ActiveAbility::Freeze
                         | ActiveAbility::Blink
@@ -41565,21 +41560,17 @@ impl RolloutWorld {
                 let push_box = &mut self.entities[push_e];
                 let flags = form_box_flags(alive && pushing);
                 if sync_form_row(push_box, flags, pushing, entered == push_e, slot.base.id) {
-                    let (root, rotation) = if pushing {
-                        (synced, rotation)
-                    } else {
-                        (exit_position, Fix::ZERO)
-                    };
+                    // ControlPlatform.ExitAbility zeroes the form's rotation
+                    // (ControlPlatform.cs:106) before its box syncs out.
+                    let at_sync = slot.forms[slot.entity_slot(push_e)].synced;
+                    let root = if pushing { at_sync.position } else { exit_position };
+                    let rotation = at_sync.orientation.rotation();
                     let basis = Vec2::angle(rotation);
                     // SyncPhysicsTo assigns FixTransform.up from the exact
                     // ground normal. DPhysicsBox rotates its axes from the
                     // scalar angle, but translates the offset with the stored
                     // (slightly different) right vector.
-                    let offset_basis = if pushing {
-                        slot.push.collider_up.perp_cw()
-                    } else {
-                        basis
-                    };
+                    let offset_basis = at_sync.orientation.up().perp_cw();
                     let offset = if push_form.scale == Fix::ZERO {
                         data.push.collider_offset
                     } else {
