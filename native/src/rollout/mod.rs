@@ -18493,9 +18493,7 @@ impl RolloutWorld {
             self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
             return;
         }
-        if let Some(orb) = self.players[index].beam.orb {
-            self.beam_orbs[orb].held_tick = Some(self.tick);
-        }
+        self.hold_beam_orb(index);
         // PlayerBody precedes Beam on the prefab, carrying any rope the slime
         // held. Its damping is unscaled, including while time is stopped.
         self.form_body_move(index, jump_pressed);
@@ -18688,9 +18686,7 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) -> bool {
         // UpdateSim(0) holds the orb first like any other pass.
-        if let Some(orb) = self.players[index].beam.orb {
-            self.beam_orbs[orb].held_tick = Some(self.tick);
-        }
+        self.hold_beam_orb(index);
         let aim = action.direction();
         let right = self.players[index].base.up.perp_cw();
         let facing = if aim == Vec2::ZERO {
@@ -18895,6 +18891,36 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
+    /// DetPhysics syncs the collider of an orb whose Beam did not run this
+    /// pass to the pose the form's last Beam.LateUpdateSim gave it.
+    fn sync_beam_orb_to_late_pose(&mut self, index: usize) {
+        let slot = &self.players[index];
+        let late = (
+            slot.base.position,
+            slot.base.up,
+            slot.beam.staff_dir,
+            slot.facing_right,
+            slot.forms[slot.active_slot].scale,
+        );
+        self.update_beam_orb_position(index, late.0, late.1, late.2, late.3, late.4);
+    }
+
+    /// DisableIfNotHeld_deter.HoldThisFrame from Beam.UpdateSim: the orb
+    /// counts as held this pass, and one an unheld pass deactivated comes
+    /// back (DisableIfNotHeld_deter.cs:22-30).
+    fn hold_beam_orb(&mut self, index: usize) {
+        let Some(orb) = self.players[index].beam.orb else {
+            return;
+        };
+        self.beam_orbs[orb].held_tick = Some(self.tick);
+        if self.beam_orbs[orb].active
+            && let Some(entity) = self.beam_orbs[orb].entity
+            && self.entities[entity].flags & (E_REMOVED | E_DESTROYED) == 0
+        {
+            self.entities[entity].flags |= E_ACTIVE;
+        }
+    }
+
     fn beam_orbs_tick(&mut self, data: &data::RolloutData) {
         for orb_index in 0..self.beam_orbs.len() {
             if self.blink_object_hidden(self.beam_orbs[orb_index].entity) {
@@ -18911,21 +18937,29 @@ impl RolloutWorld {
                 continue;
             }
             // Only the active Beam instance's UpdateSim holds its own orb
-            // (Beam.cs:719-724); one a slime's other Beam slot left is not held.
+            // (Beam.cs:719-724), and only on a pass it runs. An orb nothing
+            // held goes inactive at its DisableIfNotHeld_deter turn: one a
+            // slime's other Beam slot left, or the current one when a Blink
+            // hid its form before the form's turn (DisableIfNotHeld_deter.cs:33-47).
             let owner = &self.players[orb.owner];
-            if owner.active != ActiveAbility::Beam || owner.beam.orb != Some(orb_index) {
-                // Beam.OnEnterAbility holds the orb through
-                // DisableIfNotHeld_deter.HoldThisFrame on the very pass it
-                // creates or revives it (Beam.cs:261-274), so that pass's
-                // UpdateSim sees isHeld and neither deactivates nor destroys
-                // the object (DisableIfNotHeld_deter.cs:22-47). A death on the
-                // entry pass therefore still publishes the orb; it leaves on
-                // the pass after.
-                // Likewise a form that left during its own UpdateSim held
-                // the orb first.
-                if orb.born_tick == self.tick || orb.held_tick == Some(self.tick) {
-                    continue;
+            let current = owner.active == ActiveAbility::Beam && owner.beam.orb == Some(orb_index);
+            // Beam.OnEnterAbility holds the orb through
+            // DisableIfNotHeld_deter.HoldThisFrame on the very pass it
+            // creates or revives it (Beam.cs:261-274), so that pass's
+            // UpdateSim sees isHeld and neither deactivates nor destroys
+            // the object (DisableIfNotHeld_deter.cs:22-47). A death on the
+            // entry pass therefore still publishes the orb; it leaves on
+            // the pass after.
+            // Likewise a form that left during its own UpdateSim held
+            // the orb first.
+            let held = orb.born_tick == self.tick || orb.held_tick == Some(self.tick);
+            if !held {
+                // A Blink that hid the form synced the orb as it did.
+                let owner = orb.owner;
+                if current && !self.players[owner].blink_tunnel_active {
+                    self.sync_beam_orb_to_late_pose(owner);
                 }
+                let orb = &mut self.beam_orbs[orb_index];
                 let destroy = orb.holder_destroyed.is_some_and(|tick| tick < self.tick);
                 if let Some(entity) = orb.entity {
                     if destroy {
@@ -18936,6 +18970,9 @@ impl RolloutWorld {
                     }
                 }
                 orb.active = !destroy;
+                continue;
+            }
+            if !current {
                 continue;
             }
             if orb.enabled || orb.exit_ticks == 0 && orb.born_tick == self.tick {
@@ -30109,6 +30146,14 @@ impl RolloutWorld {
         if self.players[victim].active == ActiveAbility::Magnet {
             self.drop_magnet_held_item(victim);
         }
+        // A Beam form hidden before its turn keeps its orb where its last
+        // LateUpdateSim put it, from the basis the reassignment below drops.
+        if self.players[victim].active == ActiveAbility::Beam
+            && let Some(orb) = self.players[victim].beam.orb
+            && self.beam_orbs[orb].held_tick != Some(self.tick)
+        {
+            self.sync_beam_orb_to_late_pose(victim);
+        }
         let slot = &mut self.players[victim];
         // QuantumTunnel.Init reassigns the victim's rotation, which rebuilds
         // its basis from the angle and drops the exact aimed vector.
@@ -37158,6 +37203,11 @@ impl RolloutWorld {
             );
         if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
+            if self.players[index].active == ActiveAbility::Beam {
+                // Beam.UpdateSim holds its orb before its time-stop return
+                // (Beam.cs:719-731).
+                self.hold_beam_orb(index);
+            }
             if self.players[index].active == ActiveAbility::Missile {
                 // SparkShot still runs while frozen. Its turn angle uses
                 // the owner's zero FixedDeltaTime, but it nevertheless
@@ -39781,15 +39831,7 @@ impl RolloutWorld {
             // Beam.LateUpdateSim, but DetPhysics has already synced the orb
             // to the pose the last one gave it.
             if self.beam_orbs[orb].held_tick != Some(self.tick) {
-                let slot = &self.players[index];
-                let late = (
-                    slot.base.position,
-                    slot.base.up,
-                    slot.beam.staff_dir,
-                    slot.facing_right,
-                    slot.forms[slot.active_slot].scale,
-                );
-                self.update_beam_orb_position(index, late.0, late.1, late.2, late.3, late.4);
+                self.sync_beam_orb_to_late_pose(index);
             }
         }
         // killPlayer destroys every ability object the slime holds, active or
