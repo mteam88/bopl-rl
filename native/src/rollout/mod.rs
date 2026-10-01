@@ -23308,10 +23308,10 @@ impl RolloutWorld {
                     return;
                 }
             }
-            let slot = &mut self.players[index];
-            slot.base.velocity = Vec2::ZERO;
-            slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
+            // Move(zero) leaves the attached body still, and the PlayerBody
+            // after it steps the body and holds the slime's rope.
+            self.players[index].base.velocity = Vec2::ZERO;
+            self.form_body_step(index);
         } else {
             let slot = &mut self.players[index];
             let space = slot.base.space;
@@ -23340,10 +23340,10 @@ impl RolloutWorld {
                     // (Direction.DOWN, the gExit animation) and keeps the
                     // form; PlayerBody then moves it (ThrowItem.cs:404-411).
                     slot.throw_item.direction = -slot.base.up();
+                    // Fire zeroes the grounded body's own velocity (ThrowItem.cs:220).
                     self.fire_mine(index, data);
-                    let slot = &mut self.players[index];
-                    slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
-                    slot.base.external_velocity *= Fix::from_f64(0.95);
+                    self.players[index].base.velocity = Vec2::ZERO;
+                    self.form_body_step(index);
                     return;
                 }
                 self.exit_mine(index);
