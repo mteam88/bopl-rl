@@ -7900,11 +7900,6 @@ impl RolloutWorld {
         }
         self.abilityless_clones_tick(data, updater_dt);
         self.blink_clone_tunnels_tick(data, updater_dt);
-        // DetPhysics.Simulate syncs the clones' boxes to where their
-        // updates left them.
-        for clone in &mut self.abilityless_clones {
-            clone.base.synced = clone.base.collider;
-        }
         let physics_dt = DT * self.player_time_scale;
         self.arrows_integrate(data, updater_dt, physics_dt);
         self.ability_pickups_integrate(physics_dt);
@@ -7964,6 +7959,24 @@ impl RolloutWorld {
             .then(|| slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             let forms = slot.form_entities.map(registered);
             self.players[index].sync_boxes(hurtbox, forms);
+        }
+        // Every registered clone box takes its FixTransform too, where its
+        // update, a Portal or a Blink release left it.
+        for clone in &mut self.abilityless_clones {
+            let Some(entity) = clone.entity.filter(|&e| self.entities[e].flags & (E_DESTROYED | E_REMOVED) == 0) else {
+                clone.base.synced = clone.base.collider;
+                continue;
+            };
+            clone.base.sync_collider(self.entity_inverse_extents[entity]);
+            let collider = clone.base.collider;
+            let row = &mut self.entities[entity];
+            row.x = collider.center.x.raw();
+            row.y = collider.center.y.raw();
+            row.right_x = collider.right.x.raw();
+            row.right_y = collider.right.y.raw();
+            row.up_x = collider.up.x.raw();
+            row.up_y = collider.up.y.raw();
+            row.rotation = clone.base.rotation().raw();
         }
         if self.platforms.iter().any(|platform| platform.collider.inner.center != platform.surface.center) {
             for platform in self.platforms.iter_mut() {
