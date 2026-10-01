@@ -254,11 +254,18 @@ impl RolloutWorld {
                 self.guided_missiles[i].body = body;
                 self.guided_missiles[i].position += delta;
             }
+            // The Rock's row is its DetPhysics circle, which the correction
+            // moves along with the FixTransform it is synced back to.
             Part::Rock(i) => {
                 let slot = &mut self.players[i];
                 slot.rock.body = body;
                 slot.base.position += delta;
                 slot.base.velocity = body.velocity;
+                let (entity, position) = (slot.rock_entity, slot.base.position);
+                if let Some(row) = self.entities.get_mut(entity) {
+                    row.x = position.x.raw();
+                    row.y = position.y.raw();
+                }
             }
             Part::Pickup(i) => {
                 let pickup = &mut self.ability_pickups[i];
