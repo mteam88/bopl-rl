@@ -13504,6 +13504,19 @@ impl RolloutWorld {
         // exit below (ControlPlatform.cs:142-146).
         let mut dropped_off = None;
         if !self.players[index].move_off_destroyed(self.tick) {
+            // Move raycasts unless it UnGrounds off a missing or inactive
+            // ground (PlayerPhysics.cs:232-264): CollisionRaycasts in the
+            // air, maxMovementAllowed's RaycastToClosestRoundedRect on the
+            // ground (StickyRoundedRectangle.cs:338, 449-451). Every query
+            // first drops the colliders DestroyFix marked and rebuilds the
+            // composites that lost one (DetPhysics.cs:1724), so the impulse
+            // below lands on the rebuilt combined body.
+            let base = &self.players[index].base;
+            if !base.grounded
+                || self.platforms.iter().any(|p| Some(p.id) == base.ground && p.active)
+            {
+                self.remove_destroyed_colliders();
+            }
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
