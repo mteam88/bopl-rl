@@ -1270,8 +1270,6 @@ pub struct SpawnedTeslaNode {
     pub line_hierarchy_base: u32,
     pub line_appended: u32,
     pub line_entity: Option<usize>,
-    pub line_active: bool,
-    pub line_collider_enabled: bool,
     pub line_center: Vec2,
     pub line_right: Vec2,
     pub line_up: Vec2,
@@ -15005,8 +15003,6 @@ impl RolloutWorld {
                 pending: deferred,
             });
         }
-        self.tesla_nodes[node_index].line_active = false;
-        self.tesla_nodes[node_index].line_collider_enabled = false;
     }
 
     /// `deferred`: the node was Updater.DestroyFix'd mid-pass, so its
@@ -16035,12 +16031,24 @@ impl RolloutWorld {
         self.tesla_nodes[node_index].line_hierarchy_base = hierarchy_base;
         self.tesla_nodes[node_index].line_appended = self.tick + 1;
         self.tesla_nodes[node_index].line_entity = None;
-        self.tesla_nodes[node_index].line_active = false;
-        self.tesla_nodes[node_index].line_collider_enabled = true;
         self.tesla_nodes[node_index].flicker_time = Fix::ZERO;
         self.tesla_nodes[node_index].flicker_ticks = 0;
         self.tesla_nodes[child_index].connected = true;
         self.tesla_nodes[child_index].enter_ticks = 0;
+    }
+
+    /// SimpleSparkNode's lightningLine.gameObject.SetActive and the flicker's
+    /// collider.enabled write the line's row as they happen, so DetPhysics
+    /// sees them the same pass (SimpleSparkNode.cs:115-120,
+    /// StretchableLightning.cs:66, 77).
+    fn set_tesla_line_flag(&mut self, node_index: usize, flag: u32, on: bool) {
+        if let Some(entity) = self.tesla_nodes[node_index].line_entity {
+            if on {
+                self.entities[entity].flags |= flag;
+            } else {
+                self.entities[entity].flags &= !flag;
+            }
+        }
     }
 
     /// The collider of the StretchableLightning a connection instantiated.
@@ -16099,7 +16107,7 @@ impl RolloutWorld {
                 && self.tesla_nodes[node_index].enter_ticks > data.tesla.enter_ticks
             {
                 self.tesla_nodes[node_index].lethal = true;
-                self.tesla_nodes[node_index].line_active = true;
+                self.set_tesla_line_flag(node_index, E_ACTIVE, true);
             }
             if self.tesla_nodes[node_index].enter_ticks > data.tesla.enter_ticks + 1 {
                 self.tesla_nodes[child].lethal = true;
@@ -16124,13 +16132,13 @@ impl RolloutWorld {
                 if self.tesla_nodes[node_index].flicker_ticks == 0 {
                     self.tesla_nodes[node_index].flicker_time += dt;
                     if self.tesla_nodes[node_index].flicker_time > data.tesla.flicker_period {
-                        self.tesla_nodes[node_index].line_collider_enabled = false;
+                        self.set_tesla_line_flag(node_index, E_ENABLED, false);
                         self.tesla_nodes[node_index].flicker_ticks = 1;
                     }
                 } else if self.player_time_scale >= Fix::from_f32(0.01) {
                     self.tesla_nodes[node_index].flicker_ticks += 1;
                     if self.tesla_nodes[node_index].flicker_ticks > data.tesla.flicker_ticks + 1 {
-                        self.tesla_nodes[node_index].line_collider_enabled = true;
+                        self.set_tesla_line_flag(node_index, E_ENABLED, true);
                         // SpriteAnimator invokes UnFlicker before the later
                         // StretchableLightning updater, so the restoration
                         // pass both re-enables the line and advances its new
@@ -16515,16 +16523,12 @@ impl RolloutWorld {
             // pass's contacts pushed its platform; the manifold tests where
             // they left it.
             let swept_node = Swept::Part(Part::Node(node_index));
-            let line = if node.line_active && node.line_collider_enabled {
-                Some(OrientedBox {
-                    center: node.line_center,
-                    right: node.line_right,
-                    up: node.line_up,
-                    inverse_extents: self.entity_inverse_extents[node.line_entity.expect("a registered lightning")],
-                })
-            } else {
-                None
-            };
+            let line = node.line_entity.filter(|&entity| row_is_active(&self.entities[entity])).map(|entity| OrientedBox {
+                center: node.line_center,
+                right: node.line_right,
+                up: node.line_up,
+                inverse_extents: self.entity_inverse_extents[entity],
+            });
             // Smoke collides with the Explosion-layer line but not with the
             // node's LethalTerrain or NonLethalTerrain circle.
             for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
@@ -19715,8 +19719,6 @@ impl RolloutWorld {
         node.connected = false;
         node.lethal = false;
         node.enter_ticks = 0;
-        node.line_active = false;
-        node.line_collider_enabled = false;
         if let Some(entity) = node.entity {
             self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
             self.entities[entity].layer = data.tesla.node_layer;
@@ -21646,7 +21648,7 @@ impl RolloutWorld {
         } else if let Some(node) = self
             .tesla_nodes
             .iter_mut()
-            .find(|node| node.line_active && node.line_entity == Some(entity))
+            .find(|node| node.line_entity == Some(entity) && self.entities[entity].flags & E_ACTIVE != 0)
         {
             node.line_center += shift;
             moved = true;
@@ -29743,8 +29745,7 @@ impl RolloutWorld {
             .find(|(_, node)| node.active && node.line_entity == Some(entity))
         {
             let on = node.lethal
-                && node.line_active
-                && node.line_collider_enabled
+                && row_is_active(&self.entities[entity])
                 && !node.macho_carried
                 && !(node_index < live_nodes && self.attached_hidden(node.platform_index, node.entity));
             return on.then_some(DetCollider::Box(OrientedBox {
@@ -40744,16 +40745,8 @@ impl RolloutWorld {
                 // Tesla form collider itself does not.
                 flags: E_TRIGGER
                     | E_EXPLOSIVE
-                    | if node.line_active && !line_hidden {
-                        E_ACTIVE
-                    } else {
-                        0
-                    }
-                    | if node.line_collider_enabled {
-                        E_ENABLED
-                    } else {
-                        0
-                    },
+                    | if line_hidden { 0 } else { self.entities[line_entity].flags & E_ACTIVE }
+                    | self.entities[line_entity].flags & E_ENABLED,
                 hierarchy: self.entities[line_entity].hierarchy,
                 x: node.line_center.x.raw(),
                 y: node.line_center.y.raw(),
