@@ -23466,6 +23466,10 @@ impl RolloutWorld {
 
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
         let dash_inverse_extents = self.entity_inverse_extents.get(self.players[index].dash_entity).copied();
+        let dashing = {
+            let dash = &self.players[index].base.dash;
+            dash.active && dash.in_dash
+        };
         self.players[index]
             .base
             .move_step(action, movement_input, terrain!(self), dash_inverse_extents);
@@ -23492,7 +23496,9 @@ impl RolloutWorld {
         }
         let dash_cast = {
             let caster = &self.players[index].base;
-            (caster.dash.active && caster.dash.time == DT).then_some((
+            // performDash's RaycastAll (Dash.cs:134), on the pass the
+            // anticipation ends.
+            (caster.dash.active && caster.dash.in_dash && !dashing).then_some((
                 caster.position,
                 caster.dash.input,
                 caster.id,
@@ -37011,10 +37017,10 @@ impl RolloutWorld {
         // SlimeController and these forms run as ever: only their FixedDeltaTime
         // steps are zero and their SpriteAnimators hold.
         let runs_frozen = self.playable(index)
-            && !self.players[index].base.dash.active
             && matches!(
                 self.players[index].active,
                 ActiveAbility::None
+                    | ActiveAbility::Dash
                     | ActiveAbility::Push
                     | ActiveAbility::Spike
                     | ActiveAbility::Engine
@@ -37106,10 +37112,10 @@ impl RolloutWorld {
                 }
                 return;
             }
-            // The forms left here (Dash, Rock, Revival, Gust, Time Stop) hide
-            // the slime with its PlayerPhysics and SlimeController and run no
-            // gravity of their own: ApplyGravity is off on the Dash, Gust,
-            // Revival and Time stop prefabs. Their PlayerBody moves by
+            // The forms left here (Rock, Revival, Gust, Time Stop) hide the
+            // slime with its PlayerPhysics and SlimeController and run no
+            // gravity of their own: ApplyGravity is off on the Gust, Revival
+            // and Time stop prefabs. Their PlayerBody moves by
             // Velocity times the zero FixedDeltaTime but still damps the
             // external velocity (PlayerBody.cs:245-247); CastSpell's grounded
             // branch first spends it along the surface with no time-stop gate

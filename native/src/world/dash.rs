@@ -49,7 +49,10 @@ impl Player {
     }
     pub(super) fn dash_step(&mut self, action: Action, terrain: Terrain) {
         let platforms = terrain.platforms;
-        self.dash.time += DT;
+        // timePassed += GameTime.FixedDeltaTime (Dash.cs:246): the
+        // anticipation holds under Time Stop, while updatesPassedInDash
+        // below counts raw passes, so a dash already under way lands.
+        self.dash.time += self.fixed_delta_time;
         if self.dash.time < Fix::from_raw(42_949_672) {
             let aim = action.direction();
             if aim.length() > Fix::from_f32(0.4) {
