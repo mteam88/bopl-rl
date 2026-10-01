@@ -4478,6 +4478,8 @@ struct PlatformScratch {
     /// The SlimeController that took Player.Position that way, as a
     /// `PositionCall`.
     clone_publisher: [Option<PositionCall>; MAX_BODIES],
+    /// Rows a retired extra body or a promoted clone still holds this pass.
+    retired_holds: Vec<RetiredHold>,
     /// Every SlimeController's SetPosition this pass, with the Updater
     /// hierarchy it ran at and its row id and ability count at the call: a
     /// body's (whose value is its published one) or a clone's OldUpdate with
@@ -4602,6 +4604,16 @@ impl PlatformScratch {
             ..PlatformScratch::default()
         }
     }
+}
+
+/// A body record whose GameObject went on in another record this pass: a
+/// retired extra body's in its player's slot, a promoted clone's in an extra
+/// body. It is still that GameObject, IsDestroyed if a callback killed it,
+/// until the frame's DestroyImmediate (Updater.cs:339-344).
+#[derive(Clone, Copy)]
+enum RetiredHold {
+    Body { body: usize, entity: usize },
+    Clone { clone: usize, entity: usize },
 }
 
 #[derive(Clone, Copy, Default)]
@@ -6809,7 +6821,7 @@ impl RolloutWorld {
         }
         retired.active = false;
         retired.base.alive = false;
-        retired.entity = None;
+        self.scratch.retired_holds.push(RetiredHold::Clone { clone: clone_index, entity });
         if let Some(rope) = grip.rope {
             self.attach_player_rope(body, Some(rope), grip.top);
         }
@@ -15045,10 +15057,27 @@ impl RolloutWorld {
     }
 
     /// The frame's closing DestroyImmediate takes every object DestroyFix
-    /// marked, so none is IsDestroyed past the frame (Updater.cs:339-344).
+    /// marked, so none is IsDestroyed past the frame, and the retired body
+    /// records let go of their rows (Updater.cs:339-344).
     fn destroy_marked_objects(&mut self) {
         for row in &mut self.entities {
             row.flags &= !E_FIX_DESTROYED;
+        }
+        for hold in std::mem::take(&mut self.scratch.retired_holds) {
+            match hold {
+                RetiredHold::Body { body, entity } => {
+                    let slot = &mut self.players[body];
+                    if !slot.base.alive && slot.body_entity == entity {
+                        slot.body_entity = usize::MAX;
+                    }
+                }
+                RetiredHold::Clone { clone, entity } => {
+                    let clone = &mut self.abilityless_clones[clone];
+                    if !clone.active && clone.entity == Some(entity) {
+                        clone.entity = None;
+                    }
+                }
+            }
         }
     }
 
@@ -37093,6 +37122,13 @@ impl RolloutWorld {
                 && let Some(body) = self.promote_abilityless_clone(clone_index)
             {
                 self.kill(body, killer, cause, false, false);
+                // A callback's killPlayer DestroyFixes the clone, which is
+                // the extra body's GameObject.
+                if route.callback()
+                    && let Some(entity) = self.abilityless_clones[clone_index].entity
+                {
+                    self.entities[entity].flags |= E_FIX_DESTROYED;
+                }
                 return;
             }
             // PlayerCollision.killPlayer lets go of the body's rope first.
@@ -37108,7 +37144,7 @@ impl RolloutWorld {
             }
         }
         // A callback's killPlayer DestroyFixes the clone, which stays active
-        // until the frame ends. A promoted clone's row went to its body.
+        // until the frame ends.
         if route.callback()
             && let Some(entity) = self.abilityless_clones[clone_index].entity
         {
@@ -38352,7 +38388,12 @@ impl RolloutWorld {
         slot.revival_target_marker = None;
         slot.revival_effect_ticks = 0;
         slot.revival_particle = None;
+        let entity = slot.body_entity;
         slot.clear_entity_rows();
+        slot.body_entity = entity;
+        if entity != usize::MAX {
+            self.scratch.retired_holds.push(RetiredHold::Body { body, entity });
+        }
     }
 
     /// `form_exit` is false when the caller hands the form's Ability an exit
