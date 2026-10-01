@@ -2008,9 +2008,6 @@ pub struct MagnetState {
     pub animation_ticks: u32,
     pub time_spent_pulling: Fix,
     pub aim: Vec2,
-    /// The ability FixTransform's previous right basis. Magnet's
-    /// PlayerPhysics does not synchronize rotation to its ground.
-    pub body_right: Vec2,
     pub has_fired: bool,
     pub held: MagnetHeld,
     pub held_position: Vec2,
@@ -11733,15 +11730,6 @@ impl RolloutWorld {
                             // slime and consumes the first enter frame now.
                             animation_ticks: 1,
                             aim,
-                            // MagnetGun.OnEnterAbility ends with
-                            // `body.rotation = Fix.Zero` (MagnetGun.cs:325),
-                            // and FixTransform's rotation setter rebuilds the
-                            // basis from that angle (FixTransform.cs:42-47):
-                            // the entry pass's firepoint therefore runs off
-                            // world right, not off the aim. Only the tail of
-                            // UpdateSim turns the body to the aim
-                            // (MagnetGun.cs:1256).
-                            body_right: Vec2::RIGHT,
                             ..MagnetState::default()
                         };
                         // Ability.EnterAbility scales the box, then
@@ -11790,6 +11778,14 @@ impl RolloutWorld {
                             row.up_y = collider.up.y.raw();
                             self.sync_form_box(index, collider);
                         }
+                        // OnEnterAbility ends with `body.rotation = Fix.Zero`
+                        // (MagnetGun.cs:325), and FixTransform's rotation
+                        // setter rebuilds up and right from that angle
+                        // (FixTransform.cs:42-47): the entry pass's firepoint
+                        // runs off world right, not off the aim. Only the
+                        // tail of UpdateSim turns the body to the aim
+                        // (MagnetGun.cs:1256).
+                        self.players[index].base.up = Vec2::UP;
                         self.form_entry_turn(data, index);
                         self.magnet_tick(index, action, movement_input, data, false);
                         return;
@@ -26206,7 +26202,6 @@ impl RolloutWorld {
             // UnGround(nullRotation: true) resets body.right (MagnetGun.cs:1215).
             let slot = &mut self.players[index];
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-            slot.magnet.body_right = Vec2::RIGHT;
         }
 
         if !self.players[index].base.grounded {
@@ -26262,7 +26257,6 @@ impl RolloutWorld {
         if !slot.magnet.has_fired {
             slot.base.up = slot.magnet.aim.perp();
             slot.base.rotation = slot.magnet.aim.normalized_angle();
-            slot.magnet.body_right = slot.magnet.aim;
             if slot.base.velocity.length() > magnet.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * magnet.max_slow_mo_speed;
             }
@@ -26605,8 +26599,9 @@ impl RolloutWorld {
 
     fn magnet_firepoint(&self, index: usize, _data: &data::RolloutData) -> Vec2 {
         let slot = &self.players[index];
-        let right = slot.magnet.body_right;
-        let up = right.perp();
+        // FixTransform keeps right as MulByNegI(up) (FixTransform.cs:50-60).
+        let up = slot.base.up;
+        let right = up.perp_cw();
         // OnScaleChanged scales the serialized firepoint while extraOffset is
         // assigned in world units from the selected object.
         let offset = slot.gun_firepoint_offsets[slot.active_slot]
@@ -26650,7 +26645,7 @@ impl RolloutWorld {
         let offset_x =
             slot.gun_firepoint_offsets[slot.active_slot].x
                 + slot.magnet_extra_offsets[slot.active_slot].x;
-        let root = firepoint - slot.magnet.body_right * offset_x;
+        let root = firepoint - slot.base.up.perp_cw() * offset_x;
         // body.fixtrans.Scale, as Ability (hierarchy 3) left it last pass.
         let side = data.magnet.raycast_offset * slot.forms[slot.active_slot].scale;
         let distance = offset_x + Fix::from_int(1000);
@@ -27155,7 +27150,6 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 if slot.base.grounded && slot.base.ground == Some(self.platforms[platform].id) {
                     UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-                    slot.magnet.body_right = Vec2::RIGHT;
                 }
             }
             MagnetHeld::AbilityPickup(i) => {
@@ -27805,14 +27799,12 @@ impl RolloutWorld {
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
-        slot.magnet.body_right = facing;
         slot.base.up = facing.perp();
         slot.base.rotation = facing.normalized_angle();
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
             // UnGround(nullRotation) resets the FixTransform (MagnetGun.cs:408).
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-            slot.magnet.body_right = Vec2::RIGHT;
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
         }
@@ -43508,8 +43500,8 @@ impl RolloutWorld {
                     let (root, rotation, offset_basis) = if magnetizing {
                         (
                             synced,
-                            slot.magnet.body_right.normalized_angle(),
-                            slot.magnet.body_right,
+                            slot.base.up.perp_cw().normalized_angle(),
+                            slot.base.up.perp_cw(),
                         )
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT)
@@ -45930,7 +45922,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         world.players[0].magnet.aim = Vec2::RIGHT;
-        world.players[0].magnet.body_right = Vec2::RIGHT;
+        world.players[0].base.up = Vec2::UP;
         world.players[0].base.position = Vec2::new(Fix::from_int(2), Fix::from_int(20));
         world.players[1].set_active_form(&mut world.entities, ActiveAbility::Drill);
         world.players[1].base.position = Vec2::new(Fix::from_int(30), Fix::from_int(30));
@@ -45978,7 +45970,7 @@ mod tests {
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Magnet);
         world.players[0].magnet.phase = 2;
         world.players[0].magnet.aim = Vec2::RIGHT;
-        world.players[0].magnet.body_right = Vec2::RIGHT;
+        world.players[0].base.up = Vec2::UP;
         let firepoint = world.magnet_firepoint(0, data);
         world.revival_marker_pool.push(RevivalMarker {
             active: true,
