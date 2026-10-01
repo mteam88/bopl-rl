@@ -7513,11 +7513,6 @@ impl RolloutWorld {
                 self.players[index].input_packet = *action;
             }
         }
-        let active_subsystems = self.active_subsystems;
-        let has = |ability| active_subsystems & ability_bit(ability) != 0;
-        let has_rope = has(ABILITY_GRAPPLING_HOOK) || has(ABILITY_WEB_SWING);
-        // Gold Mushroom and a Duplicator shot at a slime both make ability-less clones.
-        let has_clones = has(ABILITY_GOLD_MUSHROOM) || has(ABILITY_DUPLICATOR);
         // DestroyFix from a BlackHole wall callback leaves the rounded body
         // visible as destroyed for that contact pass. DetPhysics removes it
         // at the beginning of the following simulation pass.
@@ -8031,51 +8026,37 @@ impl RolloutWorld {
             }
             self.players[index].base.late_step(&self.platforms);
         }
-        if has_clones {
-            for clone in &mut self.abilityless_clones {
-                let ground = clone.base.ground.and_then(|ground| {
-                    self.platforms.iter().position(|platform| platform.id == ground)
-                });
-                let Some(platform_index) = ground else {
-                    continue;
-                };
-                if !clone.active
-                    || clone.blink_tunnel_active
-                    || self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED
-                        != 0
-                {
-                    continue;
-                }
-                let platform = &self.platforms[platform_index];
-                if platform.active {
-                    clone.base.late_step(&self.platforms);
-                } else if clone.base.alive && clone.base.grounded && !clone.base.dash.active {
-                    // As for a player: a wall QuantumTunnel hid is not
-                    // destroyed, and LateUpdateSim still follows it.
-                    let base = &mut clone.base;
-                    base.position = platform.surface.position(base.local, base.radius);
-                    base.align(platform);
-                }
+        for clone in &mut self.abilityless_clones {
+            let ground = clone.base.ground.and_then(|ground| {
+                self.platforms.iter().position(|platform| platform.id == ground)
+            });
+            let Some(platform_index) = ground else {
+                continue;
+            };
+            if !clone.active
+                || clone.blink_tunnel_active
+                || self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED
+                    != 0
+            {
+                continue;
+            }
+            let platform = &self.platforms[platform_index];
+            if platform.active {
+                clone.base.late_step(&self.platforms);
+            } else if clone.base.alive && clone.base.grounded && !clone.base.dash.active {
+                // As for a player: a wall QuantumTunnel hid is not
+                // destroyed, and LateUpdateSim still follows it.
+                let base = &mut clone.base;
+                base.position = platform.surface.position(base.local, base.radius);
+                base.align(platform);
             }
         }
-        if has(ABILITY_BEAM) {
-            self.beams_late_tick(data);
-        }
-        if has_rope {
-            self.ropes_late();
-        }
-        if has(ABILITY_THROW) {
-            self.macho_late_tick(data);
-        }
-        if has(ABILITY_MINE) {
-            self.mines_late_tick(data);
-            if has_rope {
-                self.ropes_late_on_older_mines();
-            }
-        }
-        if has(ABILITY_ROCK) {
-            self.rocks_late_tick(data);
-        }
+        self.beams_late_tick(data);
+        self.ropes_late();
+        self.macho_late_tick(data);
+        self.mines_late_tick(data);
+        self.ropes_late_on_older_mines();
+        self.rocks_late_tick(data);
         for index in 0..self.players.len() {
             self.exited_ability(index, data);
         }
