@@ -1774,9 +1774,6 @@ pub struct PlatformDynamics {
     /// what every number in the list registered offset by, which a copy made
     /// while it is out of the hierarchy keeps (ShootDuplicator.cs:709-718).
     pub registered: (&'static [u32], u32),
-    /// The Updater pass in which a runtime-spawned platform's updaters last
-    /// took their turn.
-    pub updater_ran_tick: Option<u32>,
     /// DPhysicsRoundedRect.Scale and its authored lower clamp. MachoThrow2
     /// mutates these while excavating a Boulder from the attached platform.
     pub scale: Fix,
@@ -4256,7 +4253,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
 /// The place just after `key`.
@@ -5783,7 +5780,6 @@ impl RolloutWorld {
             ));
             self.platform_dynamics.push(PlatformDynamics {
                 registered: (&data::get().maps[map].platforms[index].registrations, p.hierarchy),
-                updater_ran_tick: None,
                 body: p.body,
                 scale: p.base_scale,
                 body_scale: p.base_scale,
@@ -6478,7 +6474,7 @@ impl RolloutWorld {
             && self.platform_pass(i) == PlatformPass::Spawned
             // Not when its updaters already took their turn this pass: the
             // collider holds that resize.
-            && self.platform_dynamics[i].updater_ran_tick != Some(self.tick)
+            && !self.updater_passed(self.platform_turn_key(i))
             && !self.spawned.iter().any(|s| s.active && s.being_removed && s.platform_index == i)
             && self
                 .spawned
@@ -8502,9 +8498,7 @@ impl RolloutWorld {
             }
         };
         for i in 0..self.platforms.len() {
-            if self.platform_dynamics[i].updater_ran_tick != Some(tick)
-                && self.platform_pass(i) != PlatformPass::Authored
-            {
+            if self.platform_pass(i) != PlatformPass::Authored {
                 push(self.platform_turn_key(i), 0, i);
             }
         }
@@ -8708,7 +8702,6 @@ impl RolloutWorld {
             self.updater_take_turn(key);
             let tick = Some(tick);
             match kind {
-                0 => self.platform_dynamics[index].updater_ran_tick = tick,
                 7 => self.ropes[index].grapple_ran_tick = tick,
                 8 => self.ropes[index].rope_ran_tick = tick,
                 _ => {}
@@ -17093,7 +17086,7 @@ impl RolloutWorld {
                         && spawn.being_removed
                         && spawn.platform_index == platform_index
                         && spawn.hierarchy_base < self.black_holes[hole_index].hierarchy_base
-                }) && self.platform_dynamics[platform_index].updater_ran_tick != Some(self.tick);
+                }) && !self.updater_passed(self.platform_turn_key(platform_index));
                 if shrunk_first {
                     self.late_platform_pulls.push((platform_index, vector, cube, mass, controlled));
                     continue;
@@ -19491,7 +19484,6 @@ impl RolloutWorld {
         self.next_platform_id += 1;
         self.platform_dynamics.push(PlatformDynamics {
             registered: (data::get().prefab("Boulder"), data.macho_throw.boulder_collider_hierarchy),
-            updater_ran_tick: None,
             body: data.macho_throw.boulder_body,
             scale,
             // Boulder.Scale is assigned before its first BoplBody update;
@@ -31057,10 +31049,6 @@ impl RolloutWorld {
 
         let mut dynamics = self.platform_dynamics[source];
         dynamics.registered = registered;
-        // Updater adds an updatable registered mid-pass to its list only at
-        // the start of the next pass (Updater.cs:258-282), so the copy's
-        // updaters first run then, wherever this effect's turn fell.
-        dynamics.updater_ran_tick = Some(self.tick);
         // The source's BoplBody rescale this pass is not the copy's.
         dynamics.unscaled_inverse_mass = None;
         dynamics.scale = copy_scale;
@@ -31871,7 +31859,6 @@ impl RolloutWorld {
         ));
         self.platform_dynamics.push(PlatformDynamics {
             registered: (data::get().prefab("ResizablePlatform"), pd.spawn_collider_hierarchy),
-            updater_ran_tick: None,
             body: pd.spawn_body,
             scale,
             body_scale: scale,
@@ -36317,7 +36304,7 @@ impl RolloutWorld {
         let newest = (0..self.platforms.len())
             .filter(|&i| {
                 self.platform_pass(i) == PlatformPass::Spawned
-                    && self.platform_dynamics[i].updater_ran_tick != Some(self.tick)
+                    && !self.updater_passed(self.platform_turn_key(i))
             })
             .map(|i| self.entities[self.platform_entities[i]].hierarchy)
             .filter(|hierarchy| window.contains(hierarchy))
@@ -36352,14 +36339,14 @@ impl RolloutWorld {
         if window.is_empty() {
             return;
         }
+        let outer = (self.scratch.duplicates_window.clone(), self.scratch.spawned_window.clone());
         match pass {
             PlatformPass::Duplicated => self.scratch.duplicates_window = Some(window),
             PlatformPass::Spawned => self.scratch.spawned_window = Some(window),
             PlatformPass::Authored => unreachable!("authored platforms update in their own pass"),
         }
         self.platform_turns(data, updater_dt, pass);
-        self.scratch.duplicates_window = None;
-        self.scratch.spawned_window = None;
+        (self.scratch.duplicates_window, self.scratch.spawned_window) = outer;
     }
 
     /// Platform `i`'s key among the spawned updatables'. Its row carries its
@@ -36395,8 +36382,7 @@ impl RolloutWorld {
             PlatformPass::Spawned => &self.scratch.spawned_window,
         };
         self.platform_pass(i) == pass
-            && (pass == PlatformPass::Authored
-                || self.platform_dynamics[i].updater_ran_tick != Some(self.tick))
+            && (pass == PlatformPass::Authored || !self.updater_passed(self.platform_turn_key(i)))
             && self.platform_dynamics[i].appended <= self.tick
             && window.as_ref().is_none_or(|window| {
                 window.contains(&self.entities[self.platform_entities[i]].hierarchy)
@@ -36455,6 +36441,13 @@ impl RolloutWorld {
             if !self.platform_updates_in(i, pass) {
                 continue;
             }
+            // A runtime platform's prefab takes its turn in Updater's walk,
+            // after everything listed before it.
+            if pass != PlatformPass::Authored {
+                let key = self.platform_turn_key(i);
+                self.run_spawned_before(data, updater_dt, key);
+                self.updater_take_turn(key);
+            }
             for &updater in self.platform_updater_order(data, i) {
                 match updater {
                     U::StickyRoundedRectangle => self.platform_sticky(updater_dt, i),
@@ -36477,9 +36470,6 @@ impl RolloutWorld {
                     }
                     U::Other => {}
                 }
-            }
-            if pass != PlatformPass::Authored {
-                self.platform_dynamics[i].updater_ran_tick = Some(self.tick);
             }
         }
         if shook {
