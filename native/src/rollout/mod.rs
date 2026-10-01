@@ -13073,86 +13073,35 @@ impl RolloutWorld {
         // (MeteorSmash.cs:330-335).
         self.players[index].base.velocity = Vec2::ZERO;
         self.players[index].base.external_velocity = Vec2::ZERO;
-        self.remove_destroyed_colliders();
         let start = self.players[index].base.position;
         let scene_water = data.maps[self.map].scene_water_height();
         let ray_start = start - Vec2::UP * self.players[index].base.radius;
         let direction = -Vec2::UP;
-        let distance_limit = Fix::from_int(1_000_000);
-        self.scratch.ray_hits.clear();
-
-        // DetPhysics.RaycastAll returns every serialized layer in distance /
-        // hierarchy order. Only the nearest rounded wall can matter because
-        // Meteor exits on the first wall, but player/item callbacks before it
-        // must all run.
-        if data.meteor.raycast_mask & (1 << LAYER_WALL) != 0
-            && let Some((platform_index, distance, _)) =
-                crate::world::closest(terrain!(self), ray_start, direction, distance_limit, None)
-        {
-            self.scratch.ray_hits.push(SortedRayHit {
-                distance,
-                hierarchy: self.entities[self.platform_entities[platform_index]].hierarchy,
-                kind: 0,
-                index: platform_index,
-            });
-        }
-        // Every other registered collider on the mask, the Meteor's own box
-        // aside: players, clones and items alike.
+        // Meteor exits on the first wall or the water; a player or item hit
+        // before it gets its callbacks.
         let own = Self::hurtbox_entity(&self.players[index]);
-        for (entity, row) in self.entities.iter().copied().enumerate() {
-            if entity == own
-                || !self.collides(entity)
-                || matches!(row.layer, LAYER_WALL | LAYER_WATER)
-                || data.meteor.raycast_mask & (1u32 << row.layer) == 0
-            {
-                continue;
-            }
-            let Some(hit) = self.raycast_entity_row(entity, row, ray_start, direction)
-                .filter(|hit| hit.near <= distance_limit)
-            else {
-                continue;
-            };
-            self.scratch.ray_hits.push(SortedRayHit {
-                distance: hit.near.max(Fix::ZERO),
-                hierarchy: row.hierarchy,
-                kind: 2,
-                index: entity,
-            });
-        }
-        let map = &data.maps[self.map];
-        if let Some((water_position, water_extents, water_hierarchy)) = map.water
-            && data.meteor.raycast_mask & (1 << LAYER_WATER) != 0
-        {
-            let water = OrientedBox::from_basis(
-                water_position,
-                Vec2::RIGHT,
-                data::surface_extents(water_extents),
-            );
-            if let Some(hit) = water.raycast(ray_start, direction)
-                && hit.near >= Fix::ZERO
-                && hit.near <= distance_limit
-            {
-                self.scratch.ray_hits.push(SortedRayHit {
-                    distance: hit.near,
-                    hierarchy: water_hierarchy,
-                    kind: 3,
-                    index: 0,
-                });
-            }
-        }
-        self.scratch
-            .ray_hits
-            .sort_unstable_by_key(|hit| (hit.distance, hit.hierarchy));
+        self.raycast_all(ray_start, direction, Fix::from_int(1_000_000), data.meteor.raycast_mask, own, data);
 
         for hit_index in 0..self.scratch.ray_hits.len() {
             let hit = self.scratch.ray_hits[hit_index];
             let near = ray_start + direction * hit.distance;
             match hit.kind {
-                0 => {
-                    self.meteor_land(index, hit.index, start, near, data);
+                3 => {
+                    // The smear ends where the ray met the water collider,
+                    // which need not sit at SceneBounds.WaterHeight.
+                    self.spawn_meteor_smear(start, near, index, data);
+                    self.players[index].base.position =
+                        Vec2::new(start.x, scene_water - Fix::from_int(20));
+                    self.exit_meteor_air(index);
                     return;
                 }
-                2 => {
+                _ if self.entities[hit.index].layer == LAYER_WALL => {
+                    if let Some(platform_index) = self.platform_entities.iter().position(|&entity| entity == hit.index) {
+                        self.meteor_land(index, platform_index, start, near, data);
+                        return;
+                    }
+                }
+                _ => {
                     let entity = hit.index;
                     let target = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity);
                     self.players[index].base.position = near;
@@ -13190,16 +13139,6 @@ impl RolloutWorld {
                         return;
                     }
                 }
-                3 => {
-                    // The smear ends where the ray met the water collider,
-                    // which need not sit at SceneBounds.WaterHeight.
-                    self.spawn_meteor_smear(start, near, index, data);
-                    self.players[index].base.position =
-                        Vec2::new(start.x, scene_water - Fix::from_int(20));
-                    self.exit_meteor_air(index);
-                    return;
-                }
-                _ => unreachable!(),
             }
         }
         if !self.scratch.ray_hits.is_empty() {
@@ -22954,96 +22893,38 @@ impl RolloutWorld {
             ))
         };
         if let Some((origin, direction, caster_id)) = dash_cast {
-            // RaycastAll (Dash.cs:134).
-            self.remove_destroyed_colliders();
-            let data = data::get();
-            let distance_limit = Fix::from_int(13);
-            self.scratch.ray_hits.clear();
-
-            // DetPhysics.RaycastAll sorts every shape by near distance and
-            // then PhysicsParent hierarchy. The first wall terminates Dash's
-            // callback walk, while non-wall hits before it all receive their
-            // callbacks. Retain one preallocated list so mixed compositions
-            // preserve that ordering without allocating on a cast.
-            if let Some((platform_index, distance, _)) =
-                crate::world::closest(terrain!(self), origin, direction, distance_limit, None)
-            {
-                let hierarchy = self.entities[self.platform_entities[platform_index]].hierarchy;
-                self.scratch.ray_hits.push(SortedRayHit {
-                    distance,
-                    hierarchy,
-                    kind: 0,
-                    index: platform_index,
-                });
-            }
-
-            for (target, player) in self.players.iter().enumerate() {
-                if target == index
-                    || !player.base.alive
-                    || player.base.dash.active
-                    || (player.active == ActiveAbility::Platform
-                        && player.platform.phase != PLATFORM_ANTICIPATION)
-                {
-                    continue;
-                }
-                let entity = Self::hurtbox_entity(player);
-                // Dash runs before the DetPhysics stage. Its RaycastAll sees
-                // the collider pose last synchronized by DetPhysics, exactly
-                // the pose retained in the entity row. This also preserves
-                // each form's authored circle/box choice, rotation and scale.
-                let Some(row) = self.entities.get(entity).copied() else {
-                    continue;
-                };
-                // A box synced mid-pass since (a slime that left or entered a
-                // form earlier this pass) is where that sync put it.
-                let Some(collider) = self.detphysics_collider(entity) else {
-                    continue;
-                };
-                let hit = collider.raycast(origin, direction);
-                let Some(hit) = hit.filter(|hit| hit.near <= distance_limit) else {
-                    continue;
-                };
-                self.scratch.ray_hits.push(SortedRayHit {
-                    distance: hit.near.max(Fix::ZERO),
-                    hierarchy: row.hierarchy,
-                    kind: 1,
-                    index: target,
-                });
-            }
-
             // The shipped mask is Player, Projectile, wall, LethalTerrain,
-            // Explosion, RigidBodyAffector and orb. Player and wall shapes are
-            // handled above; every registered non-player circle/box can be
-            // read directly from the retained DetPhysics observation row.
-            const DASH_NON_PLAYER_MASK: u32 =
-                (1 << LAYER_PROJECTILE) | (1 << 16) | (1 << 18) | (1 << 23) | (1 << 26);
-            for (entity_index, row) in self.entities.iter().copied().enumerate() {
-                if !self.collides(entity_index)
-                    || DASH_NON_PLAYER_MASK & (1u32 << row.layer) == 0
-                {
-                    continue;
-                }
-                let hit = self.raycast_entity_row(entity_index, row, origin, direction);
-                let Some(hit) = hit.filter(|hit| hit.near <= distance_limit) else {
-                    continue;
-                };
-                self.scratch.ray_hits.push(SortedRayHit {
-                    distance: hit.near.max(Fix::ZERO),
-                    hierarchy: row.hierarchy,
-                    kind: 2,
-                    index: entity_index,
-                });
-            }
-            self.scratch
-                .ray_hits
-                .sort_unstable_by_key(|hit| (hit.distance, hit.hierarchy));
+            // Explosion, RigidBodyAffector and orb (Dash.cs:134).
+            const DASH_MASK: u32 = (1 << LAYER_PLAYER)
+                | (1 << LAYER_PROJECTILE)
+                | (1 << LAYER_WALL)
+                | (1 << 16)
+                | (1 << 18)
+                | (1 << 23)
+                | (1 << 26);
+            let data = data::get();
+            let own = Self::hurtbox_entity(&self.players[index]);
+            self.raycast_all(origin, direction, Fix::from_int(13), DASH_MASK, own, data);
 
+            // The first wall ends performDash's walk; every hit before it
+            // gets its callbacks.
             for hit_index in 0..self.scratch.ray_hits.len() {
                 let hit = self.scratch.ray_hits[hit_index];
-                match hit.kind {
-                    0 => break,
-                    1 => {
-                        let target = hit.index;
+                let row = self.entities[hit.index];
+                let player = (row.layer == LAYER_PLAYER)
+                    .then(|| self.players.iter().position(|slot| Self::hurtbox_entity(slot) == hit.index));
+                match player {
+                    _ if row.layer == LAYER_WALL => break,
+                    Some(None) => continue,
+                    Some(Some(target)) => {
+                        let player = &self.players[target].base;
+                        if !player.alive
+                            || player.dash.active
+                            || (self.players[target].active == ActiveAbility::Platform
+                                && self.players[target].platform.phase != PLATFORM_ANTICIPATION)
+                        {
+                            continue;
+                        }
                         if !self.playable(target) {
                             continue;
                         }
@@ -23086,9 +22967,8 @@ impl RolloutWorld {
                             self.players[target].base.push_from(origin, target < index);
                         }
                     }
-                    2 => {
+                    None => {
                         let entity = hit.index;
-                        let row = self.entities[entity];
 
                         // RigidBodyAffector is not itself lethal in
                         // PlayerCollision. Positive BlackHole consumes the
@@ -23232,7 +23112,6 @@ impl RolloutWorld {
                         }
                         return;
                     }
-                    _ => unreachable!(),
                 }
             }
         }
@@ -26744,6 +26623,68 @@ impl RolloutWorld {
             }
         }
         nearest
+    }
+
+    /// DetPhysics.RaycastAll (DetPhysics.cs:2095-2166): purges destroyed
+    /// colliders, then lists into `scratch.ray_hits` every active rounded
+    /// rect, circle and box on a `mask` layer but the caster's the ray meets
+    /// within `distance`, sorted by near distance, then hierarchy
+    /// (RaycastComparer). A hit's `index` is its row; `kind` is its shape,
+    /// 3 for the scene water, a box.
+    fn raycast_all(&mut self, origin: Vec2, direction: Vec2, distance: Fix, mask: u32, caster: usize, data: &data::RolloutData) {
+        self.remove_destroyed_colliders();
+        self.scratch.ray_hits.clear();
+        for platform in 0..self.platforms.len() {
+            let entity = self.platform_entities[platform];
+            let row = self.entities[entity];
+            if !self.platforms[platform].active || entity == caster || row.layer >= 32 || mask & (1u32 << row.layer) == 0 {
+                continue;
+            }
+            if let Some(hit) = self.platforms[platform].collider.raycast(origin, direction)
+                && hit.near <= distance
+            {
+                self.scratch.ray_hits.push(SortedRayHit { distance: hit.near, hierarchy: row.hierarchy, kind: 2, index: entity });
+            }
+        }
+        for kind in [0u32, 1] {
+            for (entity, row) in self.entities.iter().copied().enumerate() {
+                if row.kind != kind || entity == caster || row.layer >= 32 || mask & (1u32 << row.layer) == 0 {
+                    continue;
+                }
+                if let Some(near) = self.ray_row_hit(entity, row, origin, direction)
+                    && near <= distance
+                {
+                    self.scratch.ray_hits.push(SortedRayHit { distance: near.max(Fix::ZERO), hierarchy: row.hierarchy, kind: kind as u8, index: entity });
+                }
+            }
+            if kind == 0
+                && mask & (1 << LAYER_WATER) != 0
+                && let Some((water_position, water_extents, water_hierarchy)) = data.maps[self.map].water
+                && let Some(hit) = OrientedBox::from_basis(water_position, Vec2::RIGHT, data::surface_extents(water_extents))
+                    .raycast(origin, direction)
+                && hit.near >= Fix::ZERO
+                && hit.near <= distance
+            {
+                self.scratch.ray_hits.push(SortedRayHit { distance: hit.near, hierarchy: water_hierarchy, kind: 3, index: usize::MAX });
+            }
+        }
+        self.scratch.ray_hits.sort_unstable_by_key(|hit| (hit.distance, hit.hierarchy));
+    }
+
+    /// A circle's or box's near distance along a DetPhysics ray, None when
+    /// IsActive leaves it out: a slime's or clone's collider where its last
+    /// sync put it, any other as its row holds it.
+    fn ray_row_hit(&self, entity: usize, row: CEntity, origin: Vec2, direction: Vec2) -> Option<Fix> {
+        if self.left_form_row(entity) {
+            return None;
+        }
+        if self.is_body_collider(entity) {
+            return self.detphysics_collider(entity)?.raycast(origin, direction).map(|hit| hit.near);
+        }
+        if !self.collides(entity) {
+            return None;
+        }
+        self.raycast_entity_row(entity, row, origin, direction).map(|hit| hit.near)
     }
 
     /// DetPhysics.CircleCastAll (DetPhysics.cs:1950-1995): purges destroyed
