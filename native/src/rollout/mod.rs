@@ -2139,7 +2139,8 @@ pub enum MagnetHeld {
     ThrownItem(usize),
     Missile(usize),
     Arrow(usize),
-    Player(usize),
+    /// A SlimeController, through whichever form or slime body was hit.
+    Player(Slime),
     Rock(usize),
     BlackHole(usize),
     Boulder(usize),
@@ -2254,9 +2255,18 @@ impl Slime {
 /// player's slime and an ability-less clone both keep.
 struct SlimeMut<'a> {
     base: &'a mut Player,
+    ragdoll: &'a mut RagdollState,
     obs_state: &'a mut u32,
     state_ticks: &'a mut u32,
+    facing_right: &'a mut bool,
     ground_destroyed: &'a mut Option<DestroyedGround>,
+    /// PlayerBody.ropeBody and topAttachment.
+    rope: Option<usize>,
+    rope_top: bool,
+    /// A player's slime publishes its state switch after the pass
+    /// (`update_obs_state`), which this skips; a clone switches in its own
+    /// update.
+    switch_skipped: Option<&'a mut bool>,
 }
 
 impl SlimeMut<'_> {
@@ -2267,6 +2277,32 @@ impl SlimeMut<'_> {
         *self.obs_state = STATE_FALL;
         *self.state_ticks = 0;
         rotation
+    }
+
+    /// SlimeController.ApplyRagDoll (SlimeController.cs:1012-1036): the speed
+    /// with its horizontal part slowed becomes selfImposedVelocity, and the
+    /// body faces the speed as given. A ragdoll applied on the ground does
+    /// not end on a landing.
+    fn apply_ragdoll(&mut self, duration: Fix, speed: Vec2) {
+        *self.obs_state = STATE_RAGDOLL;
+        *self.ragdoll = RagdollState { hold_on_ground: self.base.grounded, time: Fix::ZERO, duration };
+        let right = speed.normalized_safe();
+        self.base.velocity = Vec2::new(speed.x / Fix::from_f32(1.5), speed.y);
+        if right != Vec2::ZERO {
+            self.base.set_right(right);
+        }
+    }
+
+    /// SlimeController.attachToGround from a caller after the slime's own
+    /// pass: State.land, the animator's count starting next pass.
+    fn land_after_pass(&mut self) {
+        if self.base.attach_upside_down == Some(true) {
+            *self.facing_right = !*self.facing_right;
+        }
+        begin_land(self.obs_state, self.state_ticks, false);
+        if let Some(skipped) = self.switch_skipped.as_deref_mut() {
+            *skipped = true;
+        }
     }
 }
 
@@ -3158,9 +3194,14 @@ impl AbilitylessClone {
     fn slime_mut(&mut self) -> SlimeMut<'_> {
         SlimeMut {
             base: &mut self.base,
+            ragdoll: &mut self.ragdoll,
             obs_state: &mut self.obs_state,
             state_ticks: &mut self.state_ticks,
+            facing_right: &mut self.facing_right,
             ground_destroyed: &mut self.ground_destroyed,
+            rope: self.grip.rope,
+            rope_top: self.grip.top,
+            switch_skipped: None,
         }
     }
 
@@ -3767,9 +3808,14 @@ impl PlayerSlot {
     fn slime_mut(&mut self) -> SlimeMut<'_> {
         SlimeMut {
             base: &mut self.base,
+            ragdoll: &mut self.ragdoll,
             obs_state: &mut self.obs_state,
             state_ticks: &mut self.state_ticks,
+            facing_right: &mut self.facing_right,
             ground_destroyed: &mut self.ground_destroyed,
+            rope: self.rope,
+            rope_top: self.rope_top,
+            switch_skipped: Some(&mut self.obs_state_disabled_this_tick),
         }
     }
 
@@ -9681,6 +9727,27 @@ impl RolloutWorld {
         match slime {
             Slime::Player(index) => &self.players[index].base,
             Slime::Clone(index) => &self.abilityless_clones[index].base,
+        }
+    }
+
+    /// Whether Updater's walk has passed the SlimeController's OldUpdate this
+    /// pass.
+    fn slime_passed(&self, slime: Slime) -> bool {
+        match slime {
+            Slime::Player(index) => self.players[index].pass_start.0 == self.tick,
+            Slime::Clone(index) => {
+                let clone = &self.abilityless_clones[index];
+                self.updater_passed(self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base))
+            }
+        }
+    }
+
+    /// MagnetGun.nullItemTypeIfDropped: the held SlimeController is still
+    /// there and active (MagnetGun.cs:918-925).
+    fn magnet_holdable(&self, slime: Slime) -> bool {
+        match slime {
+            Slime::Player(index) => self.playable(index),
+            Slime::Clone(index) => self.clone_box_registered(index),
         }
     }
 
@@ -24786,12 +24853,16 @@ impl RolloutWorld {
             let player = &self.players[player_index];
             return Some(match player.active {
                 ActiveAbility::Rock => (MagnetHeld::Rock(player_index), player.base.position),
-                ActiveAbility::None => (MagnetHeld::Player(player_index), player.base.position),
+                ActiveAbility::None => (MagnetHeld::Player(Slime::Player(player_index)), player.base.position),
                 // An ability form's FixTransform is its collider's.
-                _ => (MagnetHeld::Player(player_index), self.hurtbox_collider(player_index)?.center()),
+                _ => (MagnetHeld::Player(Slime::Player(player_index)), self.hurtbox_collider(player_index)?.center()),
             });
         }
         let matches = |active: bool, candidate: Option<usize>| active && candidate == Some(entity);
+        // An ability-less clone is a plain SlimeController (MagnetGun.cs:680-684).
+        if let Some(index) = self.abilityless_clones.iter().position(|clone| matches(clone.active, clone.entity)) {
+            return Some((MagnetHeld::Player(Slime::Clone(index)), self.abilityless_clones[index].base.position));
+        }
         if let Some(index) = self.arrows.iter().position(|arrow| matches(arrow.active, arrow.entity)) {
             return Some((MagnetHeld::Arrow(index), self.arrows[index].position));
         }
@@ -24861,14 +24932,14 @@ impl RolloutWorld {
                 let arrow = self.arrows[i];
                 (arrow.position, arrow.velocity, arrow.scale, false)
             }
-            MagnetHeld::Player(i) => {
-                let player = &self.players[i];
-                (
-                    player.base.position,
-                    player.base.velocity + player.base.external_velocity,
-                    player.collider_scale(),
-                    false,
-                )
+            MagnetHeld::Player(slime) => {
+                let base = self.slime_base(slime);
+                // The hit collider's Scale: a form's own, else the slime's.
+                let scale = match slime {
+                    Slime::Player(i) => self.players[i].collider_scale(),
+                    Slime::Clone(_) => base.scale,
+                };
+                (base.position, base.velocity + base.external_velocity, scale, false)
             }
             MagnetHeld::Rock(i) => {
                 let player = &self.players[i];
@@ -24958,16 +25029,17 @@ impl RolloutWorld {
                 arrow.magnet_holder = Some(index);
                 arrow.magnet_hold_ticks = 3;
             }
-            MagnetHeld::Player(i) => {
-                let entity = Self::hurtbox_entity(&self.players[i]);
-                let tick = self.tick;
-                let frozen = Some(FrozenForm { tick, entity, posed: true });
+            MagnetHeld::Player(slime) => {
                 // MagnetGun hands every form its own ExitAbility and moves
                 // only the slime, so the form's FixTransform stops wherever
                 // that exit left its body, rotation included
                 // (MagnetGun.cs:663-678): BlackHoleClap.ExitAbility(info)
                 // keeps the rotation its own exits zero.
-                if self.players[i].active != ActiveAbility::None {
+                if let Slime::Player(i) = slime
+                    && self.players[i].active != ActiveAbility::None
+                {
+                    let entity = Self::hurtbox_entity(&self.players[i]);
+                    let frozen = Some(FrozenForm { tick: self.tick, entity, posed: true });
                     let handed =
                         ExitInfo { position: firepoint, facing_right: true, ..ExitInfo::default() };
                     let info = self.form_exit_ability(i, handed);
@@ -24978,20 +25050,13 @@ impl RolloutWorld {
                     self.ability_exit(i, info);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 }
-                let slot = &mut self.players[i];
-                // MagnetGun.cs:687 calls UnGround() with nullRotation. A
+                // MagnetGun.cs:686-689. UnGround() takes nullRotation; a
                 // packet SyncPhysicsTo took airborne left no attachedGround
                 // for it to lift the slime off.
-                UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, true);
-                slot.base.skip_next_gravity = true;
-                // ApplyRagDoll's zero speed is the new selfImposedVelocity.
-                slot.base.velocity = Vec2::ZERO;
-                slot.ragdoll = RagdollState {
-                    hold_on_ground: false,
-                    time: Fix::ZERO,
-                    duration: data.magnet.small_ragdoll_duration,
-                };
-                slot.obs_state = STATE_RAGDOLL;
+                let mut body = slime.of(&mut self.players, &mut self.abilityless_clones);
+                body.unground(&self.platforms, self.tick, true);
+                body.base.skip_next_gravity = true;
+                body.apply_ragdoll(data.magnet.small_ragdoll_duration, Vec2::ZERO);
             }
             MagnetHeld::Rock(i) => {
                 self.players[i].rock.body.angular_velocity = data.magnet.locked_angular_velocity;
@@ -25200,7 +25265,7 @@ impl RolloutWorld {
             MagnetHeld::Arrow(i) => self.arrows.get(i).is_some_and(|v| {
                 v.active && v.magnet_holder == Some(index) && !self.blink_object_hidden(v.entity)
             }),
-            MagnetHeld::Player(i) => i < self.players.len() && self.playable(i),
+            MagnetHeld::Player(slime) => self.magnet_holdable(slime),
             MagnetHeld::Rock(i) => {
                 i < self.players.len()
                     && self.playable(i)
@@ -25246,7 +25311,8 @@ impl RolloutWorld {
             MagnetHeld::ThrownItem(i) => self.thrown_items[i].position,
             MagnetHeld::Missile(i) => self.guided_missiles[i].position,
             MagnetHeld::Arrow(i) => self.arrows[i].position,
-            MagnetHeld::Player(i) | MagnetHeld::Rock(i) => self.players[i].base.position,
+            MagnetHeld::Player(slime) => self.slime_base(slime).position,
+            MagnetHeld::Rock(i) => self.players[i].base.position,
             MagnetHeld::BlackHole(i) => self.black_holes[i].position,
             MagnetHeld::Boulder(i) => {
                 self.platforms[self.macho_boulders[i].platform_index]
@@ -25343,24 +25409,19 @@ impl RolloutWorld {
                 arrow.magnet_holder = Some(index);
                 arrow.magnet_hold_ticks = 2;
             }
-            MagnetHeld::Player(i) => {
-                let slot = &mut self.players[i];
-                slot.base.position = position;
-                slot.base.velocity = Vec2::ZERO;
-                slot.base.skip_next_gravity = true;
-                slot.ragdoll = RagdollState {
-                    hold_on_ground: false,
-                    time: Fix::ZERO,
-                    duration: data.magnet.small_ragdoll_duration,
-                };
-                slot.obs_state = STATE_RAGDOLL;
+            MagnetHeld::Player(slime) => {
+                // MagnetGun.cs:1124-1128.
+                let mut body = slime.of(&mut self.players, &mut self.abilityless_clones);
+                body.base.position = position;
+                body.apply_ragdoll(data.magnet.small_ragdoll_duration, Vec2::ZERO);
+                body.base.skip_next_gravity = true;
                 // MagnetGun.LateUpdateSim pins whichever rope endpoint owns
                 // the held PlayerBody after forcing it off its ground.
-                if let Some(rope_index) = slot.rope
+                if let Some(rope_index) = body.rope
                     && rope_index < self.ropes.len()
                     && self.ropes[rope_index].physics.enabled
                 {
-                    let endpoint = if slot.rope_top {
+                    let endpoint = if body.rope_top {
                         0
                     } else {
                         self.ropes[rope_index].physics.count - 1
@@ -25542,54 +25603,35 @@ impl RolloutWorld {
                     item.body.force += direction * data.magnet.fire_force;
                 }
             }
-            MagnetHeld::Player(i) => {
-                let rope = self.players.get(i).and_then(|slot| slot.rope);
-                let rope_top = self.players.get(i).is_some_and(|slot| slot.rope_top);
-                let mut speed = direction * data.magnet.fire_ragdoll_force;
-                // ApplyRagDoll turns the body to face the throw before it
-                // slows the horizontal part (SlimeController.cs:1026-1034).
-                let right = speed.normalized_safe();
-                speed.x /= Fix::from_f32(1.5);
-                if let Some(slot) = self.players.get_mut(i) {
-                    slot.base.velocity = speed;
-                    if right != Vec2::ZERO {
-                        slot.base.set_right(right);
-                    }
-                    // ApplyRagDoll leaves the skipNextUpdate this pass's hold
-                    // already set (MagnetGun.cs:1127-1128).
-                    slot.ragdoll = RagdollState {
-                        hold_on_ground: false,
-                        time: Fix::ZERO,
-                        duration: data.magnet.fire_ragdoll_duration,
-                    };
-                    slot.obs_state = STATE_RAGDOLL;
-                    // Shoot then casts the landing rays over a 0.0001 s step
-                    // (MagnetGun.cs:474). attachToGround puts the slime
-                    // straight into State.land, ending the ragdoll, after its
-                    // pass. That pass's OldUpdate returned in State.ragdoll
-                    // (SlimeController.cs:787-790), before the state switch
-                    // and AlignTransformAir, and its animator already ran. A
-                    // slime updating after its holder lands in its own pass.
-                    let attached =
-                        self.slot_physics(i, |slot, world| slot.base.collision_rays_over(world, Fix::from_f64(0.0001)));
-                    let slot = &mut self.players[i];
-                    if attached && slot.pass_start.0 == self.tick {
-                        if slot.base.attach_upside_down == Some(true) {
-                            slot.facing_right = !slot.facing_right;
-                        }
-                        slot.begin_land(false);
-                        slot.obs_state_disabled_this_tick = true;
-                    }
-                }
+            MagnetHeld::Player(slime) => {
+                let speed = direction * data.magnet.fire_ragdoll_force;
+                let mut body = slime.of(&mut self.players, &mut self.abilityless_clones);
+                // MagnetGun.cs:469-474. ApplyRagDoll leaves the
+                // skipNextUpdate this pass's hold already set.
                 if speed.y > Fix::ZERO
-                    && let Some(rope_index) = rope
-                    && let Some(rope) = self.ropes.get_mut(rope_index)
+                    && let Some(rope) = body.rope.and_then(|rope| self.ropes.get_mut(rope))
                 {
-                    if rope_top {
+                    if body.rope_top {
                         rope.time_air_start = Fix::from_f64(0.1);
                     } else {
                         rope.time_air_end = Fix::from_f64(0.1);
                     }
+                }
+                body.apply_ragdoll(data.magnet.fire_ragdoll_duration, speed);
+                // Shoot then casts the landing rays over a 0.0001 s step.
+                // attachToGround puts the slime straight into State.land,
+                // ending the ragdoll, after its pass. That pass's OldUpdate
+                // returned in State.ragdoll (SlimeController.cs:787-790),
+                // before the state switch and AlignTransformAir, and its
+                // animator already ran. A slime updating after its holder
+                // lands in its own pass.
+                let dt = Fix::from_f64(0.0001);
+                let attached = match slime {
+                    Slime::Player(i) => self.slot_physics(i, |slot, world| slot.base.collision_rays_over(world, dt)),
+                    Slime::Clone(i) => self.clone_physics(i, |clone, walls| clone.base.collision_rays_over(walls, dt)),
+                };
+                if attached && self.slime_passed(slime) {
+                    slime.of(&mut self.players, &mut self.abilityless_clones).land_after_pass();
                 }
             }
             MagnetHeld::Rock(i) => {
@@ -41323,7 +41365,7 @@ mod tests {
         world.players[1].base.position = Vec2::new(Fix::from_int(30), Fix::from_int(30));
         let firepoint = world.magnet_firepoint(0, data::get());
 
-        world.magnet_take_target(0, MagnetHeld::Player(1), data::get());
+        world.magnet_take_target(0, MagnetHeld::Player(Slime::Player(1)), data::get());
 
         assert_eq!(world.players[1].base.position, firepoint);
         assert_eq!(world.players[0].magnet.held_position, firepoint);
