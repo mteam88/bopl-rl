@@ -1914,6 +1914,10 @@ pub struct FormScale {
     /// A circle form's DPhysicsCircle.radius, which its Scale setter
     /// multiplies by `(1 / old) * new` (DPhysicsCircle.cs:214-221).
     pub circle_radius: Fix,
+    /// The Rock circle's startRadius (GetStartRadius, DPhysicsCircle.cs:372):
+    /// the Scale setter rescales it until ManualInit registers the circle,
+    /// and it stays from then on (DPhysicsCircle.cs:186-205, 292-299).
+    pub start_radius: Fix,
     /// A form BoplBody's DetPhysics inverse mass and inertia, and the
     /// prevScale it last divided them by; zero until the body first runs.
     pub inverse_mass: Fix,
@@ -11193,8 +11197,21 @@ impl RolloutWorld {
                             self.players[index].form_entities[s] = entity;
                             self.players[index].rock_entity = entity;
                         }
+                        // Ability.EnterAbility rescales the slot's own circle to
+                        // Player.Scale from the scale its last use left, keeping
+                        // its Q32 residue; a new form starts from the prefab
+                        // radius. BounceBall.OnEnterAbility's ManualInit then
+                        // registers a new circle at that radius (Ability.cs:103-110,
+                        // BounceBall.cs:102-105).
                         let self_imposed = self.entry_self_imposed(index);
                         let slot = &mut self.players[index];
+                        let fresh = slot.forms[s].scale == Fix::ZERO;
+                        let scale = slot.player_scale;
+                        slot.forms[s].set_circle_scale(scale, data.rock.radius);
+                        if fresh {
+                            slot.forms[s].start_radius = slot.forms[s].circle_radius;
+                        }
+                        let start_radius = slot.forms[s].start_radius;
                         let mut body = data.rock.body;
                         let velocity = self_imposed + slot.base.external_velocity;
                         let direction = if self_imposed.x <= Fix::ZERO {
@@ -11208,7 +11225,7 @@ impl RolloutWorld {
                             velocity
                         };
                         body.angular_velocity =
-                            velocity.length() * direction * data.rock.radius * Fix::from_f32(0.2);
+                            velocity.length() * direction * start_radius * Fix::from_f32(0.2);
                         body.angular_velocity /= slot.player_scale;
                         if slot.rope.is_some() {
                             body.angular_velocity = Fix::ZERO;
@@ -11230,11 +11247,6 @@ impl RolloutWorld {
                         // off the slime's own position (BounceBall.cs:131).
                         slot.reported_position = form_position;
                         slot.reported_tick = self.tick;
-                        // Ability.EnterAbility rescales the slot's own circle to
-                        // Player.Scale from the scale its last use left, keeping
-                        // its Q32 residue; a new form starts from the prefab radius.
-                        let scale = slot.player_scale;
-                        slot.forms[s].set_circle_scale(scale, data.rock.radius);
                         slot.rock = RockState {
                             body,
                             exit_scale: Fix::ONE,
