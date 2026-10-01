@@ -208,7 +208,9 @@ impl RolloutWorld {
             Swept::Part(Part::Body(i)) => sweep.players.get(i),
             Swept::Part(Part::Clone(i)) => sweep.clones.get(i),
             // A trigger no group moves: SortAndSweep bounded it where it is.
-            Swept::Part(Part::Hook(_) | Part::Hole(_)) => return Some(self.current_bounds(collider, data::get())),
+            Swept::Part(Part::Hook(_) | Part::Hole(_) | Part::Line(_)) => {
+                return Some(self.current_bounds(collider, data::get()));
+            }
             Swept::Player(i) => sweep.players.get(i),
             Swept::Clone(i) => sweep.clones.get(i),
             Swept::Arrow(i) => sweep.arrows.get(i),

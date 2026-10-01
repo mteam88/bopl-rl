@@ -32,6 +32,8 @@ pub(super) enum Part {
     Body(usize),
     /// An abilityless clone's box.
     Clone(usize),
+    /// A lit Tesla connection's StretchableLightning box, by parent node.
+    Line(usize),
 }
 
 /// Arrow.StickTo: Player, item, wall, LethalTerrain and NonLethalTerrain
@@ -81,6 +83,15 @@ impl RolloutWorld {
                 radius: self.black_holes[i].radius,
             }),
             Part::Body(_) | Part::Clone(_) => self.body_row_collider(self.part_entity(part).expect("registered body")),
+            Part::Line(i) => {
+                let node = &self.tesla_nodes[i];
+                Collider::Box(OrientedBox {
+                    center: node.line_center,
+                    right: node.line_right,
+                    up: node.line_up,
+                    inverse_extents: self.entity_inverse_extents[node.line_entity.expect("a registered lightning")],
+                })
+            }
         }
     }
 
@@ -115,6 +126,7 @@ impl RolloutWorld {
             Part::Hook(r) => self.ropes[r].hook_entity.map_or(LAYER_ROPE, |entity| self.entities[entity].layer),
             Part::Arrow(i) => self.arrows[i].entity.map_or(LAYER_PROJECTILE, |entity| self.entities[entity].layer),
             Part::Hole(_) => LAYER_RIGID_BODY_AFFECTOR,
+            Part::Line(_) => data.tesla.lightning_layer,
             Part::Body(_) | Part::Clone(_) => self.entities[self.part_entity(part).expect("registered body")].layer,
         }
     }
@@ -170,6 +182,7 @@ impl RolloutWorld {
             Part::Hole(i) => self.black_holes[i].entity,
             Part::Body(i) => Some(Self::hurtbox_entity(&self.players[i])),
             Part::Clone(i) => self.abilityless_clones[i].entity,
+            Part::Line(i) => self.tesla_nodes[i].line_entity,
         }
     }
 
@@ -189,7 +202,8 @@ impl RolloutWorld {
             | Part::Arrow(_)
             | Part::Hole(_)
             | Part::Body(_)
-            | Part::Clone(_) => None,
+            | Part::Clone(_)
+            | Part::Line(_) => None,
         }
     }
 
@@ -214,6 +228,8 @@ impl RolloutWorld {
             // A DPhysicsBox with no BoplBody registers inverseMass -1
             // (DPhysicsBox.cs:339-345), and a form's circle likewise.
             Part::Body(_) | Part::Clone(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
+            // The lightning's box is a trigger.
+            Part::Line(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
         }
     }
 
@@ -233,6 +249,7 @@ impl RolloutWorld {
             Part::Hole(i) => self.black_holes[i].active,
             Part::Body(i) => self.hittable(i),
             Part::Clone(i) => self.abilityless_clones[i].active,
+            Part::Line(i) => self.tesla_nodes[i].line_entity.is_some(),
         }
     }
 
@@ -315,7 +332,7 @@ impl RolloutWorld {
             Part::Hook(_) => {}
             Part::Arrow(i) => self.set_arrow_body(i, body, delta),
             Part::Hole(i) => self.black_holes[i].body_velocity = body.velocity,
-            Part::Body(_) | Part::Clone(_) => {}
+            Part::Body(_) | Part::Clone(_) | Part::Line(_) => {}
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_) | Part::Arrow(_), Some(entity)) =
             (part, self.part_entity(part))
@@ -353,6 +370,7 @@ impl RolloutWorld {
             Part::Arrow(i) => self.arrows[i].position,
             Part::Hole(i) => self.black_holes[i].position,
             Part::Body(_) | Part::Clone(_) => self.part_collider(part).center(),
+            Part::Line(i) => self.tesla_nodes[i].line_center,
         }
     }
 
@@ -451,7 +469,13 @@ impl RolloutWorld {
             Part::Arrow(i) => self.arrows[i].force += force,
             // A RopeHook's circle has no BoplBody, so nothing integrates it.
             Part::Hook(_) => {}
-            Part::Node(_) | Part::Engine(_) | Part::Spike(_) | Part::Hole(_) | Part::Body(_) | Part::Clone(_) => unreachable!(),
+            Part::Node(_)
+            | Part::Engine(_)
+            | Part::Spike(_)
+            | Part::Hole(_)
+            | Part::Body(_)
+            | Part::Clone(_)
+            | Part::Line(_) => unreachable!(),
         }
     }
 
@@ -465,7 +489,7 @@ impl RolloutWorld {
 
     /// Whether a slime's or non-Rock form's Player-layer collider is in this
     /// Simulate's pairs, and whether it is a circle.
-    fn body_part_circle(&self, i: usize) -> Option<bool> {
+    pub(super) fn body_part_circle(&self, i: usize) -> Option<bool> {
         let slot = &self.players[i];
         if slot.active == ActiveAbility::Rock || !self.hittable(i) {
             return None;
@@ -493,6 +517,18 @@ impl RolloutWorld {
     /// collider, so the pair's callbacks queue there.
     pub(super) fn node_body_grouped(&self, node: usize, player: usize) -> bool {
         self.body_part_circle(player).is_some_and(|circle| self.node_part(node, circle))
+    }
+
+    /// Whether a live node's lit, enabled lightning is a part of the
+    /// Circle/Box and Box/Box groups. The line of a node evicted this pass
+    /// still meets its pairs in tesla_contacts.
+    pub(super) fn line_part(&self, i: usize) -> bool {
+        let node = &self.tesla_nodes[i];
+        node.active
+            && node.lethal
+            && !node.macho_carried
+            && !self.attached_hidden(node.platform_index, node.entity)
+            && node.line_entity.is_some_and(|entity| row_is_active(&self.entities[entity]))
     }
 
     /// Whether an abilityless clone's collider is in this Simulate's pairs,
@@ -593,6 +629,11 @@ impl RolloutWorld {
         for i in 0..self.guided_missiles.len() {
             if self.guided_missile_live(i) {
                 parts.push(Part::Missile(i));
+            }
+        }
+        for i in 0..self.tesla_nodes.len() {
+            if self.line_part(i) {
+                parts.push(Part::Line(i));
             }
         }
         for i in 0..self.players.len() {
@@ -928,6 +969,11 @@ impl RolloutWorld {
                 parts.push(Part::Missile(i));
             }
         }
+        for i in 0..self.tesla_nodes.len() {
+            if self.line_part(i) {
+                parts.push(Part::Line(i));
+            }
+        }
         for i in 0..self.players.len() {
             if self.body_part_circle(i) == Some(false) {
                 parts.push(Part::Body(i));
@@ -1027,6 +1073,14 @@ impl RolloutWorld {
         {
             return;
         }
+        // Of the lightning's pairs only a slime's, form's, clone's and Mine's
+        // run here yet.
+        if matches!(other, Part::Line(_))
+            && !matches!(receiver, Part::Body(_) | Part::Clone(_))
+            && !matches!(receiver, Part::Item(item) if self.thrown_items[item].ability == ABILITY_MINE)
+        {
+            return;
+        }
         match receiver {
             Part::Hole(hole) => self.black_hole_on_collide(hole, other, data),
             Part::Item(item) => match self.thrown_items[item].ability {
@@ -1041,7 +1095,8 @@ impl RolloutWorld {
                 // Mine.OnCollide: an arrow is an igniter, and the Mine sees
                 // the contact whether or not the arrow landed first
                 // (Mine.cs:227-235).
-                ABILITY_MINE if matches!(other, Part::Arrow(_)) => {
+                // Mine.Igniters holds the lightning's layer too.
+                ABILITY_MINE if matches!(other, Part::Arrow(_) | Part::Line(_)) => {
                     self.run_callback_hit(CallbackHit::MineIgnite { item }, data);
                 }
                 // GrenadeExplode.OnCollide goes off on a Player-layer collider
@@ -1131,7 +1186,8 @@ impl RolloutWorld {
                     | Part::Hook(_)
                     | Part::Hole(_)
                     | Part::Body(_)
-                    | Part::Clone(_) => return,
+                    | Part::Clone(_)
+                    | Part::Line(_) => return,
                 };
                 self.rope_hook_collide(rope, target);
             }
@@ -1178,8 +1234,8 @@ impl RolloutWorld {
                     // A SimpleSparkNode never assigns its Explosion's
                     // PlayerOwnerId, so the kill credits its zero default.
                     Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
-                    // Nor does a SpikeAttack's.
-                    Part::Spike(_) => (0, CAUSE_OTHER),
+                    // Nor does a SpikeAttack's or a StretchableLightning's.
+                    Part::Spike(_) | Part::Line(_) => (0, CAUSE_OTHER),
                     Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
                     Part::DuplicatedRock(rock) => {
                         let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
@@ -1210,7 +1266,7 @@ impl RolloutWorld {
                         let entity = state.entity.expect("registered arrow");
                         (self.entities[entity].owner, CAUSE_OTHER)
                     }
-                    Part::Spike(_) => (0, CAUSE_OTHER),
+                    Part::Spike(_) | Part::Line(_) => (0, CAUSE_OTHER),
                     _ => return,
                 };
                 self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, data);
@@ -1249,7 +1305,8 @@ impl RolloutWorld {
             // Grow reads -1 from a collider no BoplBody owns.
             Part::Body(player) => (HoleTarget::Player(player, self.players[player].active == ActiveAbility::None), -Fix::ONE),
             Part::Clone(clone) => (HoleTarget::Clone(clone), -Fix::ONE),
-            Part::Hook(_) => return,
+            // The lightning's pairs with a hole are not the groups' yet.
+            Part::Hook(_) | Part::Line(_) => return,
         };
         self.black_hole_collide(hole, target, inverse_mass, data);
     }

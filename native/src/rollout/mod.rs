@@ -8231,7 +8231,7 @@ impl RolloutWorld {
             self.smoke_contacts(data);
         }
         if has(ABILITY_TESLA) {
-            self.tesla_contacts(data);
+            self.tesla_contacts();
         }
         if has_clones {
             self.abilityless_clone_contacts();
@@ -16460,7 +16460,7 @@ impl RolloutWorld {
         self.spike_attacks[spike_index].pushed_this_frame = true;
     }
 
-    fn tesla_contacts(&mut self, data: &data::RolloutData) {
+    fn tesla_contacts(&mut self) {
         // PlayerCollision kills in DetPhysics' callback order: Circle/Circle,
         // then Circle/Box, then Box/Box pairs, each in sort-and-sweep order.
         let sweep_x = self.sweep_x();
@@ -16519,28 +16519,6 @@ impl RolloutWorld {
                     let line_rank = sweep_rank(&self.entities, box_min(line), None);
                     let key = self.smoke_ignite_key(entity, false, line_rank);
                     self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
-                }
-            }
-            // Mine.Igniters holds the line's layer but not LethalTerrain, so
-            // only the line lights a mine.
-            // Mine.OnCollide runs from the callback queue at the pair's
-            // Circle/Box place.
-            for item in 0..self.thrown_items.len() {
-                let Some(line) = line else {
-                    break;
-                };
-                let mine = self.thrown_items[item];
-                if !mine.active || mine.ability != ABILITY_MINE || !matches!(mine.phase, 1 | 2) {
-                    continue;
-                }
-                let mine_circle = Circle {
-                    center: mine.position,
-                    radius: thrown_item_radius(data, mine),
-                };
-                if crate::physics::contact::circle_box(mine_circle, line).is_some() {
-                    let line_rank = sweep_rank(&self.entities, box_min(line), None);
-                    let (later, earlier) = sweep_pair(self.part_rank(Part::Item(item)), line_rank);
-                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), CallbackHit::MineIgnite { item }));
                 }
             }
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
@@ -16627,8 +16605,12 @@ impl RolloutWorld {
                 let retired = node_index >= live_nodes;
                 let grouped = !retired && self.node_body_grouped(node_index, player_index);
                 let node_key = (node_hit && !grouped && !retired).then(|| pair(node_pass, node_min, node.entity));
+                // A live node's lightning meets a slime's or form's collider
+                // in the groups.
+                let line_grouped =
+                    node_index < live_nodes && self.line_part(node_index) && self.body_part_circle(player_index).is_some();
                 let line_key = line
-                    .filter(|_| line_hit)
+                    .filter(|_| line_hit && !line_grouped)
                     .map(|line| pair(node_pass + 1, box_min(line), None));
                 if let Some(key) = [*victim, node_key, line_key].into_iter().flatten().min() {
                     *victim = Some(key);
@@ -34886,7 +34868,13 @@ impl RolloutWorld {
                 (spawned_hierarchy(self.duplicated_rocks[i].hierarchy_base), data.rock.no_player_child_count)
             }
             // Not on a StickTo layer, or on the Player layer without a BoplBody.
-            Part::Pickup(_) | Part::Hook(_) | Part::Arrow(_) | Part::Hole(_) | Part::Body(_) | Part::Clone(_) => {
+            Part::Pickup(_)
+            | Part::Hook(_)
+            | Part::Arrow(_)
+            | Part::Hole(_)
+            | Part::Body(_)
+            | Part::Clone(_)
+            | Part::Line(_) => {
                 unreachable!()
             }
         }
@@ -37768,8 +37756,11 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                // A spike's pairs are the groups'.
-                if self.spike_attacks.iter().any(|spike| spike.entity == Some(entity)) {
+                // A spike's pairs, and a live node's lightning's, are the groups'.
+                if self.spike_attacks.iter().any(|spike| spike.entity == Some(entity))
+                    || (0..self.tesla_nodes.len())
+                        .any(|node| self.tesla_nodes[node].line_entity == Some(entity) && self.line_part(node))
+                {
                     continue;
                 }
                 // An arrow DetPhysics simulates pairs in circle_box_group.
@@ -43182,7 +43173,7 @@ mod tests {
             ..SpawnedTeslaNode::default()
         });
 
-        world.tesla_contacts(data::get());
+        world.tesla_contacts();
         world.run_callback_hits(data::get());
 
         assert_eq!(world.players[1].deaths, 0);
