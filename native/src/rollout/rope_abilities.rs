@@ -12,6 +12,10 @@ pub(super) enum RopeParentPass {
     OlderTackOrBall,
     /// The rope updates in the hammer loop, so its attachment pulls after it.
     AfterHammers,
+    /// The rope is newer than a TeleportIndicator firing this pass, whose
+    /// teleportObject has let its player's rope go before the attachment
+    /// looks (TeleportIndicator.cs:129-137, RopeAttachment.cs:103).
+    AfterTeleport,
     Other,
 }
 
@@ -1525,6 +1529,7 @@ impl RolloutWorld {
                     RopeParentPass::OlderTackOrBall
                 }
                 _ if hierarchy >= self.scratch.ropes_deferred_from => RopeParentPass::AfterHammers,
+                _ if hierarchy > self.scratch.ropes_teleported_from => RopeParentPass::AfterTeleport,
                 _ => RopeParentPass::Other,
             };
             if parent_pass != pass {

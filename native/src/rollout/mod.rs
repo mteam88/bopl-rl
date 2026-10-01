@@ -4532,6 +4532,9 @@ struct PlatformScratch {
     /// The oldest hammer's hierarchy: ropes from here up update in the hammer
     /// loop, and their attachments pull after them.
     ropes_deferred_from: u32,
+    /// The oldest TeleportIndicator firing this pass: the attachments of the
+    /// ropes newer than it pull after it.
+    ropes_teleported_from: u32,
     /// The row hierarchies of the Duplicator copies the current Duplicated
     /// platform pass runs; None runs them all.
     duplicates_window: Option<std::ops::Range<u32>>,
@@ -7814,6 +7817,7 @@ impl RolloutWorld {
             .map(|marker| marker.hierarchy_base)
             .min()
             .unwrap_or(u32::MAX);
+        self.scratch.ropes_teleported_from = first_teleport;
         let ropes_before_clones = first_clone.min(first_hammer);
         // A rope hanging from a platform that an older Shrink or Growth Ray
         // ScaleChanger resizes this pass hangs from, and collides with, the
@@ -7932,6 +7936,9 @@ impl RolloutWorld {
         }
         if has_rope && first_teleport < ropes_before_clones {
             self.ropes_update(first_teleport..ropes_before_clones);
+        }
+        if has_rope && first_teleport < u32::MAX {
+            self.rope_parents_update(rope_abilities::RopeParentPass::AfterTeleport);
         }
         if has(ABILITY_BLINK) {
             self.blink_tunnels_tick(data, updater_dt);
