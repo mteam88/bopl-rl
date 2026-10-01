@@ -7951,6 +7951,11 @@ impl RolloutWorld {
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_items(data);
         }
+        // Updater's walk reaches the end of its list before DetPhysics
+        // simulates (Updater.cs:298-303): every updatable no earlier turn
+        // brought it to takes its turn now, in list order, once.
+        self.scratch.ropes_walk_limit = u32::MAX;
+        self.run_spawned_before(data, updater_dt, (self.tick + 1, 0, 0));
         // DetPhysics syncs each Beam orb's collider from the FixTransform the
         // last Beam.LateUpdateSim wrote, whether or not that form is still out.
         for orb in &self.beam_orbs {
