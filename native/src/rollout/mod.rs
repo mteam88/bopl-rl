@@ -8116,10 +8116,6 @@ impl RolloutWorld {
                 })
                 .count();
             self.beam_physics_tick(data);
-            self.beam_contacts();
-        }
-        if has(ABILITY_DRILL) {
-            self.drill_contacts();
         }
         // DetPhysics runs every narrow-phase group every Simulate; one with
         // no parts makes no pairs. It corrects every Circle/RR pair before any
@@ -8144,19 +8140,6 @@ impl RolloutWorld {
             for roller in 0..self.players.len() {
                 self.roll_hurtbox_contacts(roller, data);
             }
-        }
-        if has(ABILITY_GRENADE) {
-            self.grenade_explosion_contacts(data);
-        }
-        self.missile_explosion_contacts(data);
-        if has(ABILITY_METEOR) {
-            self.meteor_smear_contacts();
-        }
-        if has(ABILITY_BEAM) {
-            self.beam_orb_contacts();
-        }
-        if has(ABILITY_SMOKE) {
-            self.smoke_contacts(data);
         }
         if has_clones {
             self.abilityless_clone_contacts();
@@ -17552,107 +17535,6 @@ impl RolloutWorld {
         self.exit_form_with(index, ExitInfo { position, ..ExitInfo::default() });
     }
 
-    /// The three Explosion-layer boxes spawned by HitboxCombo use the drill
-    /// owner's id and are ignored only by that drill form's PlayerCollision.
-    fn drill_contacts(&mut self) {
-        // Each hit is a PlayerCollision.OnCollide in the callback queue, run
-        // after every group resolved in SortAndSweep pair order.
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-        for attacker in 0..self.players.len() {
-            let slot = &self.players[attacker];
-            if !self.playable(attacker)
-                || slot.active != ActiveAbility::Drill
-                || slot.drill.phase == 0
-            {
-                continue;
-            }
-            let hitboxes = slot.drill_hitbox_entities[slot.active_slot];
-            let killer = slot.base.id;
-            for hitbox_entity in hitboxes {
-                if !self.collides(hitbox_entity)
-                {
-                    continue;
-                }
-                let hitbox =
-                    Self::row_box(&self.entity_inverse_extents, hitbox_entity, self.entities[hitbox_entity]);
-                for victim in 0..self.players.len() {
-                    if victim == attacker || !self.hittable(victim) {
-                        continue;
-                    }
-                    let other = &self.players[victim];
-                    let entity = match other.active {
-                        ActiveAbility::None => other.body_entity,
-                        ActiveAbility::Dash => other.dash_entity,
-                        ActiveAbility::Bow => other.bow_entity,
-                        ActiveAbility::Grenade
-                        | ActiveAbility::Smoke
-                        | ActiveAbility::Tack
-                        | ActiveAbility::Mjolnir
-                        | ActiveAbility::PokeBall
-                        | ActiveAbility::Missile => other.throw_entity,
-                        ActiveAbility::Mine => other.mine_entity,
-                        ActiveAbility::Rock => other.rock_entity,
-                        ActiveAbility::Roll => other.roll_entity,
-                        ActiveAbility::Meteor => other.meteor_entity,
-                        ActiveAbility::Push => other.push_entity,
-                        ActiveAbility::Freeze => other.freeze_entity,
-                        ActiveAbility::Blink => other.blink_entity,
-                        ActiveAbility::GrowthRay => other.growth_ray_entity,
-                        ActiveAbility::ShrinkRay => other.shrink_ray_entity,
-                        ActiveAbility::Duplicator => other.duplicator_entity,
-                        ActiveAbility::Magnet => other.magnet_entity,
-                        ActiveAbility::Spike => other.spike_entity,
-                        ActiveAbility::Engine => other.engine_entity,
-                        ActiveAbility::Tesla => other.tesla_entity,
-                        ActiveAbility::TimeStop => other.time_stop_entity,
-                        ActiveAbility::Gust => other.gust_entity,
-                        ActiveAbility::Revival => other.revival_entity,
-                        ActiveAbility::BlackHole => other.black_hole_entity,
-                        ActiveAbility::Throw => other.macho_throw_entity,
-                        ActiveAbility::Drill => other.drill_entity,
-                        ActiveAbility::Beam => other.beam_entity,
-                        ActiveAbility::Platform => other.circle_entity,
-                    };
-                    if !self.collides(entity) {
-                        continue;
-                    }
-                    let row = self.entities[entity];
-                    let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                    let row_min = if row.kind == 0 {
-                        axis(center) - Fix::from_raw(row.radius)
-                    } else {
-                        axis(center)
-                            - Fix::from_raw(if sweep_x { row.right_x } else { row.right_y }).abs()
-                            - Fix::from_raw(if sweep_x { row.up_x } else { row.up_y }).abs()
-                    };
-                    let row_rank = sweep_rank(&self.entities, row_min, Some(entity));
-                    let hitbox_rank = sweep_rank(&self.entities, box_min(hitbox), Some(hitbox_entity));
-                    let key = sweep_pair(row_rank, hitbox_rank);
-                    let hit = if row.kind == 0 {
-                        crate::physics::contact::circle_box(
-                            Circle {
-                                center,
-                                radius: Fix::from_raw(row.radius),
-                            },
-                            hitbox,
-                        )
-                        .is_some()
-                    } else {
-                        swept_box_box(hitbox, hitbox_rank, Self::row_box(&self.entity_inverse_extents, entity, row), row_rank).is_some()
-                    };
-                    if hit {
-                        let group = if row.kind == 0 { GROUP_CB } else { GROUP_BB };
-                        let slime = self.players[victim].active == ActiveAbility::None;
-                        let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_OTHER, slime };
-                        self.scratch.callback_hits.push(((group, key.0, key.1), kill));
-                    }
-                }
-            }
-        }
-    }
-
     fn spawn_beam_orb(&mut self, owner: usize, data: &data::RolloutData) {
         let position = self.players[owner].base.position
             + self.players[owner].beam.staff_dir
@@ -18725,125 +18607,6 @@ impl RolloutWorld {
             {
                 self.players[player].rock.body.force +=
                     beam.direction * data.beam.rigid_body_force * scale;
-            }
-        }
-    }
-
-    /// BeamObject's hits. A PlayerCollision.OnCollide is a callback: it runs
-    /// from the queue after every group resolved, in SortAndSweep pair order.
-    fn beam_contacts(&mut self) {
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        for slot in self.beam_pool.iter().take(self.scratch.beam_contacts) {
-            let Some(entity) = slot.entity else {
-                continue;
-            };
-            if !self.collides(entity) {
-                continue;
-            }
-            // DetPhysics sweeps the bounding boxes before UpdateBeams, then
-            // SetDimensions moves the collider, so the narrow phase tests this
-            // pass's box on the pairs the previous box found.
-            let Some(swept) = slot.contact_collider else {
-                continue;
-            };
-            let Some(hitbox) = slot.hitbox.collider else {
-                continue;
-            };
-            let swept = swept.bounds(Fix::ZERO);
-            for victim in 0..self.players.len() {
-                if !self.hittable(victim) {
-                    continue;
-                }
-                // PlayerCollision.IgnoreBeamId only suppresses the owning
-                // ability's beam. Crossed beams retain each segment's id.
-                // A player without a beam ignores none (the source's
-                // ignoredBeamId = -1 guard); the former i32::MIN sentinel
-                // overflowed .abs() and aborted the sim on any Beam contact.
-                if self.players[victim].beam_entity != usize::MAX {
-                    let own_beam_id = self.entities[self.players[victim].beam_entity]
-                        .hierarchy
-                        .wrapping_sub(100_000_000)
-                        .wrapping_add(2) as i32;
-                    if slot.contact_beam_id.wrapping_abs() == own_beam_id.wrapping_abs() {
-                        continue;
-                    }
-                }
-                let target = match self.players[victim].active {
-                    ActiveAbility::None => self.players[victim].body_entity,
-                    ActiveAbility::Dash => self.players[victim].dash_entity,
-                    ActiveAbility::Bow => self.players[victim].bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => self.players[victim].throw_entity,
-                    ActiveAbility::Mine => self.players[victim].mine_entity,
-                    ActiveAbility::Rock => self.players[victim].rock_entity,
-                    ActiveAbility::Roll => self.players[victim].roll_entity,
-                    ActiveAbility::Meteor => self.players[victim].meteor_entity,
-                    ActiveAbility::Push => self.players[victim].push_entity,
-                    ActiveAbility::Freeze => self.players[victim].freeze_entity,
-                    ActiveAbility::Blink => self.players[victim].blink_entity,
-                    ActiveAbility::GrowthRay => self.players[victim].growth_ray_entity,
-                    ActiveAbility::ShrinkRay => self.players[victim].shrink_ray_entity,
-                    ActiveAbility::Duplicator => self.players[victim].duplicator_entity,
-                    ActiveAbility::Magnet => self.players[victim].magnet_entity,
-                    ActiveAbility::Spike => self.players[victim].spike_entity,
-                    ActiveAbility::Engine => self.players[victim].engine_entity,
-                    ActiveAbility::Tesla => self.players[victim].tesla_entity,
-                    ActiveAbility::TimeStop => self.players[victim].time_stop_entity,
-                    ActiveAbility::Gust => self.players[victim].gust_entity,
-                    ActiveAbility::Revival => self.players[victim].revival_entity,
-                    ActiveAbility::BlackHole => self.players[victim].black_hole_entity,
-                    ActiveAbility::Throw => self.players[victim].macho_throw_entity,
-                    ActiveAbility::Drill => self.players[victim].drill_entity,
-                    ActiveAbility::Beam => self.players[victim].beam_entity,
-                    ActiveAbility::Platform => self.players[victim].circle_entity,
-                };
-                if !self.collides(target) {
-                    continue;
-                }
-                let row = self.entities[target];
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let extent = if row.kind == 0 {
-                    Vec2::new(Fix::from_raw(row.radius), Fix::from_raw(row.radius))
-                } else {
-                    Vec2::new(
-                        Fix::from_raw(row.right_x).abs() + Fix::from_raw(row.up_x).abs(),
-                        Fix::from_raw(row.right_y).abs() + Fix::from_raw(row.up_y).abs(),
-                    )
-                };
-                if swept.max.x <= center.x - extent.x
-                    || swept.min.x >= center.x + extent.x
-                    || swept.max.y <= center.y - extent.y
-                    || swept.min.y >= center.y + extent.y
-                {
-                    continue;
-                }
-                let target_rank = sweep_rank(&self.entities, axis(center - extent), Some(target));
-                let beam_rank = sweep_rank(&self.entities, axis(swept.min), Some(entity));
-                let overlap = if row.kind == 0 {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center,
-                            radius: Fix::from_raw(row.radius),
-                        },
-                        hitbox,
-                    )
-                    .is_some()
-                } else {
-                    swept_box_box(hitbox, beam_rank, Self::row_box(&self.entity_inverse_extents, target, row), target_rank).is_some()
-                };
-                if overlap {
-                    let (later, earlier) = sweep_pair(target_rank, beam_rank);
-                    let group = if row.kind == 0 { GROUP_CB } else { GROUP_BB };
-                    let killer = slot.contact_owner_id as u32;
-                    let slime = self.players[victim].active == ActiveAbility::None;
-                    let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_BEAMED, slime };
-                    self.scratch.callback_hits.push(((group, later, earlier), kill));
-                }
             }
         }
     }
@@ -34556,147 +34319,6 @@ impl RolloutWorld {
         }
     }
 
-    /// Explosion's box is lethal only on its first registered frame. The two
-    /// Shockwaves have already run in Init; this is the later DetPhysics
-    /// callback phase.
-    fn grenade_explosion_contacts(&mut self, data: &data::RolloutData) {
-        for explosion_index in 0..self.grenade_explosions.len() {
-            let explosion = self.grenade_explosions[explosion_index];
-            if !explosion.active
-                || !explosion.registered
-                || explosion.age != 1
-                || self.blink_object_hidden(explosion.entity)
-            {
-                continue;
-            }
-            let hitbox = OrientedBox::from_basis(
-                explosion.position,
-                Vec2::RIGHT,
-                data.grenade.explosion_extents * explosion.scale,
-            );
-            let mut victims = [false; MAX_BODIES];
-            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.hittable(player_index) {
-                    continue;
-                }
-                let player = &self.players[player_index];
-                *victim = if player.active == ActiveAbility::Platform
-                    && player.platform.phase == PLATFORM_ANTICIPATION
-                {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: player.base.position,
-                            radius: player.forms[player.active_slot].circle_radius,
-                        },
-                        hitbox,
-                    )
-                    .is_some()
-                } else if player.active == ActiveAbility::Platform {
-                    false
-                } else {
-                    let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
-                    self.player_hit_by_box(player_index, hitbox, hitbox_rank)
-                };
-            }
-            let killer = explosion.killer(&self.players);
-            let hitbox_min = self.box_sweep_min(hitbox);
-            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim {
-                    let cause = if self.players[player_index].base.id == killer {
-                        CAUSE_ACCIDENT
-                    } else {
-                        CAUSE_OTHER
-                    };
-                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, explosion.entity);
-                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
-                }
-            }
-        }
-    }
-
-    fn missile_explosion_contacts(&mut self, data: &data::RolloutData) {
-        for explosion_index in 0..self.missile_explosions.len() {
-            let explosion = self.missile_explosions[explosion_index];
-            if !explosion.active
-                || !explosion.registered
-                || explosion.age != 1
-                || self.blink_object_hidden(explosion.entity)
-            {
-                continue;
-            }
-            let hitbox = OrientedBox::from_basis(
-                explosion.position,
-                Vec2::RIGHT,
-                data.missile.explosion_extents * explosion.scale,
-            );
-            let mut victims = [false; MAX_BODIES];
-            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.hittable(player_index) {
-                    continue;
-                }
-                let player = &self.players[player_index];
-                *victim = if player.active == ActiveAbility::Platform
-                    && player.platform.phase == PLATFORM_ANTICIPATION
-                {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: player.base.position,
-                            radius: player.forms[player.active_slot].circle_radius,
-                        },
-                        hitbox,
-                    )
-                    .is_some()
-                } else if player.active == ActiveAbility::Platform {
-                    false
-                } else {
-                    let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
-                    self.player_hit_by_box(player_index, hitbox, hitbox_rank)
-                };
-            }
-            let killer = if explosion.credited_owner {
-                player_id(&self.players, explosion.owner)
-            } else {
-                0
-            };
-            let hitbox_min = self.box_sweep_min(hitbox);
-            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim {
-                    let cause = if killer == self.players[player_index].base.id {
-                        CAUSE_ACCIDENT
-                    } else {
-                        CAUSE_OTHER
-                    };
-                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, explosion.entity);
-                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
-                }
-            }
-        }
-    }
-
-    /// The low edge of a box on the broadphase sweep axis.
-    fn box_sweep_min(&self, b: OrientedBox) -> Fix {
-        if self.sweep_x() {
-            b.center.x - b.right.x.abs() - b.up.x.abs()
-        } else {
-            b.center.y - b.right.y.abs() - b.up.y.abs()
-        }
-    }
-
-    /// Queues PlayerCollision.OnCollide for a lethal hitbox touching the
-    /// player's registered shape.
-    fn queue_callback_kill(
-        &mut self,
-        player_index: usize,
-        hitbox_is_circle: bool,
-        hitbox: SweepRank,
-        killer: u32,
-        cause: u32,
-    ) {
-        let slime = self.players[player_index].active == ActiveAbility::None;
-        let hit = CallbackHit::Kill { player: player_index, killer, cause, slime };
-        self.queue_callback_hit(player_index, hitbox_is_circle, hitbox, hit);
-    }
-
     fn clone_sweep_rank(&self, clone_index: usize) -> SweepRank {
         let min = self.swept_min(Swept::Clone(clone_index));
         sweep_rank(&self.entities, min, self.abilityless_clones[clone_index].entity)
@@ -34706,21 +34328,6 @@ impl RolloutWorld {
         let player_min = self.player_sweep_min(player_index);
         let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
         sweep_rank(&self.entities, player_min, entity)
-    }
-
-    /// Queues `hit` in ToMakeCallBacks order for the pair of a player's box and
-    /// `hitbox`; the hits of one pair keep the order they were queued in.
-    fn queue_callback_hit(
-        &mut self,
-        player_index: usize,
-        hitbox_is_circle: bool,
-        hitbox: SweepRank,
-        hit: CallbackHit,
-    ) {
-        let player = self.player_sweep_rank(player_index);
-        let category = GROUP_BB - hitbox_is_circle as u8 - self.player_is_circle(player_index) as u8;
-        let (later, earlier) = sweep_pair(hitbox, player);
-        self.scratch.callback_hits.push(((category, later, earlier), hit));
     }
 
     /// The Player-layer pairs DetPhysics finds for a SlimeController's box: a
@@ -35011,60 +34618,6 @@ impl RolloutWorld {
         }
     }
 
-    /// The orb at Beam's staff tip is an Explosion circle (orbAnim.prefab,
-    /// canHurtOwner 0) whose hitbox StartBeam enables and StopOrbAnim
-    /// disables (Beam.cs:344, 395), so it kills any other player it touches.
-    fn beam_orb_contacts(&mut self) {
-        for orb_index in 0..self.beam_orbs.len() {
-            let orb = self.beam_orbs[orb_index];
-            let Some(entity) = orb.entity else {
-                continue;
-            };
-            if !orb.active
-                || !orb.enabled
-                || !self.collides(entity)
-                || self.blink_object_hidden(orb.entity)
-            {
-                continue;
-            }
-            let row = self.entities[entity];
-            let hitbox = Circle {
-                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                radius: Fix::from_raw(row.radius),
-            };
-            let mut victims = [false; MAX_BODIES];
-            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if player_index == orb.owner || !self.hittable(player_index) {
-                    continue;
-                }
-                let player = &self.players[player_index];
-                *victim = if player.active == ActiveAbility::Platform
-                    && player.platform.phase == PLATFORM_ANTICIPATION
-                {
-                    let hurtbox = Circle {
-                        center: player.base.position,
-                        radius: player.forms[player.active_slot].circle_radius,
-                    };
-                    crate::physics::contact::circle_circle(hitbox, hurtbox).is_some()
-                } else if player.active == ActiveAbility::Platform {
-                    false
-                } else {
-                    self.player_hit_by_circle(player_index, hitbox)
-                };
-            }
-            let killer = player_id(&self.players, orb.owner);
-            let hitbox_min = if self.sweep_x() { hitbox.center.x } else { hitbox.center.y }
-                - hitbox.radius;
-            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim {
-                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, orb.entity);
-                    self.queue_callback_kill(player_index, true, hitbox_rank, killer, CAUSE_OTHER);
-                }
-            }
-        }
-    }
-
-
     fn player_is_circle(&self, player_index: usize) -> bool {
         let player = &self.players[player_index];
         !matches!(player.active, ActiveAbility::None | ActiveAbility::Dash)
@@ -35109,39 +34662,6 @@ impl RolloutWorld {
         }
     }
 
-    /// MeteorSmear carries Explosion with its hitbox live for the smear's whole
-    /// life, so DetPhysics kills any Player-layer shape it overlaps. Only the
-    /// caster's own colliders ignore it (MeteorSmash.SpawnSmearEffect).
-    fn meteor_smear_contacts(&mut self) {
-        for smear_index in 0..self.meteor_smears.len() {
-            let smear = self.meteor_smears[smear_index];
-            if !smear.active {
-                continue;
-            }
-            let hitbox = OrientedBox {
-                center: smear.center,
-                right: smear.right,
-                up: smear.up,
-                inverse_extents: self.entity_inverse_extents[smear.entity.expect("registered MeteorSmear")],
-            };
-            for player_index in 0..self.players.len() {
-                if player_index == smear.owner || !self.hittable(player_index) {
-                    continue;
-                }
-                // A DetPhysics pair like `slime_pairs`: the smear's box against
-                // the Player-layer collider Simulate holds, into
-                // PlayerCollision.OnCollide's Explosion branch.
-                let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), smear.entity);
-                if self.collides(Self::hurtbox_entity(&self.players[player_index]))
-                    && self.player_hit_by_box(player_index, hitbox, hitbox_rank)
-                {
-                    let killer = player_id(&self.players, smear.owner);
-                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, CAUSE_OTHER);
-                }
-            }
-        }
-    }
-
     /// FlammableSmoke.OnCollide: an Explosion with igniteFlammables Ignites
     /// the cloud, which restarts its detonation clock and disables its
     /// collider (FlammableSmoke.cs:85-98). An Explosion destroys itself only
@@ -35154,57 +34674,6 @@ impl RolloutWorld {
         }
         cloud.ignition_time = Fix::ZERO;
         self.entities[entity].flags &= !E_ENABLED;
-    }
-
-    fn smoke_contacts(&mut self, data: &data::RolloutData) {
-        for explosion_index in 0..self.smoke_explosions.len() {
-            let explosion = self.smoke_explosions[explosion_index];
-            if !explosion.active || !explosion.registered || explosion.age != 1 {
-                continue;
-            }
-            let extents = data.smoke.explosion_extents * explosion.scale;
-            let center = explosion.position + data.smoke.explosion_collider_offset * explosion.scale;
-            let hitbox = OrientedBox::from_basis(center, Vec2::RIGHT, extents);
-            let mut victims = [false; MAX_BODIES];
-            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                // A slime in its spawn animation already has its hurtbox on,
-                // as for the grenade's and the missile's Explosion.
-                if !self.hittable(player_index) {
-                    continue;
-                }
-                let player = &self.players[player_index];
-                *victim = if player.active == ActiveAbility::Platform
-                    && player.platform.phase == PLATFORM_ANTICIPATION
-                {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: player.base.position,
-                            radius: player.forms[player.active_slot].circle_radius,
-                        },
-                        hitbox,
-                    )
-                    .is_some()
-                } else if player.active == ActiveAbility::Platform {
-                    false
-                } else {
-                    let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
-                    self.player_hit_by_box(player_index, hitbox, hitbox_rank)
-                };
-            }
-            let killer = player_id(&self.players, explosion.owner);
-            let hitbox_min = self.box_sweep_min(hitbox);
-            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim {
-                    let cause = if self.players[player_index].base.id == killer {
-                        CAUSE_ACCIDENT
-                    } else {
-                        CAUSE_OTHER
-                    };
-                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, explosion.entity);
-                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
-                }
-            }
-        }
     }
 
     /// Stable rounded-rectangle broad phase, matching the RR subset of the
@@ -36795,21 +36264,20 @@ impl RolloutWorld {
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if Some(entity) == clone_entity
                     || !self.collides(entity)
-                    || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18)
+                    || !matches!(row.layer, LAYER_PROJECTILE | 16)
                 {
                     continue;
                 }
-                // A spike's, a Duplicator copy's, a grouped node's and a live
-                // node's lightning's pairs are the groups'.
+                // A spike's, a Duplicator copy's and a grouped node's pairs
+                // are the groups'.
                 let circle_group = self.clone_part_circle(clone_index);
                 if self.spike_attacks.iter().any(|spike| spike.entity == Some(entity))
                     || self.duplicated_rocks.iter().any(|rock| {
                         rock.active && rock.entity == Some(entity) && !self.blink_object_hidden(rock.entity)
                     })
                     || (0..self.tesla_nodes.len()).any(|node| {
-                        (self.tesla_nodes[node].line_entity == Some(entity) && self.line_part(node))
-                            || (self.tesla_nodes[node].entity == Some(entity)
-                                && circle_group.is_some_and(|circle| self.node_part(node, circle)))
+                        self.tesla_nodes[node].entity == Some(entity)
+                            && circle_group.is_some_and(|circle| self.node_part(node, circle))
                     })
                 {
                     continue;

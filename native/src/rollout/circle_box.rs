@@ -220,6 +220,66 @@ impl RolloutWorld {
         }
     }
 
+    /// PlayerCollision.KillPlayerOnCollision's reading of an Explosion-layer
+    /// collider: Explosion.PlayerOwnerId, canHurtOwner and the "beam" tag, or
+    /// a Drill box's Hitbox.GetPlayerId with canHurtOwner taken as true
+    /// (PlayerCollision.cs:350-375). A grenade's or missile's blast credits
+    /// nobody unless its owner was credited; the orb's canHurtOwner is off.
+    fn blast_owner(&self, blast: Blast) -> (u32, bool, bool) {
+        match blast {
+            Blast::Grenade(i) => (self.grenade_explosions[i].killer(&self.players), true, false),
+            Blast::Mine(i) => {
+                let explosion = &self.missile_explosions[i];
+                (if explosion.credited_owner { player_id(&self.players, explosion.owner) } else { 0 }, true, false)
+            }
+            Blast::Smoke(i) => (player_id(&self.players, self.smoke_explosions[i].owner), true, false),
+            Blast::Smear(i) => (player_id(&self.players, self.meteor_smears[i].owner), true, false),
+            Blast::Drill(p, _) => (self.players[p].base.id, true, false),
+            Blast::Beam(i) => (self.beam_pool[i].contact_owner_id as u32, true, true),
+            Blast::Orb(i) => (player_id(&self.players, self.beam_orbs[i].owner), false, false),
+        }
+    }
+
+    /// PlayerCollision.KillPlayerOnCollision for a player's own collider and
+    /// an Explosion-layer one: the (killer, cause) of the kill, or None. The
+    /// caster's PlayerCollisions ignore its MeteorSmear and its Drill's
+    /// HitboxCombo boxes, which Ability copies between the slime's and the
+    /// form's (MeteorSmash.cs:305-306, HitboxCombo.cs:37-45, Ability.cs:97,
+    /// 149); the Beam form's ignores its own beam's BeamObjects
+    /// (Beam.cs:213); the kill spares the owner unless canHurtOwner, and is
+    /// an Accident on the owner (PlayerCollision.cs:315-322, 362-370, 444-451).
+    fn blast_kill(&self, blast: Blast, victim: Option<usize>, victim_id: u32) -> Option<(u32, u32)> {
+        if let Some(victim) = victim {
+            let slot = &self.players[victim];
+            let ignored = match blast {
+                Blast::Smear(i) => self.meteor_smears[i].owner == victim,
+                Blast::Drill(p, _) => p == victim,
+                Blast::Beam(i) => {
+                    slot.active == ActiveAbility::Beam && slot.beam_entity != usize::MAX && {
+                        let own = self.entities[slot.beam_entity].hierarchy.wrapping_sub(100_000_000).wrapping_add(2) as i32;
+                        self.beam_pool[i].contact_beam_id.wrapping_abs() == own.wrapping_abs()
+                    }
+                }
+                _ => false,
+            };
+            if ignored {
+                return None;
+            }
+        }
+        let (owner, can_hurt_owner, beam) = self.blast_owner(blast);
+        if owner == victim_id && !can_hurt_owner {
+            return None;
+        }
+        let cause = if owner == victim_id {
+            CAUSE_ACCIDENT
+        } else if beam {
+            CAUSE_BEAMED
+        } else {
+            CAUSE_OTHER
+        };
+        Some((owner, cause))
+    }
+
     /// The collider DetPhysics holds for a slime's, form's or clone's row,
     /// where it last synced it.
     fn body_row_collider(&self, entity: usize) -> Collider {
@@ -1273,13 +1333,17 @@ impl RolloutWorld {
             // kills it as it does a slime.
             Part::Rock(rock) => {
                 self.rock_on_collide(rock, contact.normal, self.part_layer(other, data));
-                let lethal = match other {
-                    Part::Spike(_) | Part::Line(_) => true,
-                    Part::Node(node) => self.tesla_nodes[node].lethal,
-                    _ => false,
+                if self.collider_destroyed(collider) {
+                    return;
+                }
+                let kill = match other {
+                    Part::Spike(_) | Part::Line(_) => Some((0, CAUSE_OTHER)),
+                    Part::Node(node) if self.tesla_nodes[node].lethal => Some((0, CAUSE_OTHER)),
+                    Part::Explosion(blast) => self.blast_kill(blast, Some(rock), self.players[rock].base.id),
+                    _ => None,
                 };
-                if lethal && !self.collider_destroyed(collider) {
-                    let hit = CallbackHit::Kill { player: rock, killer: 0, cause: CAUSE_OTHER, slime: false };
+                if let Some((killer, cause)) = kill {
+                    let hit = CallbackHit::Kill { player: rock, killer, cause, slime: false };
                     self.run_callback_hit(hit, data);
                 }
             }
@@ -1396,6 +1460,10 @@ impl RolloutWorld {
                         let cause = if self.players[player].base.id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER };
                         (killer, cause)
                     }
+                    Part::Explosion(blast) => match self.blast_kill(blast, Some(player), self.players[player].base.id) {
+                        Some(kill) => kill,
+                        None => return,
+                    },
                     _ => return,
                 };
                 let slime = self.players[player].active == ActiveAbility::None;
@@ -1426,6 +1494,12 @@ impl RolloutWorld {
                         let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
                         (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER })
                     }
+                    // A clone's PlayerCollision ignores no collider and no
+                    // beam id.
+                    Part::Explosion(blast) => match self.blast_kill(blast, None, clone_id) {
+                        Some(kill) => kill,
+                        None => return,
+                    },
                     _ => return,
                 };
                 self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, data);
