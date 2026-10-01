@@ -249,10 +249,6 @@ fn swept_box_box(a: OrientedBox, a_rank: SweepRank, b: OrientedBox, b_rank: Swee
     }
 }
 
-/// A DetPhysics overlap query tests its own shape as A
-/// (DetPhysics.cs:1684-1708), ahead of every collider in the sweep.
-const QUERY_RANK: SweepRank = (Fix::MIN, 0, 0);
-
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CSlime {
@@ -24442,263 +24438,94 @@ impl RolloutWorld {
             .pull_curve
             .evaluate(slot.magnet.time_spent_pulling / magnet.max_pull_duration);
         let raw_firepoint_offset = slot.gun_firepoint_offsets[slot.active_slot];
-        let ground = slot.base.ground;
+        let grounded_on = slot.base.grounded.then_some(slot.base.ground).flatten();
         let body_position = slot.base.position;
+        let mut hits = [0usize; 100];
+        let count = self.collide_box(query, magnet.only_pull, &mut hits);
         let mut changed = false;
-        for platform_index in 0..self.platforms.len() {
-            if ground == Some(self.platforms[platform_index].id)
-                || !self.platforms[platform_index].active
-            {
-                continue;
-            }
-            if !box_rounded_overlaps(query, self.platforms[platform_index].collider) {
-                continue;
-            }
-            let position = self.platforms[platform_index].surface.center;
-            let application = body_position + direction * (position - body_position).dot(direction);
-            let arm = (application - position).normalized_safe();
-            self.platform_dynamics[platform_index]
-                .body
-                .apply_impulse((-magnet.wall_pull_strength * multiplier) * direction, arm);
-            changed = true;
-        }
-        // DetPhysics.CollideBox finds a slime in its spawn animation, whose
-        // hurtbox is enabled, and its PlayerBody keeps the externalVelocity.
-        for player_index in 0..self.players.len() {
-            if !self.hittable(player_index) {
-                continue;
-            }
-            let target = &self.players[player_index];
-            let hit = if player_index == index {
-                // TryPullItems leaves Magnet's own Player-layer hurtbox
-                // enabled. The forward pull box can overlap it, routing the
-                // caster back through the generic PlayerBody branch. That box
-                // is where DetPhysics last put it: the published row, or the
-                // entry pose on the entry pass.
-                let collider = Self::row_box(
-                    &self.entity_inverse_extents,
-                    target.magnet_entity,
-                    self.entities[target.magnet_entity],
-                );
-                crate::physics::contact::box_box(query, collider).is_some()
-            } else {
-                // A player in a form is found through that form's own shape.
-                self.player_hit_by_box(player_index, query, QUERY_RANK)
-            };
-            if !hit {
-                continue;
-            }
-            // The shipped code accidentally measures closeness from the raw
+        for &entity in &hits[..count] {
+            let layer = self.entities[entity].layer;
+            // Projectiles and everything but walls and black holes pull harder
+            // close in. The shipped code measures closeness from the raw
             // prefab FirepointOffset rather than from the world firepoint.
-            let mut strength = multiplier;
-            if (target.base.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
-            {
-                strength *= magnet.close_pull_multiplier;
-            }
-            if target.active == ActiveAbility::Rock {
-                self.players[player_index].rock.body.force +=
-                    (-magnet.pull_strength * strength) * direction;
-            } else {
-                let pull = if target.active == ActiveAbility::Throw {
-                    magnet.macho_pull_strength
+            let close = |position: Vec2| {
+                if (position - raw_firepoint_offset).length_squared() < magnet.fast_pull_radius_squared {
+                    multiplier * magnet.close_pull_multiplier
                 } else {
-                    magnet.player_pull_strength
+                    multiplier
+                }
+            };
+            if layer == LAYER_WALL {
+                let Some(platform_index) = self.platform_entities.iter().position(|&row| row == entity) else {
+                    continue;
                 };
-                self.players[player_index].base.external_velocity -= (pull * strength) * direction;
-            }
-        }
-        for item_index in 0..self.thrown_items.len() {
-            let Some(entity) = self.thrown_items[item_index].entity else {
+                if grounded_on == Some(self.platforms[platform_index].id) {
+                    continue;
+                }
+                let position = self.platforms[platform_index].surface.center;
+                let application = body_position + direction * (position - body_position).dot(direction);
+                let arm = (application - position).normalized_safe();
+                self.platform_dynamics[platform_index]
+                    .body
+                    .apply_impulse((-magnet.wall_pull_strength * multiplier) * direction, arm);
+                changed = true;
                 continue;
-            };
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].magnet_holder.is_some()
-                || !self.collides(entity)
+            }
+            if layer == LAYER_RIGID_BODY_AFFECTOR {
+                // BlackHole.AddForce divides by signed mass.
+                if let Some(hole) = self.black_holes.iter_mut().find(|hole| hole.active && hole.entity == Some(entity))
+                    && hole.mass != Fix::ZERO
+                {
+                    hole.velocity += (-magnet.black_hole_pull_strength * direction) / hole.mass;
+                }
+                continue;
+            }
+            let pull = if layer == LAYER_PROJECTILE { magnet.projectile_pull_strength } else { magnet.pull_strength };
+            // The hit's BoplBody, else its PlayerBody.
+            if let Some(part) = self.part_of_entity(entity) {
+                let position = match part {
+                    Part::Item(i) => self.thrown_items[i].position,
+                    Part::Shot(i) => self.portal_shots[i].position,
+                    Part::Missile(i) => self.guided_missiles[i].position,
+                    Part::Rock(i) => self.players[i].base.position,
+                    Part::Pickup(i) => self.ability_pickups[i].position,
+                    Part::DuplicatedRock(i) => self.duplicated_rocks[i].position,
+                    Part::Arrow(i) => self.arrows[i].position,
+                    Part::Hook(r) => self.ropes[r].hook_position,
+                    Part::Node(i) => self.tesla_nodes[i].collider_center,
+                    Part::Engine(i) => self.engines[i].collider_center,
+                    Part::Spike(i) => self.spike_attacks[i].collider_center,
+                    Part::Hole(_)
+                    | Part::Body(_)
+                    | Part::Clone(_)
+                    | Part::Line(_)
+                    | Part::Cloud(_)
+                    | Part::Explosion(_)
+                    | Part::Water => continue,
+                };
+                self.part_add_force(part, (-pull * close(position)) * direction);
+            } else if let Some(marker) =
+                self.revival_marker_pool.iter_mut().find(|marker| marker.active && marker.entity == Some(entity))
             {
-                continue;
-            }
-            let item = &mut self.thrown_items[item_index];
-            // CollideBox tests the DetPhysics collider (MagnetGun.cs:511).
-            let radius = thrown_item_radius(data, *item);
-            if crate::physics::contact::circle_box(
-                Circle {
-                    center: Self::thrown_item_collider_center(&self.entities, self.tick, item),
-                    radius,
-                },
-                query,
-            )
-            .is_none()
+                marker.body.force += (-pull * close(marker.position)) * direction;
+            } else if let Some(marker) =
+                self.teleport_marker_pool.iter_mut().find(|marker| marker.active && marker.entity == Some(entity))
             {
-                continue;
-            }
-            let mut strength = multiplier;
-            if (item.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
+                marker.body.force += (-pull * close(marker.position)) * direction;
+            } else if let Some(slime) = (0..self.players.len())
+                .find(|&i| Self::hurtbox_entity(&self.players[i]) == entity)
+                .map(Slime::Player)
+                .or_else(|| {
+                    self.abilityless_clones
+                        .iter()
+                        .position(|clone| clone.active && clone.entity == Some(entity))
+                        .map(Slime::Clone)
+                })
             {
-                strength *= magnet.close_pull_multiplier;
-            }
-            item.body.force += (-magnet.pull_strength * strength) * direction;
-        }
-        for missile in &mut self.guided_missiles {
-            if !missile.active || !missile.registered || missile.magnet_holder.is_some() {
-                continue;
-            }
-            let collider = missile.collider(&self.entity_inverse_extents);
-            if crate::physics::contact::box_box(query, collider).is_none() {
-                continue;
-            }
-            // The guided Missile carries an Item component and lives on layer
-            // 10 (`item`), so MagnetGun routes it through the ordinary item
-            // branch. ProjectilePullStr is reserved for layer 9 projectiles.
-            let mut strength = multiplier;
-            if (missile.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
-            {
-                strength *= magnet.close_pull_multiplier;
-            }
-            missile.body.force += (-magnet.pull_strength * strength) * direction;
-        }
-        for arrow in &mut self.arrows {
-            if !arrow.active || !arrow.registered || arrow.magnet_holder.is_some() {
-                continue;
-            }
-            let contact = crate::physics::contact::circle_box(
-                Circle {
-                    center: arrow.position,
-                    radius: arrow.collider_radius,
-                },
-                query,
-            );
-            if contact.is_none() {
-                continue;
-            }
-            let mut strength = multiplier;
-            if (arrow.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
-            {
-                strength *= magnet.close_pull_multiplier;
-            }
-            arrow.force += (-magnet.projectile_pull_strength * strength) * direction;
-        }
-        for pickup_index in 0..self.ability_pickups.len() {
-            let pickup = self.ability_pickups[pickup_index];
-            let Some(DetCollider::Circle(collider)) =
-                pickup.entity.and_then(|entity| self.detphysics_collider(entity))
-            else {
-                continue;
-            };
-            if crate::physics::contact::circle_box(collider, query).is_none() {
-                continue;
-            }
-            let mut strength = multiplier;
-            if (pickup.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
-            {
-                strength *= magnet.close_pull_multiplier;
-            }
-            self.ability_pickups[pickup_index].body.force +=
-                (-magnet.pull_strength * strength) * direction;
-        }
-        for shot_index in 0..self.portal_shots.len() {
-            let shot = self.portal_shots[shot_index];
-            if !shot.active || !shot.registered || self.blink_object_hidden(shot.entity) {
-                continue;
-            }
-            if crate::physics::contact::circle_box(
-                Circle {
-                    center: shot.position,
-                    radius: shot.collider_radius,
-                },
-                query,
-            )
-            .is_none()
-            {
-                continue;
-            }
-            let mut strength = multiplier;
-            if (shot.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
-            {
-                strength *= magnet.close_pull_multiplier;
-            }
-            self.portal_shots[shot_index].body.force +=
-                (-magnet.pull_strength * strength) * direction;
-        }
-        for marker_index in 0..self.revival_marker_pool.len() {
-            let marker = self.revival_marker_pool[marker_index];
-            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
-                continue;
-            }
-            let radius = marker
-                .entity
-                .map(|entity| Fix::from_raw(self.entities[entity].radius))
-                .unwrap_or(data.revival.marker_radius);
-            if crate::physics::contact::circle_box(
-                Circle {
-                    center: marker.position + data.revival.marker_offset,
-                    radius,
-                },
-                query,
-            )
-            .is_none()
-            {
-                continue;
-            }
-            let mut strength = multiplier;
-            if (marker.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
-            {
-                strength *= magnet.close_pull_multiplier;
-            }
-            self.revival_marker_pool[marker_index].body.force +=
-                (-magnet.pull_strength * strength) * direction;
-        }
-        for marker_index in 0..self.teleport_marker_pool.len() {
-            let marker = self.teleport_marker_pool[marker_index];
-            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
-                continue;
-            }
-            if crate::physics::contact::circle_box(
-                Circle {
-                    center: marker.position + data.teleport.marker_offset,
-                    radius: data.teleport.marker_radius,
-                },
-                query,
-            )
-            .is_none()
-            {
-                continue;
-            }
-            let mut strength = multiplier;
-            if (marker.position - raw_firepoint_offset).length_squared()
-                < magnet.fast_pull_radius_squared
-            {
-                strength *= magnet.close_pull_multiplier;
-            }
-            self.teleport_marker_pool[marker_index].body.force +=
-                (-magnet.pull_strength * strength) * direction;
-        }
-        for hole_index in 0..self.black_holes.len() {
-            let hole = self.black_holes[hole_index];
-            if !hole.active || self.blink_object_hidden(hole.entity) {
-                continue;
-            }
-            if crate::physics::contact::circle_box(
-                Circle {
-                    center: hole.position,
-                    radius: hole.radius,
-                },
-                query,
-            )
-            .is_none()
-            {
-                continue;
-            }
-            // BlackHole.AddForce divides by signed mass.
-            if hole.mass != Fix::ZERO {
-                self.black_holes[hole_index].velocity +=
-                    (-magnet.black_hole_pull_strength * direction) / hole.mass;
+                let macho = matches!(slime, Slime::Player(i) if self.players[i].active == ActiveAbility::Throw);
+                let pull = if macho { magnet.macho_pull_strength } else { magnet.player_pull_strength };
+                let base = slime.of(&mut self.players, &mut self.abilityless_clones).base;
+                base.external_velocity -= (pull * close(base.position)) * direction;
             }
         }
         if changed {
@@ -26209,6 +26036,42 @@ impl RolloutWorld {
                         Some(DetCollider::Box(collider)) => {
                             crate::physics::contact::circle_box_overlaps(query, collider)
                         }
+                        None => false,
+                    },
+                };
+                if overlaps {
+                    hits[count] = entity;
+                    count += 1;
+                    if count == hits.len() {
+                        return count;
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    /// DetPhysics.CollideBox (DetPhysics.cs:1667-1715): walks circles, boxes
+    /// and rounded rects in registration order and writes each active one on
+    /// a `mask` layer the box touches, by PhysTools' boolean tests, until
+    /// `hits` is full. Returns the count.
+    fn collide_box(&self, query: OrientedBox, mask: u32, hits: &mut [usize]) -> usize {
+        let mut count = 0;
+        for kind in 0..3u32 {
+            for (entity, row) in self.entities.iter().enumerate() {
+                if row.kind != kind
+                    || row.layer >= 32
+                    || mask & (1u32 << row.layer) == 0
+                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
+                    || self.left_form_row(entity)
+                {
+                    continue;
+                }
+                let overlaps = match kind {
+                    2 => self.rounded_rect_collider(entity).is_some_and(|rounded| box_rounded_overlaps(query, rounded)),
+                    _ => match self.detphysics_collider(entity) {
+                        Some(DetCollider::Circle(circle)) => crate::physics::contact::circle_box_overlaps(circle, query),
+                        Some(DetCollider::Box(collider)) => crate::physics::contact::box_box(query, collider).is_some(),
                         None => false,
                     },
                 };
