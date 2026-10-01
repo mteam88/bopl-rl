@@ -237,18 +237,6 @@ fn sweep_pair(a: SweepRank, b: SweepRank) -> (SweepRank, SweepRank) {
     if a > b { (a, b) } else { (b, a) }
 }
 
-/// DetPhysics' Box/Box narrow phase takes as A the box SortAndSweep reached
-/// first (DetPhysics.cs:2203-2205), and box_box's projections, normal and
-/// contact point depend on which side is A. The manifold is A's; the flag
-/// says whether `a` is A.
-fn swept_box_box(a: OrientedBox, a_rank: SweepRank, b: OrientedBox, b_rank: SweepRank) -> Option<(Contact, bool)> {
-    if a_rank < b_rank {
-        crate::physics::contact::box_box(a, b).map(|contact| (contact, true))
-    } else {
-        crate::physics::contact::box_box(b, a).map(|contact| (contact, false))
-    }
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CSlime {
@@ -4430,10 +4418,6 @@ enum CallbackHit {
     Pickup { pickup: usize, taker: PickupTaker, body: usize },
     /// A young SpikeAttack.OnCollide with any collider off the wall layer.
     SpikeShove { spike: usize, target: Part, point: Vec2 },
-    /// SlimeController.OnCollide of a slime's or an abilityless clone's box
-    /// with another Player-layer collider; `lower` is whether the slime's
-    /// collider is the earlier in the hierarchy.
-    SlimeCollide { slime: Slime, other: Slime, lower: bool },
     /// PlayerCollision.OnCollide of a slime's, form's or abilityless clone's
     /// collider with a wall-layer rounded rect, whose collider the manifold
     /// copied (PlayerCollision.cs:326-347).
@@ -7987,7 +7971,6 @@ impl RolloutWorld {
             self.take_sweep(&mut sweep, data);
             self.scratch.sweep = sweep;
         }
-        self.slime_pairs();
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
         self.ropes_physics(physics_dt);
@@ -9676,11 +9659,6 @@ impl RolloutWorld {
         }
     }
 
-    /// Non-instant abilities disable the original slime box, but
-    /// Bow and Platform anticipation replace it with their own
-    /// Player-layer trigger. The active ability has no
-    /// SlimeController callback; the ordinary slime on the other
-    /// side still receives its one-sided overlap push.
     /// The Throw form's hurtbox synced to the FixTransform at `position`, `up`.
     fn macho_throw_box(&self, index: usize, position: Vec2, up: Vec2, data: &data::RolloutData) -> OrientedBox {
         let slot = &self.players[index];
@@ -9691,42 +9669,6 @@ impl RolloutWorld {
             Vec2::angle(up.perp_cw().normalized_angle()),
             self.entity_inverse_extents[slot.macho_throw_entity],
         )
-    }
-
-    fn slime_collider_enabled(slot: &PlayerSlot) -> bool {
-        match slot.active {
-            ActiveAbility::None
-            | ActiveAbility::Dash
-            | ActiveAbility::Bow
-            | ActiveAbility::Grenade
-            | ActiveAbility::Smoke
-            | ActiveAbility::Tack
-            | ActiveAbility::Mjolnir
-            | ActiveAbility::PokeBall
-            | ActiveAbility::Missile
-            | ActiveAbility::Mine
-            | ActiveAbility::Rock
-            | ActiveAbility::Roll
-            | ActiveAbility::Meteor
-            | ActiveAbility::Push
-            | ActiveAbility::Freeze
-            | ActiveAbility::Blink
-            | ActiveAbility::GrowthRay
-            | ActiveAbility::ShrinkRay
-            | ActiveAbility::Spike
-            | ActiveAbility::Engine
-            | ActiveAbility::Tesla
-            | ActiveAbility::TimeStop
-            | ActiveAbility::Gust
-            | ActiveAbility::Revival
-            | ActiveAbility::BlackHole
-            | ActiveAbility::Throw
-            | ActiveAbility::Drill
-            | ActiveAbility::Beam
-            | ActiveAbility::Duplicator
-            | ActiveAbility::Magnet => true,
-            ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
-        }
     }
 
     fn slime_base(&self, slime: Slime) -> &Player {
@@ -9866,21 +9808,6 @@ impl RolloutWorld {
             && slot.revival_effect_ticks == 0
             && !slot.teleport_effect_active
             && !slot.blink_tunnel_active
-    }
-
-    /// BeforeSpawnInit enables the hurtbox for the spawn animation while the
-    /// body is not simulated, so a spawning slime already shoves and is
-    /// shoved by overlapping slimes.
-    fn shoves(&self, index: usize) -> bool {
-        let slot = &self.players[index];
-        self.playable(index)
-            || (slot.base.alive
-                && slot.unspawned == 0
-                && slot.respawn_ticks == 0
-                && slot.respawn_spawn_ticks > 0
-                && !slot.revival_clone_pending
-                && !slot.stock_clone_pending
-                && slot.revival_effect_ticks == 0)
     }
 
     /// SlimeController.OnCollide bites before it shoves: a grounded slime at
@@ -33890,80 +33817,10 @@ impl RolloutWorld {
         self.circle_box_group(data);
     }
 
-    fn clone_sweep_rank(&self, clone_index: usize) -> SweepRank {
-        let min = self.swept_min(Swept::Clone(clone_index));
-        sweep_rank(&self.entities, min, self.abilityless_clones[clone_index].entity)
-    }
-
     fn player_sweep_rank(&self, player_index: usize) -> SweepRank {
         let player_min = self.player_sweep_min(player_index);
         let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
         sweep_rank(&self.entities, player_min, entity)
-    }
-
-    /// The Player-layer pairs DetPhysics finds for a SlimeController's box: a
-    /// slime's box with another slime's box or form collider, and an
-    /// abilityless clone's box with either. A killPlayer from an updater
-    /// (Mjolnir.TryHitPlayers) destroyed its slime before Simulate, so that
-    /// box meets nothing this pass.
-    fn slime_pairs(&mut self) {
-        let players = self.players.len();
-        for a in 0..players {
-            if !self.slime_box_registered(a) {
-                continue;
-            }
-            for b in a + 1..players {
-                if !self.slime_box_registered(b) || !self.swept_pair(Swept::Player(a), Swept::Player(b)) {
-                    continue;
-                }
-                let a_slime = self.players[a].active == ActiveAbility::None;
-                let b_slime = self.players[b].active == ActiveAbility::None;
-                let touching = if a_slime {
-                    self.player_hit_by_box(b, self.players[a].base.collider, self.player_sweep_rank(a))
-                } else {
-                    b_slime && self.player_hit_by_box(a, self.players[b].base.collider, self.player_sweep_rank(b))
-                };
-                if touching {
-                    self.queue_slime_pair(Slime::Player(a), a_slime, Slime::Player(b), b_slime);
-                }
-            }
-        }
-        for clone in 0..self.abilityless_clones.len() {
-            if !self.clone_box_registered(clone) {
-                continue;
-            }
-            let clone_box = self.abilityless_clones[clone].base.collider;
-            for player in 0..players {
-                if self.playable(player)
-                    && Self::slime_collider_enabled(&self.players[player])
-                    && self.swept_pair(Swept::Clone(clone), Swept::Player(player))
-                    && self.player_hit_by_box(player, clone_box, self.clone_sweep_rank(clone))
-                {
-                    let slime = self.players[player].active == ActiveAbility::None;
-                    self.queue_slime_pair(Slime::Clone(clone), true, Slime::Player(player), slime);
-                }
-            }
-            for other in clone + 1..self.abilityless_clones.len() {
-                if self.clone_box_registered(other)
-                    && self.swept_pair(Swept::Clone(clone), Swept::Clone(other))
-                    && swept_box_box(
-                        clone_box,
-                        self.clone_sweep_rank(clone),
-                        self.abilityless_clones[other].base.collider,
-                        self.clone_sweep_rank(other),
-                    )
-                    .is_some()
-                {
-                    self.queue_slime_pair(Slime::Clone(clone), true, Slime::Clone(other), true);
-                }
-            }
-        }
-    }
-
-    /// BeforeSpawnInit enables the hurtbox for the spawn animation while the
-    /// body is not simulated, so a spawning slime already meets other slimes.
-    fn slime_box_registered(&self, index: usize) -> bool {
-        self.shoves(index) && Self::slime_collider_enabled(&self.players[index])
     }
 
     fn clone_box_registered(&self, index: usize) -> bool {
@@ -33972,38 +33829,6 @@ impl RolloutWorld {
             && clone.base.alive
             && clone.entity.is_some()
             && !self.abilityless_clone_hidden(clone)
-    }
-
-    /// Queues SlimeController.OnCollide for each side of the pair whose
-    /// SlimeController is live, at the pair's place in ToMakeCallBacks; the
-    /// collider earlier in the sweep has its callbacks first.
-    fn queue_slime_pair(&mut self, a: Slime, a_live: bool, b: Slime, b_live: bool) {
-        let rank = |prey: Slime| match prey {
-            Slime::Player(index) => self.player_sweep_rank(index),
-            Slime::Clone(index) => {
-                let min = self.swept_min(Swept::Clone(index));
-                sweep_rank(&self.entities, min, self.abilityless_clones[index].entity)
-            }
-        };
-        let entity = |prey: Slime| match prey {
-            Slime::Player(index) => Some(Self::hurtbox_entity(&self.players[index])),
-            Slime::Clone(index) => self.abilityless_clones[index].entity,
-        };
-        let hierarchy = |prey: Slime| entity(prey).and_then(|e| self.entities.get(e)).map(|row| row.hierarchy);
-        let circle = |prey: Slime| matches!(prey, Slime::Player(index) if self.player_is_circle(index));
-        let (a_rank, b_rank) = (rank(a), rank(b));
-        let (later, earlier) = sweep_pair(a_rank, b_rank);
-        let key = (GROUP_BB - circle(a) as u8 - circle(b) as u8, later, earlier);
-        let a_lower = hierarchy(a) < hierarchy(b);
-        let mut sides = [(a, b, a_lower, a_live), (b, a, !a_lower, b_live)];
-        if b_rank < a_rank {
-            sides.swap(0, 1);
-        }
-        for (slime, other, lower, live) in sides {
-            if live {
-                self.scratch.callback_hits.push((key, CallbackHit::SlimeCollide { slime, other, lower }));
-            }
-        }
     }
 
     /// SlimeController.OnCollide: bite a small enough enemy body, then push
@@ -34121,9 +33946,6 @@ impl RolloutWorld {
                 self.part_add_force_at(target, direction * data.spike.knock_player, point);
                 self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
             }
-            CallbackHit::SlimeCollide { slime, other, lower } => {
-                self.slime_collide(slime, other, lower);
-            }
             CallbackHit::Squish { slime, wall, collider } => self.squish(slime, wall, collider),
             CallbackHit::BlackHole { hole, target, inverse_mass } => {
                 self.black_hole_collide(hole, target, inverse_mass, data);
@@ -34189,19 +34011,15 @@ impl RolloutWorld {
         }
     }
 
-    fn player_is_circle(&self, player_index: usize) -> bool {
-        let player = &self.players[player_index];
-        !matches!(player.active, ActiveAbility::None | ActiveAbility::Dash)
-            && self.entities[Self::hurtbox_entity(player)].kind == 0
-    }
-
     /// The low edge, on the broadphase sweep axis, of the player's registered
     /// Player-layer shape.
     fn player_sweep_min(&self, player_index: usize) -> Fix {
         self.swept_min(Swept::Player(player_index))
     }
 
-    /// `player_hit_by_box` for a circle hitbox.
+    /// Whether a circle hitbox overlaps the player's registered Player-layer
+    /// shape: the slime's and Dash's own box, or the collider a form's prefab
+    /// registered (`hurtbox_collider`).
     fn player_hit_by_circle(&self, player_index: usize, hitbox: Circle) -> bool {
         let player = &self.players[player_index];
         if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
@@ -34210,25 +34028,6 @@ impl RolloutWorld {
         match self.hurtbox_collider(player_index) {
             Some(DetCollider::Circle(circle)) => crate::physics::contact::circle_circle(hitbox, circle).is_some(),
             Some(DetCollider::Box(shape)) => crate::physics::contact::circle_box(hitbox, shape).is_some(),
-            None => false,
-        }
-    }
-
-    /// Whether a box hitbox overlaps the player's registered Player-layer
-    /// shape. The slime and Dash use their own box; any other form is the
-    /// collider its prefab registered, such as Bow's rotated box, as
-    /// DetPhysics holds it. On the entry pass OnEnterAbility has already
-    /// activated and synced it, though its row only turns active when the
-    /// pass publishes (`hurtbox_collider`).
-    fn player_hit_by_box(&self, player_index: usize, hitbox: OrientedBox, hitbox_rank: SweepRank) -> bool {
-        let player = &self.players[player_index];
-        let rank = self.player_sweep_rank(player_index);
-        if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
-            return swept_box_box(player.base.collider, rank, hitbox, hitbox_rank).is_some();
-        }
-        match self.hurtbox_collider(player_index) {
-            Some(DetCollider::Box(shape)) => swept_box_box(shape, rank, hitbox, hitbox_rank).is_some(),
-            Some(DetCollider::Circle(circle)) => crate::physics::contact::circle_box(circle, hitbox).is_some(),
             None => false,
         }
     }

@@ -1281,23 +1281,28 @@ impl RolloutWorld {
         contact: Contact,
         data: &data::RolloutData,
     ) {
-        // Only the Rock form's, the Duplicator copy's, the arrows' and the holes' pairs
-        // with slime, form and clone colliders run here yet; the others'
-        // callbacks are still queued from their own contact passes.
-        if matches!(other, Part::Body(_) | Part::Clone(_))
-            && !matches!(
-                receiver,
-                Part::Rock(_)
-                    | Part::DuplicatedRock(_)
-                    | Part::Arrow(_)
-                    | Part::Hole(_)
-                    | Part::Item(_)
-                    | Part::Pickup(_)
-                    | Part::Spike(_)
-                    | Part::Missile(_)
-            )
+        // A slime's or an abilityless clone's own box calls its
+        // SlimeController.OnCollide before its PlayerCollision's: Player.prefab
+        // numbers them 2 and 3, and RegisterCollisionCallback keeps the box's
+        // callbacks in that order (DPhysicsBox.cs:383-402, SlimeController.cs:471,
+        // PlayerCollision.cs:89). It bites and shoves off any Player-layer
+        // collider (SlimeController.cs:1206-1244).
+        let slime = match receiver {
+            Part::Body(player) if self.players[player].active == ActiveAbility::None => Some(Slime::Player(player)),
+            Part::Clone(clone) => Some(Slime::Clone(clone)),
+            _ => None,
+        };
+        let prey = match other {
+            Part::Body(player) | Part::Rock(player) => Some(Slime::Player(player)),
+            Part::Clone(clone) => Some(Slime::Clone(clone)),
+            _ => None,
+        };
+        if let (Some(slime), Some(prey)) = (slime, prey)
+            && self.part_layer(other, data) == LAYER_PLAYER
         {
-            return;
+            let hierarchy = |part| self.part_entity(part).and_then(|entity| self.entities.get(entity)).map(|row| row.hierarchy);
+            let lower = hierarchy(receiver) < hierarchy(other);
+            self.slime_collide(slime, prey, lower);
         }
         match receiver {
             Part::Hole(hole) => self.black_hole_on_collide(hole, other, data),
