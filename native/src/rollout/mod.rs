@@ -17399,16 +17399,7 @@ impl RolloutWorld {
                 if !item.active || item.entity.is_none() || self.blink_object_hidden(item.entity) {
                     continue;
                 }
-                // The DetPhysics collider, where the last Simulate left it: a
-                // Mine's shake or a settled peel's UpdateSim moves only the
-                // FixTransform, which the collider takes at the next Simulate.
-                // An item spawned this pass has its collider at the spawn.
-                let center = if item.born_tick == self.tick {
-                    item.synced_center
-                } else {
-                    let row = self.entities[item.entity.unwrap()];
-                    Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
-                };
+                let center = Self::thrown_item_collider_center(&self.entities, self.tick, &item);
                 if let Some(force) = Self::black_hole_force(
                     position,
                     center,
@@ -26436,10 +26427,11 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // CollideBox tests the DetPhysics collider (MagnetGun.cs:511).
             let radius = thrown_item_radius(data, *item);
             if crate::physics::contact::circle_box(
                 Circle {
-                    center: item.position,
+                    center: Self::thrown_item_collider_center(&self.entities, self.tick, item),
                     radius,
                 },
                 query,
@@ -26797,7 +26789,7 @@ impl RolloutWorld {
                 crate::physics::contact::circle_circle(
                     pickup_circle,
                     Circle {
-                        center: item.position,
+                        center: Self::thrown_item_collider_center(&self.entities, self.tick, item),
                         radius: thrown_item_radius(data, *item),
                     },
                 )
@@ -34413,6 +34405,19 @@ impl RolloutWorld {
         }
         item.updater_ran_tick = Some(self.tick);
         true
+    }
+
+    /// A thrown item's DetPhysics collider, where the last Simulate left it:
+    /// a Mine's shake or a settled peel's UpdateSim moves only the
+    /// FixTransform, which the collider takes at the next Simulate. An item
+    /// spawned this pass has its collider at the spawn.
+    fn thrown_item_collider_center(entities: &[CEntity], tick: u32, item: &ThrownItem) -> Vec2 {
+        match item.entity {
+            Some(entity) if item.born_tick != tick => {
+                Vec2::new(Fix::from_raw(entities[entity].x), Fix::from_raw(entities[entity].y))
+            }
+            _ => item.synced_center,
+        }
     }
 
     fn poke_balls_and_tacks_tick(
