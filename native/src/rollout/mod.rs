@@ -12884,7 +12884,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let Some(hit) = Self::raycast_entity_row(row, ray_start, direction)
+            let Some(hit) = self.raycast_entity_row(entity, row, ray_start, direction)
                 .filter(|hit| hit.near <= distance_limit)
             else {
                 continue;
@@ -12903,7 +12903,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let Some(hit) = Self::raycast_entity_row(row, ray_start, direction)
+            let Some(hit) = self.raycast_entity_row(entity, row, ray_start, direction)
                 .filter(|hit| hit.near <= distance_limit)
             else {
                 continue;
@@ -18964,6 +18964,45 @@ impl RolloutWorld {
             .map(|(_, inverse_extents)| inverse_extents)
     }
 
+    /// The inverseExtents DetPhysics' Box holds for an entity: the reciprocal
+    /// of its authored extents, divided by every Scale since and never rebuilt
+    /// from its axes (Box.cs:30-41). None: a box this port keeps no extents for.
+    fn stored_inverse_extents(
+        players: &[PlayerSlot],
+        clones: &[AbilitylessClone],
+        spikes: &[SpawnedSpike],
+        engines: &[SpawnedEngine],
+        entity: usize,
+    ) -> Option<Vec2> {
+        Self::hurtbox_inverse_extents(players, clones, entity)
+            .or_else(|| {
+                players.iter().find_map(|slot| {
+                    let form_slot = slot.drill_hitbox_entities.iter().position(|boxes| boxes.contains(&entity))?;
+                    let hitbox = slot.drill_hitbox_entities[form_slot].iter().position(|&e| e == entity)?;
+                    let form = slot.drill_hitbox_scales[form_slot][hitbox];
+                    (form.scale != Fix::ZERO).then_some(form.inverse_extents)
+                })
+            })
+            .or_else(|| {
+                spikes
+                    .iter()
+                    .find(|spike| spike.active && spike.entity == Some(entity))
+                    .map(|spike| spike.inverse_extents)
+            })
+            .or_else(|| {
+                engines
+                    .iter()
+                    .find(|engine| engine.active && engine.entity == Some(entity))
+                    .map(|engine| engine.inverse_extents)
+            })
+    }
+
+    /// `stored_inverse_extents` for a row box, else its axes' rounded lengths.
+    fn box_inverse_extents(&self, entity: usize, right: Vec2, up: Vec2) -> Vec2 {
+        Self::stored_inverse_extents(&self.players, &self.abilityless_clones, &self.spike_attacks, &self.engines, entity)
+            .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn beam_raycast(
         platforms: &[Platform],
@@ -19028,19 +19067,7 @@ impl RolloutWorld {
                     // Box.inverseExtents is the reciprocal of the collider's
                     // own extents (DPhysicsBox.cs:358), not of a rotated
                     // right/up's rounded length.
-                    let inverse_extents = Self::hurtbox_inverse_extents(players, clones, entity)
-                        .or_else(|| {
-                            spikes
-                                .iter()
-                                .find(|spike| spike.active && spike.entity == Some(entity))
-                                .map(|spike| spike.inverse_extents)
-                        })
-                        .or_else(|| {
-                            engines
-                                .iter()
-                                .find(|engine| engine.active && engine.entity == Some(entity))
-                                .map(|engine| engine.inverse_extents)
-                        })
+                    let inverse_extents = Self::stored_inverse_extents(players, clones, spikes, engines, entity)
                         .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()));
                     OrientedBox { center, right, up, inverse_extents }.raycast(origin, direction)
                 };
@@ -23593,7 +23620,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let hit = Self::raycast_entity_row(row, origin, direction);
+                let hit = self.raycast_entity_row(entity_index, row, origin, direction);
                 let Some(hit) = hit.filter(|hit| hit.near <= distance_limit) else {
                     continue;
                 };
@@ -23795,7 +23822,7 @@ impl RolloutWorld {
     }
 
     #[inline]
-    fn raycast_entity_row(row: CEntity, origin: Vec2, direction: Vec2) -> Option<RayHit> {
+    fn raycast_entity_row(&self, entity: usize, row: CEntity, origin: Vec2, direction: Vec2) -> Option<RayHit> {
         let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
         match row.kind {
             0 => Circle {
@@ -23806,18 +23833,11 @@ impl RolloutWorld {
             1 => {
                 let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
                 let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                let right_length = right.length();
-                let up_length = up.length();
-                if right_length == Fix::ZERO || up_length == Fix::ZERO {
+                if right == Vec2::ZERO || up == Vec2::ZERO {
                     None
                 } else {
-                    OrientedBox {
-                        center,
-                        right,
-                        up,
-                        inverse_extents: Vec2::new(Fix::ONE / right_length, Fix::ONE / up_length),
-                    }
-                    .raycast(origin, direction)
+                    OrientedBox { center, right, up, inverse_extents: self.box_inverse_extents(entity, right, up) }
+                        .raycast(origin, direction)
                 }
             }
             _ => None,
@@ -27544,10 +27564,7 @@ impl RolloutWorld {
                                 center,
                                 right,
                                 up,
-                                inverse_extents: Vec2::new(
-                                    Fix::ONE / right.length(),
-                                    Fix::ONE / up.length(),
-                                ),
+                                inverse_extents: self.box_inverse_extents(entity, right, up),
                             })
                             .and_then(|shape| shape.raycast(origin, direction))
                             .map(|hit| hit.near)
@@ -29938,7 +29955,7 @@ impl RolloutWorld {
                     center,
                     right,
                     up,
-                    inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+                    inverse_extents: self.box_inverse_extents(entity, right, up),
                 }))
             }
             _ => None,
@@ -33442,9 +33459,7 @@ impl RolloutWorld {
         } else {
             let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
             let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-            let inverse_extents =
-                Self::hurtbox_inverse_extents(&self.players, &self.abilityless_clones, entity)
-                    .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()));
+            let inverse_extents = self.box_inverse_extents(entity, right, up);
             crate::physics::contact::circle_box(
                 query,
                 OrientedBox {
