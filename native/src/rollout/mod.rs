@@ -1091,10 +1091,6 @@ pub struct CastSpellState {
     pub phase: u8,
     pub ticks: u32,
     pub time: Fix,
-    /// Pose synced by DetPhysics before the updatable callbacks in this pass.
-    pub collider_position: Vec2,
-    pub collider_right: Vec2,
-    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -8173,16 +8169,6 @@ impl RolloutWorld {
                 platform.collider.inner.center = platform.surface.center;
             }
         }
-        // The CastSpell circle takes its FixTransform's pose here and keeps it
-        // through the callbacks and the late ground follow until the next
-        // Simulate, a callback kill's UnGround included.
-        for slot in &mut self.players {
-            if slot.active == ActiveAbility::TimeStop {
-                slot.cast_spell.collider_position = slot.base.position;
-                slot.cast_spell.collider_right = slot.base.up().perp_cw();
-                slot.cast_spell.collider_rotation = slot.base.rotation();
-            }
-        }
         self.refresh_actor_entities();
         if self.intro_phase == 3 {
             self.platforms_tick(data, physics_dt);
@@ -13915,9 +13901,6 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.base.set_rotation(Fix::ZERO);
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
-                slot.cast_spell.collider_position = slot.base.position;
-                slot.cast_spell.collider_right = Vec2::RIGHT;
-                slot.cast_spell.collider_rotation = Fix::ZERO;
                 info.take_body(&slot.base);
                 info.position += data.time_stop.exit_offset * slot.player_scale;
                 info.external_velocity = Vec2::ZERO;
@@ -14536,12 +14519,6 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) {
         let published_position = self.players[index].base.position;
-        {
-            let slot = &mut self.players[index];
-            slot.cast_spell.collider_position = published_position;
-            slot.cast_spell.collider_right = slot.base.up().perp_cw();
-            slot.cast_spell.collider_rotation = slot.base.rotation();
-        }
         // CastSpell.UpdateSim: on a live ground the form slides by its
         // external velocity along the surface, which spends it, so a grounded
         // rope pull from the last LateUpdateSim never reaches PlayerBody
@@ -14647,16 +14624,14 @@ impl RolloutWorld {
         let inverse_mass = Fix::from_raw(214_748_368);
         let air_resistance = Fix::from_raw(4_166_118_400);
         let slot = &self.players[index];
-        let (radius, offset) = slot.time_stop_circle(data::get());
+        let radius = slot.time_stop_circle(data::get()).0;
         // CircleCastAll is centred on the FixTransform, but the manifold uses
         // the registered circle, which keeps its offset pose from the last
-        // sync (OnEnterAbility's UpdatePhysicsPositions, then Simulate).
+        // sync (OnEnterAbility's UpdatePhysicsPositions, then Simulate): the
+        // pose its row holds.
         let cast = Circle { center: slot.base.position, radius };
-        let own = Circle {
-            center: slot.cast_spell.collider_position
-                + slot.cast_spell.collider_right.complex_mul(offset),
-            radius,
-        };
+        let row = self.entities[slot.time_stop_entity];
+        let own = Circle { center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)), radius };
         // Both casts fill a five-entry buffer; walls are the rounded rects.
         let mut hits = [0usize; 5];
         let mut count = 0usize;
@@ -41966,11 +41941,13 @@ impl RolloutWorld {
                 let flags = form_box_flags(alive && casting_time_stop);
                 let publish = sync_form_row(circle, flags, casting_time_stop, entered == time_stop_e, slot.base.id);
                 if publish {
-                    let (position, rotation, basis) = (
-                        slot.cast_spell.collider_position,
-                        slot.cast_spell.collider_rotation,
-                        slot.cast_spell.collider_right,
-                    );
+                    // CastSpell.ExitAbility zeroes the form's rotation, and its
+                    // UnGround moves the body the out box keeps
+                    // (CastSpell.cs:164-182).
+                    let at_sync = slot.forms[slot.entity_slot(time_stop_e)].synced;
+                    let position = if casting_time_stop { at_sync.position } else { exit_position };
+                    let (rotation, basis) =
+                        (at_sync.orientation.rotation(), at_sync.orientation.up().perp_cw());
                     // The ability body's FixTransform keeps the exact Slerp
                     // basis copied from PlayerPhysics. Its published angle is
                     // derived from that vector and rebuilding the basis from
