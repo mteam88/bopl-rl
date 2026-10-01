@@ -1313,13 +1313,6 @@ impl DetCollider {
         }
     }
 
-    fn overlaps_circle(self, query: Circle) -> bool {
-        match self {
-            Self::Box(collider) => crate::physics::contact::circle_box(query, collider).is_some(),
-            Self::Circle(collider) => crate::physics::contact::circle_circle(query, collider).is_some(),
-        }
-    }
-
     /// Whether the narrow phase finds the two colliders touching, each at
     /// its place in the sweep.
     fn touches(self, rank: SweepRank, other: Self, other_rank: SweepRank) -> bool {
@@ -14577,9 +14570,8 @@ impl RolloutWorld {
     /// die if squished between two, then air resistance. Returns whether the
     /// caster was killed.
     fn time_stop_cast_airborne(&mut self, index: usize) -> bool {
-        // CircleCastAll (CastSpell.cs:197,216).
-        self.remove_destroyed_colliders();
-        // Time stop.prefab: inverseMass 0.05, airResistance01 0.97.
+        // Time stop.prefab: inverseMass 0.05, airResistance01 0.97,
+        // platformPushLayerMask wall and NonLethalTerrain, squishLayerMask wall.
         let inverse_mass = Fix::from_raw(214_748_368);
         let air_resistance = Fix::from_raw(4_166_118_400);
         let slot = &self.players[index];
@@ -14591,31 +14583,35 @@ impl RolloutWorld {
         let cast = Circle { center: slot.base.position, radius };
         let row = self.entities[slot.time_stop_entity];
         let own = Circle { center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)), radius };
-        // Both casts fill a five-entry buffer; walls are the rounded rects.
+        // Both casts fill CastSpell's five-entry buffer (CastSpell.cs:97,197-241).
         let mut hits = [0usize; 5];
-        let mut count = 0usize;
-        for (wall, platform) in self.platforms.iter().enumerate() {
-            if count == hits.len() {
-                break;
-            }
-            if platform.active
-                && crate::physics::contact::circle_rounded(cast, platform.collider).is_some()
-            {
-                hits[count] = wall;
-                count += 1;
-            }
-        }
-        for &wall in &hits[..count] {
-            if let Some(contact) =
-                crate::physics::contact::circle_rounded(own, self.platforms[wall].collider)
+        let count = self.circle_cast_all(
+            cast,
+            (1 << LAYER_WALL) | (1 << LAYER_NON_LETHAL_TERRAIN),
+            |_, _| false,
+            &mut hits,
+        );
+        for &entity in &hits[..count] {
+            if self.entities[entity].kind == 2
+                && let Some(contact) = self
+                    .rounded_rect_collider(entity)
+                    .and_then(|rounded| crate::physics::contact::circle_rounded(own, rounded))
             {
                 let force = -contact.normal * contact.penetration * inverse_mass;
                 self.players[index].base.external_velocity += force * Fix::from_int(35);
             }
         }
+        let count = self.circle_cast_all(cast, 1 << LAYER_WALL, |_, _| false, &mut hits);
         let position = self.players[index].base.position;
         if count >= 2
-            && hits[..count].iter().any(|&wall| self.platforms[wall].collider.overlaps(position))
+            && hits[..count].iter().any(|&entity| match self.entities[entity].kind {
+                2 => self.rounded_rect_collider(entity).is_some_and(|rounded| rounded.overlaps(position)),
+                _ => match self.detphysics_collider(entity) {
+                    Some(DetCollider::Circle(circle)) => circle.overlaps(position),
+                    Some(DetCollider::Box(collider)) => collider.overlaps(position),
+                    None => false,
+                },
+            })
         {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, false, true);
             return true;
@@ -20652,24 +20648,19 @@ impl RolloutWorld {
     }
 
     fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
-        // Shockwave.Init's CircleCastAll (Shockwave.cs:53-56, 82) first drops
-        // the colliders DestroyFix marked and rebuilds the composites that
-        // lost one (DetPhysics.cs:1952).
-        self.remove_destroyed_colliders();
         let query = Circle {
             center: position,
             radius: wave.radius,
         };
+        // Shockwave.Init's CircleCastAll fills the wave's 50-entry buffer
+        // (Shockwave.cs:33,53-56,82); each kind below acts on what it found.
+        let mut hits = [usize::MAX; 50];
+        let count = self.circle_cast_all(query, wave.collision_mask, |_, _| false, &mut hits);
+        let hits = &hits[..count];
         if wave.collision_mask & (1 << 11) != 0 {
             let mut applied = false;
             for platform_index in 0..self.platforms.len() {
-                if !self.platforms[platform_index].active
-                    || crate::physics::contact::circle_rounded(
-                        query,
-                        self.platforms[platform_index].collider,
-                    )
-                    .is_none()
-                {
+                if !hits.contains(&self.platform_entities[platform_index]) {
                     continue;
                 }
                 let surface = self.platforms[platform_index].surface.clone();
@@ -20704,22 +20695,10 @@ impl RolloutWorld {
         if wave.collision_mask & (1 << LAYER_ITEM) != 0 {
             for item_index in 0..self.thrown_items.len() {
                 let Some(entity) = self.thrown_items[item_index].entity else { continue };
-                if !self.thrown_items[item_index].active || !self.collides(entity) {
+                if !self.thrown_items[item_index].active || !hits.contains(&entity) {
                     continue;
                 }
                 let item = &mut self.thrown_items[item_index];
-                let radius = thrown_item_radius(data::get(), *item);
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: item.position,
-                        radius,
-                    },
-                )
-                .is_none()
-                {
-                    continue;
-                }
                 let direction = item.position - position;
                 let distance =
                     (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
@@ -20730,17 +20709,7 @@ impl RolloutWorld {
             }
             // A Portal Gun shot is an item-layer circle with its own BoplBody.
             for shot in &mut self.portal_shots {
-                if !shot.active
-                    || !shot.registered
-                    || crate::physics::contact::circle_circle(
-                        query,
-                        Circle {
-                            center: shot.position,
-                            radius: shot.collider_radius,
-                        },
-                    )
-                    .is_none()
-                {
+                if !shot.active || shot.entity.is_none_or(|entity| !hits.contains(&entity)) {
                     continue;
                 }
                 let direction = shot.position - position;
@@ -20754,17 +20723,7 @@ impl RolloutWorld {
         }
         if wave.collision_mask & (1 << LAYER_PROJECTILE) != 0 {
             for arrow in &mut self.arrows {
-                if !arrow.active
-                    || !arrow.registered
-                    || crate::physics::contact::circle_circle(
-                        query,
-                        Circle {
-                            center: arrow.position,
-                            radius: arrow.collider_radius,
-                        },
-                    )
-                    .is_none()
-                {
+                if !arrow.active || arrow.entity.is_none_or(|entity| !hits.contains(&entity)) {
                     continue;
                 }
                 let direction = arrow.position - position;
@@ -20776,11 +20735,7 @@ impl RolloutWorld {
                     * arrow.inverse_mass;
             }
             for missile in &mut self.guided_missiles {
-                if !missile.active || !missile.registered {
-                    continue;
-                }
-                let collider = missile.collider(&self.entity_inverse_extents);
-                if crate::physics::contact::circle_box(query, collider).is_none() {
+                if !missile.active || missile.entity.is_none_or(|entity| !hits.contains(&entity)) {
                     continue;
                 }
                 let direction = missile.position - position;
@@ -20797,22 +20752,11 @@ impl RolloutWorld {
             // sixty-fold conversion.
             for hole_index in 0..self.black_holes.len() {
                 if !self.black_holes[hole_index].active
-                    || self.black_holes[hole_index].entity.is_none_or(|entity| !self.collides(entity))
+                    || self.black_holes[hole_index].entity.is_none_or(|entity| !hits.contains(&entity))
                 {
                     continue;
                 }
                 let hole = &mut self.black_holes[hole_index];
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: hole.position,
-                        radius: hole.radius,
-                    },
-                )
-                .is_none()
-                {
-                    continue;
-                }
                 let direction = hole.position - position;
                 let distance =
                     (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
@@ -20846,8 +20790,7 @@ impl RolloutWorld {
             // a non-instant ability that is the form row, while the ordinary
             // slime box is disabled. The form may extend into a blast whose
             // centre does not reach the hidden slime collider (Bow is the
-            // common case), so test the same DetPhysics shape the source
-            // returned to Shockwave.Init.
+            // common case).
             let player = &self.players[player_index];
             let entity = match player.active {
                 ActiveAbility::None => player.body_entity,
@@ -20882,27 +20825,7 @@ impl RolloutWorld {
                 ActiveAbility::Beam => player.beam_entity,
                 ActiveAbility::Platform => player.circle_entity,
             };
-            if !self.collides(entity) {
-                continue;
-            }
-            let row = self.entities[entity];
-            let overlaps = if row.kind == 0 {
-                crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                        radius: Fix::from_raw(row.radius),
-                    },
-                )
-                .is_some()
-            } else {
-                crate::physics::contact::circle_box(
-                    query,
-                    Self::row_box(&self.entity_inverse_extents, entity, row),
-                )
-                .is_some()
-            };
-            if !overlaps {
+            if !hits.contains(&entity) {
                 continue;
             }
             let target = &mut self.players[player_index];
@@ -21178,85 +21101,6 @@ impl RolloutWorld {
         }
     }
 
-    fn teleport_query(&mut self, query: Circle, mask: u32, hits: &mut [usize; 100]) -> usize {
-        // CircleCastAll (TeleportIndicator.cs:101-102).
-        self.remove_destroyed_colliders();
-        let mut count = 0usize;
-        // DetPhysics.CircleCastAll visits its circle, box and rounded-rect
-        // registries in that order and stops at the fixed 100-entry buffer.
-        for kind in [0u32, 1, 2] {
-            for (entity, row) in self.entities.iter().copied().enumerate() {
-                // CircleCastAll removes destroyed colliders first, so a slime
-                // killed earlier in this pass is gone (DetPhysics.cs:1952).
-                if row.kind != kind
-                    || mask & (1u32 << row.layer) == 0
-                    || self.left_form_row(entity)
-                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
-                {
-                    continue;
-                }
-                // IsActive also asks the collider to be enabled
-                // (DetPhysics.cs:1658-1663): a burning Smoke cloud has
-                // disabled its circle.
-                if self.is_body_collider(entity) {
-                    let Some(collider) = self.detphysics_collider(entity) else {
-                        continue;
-                    };
-                    if collider.overlaps_circle(query) {
-                        hits[count] = entity;
-                        count += 1;
-                        if count == hits.len() {
-                            return count;
-                        }
-                    }
-                    continue;
-                }
-                if !self.collides(entity) {
-                    continue;
-                }
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let overlaps = match kind {
-                    0 => crate::physics::contact::circle_circle(
-                        query,
-                        Circle {
-                            center,
-                            radius: Fix::from_raw(row.radius),
-                        },
-                    )
-                    .is_some(),
-                    1 => {
-                        let right =
-                            Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                        right != Vec2::ZERO
-                            && up != Vec2::ZERO
-                            && crate::physics::contact::circle_box(
-                                query,
-                                OrientedBox {
-                                    center,
-                                    right,
-                                    up,
-                                    inverse_extents: self.entity_inverse_extents[entity],
-                                },
-                            )
-                            .is_some()
-                    }
-                    _ => Self::entity_rounded_rect(&self.entity_inverse_extents, entity, row)
-                        .and_then(|rounded| crate::physics::contact::circle_rounded(query, rounded))
-                        .is_some(),
-                };
-                if overlaps {
-                    hits[count] = entity;
-                    count += 1;
-                    if count == hits.len() {
-                        return count;
-                    }
-                }
-            }
-        }
-        count
-    }
-
     fn teleport_skips_entity(&self, entity: usize) -> bool {
         let layer = self.entities[entity].layer;
         if layer == LAYER_WALL {
@@ -21502,14 +21346,16 @@ impl RolloutWorld {
             };
             let mut player_hits = [usize::MAX; 100];
             let mut marker_hits = [usize::MAX; 100];
-            let player_count = self.teleport_query(
+            let player_count = self.circle_cast_all(
                 player_query,
                 data.teleport.teleportable_mask,
+                |_, _| false,
                 &mut player_hits,
             );
-            let marker_count = self.teleport_query(
+            let marker_count = self.circle_cast_all(
                 marker_query,
                 data.teleport.teleportable_mask,
+                |_, _| false,
                 &mut marker_hits,
             );
             // TeleportIndicator.UpdateSim teleports at the marker's place in
@@ -22646,8 +22492,6 @@ impl RolloutWorld {
                 continue;
             }
             wave.registered = true;
-            // CircleCastAll (Shockwave.cs:82).
-            self.remove_destroyed_colliders();
             let config = wave.config(data);
             let query = Circle {
                 center: wave.position,
@@ -22658,73 +22502,28 @@ impl RolloutWorld {
             // is not there yet when the wave's Init casts.
             let wave_appended = wave.appended;
             let wave_hierarchy = wave.hierarchy_base;
-            let unregistered = |entity: usize| {
-                self.smoke_clouds.iter().any(|cloud| {
+            let unregistered = |world: &Self, entity: usize| {
+                world.smoke_clouds.iter().any(|cloud| {
                     cloud.active
                         && cloud.entity == Some(entity)
                         && cloud.appended == wave_appended
                         && cloud.hierarchy_base > wave_hierarchy
-                }) || self.arrows.iter().any(|arrow| {
+                }) || world.arrows.iter().any(|arrow| {
                     arrow.active
                         && arrow.entity == Some(entity)
                         && arrow.appended == wave_appended
                         && arrow.hierarchy_base > wave_hierarchy
-                }) || self.black_holes.iter().any(|hole| {
+                }) || world.black_holes.iter().any(|hole| {
                     hole.active
                         && hole.entity == Some(entity)
                         && hole.appended == wave_appended
                         && hole.hierarchy_base > wave_hierarchy
                 })
             };
-            // DetPhysics.CircleCastAll fills Shockwave's 50-entry buffer in
-            // circle -> box -> rounded-rectangle registration order. Hits
-            // that Shockwave later ignores still consume a slot.
+            // CircleCastAll fills Shockwave's 50-entry buffer (Shockwave.cs:33,82).
+            // Hits that Shockwave later ignores still consume a slot.
             let mut hit_entities = [usize::MAX; 50];
-            let mut hit_count = 0;
-            for kind in 0..=2 {
-                let mut previous_id = 0;
-                while hit_count < hit_entities.len() {
-                    let mut next = None;
-                    for (entity, row) in self.entities.iter().enumerate() {
-                        if row.kind != kind
-                            || row.id <= previous_id
-                            || !self.collides(entity)
-                            || config.mask & (1 << row.layer) == 0
-                            || ((row.layer == data.smoke.cloud_layer
-                                || row.layer == LAYER_PROJECTILE
-                                || row.layer == data.black_hole.layer)
-                                && unregistered(entity))
-                        {
-                            continue;
-                        }
-                        let platform_index = self
-                            .platform_entities
-                            .iter()
-                            .position(|&platform_entity| platform_entity == entity);
-                        let overlaps = if let Some(platform_index) = platform_index {
-                            crate::physics::contact::circle_rounded(
-                                query,
-                                self.platforms[platform_index].collider,
-                            )
-                            .is_some()
-                        } else {
-                            self.circle_overlaps_entity(query, entity)
-                        };
-                        if !overlaps {
-                            continue;
-                        }
-                        if next.is_none_or(|(_, id)| row.id < id) {
-                            next = Some((entity, row.id));
-                        }
-                    }
-                    let Some((entity, id)) = next else {
-                        break;
-                    };
-                    hit_entities[hit_count] = entity;
-                    hit_count += 1;
-                    previous_id = id;
-                }
-            }
+            let hit_count = self.circle_cast_all(query, config.mask, unregistered, &mut hit_entities);
             let retained = &hit_entities[..hit_count];
 
             for (platform_index, (platform, dynamics)) in self
@@ -25773,8 +25572,6 @@ impl RolloutWorld {
     }
 
     fn magnet_try_pickup_item(&mut self, index: usize, data: &data::RolloutData) {
-        // CircleCastAll (MagnetGun.cs:587).
-        self.remove_destroyed_colliders();
         let firepoint = self.magnet_firepoint(index, data);
         let slot = &self.players[index];
         let radius = data.magnet.pickup_radius * slot.forms[slot.active_slot].scale;
@@ -25782,209 +25579,90 @@ impl RolloutWorld {
             center: firepoint,
             radius,
         };
+        // TryPickupNearbyItems disables the Magnet's own hurtbox around its
+        // CircleCastAll into the 100-entry hitBuffer (MagnetGun.cs:583-589,
+        // RlWorldState.cs:59).
+        let own = Self::hurtbox_entity(slot);
+        let mut hits = [0usize; 100];
+        let count = self.circle_cast_all(
+            pickup_circle,
+            data.magnet.only_pickup,
+            |_, entity| entity == own,
+            &mut hits,
+        );
         self.players[index].magnet.parry_registered = true;
         self.players[index].magnet.parry_circle = pickup_circle;
 
+        // The nearest hit FixTransform, the first of equals, past a wall that
+        // is not a boulder and a slime that hasn't spawned (MagnetGun.cs:597-616).
         let mut nearest = Fix::MAX;
         let mut selected = MagnetHeld::Nothing;
-        let mut consider = |held: MagnetHeld, position: Vec2, overlaps: bool| {
-            if !overlaps {
-                return;
-            }
+        for &entity in &hits[..count] {
+            let Some((held, position)) = self.magnet_pickup_target(entity) else {
+                continue;
+            };
             let distance = (position - firepoint).length_squared();
             if distance < nearest {
                 nearest = distance;
                 selected = held;
             }
-        };
-
-        // CircleCastAll visits each registered shape family in DetPhysics
-        // order. Selection itself is strictly by centre distance, so a fixed
-        // scan preserves all non-tie decisions without allocating a hit list.
-        for player_index in 0..self.players.len() {
-            if player_index == index || !self.playable(player_index) {
-                continue;
-            }
-            let player = &self.players[player_index];
-            if player.active == ActiveAbility::Rock {
-                let circle = Circle {
-                    center: player.base.position,
-                    radius: player.rock_circle().circle_radius,
-                };
-                consider(
-                    MagnetHeld::Rock(player_index),
-                    player.base.position,
-                    crate::physics::contact::circle_circle(pickup_circle, circle).is_some(),
-                );
-            } else if player.active == ActiveAbility::None {
-                consider(
-                    MagnetHeld::Player(player_index),
-                    player.base.position,
-                    crate::physics::contact::circle_box(pickup_circle, player.base.collider)
-                        .is_some(),
-                );
-            } else {
-                // An ability form is hit through its own collider, and the
-                // distance is measured to that collider's centre.
-                let Some(collider) = self.hurtbox_collider(player_index) else {
-                    continue;
-                };
-                consider(
-                    MagnetHeld::Player(player_index),
-                    collider.center(),
-                    collider.overlaps_circle(pickup_circle),
-                );
-            }
         }
-        for (arrow_index, arrow) in self.arrows.iter().enumerate() {
-            if !arrow.active || !arrow.registered {
-                continue;
-            }
-            consider(
-                MagnetHeld::Arrow(arrow_index),
-                arrow.position,
-                crate::physics::contact::circle_circle(
-                    pickup_circle,
-                    Circle {
-                        center: arrow.position,
-                        radius: arrow.collider_radius,
-                    },
-                )
-                .is_some(),
-            );
-        }
-        for (item_index, item) in self.thrown_items.iter().enumerate() {
-            let Some(entity) = item.entity else { continue };
-            if !item.active
-                || !self.collides(entity)
-            {
-                continue;
-            }
-            consider(
-                MagnetHeld::ThrownItem(item_index),
-                item.position,
-                crate::physics::contact::circle_circle(
-                    pickup_circle,
-                    Circle {
-                        center: Self::thrown_item_collider_center(&self.entities, self.tick, item),
-                        radius: thrown_item_radius(data, *item),
-                    },
-                )
-                .is_some(),
-            );
-        }
-        for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
-            let Some(DetCollider::Circle(collider)) =
-                pickup.entity.and_then(|entity| self.detphysics_collider(entity))
-            else {
-                continue;
-            };
-            consider(
-                MagnetHeld::AbilityPickup(pickup_index),
-                pickup.position,
-                crate::physics::contact::circle_circle(pickup_circle, collider).is_some(),
-            );
-        }
-        for (shot_index, shot) in self.portal_shots.iter().enumerate() {
-            if !shot.active || !shot.registered || self.blink_object_hidden(shot.entity) {
-                continue;
-            }
-            consider(
-                MagnetHeld::PortalShot(shot_index),
-                shot.position,
-                crate::physics::contact::circle_circle(
-                    pickup_circle,
-                    Circle {
-                        center: shot.position,
-                        radius: shot.collider_radius,
-                    },
-                )
-                .is_some(),
-            );
-        }
-        for (hole_index, hole) in self.black_holes.iter().enumerate() {
-            if !hole.active || hole.mass <= Fix::ZERO || self.blink_object_hidden(hole.entity) {
-                continue;
-            }
-            consider(
-                MagnetHeld::BlackHole(hole_index),
-                hole.position,
-                crate::physics::contact::circle_circle(
-                    pickup_circle,
-                    Circle {
-                        center: hole.position,
-                        radius: hole.radius,
-                    },
-                )
-                .is_some(),
-            );
-        }
-        for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
-            if !missile.active || !missile.registered {
-                continue;
-            }
-            let collider = missile.collider(&self.entity_inverse_extents);
-            consider(
-                MagnetHeld::Missile(missile_index),
-                missile.position,
-                crate::physics::contact::circle_box(pickup_circle, collider).is_some(),
-            );
-        }
-        for (boulder_index, boulder) in self.macho_boulders.iter().enumerate() {
-            if !boulder.active || boulder.platform_index >= self.platforms.len() {
-                continue;
-            }
-            let platform = &self.platforms[boulder.platform_index];
-            let live = self.collides(self.platform_entities[boulder.platform_index]);
-            consider(
-                MagnetHeld::Boulder(boulder_index),
-                platform.surface.center,
-                live && crate::physics::contact::circle_rounded(pickup_circle, platform.collider)
-                    .is_some(),
-            );
-        }
-        for (marker_index, marker) in self.revival_marker_pool.iter().enumerate() {
-            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
-                continue;
-            }
-            let radius = marker
-                .entity
-                .map(|entity| Fix::from_raw(self.entities[entity].radius))
-                .unwrap_or(data.revival.marker_radius);
-            consider(
-                MagnetHeld::RevivalMarker(marker_index),
-                marker.position,
-                crate::physics::contact::circle_circle(
-                    pickup_circle,
-                    Circle {
-                        center: marker.position + data.revival.marker_offset,
-                        radius,
-                    },
-                )
-                .is_some(),
-            );
-        }
-        for (marker_index, marker) in self.teleport_marker_pool.iter().enumerate() {
-            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
-                continue;
-            }
-            consider(
-                MagnetHeld::TeleportMarker(marker_index),
-                marker.position,
-                crate::physics::contact::circle_circle(
-                    pickup_circle,
-                    Circle {
-                        center: marker.position + data.teleport.marker_offset,
-                        radius: data.teleport.marker_radius,
-                    },
-                )
-                .is_some(),
-            );
-        }
-
         if selected != MagnetHeld::Nothing {
             self.magnet_take_target(index, selected, data);
         }
+    }
+
+    /// What a Magnet would pick up through a collider its pickup cast hit, and
+    /// that object's FixTransform position; None for anything it passes over
+    /// or doesn't hold.
+    fn magnet_pickup_target(&self, entity: usize) -> Option<(MagnetHeld, Vec2)> {
+        if let Some(player_index) = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity) {
+            if !self.playable(player_index) {
+                return None;
+            }
+            let player = &self.players[player_index];
+            return Some(match player.active {
+                ActiveAbility::Rock => (MagnetHeld::Rock(player_index), player.base.position),
+                ActiveAbility::None => (MagnetHeld::Player(player_index), player.base.position),
+                // An ability form's FixTransform is its collider's.
+                _ => (MagnetHeld::Player(player_index), self.hurtbox_collider(player_index)?.center()),
+            });
+        }
+        let matches = |active: bool, candidate: Option<usize>| active && candidate == Some(entity);
+        if let Some(index) = self.arrows.iter().position(|arrow| matches(arrow.active, arrow.entity)) {
+            return Some((MagnetHeld::Arrow(index), self.arrows[index].position));
+        }
+        if let Some(index) = self.thrown_items.iter().position(|item| matches(item.active, item.entity)) {
+            return Some((MagnetHeld::ThrownItem(index), self.thrown_items[index].position));
+        }
+        if let Some(index) = self.ability_pickups.iter().position(|pickup| matches(pickup.active, pickup.entity)) {
+            return Some((MagnetHeld::AbilityPickup(index), self.ability_pickups[index].position));
+        }
+        if let Some(index) = self.portal_shots.iter().position(|shot| matches(shot.active, shot.entity)) {
+            return Some((MagnetHeld::PortalShot(index), self.portal_shots[index].position));
+        }
+        if let Some(index) = self.black_holes.iter().position(|hole| matches(hole.active, hole.entity)) {
+            let hole = &self.black_holes[index];
+            return (hole.mass > Fix::ZERO).then_some((MagnetHeld::BlackHole(index), hole.position));
+        }
+        if let Some(index) = self.guided_missiles.iter().position(|missile| matches(missile.active, missile.entity)) {
+            return Some((MagnetHeld::Missile(index), self.guided_missiles[index].position));
+        }
+        if let Some(index) = self.macho_boulders.iter().position(|boulder| {
+            boulder.active
+                && boulder.platform_index < self.platforms.len()
+                && self.platform_entities[boulder.platform_index] == entity
+        }) {
+            let platform = &self.platforms[self.macho_boulders[index].platform_index];
+            return Some((MagnetHeld::Boulder(index), platform.surface.center));
+        }
+        if let Some(index) = self.revival_marker_pool.iter().position(|marker| matches(marker.active, marker.entity)) {
+            return Some((MagnetHeld::RevivalMarker(index), self.revival_marker_pool[index].position));
+        }
+        if let Some(index) = self.teleport_marker_pool.iter().position(|marker| matches(marker.active, marker.entity)) {
+            return Some((MagnetHeld::TeleportMarker(index), self.teleport_marker_pool[index].position));
+        }
+        None
     }
 
     fn magnet_take_target(&mut self, index: usize, held: MagnetHeld, data: &data::RolloutData) {
@@ -27099,6 +26777,76 @@ impl RolloutWorld {
             },
             radius: Fix::from_raw(row.radius),
         })
+    }
+
+    /// A rounded rect as DetPhysics holds it, None while IsActive is false
+    /// (DetPhysics.cs:1658-1665): a platform's live collider, or else its row.
+    fn rounded_rect_collider(&self, entity: usize) -> Option<RoundedRect> {
+        match self.platform_entities.iter().position(|&candidate| candidate == entity) {
+            Some(platform) => self.platform_is_active(platform).then_some(self.platforms[platform].collider),
+            None if self.collides(entity) => {
+                Self::entity_rounded_rect(&self.entity_inverse_extents, entity, self.entities[entity])
+            }
+            None => None,
+        }
+    }
+
+    /// DetPhysics.CircleCastAll (DetPhysics.cs:1950-1995): purges destroyed
+    /// colliders, then walks circles, boxes and rounded rects in registration
+    /// order and writes each active one on a `mask` layer the circle touches,
+    /// by PhysTools' boolean tests, until `hits` is full. Returns the count.
+    /// `unlisted` names a collider the registries don't hold for this cast:
+    /// one whose Init hasn't run yet, or one the caller disabled around it.
+    fn circle_cast_all(
+        &mut self,
+        query: Circle,
+        mask: u32,
+        unlisted: impl Fn(&Self, usize) -> bool,
+        hits: &mut [usize],
+    ) -> usize {
+        self.remove_destroyed_colliders();
+        let mut count = 0;
+        for kind in 0..3u32 {
+            for (entity, row) in self.entities.iter().enumerate() {
+                // A form ExitAbility deactivated this pass is out of IsActive
+                // before its row's flags catch up.
+                if row.kind != kind
+                    || row.layer >= 32
+                    || mask & (1u32 << row.layer) == 0
+                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
+                    || self.left_form_row(entity)
+                    || unlisted(self, entity)
+                {
+                    continue;
+                }
+                let overlaps = match kind {
+                    2 => self.rounded_rect_collider(entity).is_some_and(|rounded| {
+                        crate::physics::contact::circle_box_overlaps(
+                            Circle { center: query.center, radius: query.radius + rounded.radius },
+                            rounded.inner,
+                        )
+                    }),
+                    _ => match self.detphysics_collider(entity) {
+                        Some(DetCollider::Circle(circle)) => {
+                            let radius = query.radius + circle.radius;
+                            (circle.center - query.center).length_squared() < radius * radius
+                        }
+                        Some(DetCollider::Box(collider)) => {
+                            crate::physics::contact::circle_box_overlaps(query, collider)
+                        }
+                        None => false,
+                    },
+                };
+                if overlaps {
+                    hits[count] = entity;
+                    count += 1;
+                    if count == hits.len() {
+                        return count;
+                    }
+                }
+            }
+        }
+        count
     }
 
     /// DetPhysics.PointCheckAllRoundedRects (DetPhysics.cs:1826): the last
@@ -33110,74 +32858,46 @@ impl RolloutWorld {
         !active && entity.is_none_or(|entity| self.entities[entity].flags & E_REMOVED != 0)
     }
 
-    fn mine_scan_target(&self, item_index: usize, data: &data::RolloutData) -> Option<Vec2> {
-        const MAX_CANDIDATES: usize = MAX_BODIES + MAX_PLAYERS * 16;
+    /// Mine.ScanForPlayers (Mine.cs:128-148): the first slime or clone its
+    /// CircleCastAll finds that is an enemy, as the FixTransform it aims at.
+    fn mine_scan_target(&mut self, item_index: usize, data: &data::RolloutData) -> Option<Vec2> {
         let mine = self.thrown_items[item_index];
         let query = Circle {
             center: mine.position,
             radius: data.mine.scan_radius * mine.scale,
         };
-        // Mine aims at the hit collider's FixTransform, which the owner's
-        // UpdateSim has already moved this pass; the row is DetPhysics' copy.
-        let mut candidates = [(0u32, 0u32, usize::MAX, usize::MAX, Vec2::ZERO); MAX_CANDIDATES];
-        let mut count = 0;
-        for (player_index, player) in self.players.iter().enumerate() {
-            if !self.playable_slot(player) {
-                continue;
-            }
-            let entity = Self::hurtbox_entity(player);
-            if entity == usize::MAX
-                || self.entities[entity].layer != LAYER_PLAYER
-                || !self.collides(entity)
+        // Mine_0.prefab scans for the Player layer into a four-entry buffer
+        // (Mine.cs:63,131).
+        let mut hits = [0usize; 4];
+        let count = self.circle_cast_all(query, 1 << LAYER_PLAYER, |_, _| false, &mut hits);
+        let owner_team = self.players[mine.owner].team;
+        for &entity in &hits[..count] {
+            // Mine aims at the hit collider's FixTransform, which the owner's
+            // UpdateSim has already moved this pass.
+            let (player_index, position) = if let Some(player_index) =
+                self.players.iter().position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
             {
-                continue;
-            }
-            if count < candidates.len() {
-                let row = self.entities[entity];
                 // Mine.LateUpdateSim runs before a newer slime's
                 // PlayerPhysics.LateUpdateSim moves it with its ground.
-                let position = if 100_000_000 + mine.hierarchy_base < row.hierarchy {
+                let position = if 100_000_000 + mine.hierarchy_base < self.entities[entity].hierarchy {
                     self.scratch.before_ground_follow[player_index]
                 } else {
-                    player.base.position
+                    self.players[player_index].base.position
                 };
-                candidates[count] = (row.kind, row.id, entity, player_index, position);
-                count += 1;
-            }
-        }
-        for clone in &self.abilityless_clones {
-            let Some(entity) = clone.entity.filter(|_| clone.active) else {
+                (player_index, position)
+            } else if let Some(clone) =
+                self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
+            {
+                (clone.owner, clone.base.position)
+            } else {
                 continue;
             };
-            if self.entities[entity].layer != LAYER_PLAYER
-                || !self.collides(entity)
-            {
-                continue;
-            }
-            if count < candidates.len() {
-                let row = self.entities[entity];
-                candidates[count] = (row.kind, row.id, entity, clone.owner, clone.base.position);
-                count += 1;
-            }
-        }
-        candidates[..count].sort_unstable_by_key(|&(kind, id, _, _, _)| (kind, id));
-
-        let owner_team = self.players[mine.owner].team;
-        let mut written = 0;
-        for &(_, _, entity, player_index, position) in &candidates[..count] {
-            if !self.circle_overlaps_entity(query, entity) {
-                continue;
-            }
-            written += 1;
             let player = &self.players[self.players[player_index].owner];
             if player.owner != self.players[mine.owner].owner
                 && !player.invisible
                 && player.team != owner_team
             {
                 return Some(position);
-            }
-            if written == 4 {
-                break;
             }
         }
         None
@@ -33230,8 +32950,6 @@ impl RolloutWorld {
                 continue;
             }
             let scan_target = if matches!(phase, 1 | 2) && !being_held {
-                // Mine.ScanForPlayers' CircleCastAll (Mine.cs:131).
-                self.remove_destroyed_colliders();
                 self.mine_scan_target(item_index, data)
             } else {
                 None
@@ -38001,49 +37719,31 @@ impl RolloutWorld {
         let roller_id = self.players[roller].base.id;
 
         for &center in &centers[..count] {
-            // CollideExtraHurtBoxes' CircleCastAll (Roll.cs:314).
-            self.remove_destroyed_colliders();
-            self.scratch.ray_hits.clear();
             let query = Circle {
                 center,
                 radius: self.players[roller].forms[self.players[roller].active_slot].circle_radius,
             };
-            for (entity, row) in self.entities.iter().copied().enumerate() {
-                if entity == roller_entity
-                    || row.kind > 1
-                    || !self.collides(entity)
-                    || data.roll.collision_mask & (1u32 << row.layer) == 0
-                    || !self.circle_overlaps_entity(query, entity)
-                {
-                    continue;
-                }
-                self.scratch.ray_hits.push(SortedRayHit {
-                    distance: Fix::ZERO,
-                    hierarchy: row.id,
-                    kind: row.kind as u8,
-                    index: entity,
-                });
-            }
-            // CircleCastAll writes circles before boxes in collider
-            // registration order and truncates Roll's retained buffer at
-            // ten PhysicsParents.
-            self.scratch
-                .ray_hits
-                .sort_unstable_by_key(|hit| (hit.kind, hit.hierarchy));
-            let hit_count = self.scratch.ray_hits.len().min(10);
+            // CollideExtraHurtBoxes' CircleCastAll fills Roll's ten-entry
+            // buffer (Roll.cs:75,314). The Roll's own hurtbox is in it, and
+            // its PlayerCollision ignores it both ways (Roll.cs:511).
+            let mut hits = [0usize; 10];
+            let hit_count = self.circle_cast_all(query, data.roll.collision_mask, |_, _| false, &mut hits);
 
             // CollideExtraHurtBoxes invokes every target callback before
             // it begins the reciprocal Roll hurtbox callback walk.
-            for hit_offset in 0..hit_count {
-                let entity = self.scratch.ray_hits[hit_offset].index;
-                self.form_target_on_collide(entity, roller, Vec2::ZERO, PassPhase::Updater, data);
+            for &entity in &hits[..hit_count] {
+                if entity != roller_entity {
+                    self.form_target_on_collide(entity, roller, Vec2::ZERO, PassPhase::Updater, data);
+                }
             }
 
-            for hit_offset in 0..hit_count {
+            for &entity in &hits[..hit_count] {
                 if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
                     break;
                 }
-                let entity = self.scratch.ray_hits[hit_offset].index;
+                if entity == roller_entity {
+                    continue;
+                }
                 if let Some(target) = self.players.iter().position(|slot| {
                     self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
                 }) {
@@ -43243,6 +42943,8 @@ mod tests {
             magnet_hold_ticks: -1,
             ..TeleportMarker::default()
         });
+        world.register_revival_marker(0, data);
+        world.register_teleport_marker(0, data);
 
         world.magnet_pull(0, data);
         assert!(world.revival_marker_pool[0].body.force.x < Fix::ZERO);
