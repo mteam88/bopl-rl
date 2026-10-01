@@ -1076,7 +1076,7 @@ impl RolloutWorld {
         // Of the lightning's pairs only a slime's, form's, clone's and Mine's
         // run here yet.
         if matches!(other, Part::Line(_))
-            && !matches!(receiver, Part::Body(_) | Part::Clone(_))
+            && !matches!(receiver, Part::Body(_) | Part::Clone(_) | Part::Rock(_))
             && !matches!(receiver, Part::Item(item) if self.thrown_items[item].ability == ABILITY_MINE)
         {
             return;
@@ -1127,11 +1127,17 @@ impl RolloutWorld {
                 _ => {}
             },
             // The form's circle calls BounceBall's OnCollide and its
-            // PlayerCollision's (DPhysicsCircle.cs:330-346), and a spike's
-            // zero-owner Explosion kills it as it does a slime.
+            // PlayerCollision's (DPhysicsCircle.cs:330-346), and a spike's,
+            // a lethal Tesla node's or its lightning's zero-owner Explosion
+            // kills it as it does a slime.
             Part::Rock(rock) => {
                 self.rock_on_collide(rock, contact.normal, self.part_layer(other, data));
-                if matches!(other, Part::Spike(_)) && !self.collider_destroyed(collider) {
+                let lethal = match other {
+                    Part::Spike(_) | Part::Line(_) => true,
+                    Part::Node(node) => self.tesla_nodes[node].lethal,
+                    _ => false,
+                };
+                if lethal && !self.collider_destroyed(collider) {
                     let hit = CallbackHit::Kill { player: rock, killer: 0, cause: CAUSE_OTHER, slime: false };
                     self.run_callback_hit(hit, data);
                 }

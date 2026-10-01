@@ -16596,19 +16596,23 @@ impl RolloutWorld {
                     (pass, later, earlier)
                 };
                 let node_min = self.swept_min(swept_node);
-                // A live node's pair with a slime's or form's collider queues
-                // from the Circle/Circle and Circle/Box groups.
+                // A live node's pair with a slime's or form's collider, the
+                // Rock form's circle included, queues from the Circle/Circle
+                // and Circle/Box groups.
                 // RingBuffer.Add DestroyFixes an evicted node, whose circle
                 // stays in this pass's DetPhysics; PlayerCollision refuses a
                 // destroyed collider (PlayerCollision.cs:313), so only its
                 // lightning, a separate object, still kills.
                 let retired = node_index >= live_nodes;
-                let grouped = !retired && self.node_body_grouped(node_index, player_index);
+                let rock = self.players[player_index].active == ActiveAbility::Rock && self.playable(player_index);
+                let grouped = !retired
+                    && (self.node_body_grouped(node_index, player_index) || (rock && self.node_part(node_index, true)));
                 let node_key = (node_hit && !grouped && !retired).then(|| pair(node_pass, node_min, node.entity));
                 // A live node's lightning meets a slime's or form's collider
                 // in the groups.
-                let line_grouped =
-                    node_index < live_nodes && self.line_part(node_index) && self.body_part_circle(player_index).is_some();
+                let line_grouped = node_index < live_nodes
+                    && self.line_part(node_index)
+                    && (rock || self.body_part_circle(player_index).is_some());
                 let line_key = line
                     .filter(|_| line_hit && !line_grouped)
                     .map(|line| pair(node_pass + 1, box_min(line), None));
