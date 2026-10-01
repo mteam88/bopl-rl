@@ -3477,6 +3477,15 @@ pub struct PlayerSlot {
     /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
     pub respawn_spawn_ticks: u32,
     pub respawn_selected: usize,
+    /// The pass Updater appended this stock's StockRespawnChooser. BeginChoice
+    /// adds it to a bare GameObject outside any prefab, so it registers with
+    /// HierarchyNumber 0, ahead of everything appended with it
+    /// (StockRespawn.cs:67-70).
+    pub chooser_appended: u32,
+    /// The pass the chooser last took its Updater turn.
+    pub chooser_ran_tick: Option<u32>,
+    /// The pass the chooser called ReSpawnFast.
+    pub chooser_finished_tick: Option<u32>,
     /// The chooser's three RevivePositionIndicators: the Revival marker
     /// prefab, live bodies in `revival_marker_pool`.
     pub stock_indicator_markers: [Option<usize>; 3],
@@ -5913,6 +5922,9 @@ impl RolloutWorld {
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
                 respawn_selected: 1,
+                chooser_appended: 0,
+                chooser_ran_tick: None,
+                chooser_finished_tick: None,
                 stock_indicator_markers: [None; 3],
                 input_jump_was_down: false,
                 last_movement_input: Vec2::ZERO,
@@ -8544,6 +8556,11 @@ impl RolloutWorld {
                 }
             }
         }
+        for (i, slot) in self.players.iter().enumerate() {
+            if slot.respawn_ticks > 0 && slot.chooser_ran_tick != Some(tick) {
+                push(slot.chooser_appended, 0, 27, i);
+            }
+        }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
                 && missile.updater_ran_tick != Some(tick)
@@ -8608,6 +8625,7 @@ impl RolloutWorld {
                 23 => self.blink_clone_tunnel_step(index, data, updater_dt),
                 24 => self.spike_attack_step(data, updater_dt, index),
                 25 | 26 => self.shockwave_step(kind == 26, index, data),
+                27 => self.stock_chooser_step(index, data),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -10253,7 +10271,7 @@ impl RolloutWorld {
                 self.players[index].obs_state_disabled_this_tick = true;
                 return;
             }
-            self.respawn_tick(index, movement_input, jump_pressed, data);
+            self.respawn_tick(index, data);
             return;
         }
         // RewindRecorder disables PlayerPhysics, whose UpdateSim is the one
@@ -39967,6 +39985,7 @@ impl RolloutWorld {
         slot.respawn_ticks = 360;
         slot.respawn_spawn_ticks = 0;
         slot.respawn_selected = 1;
+        slot.chooser_appended = self.tick + 1;
         slot.base.alive = true;
         slot.stock_death = Some((self.tick, slot.base.position));
         slot.base.position = data.maps[self.map].respawn_points[1];
@@ -40030,13 +40049,55 @@ impl RolloutWorld {
         }
     }
 
-    fn respawn_tick(
-        &mut self,
-        index: usize,
-        input_direction: Vec2,
-        jump_pressed: bool,
-        data: &data::RolloutData,
-    ) {
+    /// StockRespawnChooser.UpdateSim at its own Updater turn: choose a point
+    /// from the Player's directional input, then count down, and let a jump
+    /// edge confirm at once. It has no time-stop gate (StockRespawn.cs).
+    fn stock_chooser_step(&mut self, index: usize, data: &data::RolloutData) {
+        let tick = self.tick;
+        let slot = &self.players[index];
+        if slot.respawn_ticks == 0 || slot.chooser_ran_tick == Some(tick) {
+            return;
+        }
+        let input_direction = self.scratch.clone_actions[slot.owner].input_direction(slot.keyboard);
+        let jump_pressed = self.scratch.clone_jump_pressed[index];
+        let slot = &mut self.players[index];
+        slot.chooser_ran_tick = Some(tick);
+        let threshold = Fix::from_f32(0.3);
+        if input_direction.x < -threshold {
+            slot.respawn_selected = 0;
+        } else if input_direction.x > threshold {
+            slot.respawn_selected = 2;
+        } else if input_direction.y.abs() > threshold {
+            slot.respawn_selected = 1;
+        }
+        slot.respawn_ticks -= 1;
+        if slot.respawn_ticks == 0 || jump_pressed {
+            slot.respawn_ticks = 0;
+            slot.chooser_finished_tick = Some(tick);
+            // Finish revives at the chosen indicator's live position, then
+            // Ends every indicator not already destroyed.
+            let markers = std::mem::take(&mut slot.stock_indicator_markers);
+            let selected = markers[slot.respawn_selected].expect("stock indicator");
+            let position = self.revival_marker_pool[selected].position;
+            for marker in markers.into_iter().flatten() {
+                if self.revival_marker_pool[marker].active {
+                    self.end_revival_marker(marker);
+                }
+            }
+            // ReSpawnFast's ReSpawn (SlimeController.cs:597).
+            let owner = self.players[index].owner;
+            self.players[owner].extra_life = REVIVE_NONE;
+            let slot = &mut self.players[index];
+            slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
+            slot.base.position = position;
+            // ReSpawn simulates the body again (SlimeController.cs:591), so
+            // the hurtbox is exported at the chosen point this pass.
+            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+            slot.obs_state = STATE_FALL;
+        }
+    }
+
+    fn respawn_tick(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
         if !slot.base.alive {
             return;
@@ -40090,49 +40151,17 @@ impl RolloutWorld {
         }
 
         if slot.respawn_ticks > 0 {
-            // StockRespawnChooser.UpdateSim: choose a point from the full
-            // directional input, then decrement and allow a jump edge to
-            // confirm immediately.
-            let threshold = Fix::from_f32(0.3);
-            if input_direction.x < -threshold {
-                slot.respawn_selected = 0;
-            } else if input_direction.x > threshold {
-                slot.respawn_selected = 2;
-            } else if input_direction.y.abs() > threshold {
-                slot.respawn_selected = 1;
-            }
-            slot.respawn_ticks -= 1;
-            if slot.respawn_ticks == 0 || jump_pressed {
-                slot.respawn_ticks = 0;
-                // Finish revives at the chosen indicator's live position,
-                // then Ends every indicator not already destroyed.
-                let markers = std::mem::take(&mut slot.stock_indicator_markers);
-                let selected = markers[slot.respawn_selected].expect("stock indicator");
-                let position = self.revival_marker_pool[selected].position;
-                for marker in markers.into_iter().flatten() {
-                    if self.revival_marker_pool[marker].active {
-                        self.end_revival_marker(marker);
-                    }
-                }
-                // ReSpawnFast's ReSpawn (SlimeController.cs:597).
-                let owner = self.players[index].owner;
-                self.players[owner].extra_life = REVIVE_NONE;
-                let slot = &mut self.players[index];
-                slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
-                slot.base.position = position;
-                // ReSpawn simulates the body again (SlimeController.cs:591),
-                // so the hurtbox is exported at the chosen point this pass.
-                slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
-                // The chooser is ordered before its replacement slime. Its
-                // ReSpawnFast call moves the body, then that slime's OldUpdate
-                // publishes the selected position in this same pass.
-                slot.reported_position = slot.base.position;
-                slot.reported_tick = self.tick;
-                slot.obs_state = STATE_FALL;
-                // The replacement slime runs later than its chooser in this
-                // Updater pass and advances its fresh cooldowns immediately.
-                self.advance_slime_cooldowns(index);
-            }
+            // The replacement slime's OldUpdate returns early while its
+            // StockRespawnChooser waits (`stock_chooser_step`).
+            return;
+        }
+        if slot.chooser_finished_tick == Some(self.tick) {
+            // The chooser took its turn ahead of its replacement slime, whose
+            // ReSpawnFast moved the body. The slime's OldUpdate publishes the
+            // selected position and advances its fresh cooldowns this pass.
+            slot.reported_position = slot.base.position;
+            slot.reported_tick = self.tick;
+            self.advance_slime_cooldowns(index);
             return;
         }
 
