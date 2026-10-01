@@ -34693,6 +34693,10 @@ impl RolloutWorld {
         clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         clone.obs_state = STATE_RAGDOLL;
         self.players[owner].invisible = false;
+        // The eject writes the transform's position and ApplyRagDoll its
+        // right (PokeBall.cs:227-228, SlimeController.cs:1031-1035), so the
+        // row reads them, like the pin's.
+        self.sync_abilityless_clone_entity(victim);
     }
 
     fn detonate_grenade(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
