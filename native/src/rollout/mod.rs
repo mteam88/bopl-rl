@@ -14047,16 +14047,27 @@ impl RolloutWorld {
         let tick = self.tick;
         let active = self.players[index].active;
         match active {
-            ActiveAbility::Bow => {
-                // BowTransform.ExitAbility (BowTransform.cs:117-130) leaves
-                // groundedLocalPosition as it came.
+            ActiveAbility::Bow
+            | ActiveAbility::Freeze
+            | ActiveAbility::Blink
+            | ActiveAbility::GrowthRay
+            | ActiveAbility::ShrinkRay
+            | ActiveAbility::Duplicator => {
+                // BowTransform.ExitAbility (BowTransform.cs:117-130) and
+                // GunTransform.ExitAbility (GunTransform.cs:84-98); the Bow
+                // leaves groundedLocalPosition as it came.
                 let slot = &mut self.players[index];
                 slot.base.rotation = Fix::ZERO;
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 let local = info.local;
                 info.take_body(&slot.base);
-                info.local = local;
-                info.facing_right = slot.bow.aim.x >= Fix::ZERO;
+                let aim = if active == ActiveAbility::Bow {
+                    info.local = local;
+                    slot.bow.aim
+                } else {
+                    slot.gun.aim
+                };
+                info.facing_right = aim.x >= Fix::ZERO;
             }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
@@ -25659,7 +25670,7 @@ impl RolloutWorld {
         // on the pass after all authored fire-frame durations have elapsed.
         if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
-                self.exit_freeze_animation(index);
+                self.exit_form(index);
                 return;
             }
             self.players[index].gun.fire_ticks -= 1;
@@ -25830,7 +25841,7 @@ impl RolloutWorld {
         // on the pass after all authored fire-frame durations have elapsed.
         if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
-                self.exit_freeze_animation(index);
+                self.exit_form(index);
                 return;
             }
             self.players[index].gun.fire_ticks -= 1;
@@ -26007,7 +26018,7 @@ impl RolloutWorld {
         };
         if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
-                self.exit_scale_ray_animation(index);
+                self.exit_form(index);
                 return;
             }
             self.players[index].gun.fire_ticks -= 1;
@@ -26173,7 +26184,7 @@ impl RolloutWorld {
         let gun = &data.duplicator;
         if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
-                self.exit_scale_ray_animation(index);
+                self.exit_form(index);
                 return;
             }
             self.players[index].gun.fire_ticks -= 1;
@@ -26232,7 +26243,7 @@ impl RolloutWorld {
             .expect("valid Duplicator gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                self.exit_duplicator_landing(index);
+                self.landing_exit(index);
                 return;
             }
         }
@@ -28194,36 +28205,6 @@ impl RolloutWorld {
         } else {
             slot.base.velocity = -(aim * gun.knockback);
         }
-    }
-
-    fn exit_duplicator_landing(&mut self, index: usize) {
-        let platform_index = self.players[index]
-            .base
-            .ground
-            .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
-            .expect("grounded Duplicator has a platform");
-        let platform = &self.platforms[platform_index];
-        let form_radius = self.players[index].base.radius;
-        let position = platform
-            .surface
-            .position(self.players[index].base.local, form_radius);
-        let ordinary_radius = self.players[index].exit_slime_radius();
-        let local = platform
-            .surface
-            .local_position(position, ordinary_radius)
-            .expect("Duplicator exit lies on the platform");
-        let slot = &mut self.players[index];
-        slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.base.local = local;
-        slot.base.position = position;
-        slot.base.velocity = Vec2::ZERO;
-        slot.restore_slime_radius();
-        slot.base.align(platform);
-        slot.exit_to_fall(terrain!(self));
-        slot.reported_position = position;
-        slot.reported_tick = self.tick;
-        slot.set_ordinary_body_scale(slot.player_scale);
     }
 
     fn shoot_duplicator_ray(
@@ -32849,36 +32830,6 @@ impl RolloutWorld {
             self.vector_fields.push(self.platforms.len() - 1);
         }
         self.platforms_changed();
-    }
-
-    fn exit_freeze_animation(&mut self, index: usize) {
-        let terrain = terrain!(self);
-        let slot = &mut self.players[index];
-        // GunTransform.ExitAbility: `isFacingRight = inputVector.x >= 0`.
-        slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
-        UngroundBody::Form(slot).unground(terrain.platforms, self.tick, true);
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
-        slot.base.ground = None;
-        slot.restore_slime_radius();
-        slot.exit_to_fall(terrain);
-        slot.set_ordinary_body_scale(slot.player_scale);
-    }
-
-    fn exit_scale_ray_animation(&mut self, index: usize) {
-        let terrain = terrain!(self);
-        let slot = &mut self.players[index];
-        // GunTransform.ExitAbility: `isFacingRight = inputVector.x >= 0`.
-        slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
-        UngroundBody::Form(slot).unground(terrain.platforms, self.tick, true);
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
-        slot.base.ground = None;
-        slot.restore_slime_radius();
-        slot.exit_to_fall(terrain);
-        slot.set_ordinary_body_scale(slot.player_scale);
     }
 
     /// BowTransform.OldUpdate + UpdateSim for one tick: aim tracking, the
@@ -46499,7 +46450,7 @@ mod tests {
         world.players[0].base.grounded = false;
         world.players[0].base.ground = None;
 
-        world.exit_freeze_animation(0);
+        world.exit_form(0);
 
         assert_eq!(
             world.players[0].base.radius,
