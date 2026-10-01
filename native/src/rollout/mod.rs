@@ -2087,7 +2087,9 @@ pub struct BowState {
     /// (BowTransform.cs:246) sits after Fire in UpdateSim, so the firing pass
     /// never applies its own aim and every later pass leaves this alone:
     /// the bow keeps the orientation the last pre-shot pass wrote. Zero from
-    /// OnEnterAbility (BowTransform.cs:102).
+    /// OnEnterAbility (BowTransform.cs:102) and from the form's own exits
+    /// (BowTransform.cs:119, 225); an exit straight to Ability.ExitAbility
+    /// leaves it, and the inactive form's box keeps syncing it.
     pub form_rotation: Fix,
 }
 
@@ -13641,6 +13643,7 @@ impl RolloutWorld {
                 // leaves groundedLocalPosition as it came.
                 let slot = &mut self.players[index];
                 slot.base.set_rotation(Fix::ZERO);
+                slot.bow.form_rotation = Fix::ZERO;
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 let local = info.local;
                 info.take_body(&slot.base);
@@ -13936,6 +13939,9 @@ impl RolloutWorld {
         // `body.rotation = 0`: the FixTransform setter rebuilds up too.
         let slot = &mut self.players[index];
         slot.base.set_rotation(Fix::ZERO);
+        if slot.active == ActiveAbility::Bow {
+            slot.bow.form_rotation = Fix::ZERO;
+        }
         let aim = match slot.active {
             ActiveAbility::Bow => slot.bow.aim,
             ActiveAbility::Magnet => slot.magnet.aim,
@@ -31997,12 +32003,6 @@ impl RolloutWorld {
                 integrate = true;
             }
         }
-        // `body.up = inputVector` (BowTransform.cs:244-247), the tail of
-        // UpdateSim. It is skipped once the arrow is away, so the form's
-        // rotation latches on the pass before the shot.
-        if !slot.bow.has_fired {
-            slot.bow.form_rotation = slot.bow.aim.perp_cw().normalized_angle();
-        }
         if exit {
             self.landing_exit(index);
             // The first pass after a tunnel: Ability.UpdateSim's publish wins
@@ -32014,7 +32014,16 @@ impl RolloutWorld {
         }
         // Move ends in DropPlatformTest, whose exit disables the form and its
         // PlayerBody.
-        if drop_test && self.apply_platform_drop(index) {
+        let dropped = drop_test && self.apply_platform_drop(index);
+        // `body.up = inputVector` (BowTransform.cs:244-247), the tail of
+        // UpdateSim. It is skipped once the arrow is away, so the form's
+        // rotation latches on the pass before the shot. It follows Move, so
+        // it turns back a form that DropPlatformTest's exit just zeroed.
+        let b = &mut self.players[index].bow;
+        if !b.has_fired {
+            b.form_rotation = b.aim.perp_cw().normalized_angle();
+        }
+        if dropped {
             return;
         }
         if step_integrate {
@@ -41135,17 +41144,8 @@ impl RolloutWorld {
                 let bow_box = &mut self.entities[bow_e];
                 let flags = form_box_flags(alive && bowing);
                 if sync_form_row(bow_box, flags, bowing, entered == bow_e, slot.base.id) {
-                    // Bow's own exits zero its body rotation before
-                    // ExitAbility (BowTransform.cs:119, 225). FreezeRayGun
-                    // invokes Ability.ExitAbility directly, so the disabled
-                    // body retains the last aimed rotation.
-                    let (center, rotation) = if alive && bowing {
-                        (synced, bow_form_rotation)
-                    } else if slot.freeze_form_exit_tick == self.tick {
-                        (exit_position, bow_form_rotation)
-                    } else {
-                        (exit_position, Fix::ZERO)
-                    };
+                    let center = if alive && bowing { synced } else { exit_position };
+                    let rotation = bow_form_rotation;
                     let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[bow_e]);
                     bow_box.x = center.x.raw();
                     bow_box.y = center.y.raw();
