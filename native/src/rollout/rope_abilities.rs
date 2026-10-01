@@ -1098,13 +1098,11 @@ impl RolloutWorld {
         let direction = Vec2::new(x, Fix::from_raw(3_517_578_240)).normalized_safe();
         let position = self.players[player].base.position;
         // RaycastToClosestRoundedRect (WebSwing.cs:138).
-        self.remove_destroyed_colliders();
-        let terrain = self.platforms.terrain();
-        let hit = crate::world::closest(
-            terrain,
+        let hit = self.raycast_to_closest_rounded_rect(
             position + direction * Fix::from_raw(4_724_464_128),
             direction,
             WEB_MAX_LENGTH,
+            None,
             None,
         );
         let Some((platform, _, near)) = hit else {

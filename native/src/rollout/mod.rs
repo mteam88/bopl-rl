@@ -6463,46 +6463,12 @@ impl RolloutWorld {
             Fix::from_f32(-11.22)
         };
         let mut height = self.ability_pickups[index].position.y - floor;
-        let mut platform_height = None;
-        // RaycastToClosestRoundedRect (DynamicAbilityPickup.cs:121).
-        self.remove_destroyed_colliders();
         // DynamicAbilityPickup casts ten million units, not merely to the
-        // water/space fallback plane. A hit beyond that plane still replaces
-        // the fallback distance, so the broad phase must cover the full ray.
-        let bottom = center - Vec2::UP * Fix::from_int(10_000_000);
-        let lo = Vec2::new(center.x, center.y.min(bottom.y));
-        let hi = Vec2::new(center.x, center.y.max(bottom.y));
-        let mut candidates = self.platforms.terrain().candidates(lo, hi);
+        // water/space fallback plane (DynamicAbilityPickup.cs:121).
         let hierarchy = self.ability_pickups[index].hierarchy_base;
-        while candidates != 0 {
-            let platform_index = candidates.trailing_zeros() as usize;
-            candidates &= candidates - 1;
-            // RaycastToClosestRoundedRect skips inactive walls, such as one a
-            // QuantumTunnel hid earlier this pass.
-            if !self.platforms[platform_index].active {
-                continue;
-            }
-            let platform = &self.platforms[platform_index];
-            // DetPhysics.IsActive skips a rounded rect whose GameObject is
-            // inactive, such as a wall a QuantumTunnel hid (DetPhysics.cs:1658,1748).
-            if !platform.active {
-                continue;
-            }
-            let mut collider = platform.collider;
-            // An older spawned platform's ResizablePlatform.UpdateSim has
-            // already resized it to its own extents this pass
-            // (ResizablePlatform.cs:240-247), so the ray meets the box
-            // Box.UpdateExtents left; the Spawned platform pass runs after
-            // this pickup walk.
-            if self.platform_resized_before(platform_index, hierarchy) {
-                collider.inner = collider.inner.reset_extents().0;
-            }
-            if let Some(hit) = collider.raycast(center, -Vec2::UP)
-                && platform_height.is_none_or(|nearest| hit.near < nearest)
-            {
-                platform_height = Some(hit.near);
-            }
-        }
+        let platform_height = self
+            .raycast_to_closest_rounded_rect(center, -Vec2::UP, Fix::from_int(10_000_000), None, Some(hierarchy))
+            .map(|(_, near, _)| near);
         // RaycastToClosestRoundedRect replaces the water-derived fallback
         // whenever it hits any platform, even when that platform is farther
         // away than the water plane.
@@ -14349,24 +14315,12 @@ impl RolloutWorld {
             let travel = target - from;
             let distance = travel.length();
             if distance > Fix::ZERO {
-                // RaycastToClosestRoundedRect (RewindRecorder.cs:298).
-                self.remove_destroyed_colliders();
                 let direction = travel / distance;
                 let reach = distance + self.players[index].base.radius;
-                let mut nearest = Fix::MAX;
-                let mut hit_platform = None;
-                for (platform, body) in self.platforms.iter().enumerate() {
-                    if !body.active {
-                        continue;
-                    }
-                    if let Some(hit) = body.collider.raycast_within(from, direction, reach)
-                        && hit.near < nearest
-                    {
-                        nearest = hit.near;
-                        hit_platform = Some(platform);
-                    }
-                }
-                if let Some(platform) = hit_platform {
+                // RaycastToClosestRoundedRect (RewindRecorder.cs:298).
+                if let Some((platform, _, _)) =
+                    self.raycast_to_closest_rounded_rect(from, direction, reach, None, None)
+                {
                     self.platform_dynamics[platform].body.force += direction * Fix::from_int(3000);
                     // Rewind can wake an otherwise quiet dynamic platform. The
                     // platform epoch is also the deterministic dirty bit used
@@ -25191,30 +25145,20 @@ impl RolloutWorld {
     /// sign-symmetric in this `Fix` (it negates after dividing magnitudes), so
     /// only the multiplies had to move.
     fn magnet_pull(&mut self, index: usize, data: &data::RolloutData) {
-        // RaycastToClosestRoundedRect (MagnetGun.cs:495).
-        self.remove_destroyed_colliders();
         let magnet = &data.magnet;
-        let slot = &self.players[index];
-        let direction = slot.magnet.aim.normalized_safe();
+        let direction = self.players[index].magnet.aim.normalized_safe();
         if direction == Vec2::ZERO {
             return;
         }
         let firepoint = self.magnet_firepoint(index, data);
         let mut half_length = Fix::from_int(1000);
-        let mut nearest = Fix::MAX;
-        for platform in self.platforms.iter().filter(|platform| platform.active) {
-            if let Some(hit) = platform
-                .collider
-                .raycast(firepoint, direction)
-                .filter(|hit| hit.near <= Fix::from_int(10_000))
-                && hit.near < nearest
-            {
-                nearest = hit.near;
-            }
+        // TryPullItems' RaycastToClosestRoundedRect (MagnetGun.cs:495).
+        if let Some((_, near, _)) =
+            self.raycast_to_closest_rounded_rect(firepoint, direction, Fix::from_int(10_000), None, None)
+        {
+            half_length = near / Fix::from_int(2);
         }
-        if nearest != Fix::MAX {
-            half_length = nearest / Fix::from_int(2);
-        }
+        let slot = &self.players[index];
         half_length = half_length.max(Fix::from_f64(0.01));
         let half_width = magnet.pull_width.max(Fix::from_f64(0.01));
         let query = OrientedBox::from_basis(
@@ -25502,31 +25446,8 @@ impl RolloutWorld {
         slot.base.position + up * offset.y + right * offset.x
     }
 
-    fn magnet_wall_ray(
-        &self,
-        origin: Vec2,
-        direction: Vec2,
-        distance: Fix,
-        excluded_platform: Option<usize>,
-    ) -> Option<Fix> {
-        let mut nearest = Fix::MAX;
-        for (platform_index, platform) in self.platforms.iter().enumerate() {
-            if excluded_platform == Some(platform_index) || !platform.active {
-                continue;
-            }
-            if let Some(hit) = platform
-                .collider
-                .raycast(origin, direction)
-                .filter(|hit| hit.near <= distance && hit.near < nearest)
-            {
-                nearest = hit.near;
-            }
-        }
-        (nearest != Fix::MAX).then_some(nearest)
-    }
-
     fn magnet_firepoint_before_item_walls(
-        &self,
+        &mut self,
         index: usize,
         firepoint: Vec2,
         data: &data::RolloutData,
@@ -25546,20 +25467,15 @@ impl RolloutWorld {
             MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
             _ => None,
         };
-        let center =
-            self.magnet_wall_ray(slot.base.position, direction, distance, excluded_platform);
-        let upper = self.magnet_wall_ray(
-            root + direction * side.x + direction.perp() * side.y,
-            direction,
-            distance,
-            excluded_platform,
-        );
-        let lower = self.magnet_wall_ray(
-            root + direction * side.x + direction.perp_cw() * side.y,
-            direction,
-            distance,
-            excluded_platform,
-        );
+        // RaycastForWalls' three RaycastToClosestRoundedRect (MagnetGun.cs:966-968).
+        let body_position = slot.base.position;
+        let mut ray = |origin: Vec2| {
+            self.raycast_to_closest_rounded_rect(origin, direction, distance, excluded_platform, None)
+                .map(|(_, near, _)| near)
+        };
+        let center = ray(body_position);
+        let upper = ray(root + direction * side.x + direction.perp() * side.y);
+        let lower = ray(root + direction * side.x + direction.perp_cw() * side.y);
         let mut allowed = center.unwrap_or(offset_x);
         if let (Some(upper), Some(lower)) = (upper, lower) {
             allowed = upper.max(lower).min(center.unwrap_or(Fix::MAX));
@@ -25934,16 +25850,14 @@ impl RolloutWorld {
             MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
             _ => None,
         };
-        if raycast_walls {
-            // interpolationWallRaycast's RaycastToClosestRoundedRect (MagnetGun.cs:946).
-            self.remove_destroyed_colliders();
-        }
+        // interpolationWallRaycast's RaycastToClosestRoundedRect (MagnetGun.cs:946).
         if raycast_walls
-            && let Some(wall) = self.magnet_wall_ray(
+            && let Some((_, wall, _)) = self.raycast_to_closest_rounded_rect(
                 body_position,
                 direction,
                 Fix::from_int(1000),
                 excluded_platform,
+                None,
             )
         {
             distance = distance.min(wall);
@@ -26105,8 +26019,6 @@ impl RolloutWorld {
             held,
             MagnetHeld::BlackHole(_) | MagnetHeld::RevivalMarker(_) | MagnetHeld::TeleportMarker(_)
         ) {
-            // RaycastForWalls' RaycastToClosestRoundedRect (MagnetGun.cs:966-968).
-            self.remove_destroyed_colliders();
             firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
         }
         if (firepoint - object_position).length_squared() > data.magnet.max_lock_distance_squared {
@@ -26789,6 +26701,49 @@ impl RolloutWorld {
             }
             None => None,
         }
+    }
+
+    /// DetPhysics.RaycastToClosestRoundedRect (DetPhysics.cs:1721-1784):
+    /// purges destroyed colliders, then the nearest active rounded rect the
+    /// ray meets within `distance`, the first of equals in registration
+    /// order, as (platform, near distance, near point). `excluded` is a wall
+    /// whose collider is out of DetPhysics for the ray: a boulder a Magnet
+    /// holds. `updater_turn` is the caller's hierarchy when it runs ahead of
+    /// the Spawned platform pass: an older spawned platform's
+    /// ResizablePlatform.UpdateSim has resized its box already
+    /// (ResizablePlatform.cs:240-247).
+    fn raycast_to_closest_rounded_rect(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        distance: Fix,
+        excluded: Option<usize>,
+        updater_turn: Option<u32>,
+    ) -> Option<(usize, Fix, Vec2)> {
+        self.remove_destroyed_colliders();
+        let end = origin + direction * distance;
+        let lo = Vec2::new(origin.x.min(end.x), origin.y.min(end.y));
+        let hi = Vec2::new(origin.x.max(end.x), origin.y.max(end.y));
+        let mut candidates = self.platforms.terrain().candidates(lo, hi);
+        let mut nearest = None;
+        while candidates != 0 {
+            let platform = candidates.trailing_zeros() as usize;
+            candidates &= candidates - 1;
+            if !self.platforms[platform].active || excluded == Some(platform) {
+                continue;
+            }
+            let mut collider = self.platforms[platform].collider;
+            if updater_turn.is_some_and(|hierarchy| self.platform_resized_before(platform, hierarchy)) {
+                collider.inner = collider.inner.reset_extents().0;
+            }
+            if let Some(hit) = collider.raycast(origin, direction)
+                && hit.near <= distance
+                && nearest.is_none_or(|(_, near, _)| hit.near < near)
+            {
+                nearest = Some((platform, hit.near, origin + direction * hit.near));
+            }
+        }
+        nearest
     }
 
     /// DetPhysics.CircleCastAll (DetPhysics.cs:1950-1995): purges destroyed
@@ -42321,7 +42276,7 @@ mod tests {
     }
 
     #[test]
-    fn magnet_wall_ray_can_exclude_held_boulder_platform() {
+    fn raycast_to_closest_rounded_rect_can_exclude_held_boulder_platform() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let near = world.spawn_ability_platform(
@@ -42331,11 +42286,11 @@ mod tests {
         );
         let origin = Vec2::new(Fix::ZERO, Fix::from_int(30));
 
-        let included = world
-            .magnet_wall_ray(origin, Vec2::RIGHT, Fix::from_int(100), None)
+        let (_, included, _) = world
+            .raycast_to_closest_rounded_rect(origin, Vec2::RIGHT, Fix::from_int(100), None, None)
             .expect("inserted platform blocks the ray");
-        let excluded = world.magnet_wall_ray(origin, Vec2::RIGHT, Fix::from_int(100), Some(near));
-        assert!(excluded.is_none_or(|distance| distance > included));
+        let excluded = world.raycast_to_closest_rounded_rect(origin, Vec2::RIGHT, Fix::from_int(100), Some(near), None);
+        assert!(excluded.is_none_or(|(_, distance, _)| distance > included));
     }
 
     #[test]
