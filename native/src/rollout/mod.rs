@@ -2100,11 +2100,6 @@ pub struct MagnetState {
     pub animation_ticks: u32,
     pub time_spent_pulling: Fix,
     pub aim: Vec2,
-    /// The ability FixTransform's right and stored rotation, which the form's
-    /// exported row reads, also after the form is disabled. While the form
-    /// is active they match `base.up`.
-    pub body_right: Vec2,
-    pub body_rotation: Fix,
     pub has_fired: bool,
     pub held: MagnetHeld,
     pub held_position: Vec2,
@@ -2112,21 +2107,6 @@ pub struct MagnetState {
     /// allocation-free StaticUpdate parry sweep.
     pub parry_registered: bool,
     pub parry_circle: Circle,
-}
-
-impl MagnetState {
-    /// FixTransform.up's setter: right from up, the rotation its
-    /// NormalizedVectorAngle (FixTransform.cs:56-61).
-    fn aim_body(&mut self, right: Vec2) {
-        self.body_right = right;
-        self.body_rotation = right.normalized_angle();
-    }
-
-    /// `body.rotation = Fix.Zero`: the setter stores zero and rebuilds right.
-    fn null_body_rotation(&mut self) {
-        self.body_right = Vec2::RIGHT;
-        self.body_rotation = Fix::ZERO;
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3644,6 +3624,15 @@ impl PlayerSlot {
         let base = &self.base;
         self.forms[self.active_slot].pose =
             FormPose { position: base.position, up: base.up, rotation: base.rotation };
+    }
+
+    /// PlayerBody.rotation and up are the form FixTransform's own
+    /// (PlayerBody.cs:54-76): once Ability.ExitAbility disables the form, its
+    /// transform keeps the rotation the body last had.
+    fn keep_form_rotation(&mut self) {
+        let (up, rotation) = (self.base.up, self.base.rotation);
+        let pose = &mut self.forms[self.active_slot].pose;
+        (pose.up, pose.rotation) = (up, rotation);
     }
 
     /// The FixTransform `frozen`'s form row publishes.
@@ -11517,7 +11506,6 @@ impl RolloutWorld {
                         // tail of UpdateSim turns the body to the aim
                         // (MagnetGun.cs:1256).
                         self.players[index].base.up = Vec2::UP;
-                        self.players[index].magnet.null_body_rotation();
                         self.form_entry_turn(data, index);
                         self.magnet_tick(index, action, movement_input, data, false);
                         return;
@@ -13561,7 +13549,6 @@ impl RolloutWorld {
                 self.drop_magnet_held_item(index);
                 let slot = &mut self.players[index];
                 slot.base.rotation = Fix::ZERO;
-                slot.magnet.null_body_rotation();
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 info.take_body(&slot.base);
                 info.facing_right = slot.magnet.aim.x >= Fix::ZERO;
@@ -13799,10 +13786,11 @@ impl RolloutWorld {
     fn landing_exit(&mut self, index: usize) {
         if self.players[index].active == ActiveAbility::Magnet {
             self.drop_magnet_held_item(index);
-            self.players[index].magnet.null_body_rotation();
         }
+        // `body.rotation = 0`: the FixTransform setter rebuilds up too.
         let slot = &mut self.players[index];
         slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
         let aim = match slot.active {
             ActiveAbility::Bow => slot.bow.aim,
             ActiveAbility::Magnet => slot.magnet.aim,
@@ -13822,6 +13810,9 @@ impl RolloutWorld {
     fn ability_exit(&mut self, index: usize, info: ExitInfo) {
         let tick = self.tick;
         let slot = &mut self.players[index];
+        if slot.active != ActiveAbility::None {
+            slot.keep_form_rotation();
+        }
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
@@ -25633,7 +25624,6 @@ impl RolloutWorld {
             // UnGround(nullRotation: true) resets body.right (MagnetGun.cs:1215).
             let slot = &mut self.players[index];
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-            slot.magnet.null_body_rotation();
         }
 
         if !self.players[index].base.grounded {
@@ -25684,10 +25674,10 @@ impl RolloutWorld {
             // and the exit row publishes that basis (MagnetGun.cs:358, 1253-1256).
             if self.apply_platform_drop(index) {
                 let slot = &mut self.players[index];
-                if slot.magnet.has_fired {
-                    slot.magnet.null_body_rotation();
-                } else {
-                    slot.magnet.aim_body(slot.magnet.aim);
+                if !slot.magnet.has_fired {
+                    let (s, aim) = (slot.entity_slot(slot.magnet_entity), slot.magnet.aim);
+                    slot.forms[s].pose.up = aim.perp();
+                    slot.forms[s].pose.rotation = aim.normalized_angle();
                 }
                 return;
             }
@@ -25697,7 +25687,6 @@ impl RolloutWorld {
         if !slot.magnet.has_fired {
             slot.base.up = slot.magnet.aim.perp();
             slot.base.rotation = slot.magnet.aim.normalized_angle();
-            slot.magnet.aim_body(slot.magnet.aim);
             if slot.base.velocity.length() > magnet.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * magnet.max_slow_mo_speed;
             }
@@ -26515,7 +26504,6 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 if slot.base.grounded && slot.base.ground == Some(self.platforms[platform].id) {
                     UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-                    slot.magnet.null_body_rotation();
                 }
             }
             MagnetHeld::AbilityPickup(i) => {
@@ -27180,14 +27168,12 @@ impl RolloutWorld {
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
-        slot.magnet.aim_body(facing);
         slot.base.up = facing.perp();
         slot.base.rotation = facing.normalized_angle();
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
             // UnGround(nullRotation) resets the FixTransform (MagnetGun.cs:408).
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-            slot.magnet.null_body_rotation();
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
         }
@@ -39757,6 +39743,9 @@ impl RolloutWorld {
             let handed = ExitInfo { position: drop_position, ..ExitInfo::default() };
             drop_position = self.form_exit_ability(index, handed).position;
         }
+        if self.players[index].active != ActiveAbility::None {
+            self.players[index].keep_form_rotation();
+        }
         // BlackHole hands the form's Ability its exit, skipping
         // Drill.ExitAbility, so nothing turns the hitboxes off this pass.
         if callback
@@ -42017,11 +42006,16 @@ impl RolloutWorld {
                     row.owner = slot.base.id;
                 }
                 if (alive && magnetizing) || was_active {
-                    let root = if magnetizing { synced } else { exit_position };
-                    let (rotation, offset_basis) =
-                        (slot.magnet.body_rotation, slot.magnet.body_right);
-                    let basis = Vec2::angle(rotation);
+                    // The form's one FixTransform rotation: the body's while
+                    // it magnetizes, then the one its exit left, which a
+                    // drop's UpdateSim may aim again (MagnetGun.cs:358, 1256).
                     let form = &slot.forms[slot.entity_slot(magnet_e)];
+                    let (root, rotation, offset_basis) = if magnetizing {
+                        (synced, slot.base.rotation, slot.base.up.perp_cw())
+                    } else {
+                        (exit_position, form.pose.rotation, form.pose.up.perp_cw())
+                    };
+                    let basis = Vec2::angle(rotation);
                     let center = root + offset_basis.complex_mul(form.offset);
                     let collider = form.hurtbox(
                         center,
