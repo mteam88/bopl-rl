@@ -367,7 +367,7 @@ impl RolloutWorld {
             Part::Line(i) => self.tesla_nodes[i].line_entity,
             Part::Cloud(i) => self.smoke_clouds[i].entity,
             Part::Explosion(blast) => Some(self.blast_entity(blast)),
-            Part::Water => None,
+            Part::Water => self.water_entity,
         }
     }
 

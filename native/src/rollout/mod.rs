@@ -4635,6 +4635,8 @@ pub struct RolloutWorld {
     pub platform_defs: Vec<usize>,
     /// Parallel to `platforms`: index into the entity table.
     pub platform_entities: Vec<usize>,
+    /// The scene water's row, registered with the map.
+    pub water_entity: Option<usize>,
     pub arrows: Vec<Arrow>,
     /// Every landed arrow still a child of its collider, in landing order,
     /// which is each parent's child order.
@@ -4831,6 +4833,7 @@ impl RolloutWorld {
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
+            water_entity: None,
             arrows: Vec::with_capacity(64),
             landed_arrows: Vec::new(),
             ability_pickups: Vec::with_capacity(4),
@@ -4944,6 +4947,7 @@ impl RolloutWorld {
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
+        self.water_entity = src.water_entity;
         self.arrows.clone_from(&src.arrows);
         self.landed_arrows.clone_from(&src.landed_arrows);
         self.ability_pickups.clone_from(&src.ability_pickups);
@@ -5056,6 +5060,7 @@ impl RolloutWorld {
             platform_dynamics: _,
             platform_defs: _,
             platform_entities: _,
+            water_entity: _,
             arrows: _,
             landed_arrows: _,
             ability_pickups: _,
@@ -5255,6 +5260,7 @@ impl RolloutWorld {
         self.platforms_changed();
         self.platform_defs.clear();
         self.platform_entities.clear();
+        self.water_entity = None;
         self.entities.clear();
         self.entity_inverse_extents.clear();
         self.slimes.clear();
@@ -5429,7 +5435,7 @@ impl RolloutWorld {
             // (Box.SetRotation, Box.cs:33) with `inverseExtents = One / extents`,
             // the same round trip as the platform perimeters.
             let water_extents = data::surface_extents(water_extents);
-            self.push_entity(CEntity {
+            let entity = self.push_entity(CEntity {
                 id: water_id,
                 kind: 1,
                 layer: LAYER_WATER,
@@ -5443,6 +5449,7 @@ impl RolloutWorld {
                 inverse_mass: -(1 << 32),
                 ..CEntity::default()
             }, Vec2::new(Fix::ONE / water_extents.x, Fix::ONE / water_extents.y));
+            self.water_entity = Some(entity);
         }
         for i in 0..players {
             for s in 0..=slots {
