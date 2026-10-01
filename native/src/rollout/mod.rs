@@ -3330,6 +3330,8 @@ pub struct PlayerSlot {
     /// Player.Position on it, so Player.SetPosition's tie rule lets only the
     /// first write of the next pass through.
     pub blink_tunnel_end_tick: Option<u32>,
+    /// The pass the tunnel last took its Updater turn.
+    pub blink_tunnel_stepped_tick: Option<u32>,
     /// Player.Position when that tie kept an earlier write of this pass over
     /// the one in `reported_position`, with the pass it belongs to.
     pub tie_position: Option<(u32, Vec2)>,
@@ -5741,6 +5743,7 @@ impl RolloutWorld {
                 blink_tunnel_age: Fix::ZERO,
                 blink_tunnel_released: false,
                 blink_tunnel_end_tick: None,
+                blink_tunnel_stepped_tick: None,
                 tie_position: None,
                 position_setter_last: u32::MAX,
                 position_override: None,
@@ -8331,6 +8334,14 @@ impl RolloutWorld {
                 push(100_000_000 + tunnel.hierarchy, 17, i);
             }
         }
+        for (i, slot) in self.players.iter().enumerate() {
+            if slot.blink_tunnel_active
+                && slot.blink_tunnel_born_tick != tick
+                && slot.blink_tunnel_stepped_tick != Some(tick)
+            {
+                push(100_000_000 + slot.blink_tunnel_hierarchy, 20, i);
+            }
+        }
         for (i, clone) in self.abilityless_clones.iter().enumerate() {
             if clone.active && clone.born_tick < tick && clone.updater_ran_tick != Some(tick) {
                 push(100_000_000 + clone.hierarchy_base, 14, i);
@@ -8395,6 +8406,7 @@ impl RolloutWorld {
                 }
                 16 => self.tesla_nodes_update(data, updater_dt, hierarchy - 99_999_999),
                 17 => self.blink_object_tunnels_tick(data, updater_dt, Some(hierarchy - 99_999_999)),
+                20 => self.blink_tunnel_step(index, data, updater_dt),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -31076,55 +31088,64 @@ impl RolloutWorld {
             self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
             self.teleport_effects_tick(data, updater_dt, effects_from..hierarchy);
             effects_from = effects_from.max(hierarchy);
-            if self.players[victim].blink_tunnel_age > data.blink.player_duration {
-                let slot = &mut self.players[victim];
-                slot.set_blink_tunnel(&mut self.entities, false);
-                slot.blink_tunnel_end_tick = Some(self.tick);
-            }
-            self.players[victim].blink_tunnel_age += updater_dt;
-            if !self.players[victim].blink_tunnel_released
-                && self.players[victim].blink_tunnel_age
-                    >= data.blink.player_duration - data.blink.tunnel_release_duration
-            {
-                // A DuplicatePlatformEffect registered before this tunnel has
-                // already spawned its copy, which the release may land on.
-                self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
-                if self.players[victim].base.grounded {
-                    // AttachToGround replaces a ground destroyed while the
-                    // victim was hidden (PlayerPhysics.cs:496-500).
-                    if self.release_grounded_blink_player(victim) {
-                        self.players[victim].ground_destroyed = None;
-                    }
-                    // AttachToGround aligns the swallowed form's own body,
-                    // which for a Bow is the rotation its box reads.
-                    let slot = &mut self.players[victim];
-                    if slot.active == ActiveAbility::Bow {
-                        slot.bow.form_rotation = slot.base.rotation;
-                    }
-                    if slot.active == ActiveAbility::BlackHole {
-                        slot.black_hole_cast.collider_up = slot.base.up;
-                        slot.black_hole_cast.collider_rotation = slot.base.rotation;
-                    }
-                } else {
-                    self.release_airborne_blink_player(victim);
-                }
-                // DetPhysics keeps syncing the inactive form's box, which
-                // follows the body the release just moved.
-                let slot = &mut self.players[victim];
-                if slot.active == ActiveAbility::BlackHole {
-                    slot.black_hole_cast.collider_position = slot.base.position;
-                }
-                // The release moved victimFixTrans, a form's own transform,
-                // which the next Simulate syncs to its hidden box
-                // (QuantumTunnel.cs:180-182, DetPhysics.cs:2499-2531).
-                if slot.active != ActiveAbility::None {
-                    slot.sync_form_pose();
-                }
-                self.players[victim].base.sync_collider();
-                self.players[victim].blink_tunnel_released = true;
+            if self.players[victim].blink_tunnel_stepped_tick != Some(self.tick) {
+                self.blink_tunnel_step(victim, data, updater_dt);
             }
         }
         self.teleport_effects_tick(data, updater_dt, effects_from..u32::MAX);
+    }
+
+    /// One slime QuantumTunnel's UpdateSim turn (QuantumTunnel.cs:144-196).
+    fn blink_tunnel_step(&mut self, victim: usize, data: &data::RolloutData, updater_dt: Fix) {
+        self.players[victim].blink_tunnel_stepped_tick = Some(self.tick);
+        let hierarchy = self.players[victim].blink_tunnel_hierarchy;
+        if self.players[victim].blink_tunnel_age > data.blink.player_duration {
+            let slot = &mut self.players[victim];
+            slot.set_blink_tunnel(&mut self.entities, false);
+            slot.blink_tunnel_end_tick = Some(self.tick);
+        }
+        self.players[victim].blink_tunnel_age += updater_dt;
+        if !self.players[victim].blink_tunnel_released
+            && self.players[victim].blink_tunnel_age
+                >= data.blink.player_duration - data.blink.tunnel_release_duration
+        {
+            // A DuplicatePlatformEffect registered before this tunnel has
+            // already spawned its copy, which the release may land on.
+            self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
+            if self.players[victim].base.grounded {
+                // AttachToGround replaces a ground destroyed while the
+                // victim was hidden (PlayerPhysics.cs:496-500).
+                if self.release_grounded_blink_player(victim) {
+                    self.players[victim].ground_destroyed = None;
+                }
+                // AttachToGround aligns the swallowed form's own body,
+                // which for a Bow is the rotation its box reads.
+                let slot = &mut self.players[victim];
+                if slot.active == ActiveAbility::Bow {
+                    slot.bow.form_rotation = slot.base.rotation;
+                }
+                if slot.active == ActiveAbility::BlackHole {
+                    slot.black_hole_cast.collider_up = slot.base.up;
+                    slot.black_hole_cast.collider_rotation = slot.base.rotation;
+                }
+            } else {
+                self.release_airborne_blink_player(victim);
+            }
+            // DetPhysics keeps syncing the inactive form's box, which
+            // follows the body the release just moved.
+            let slot = &mut self.players[victim];
+            if slot.active == ActiveAbility::BlackHole {
+                slot.black_hole_cast.collider_position = slot.base.position;
+            }
+            // The release moved victimFixTrans, a form's own transform,
+            // which the next Simulate syncs to its hidden box
+            // (QuantumTunnel.cs:180-182, DetPhysics.cs:2499-2531).
+            if slot.active != ActiveAbility::None {
+                slot.sync_form_pose();
+            }
+            self.players[victim].base.sync_collider();
+            self.players[victim].blink_tunnel_released = true;
+        }
     }
 
     /// QuantumTunnel.UpdateSim for clone victims, in the tunnels' hierarchy
