@@ -1136,6 +1136,10 @@ pub struct SpawnedTeslaNode {
     /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
     pub transform_center: Vec2,
     pub transform_rotation: Fix,
+    /// The FixTransform offset that sync placed it with. SetScale_DPhysicsOnly
+    /// scales the live offset (`collider_offset`) at once, but the position
+    /// waits for the next SyncGameObject (FixTransform.cs:99-103).
+    pub transform_offset: Vec2,
     pub surface_offset: Fix,
     /// SimpleSparkNode._hitBoxOffsetY, compounded on each rescale like
     /// `surface_offset`, so it drifts from the prefab offset times the scale.
@@ -8063,6 +8067,7 @@ impl RolloutWorld {
         for node in &mut self.tesla_nodes {
             node.transform_center = node.collider_center;
             node.transform_rotation = node.collider_rotation;
+            node.transform_offset = node.collider_offset;
         }
         self.run_callback_hits(data);
         if has(ABILITY_GRAPPLING_HOOK) {
@@ -9173,7 +9178,7 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(node.transform_rotation);
             let position = node.transform_center
-                - node.collider_offset.complex_mul(right);
+                - node.transform_offset.complex_mul(right);
             let combined = self.platform_dynamics[node.platform_index].body;
             if let Some(entity) = node
                 .entity
@@ -9500,13 +9505,14 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(node.transform_rotation);
             let offset = node.collider_offset.complex_mul(right);
-            let root = node.transform_center - offset;
+            let root = node.transform_center - node.transform_offset.complex_mul(right);
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
                 let center = position + offset;
                 self.tesla_nodes[index].collider_center = center;
                 self.tesla_nodes[index].transform_center = center;
+                self.tesla_nodes[index].transform_offset = node.collider_offset;
                 self.platform_dynamics[node.platform_index].body.velocity =
                     Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
@@ -14818,6 +14824,7 @@ impl RolloutWorld {
             scale: collider_scale,
             radius: data.tesla.node_radius * collider_scale,
             collider_offset,
+            transform_offset: collider_offset,
             offset_scale: scale,
             body: data.tesla.node_body,
             child,
@@ -16196,9 +16203,9 @@ impl RolloutWorld {
         // unit; `right.perp() * offset.y` is algebraically equivalent but not
         // bit-identical.
         let node_root = node.transform_center
-            - node.collider_offset.complex_mul(node_right);
+            - node.transform_offset.complex_mul(node_right);
         let child_root = child_node.transform_center
-            - child_node.collider_offset.complex_mul(child_right);
+            - child_node.transform_offset.complex_mul(child_right);
         let from = node_root + node_right.perp() * node.hitbox_offset;
         let to = child_root + child_right.perp() * child_node.hitbox_offset;
         let delta = to - from;
@@ -20005,6 +20012,7 @@ impl RolloutWorld {
         node.collider_rotation = desired_rotation;
         node.transform_center = node.collider_center;
         node.transform_rotation = desired_rotation;
+        node.transform_offset = node.collider_offset;
         node.hitbox_offset = data.tesla.hitbox_offset_y * node.scale;
         node.offset_scale = node.scale;
         node.body = child_body;
@@ -28550,6 +28558,7 @@ impl RolloutWorld {
             // The copy takes the source's FixTransform.offset
             // (ShootDuplicator.cs:471).
             collider_offset: source.collider_offset,
+            transform_offset: source.collider_offset,
             offset_scale: source.scale,
             body: data.tesla.node_body,
             // Instantiate copies the GameObject's layer: a copy of a lit node
@@ -29608,7 +29617,9 @@ impl RolloutWorld {
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
             self.tesla_nodes[index].collider_center = center;
-            self.tesla_nodes[index].transform_center = center;
+            // RepositionOnParent only sets the child body's relativePos, so
+            // the FixTransform keeps its position until SyncGameObject
+            // (DPhysicsCircle.cs:424-427).
             self.entities[entity].radius = self.tesla_nodes[index].radius.raw();
             self.entities[entity].x = self.tesla_nodes[index].collider_center.x.raw();
             self.entities[entity].y = self.tesla_nodes[index].collider_center.y.raw();
