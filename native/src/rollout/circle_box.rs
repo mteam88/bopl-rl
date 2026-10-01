@@ -368,6 +368,15 @@ impl RolloutWorld {
     /// with its arm from the FixTransform, on a child's CompositeBody
     /// (DPhysicsCircle.cs:377-392, DPhysicsBox.cs:436-451).
     pub(super) fn part_add_force_at(&mut self, part: Part, force: Vec2, point: Vec2) {
+        // A slime's, form's or clone's box has no BoplBody: the impulse goes
+        // to the DetPhysics body its row publishes.
+        if let (Part::Body(_) | Part::Clone(_), Some(entity)) = (part, self.part_entity(part)) {
+            let row = &mut self.entities[entity];
+            let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy)) + force * Fix::from_raw(row.inverse_mass);
+            row.vx = velocity.x.raw();
+            row.vy = velocity.y.raw();
+            return;
+        }
         let arm = (point - self.part_root(part)).normalized_safe();
         if let Part::Arrow(i) = part {
             let mut body = self.part_body(part);
@@ -896,7 +905,8 @@ impl RolloutWorld {
     }
 
     /// DetPhysics' Box/Box group, after the Circle/Box one: rocket engine and
-    /// spike boxes of different platforms and Guided Missiles. Every manifold
+    /// spike boxes of different platforms, Guided Missiles, and slime, form
+    /// and clone boxes. Every manifold
     /// is built before the first resolves, each queues A's OnCollide then
     /// B's, and ResolveCollision works on a child's CompositeBody while
     /// PositionalCorrection takes its own inverse mass (DetPhysics.cs:3131-3168).
@@ -916,6 +926,16 @@ impl RolloutWorld {
         for i in 0..self.guided_missiles.len() {
             if self.guided_missile_live(i) {
                 parts.push(Part::Missile(i));
+            }
+        }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(false) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(false) {
+                parts.push(Part::Clone(i));
             }
         }
         parts.sort_by_key(|&part| self.part_rank(part));
@@ -1001,6 +1021,7 @@ impl RolloutWorld {
                     | Part::Hole(_)
                     | Part::Item(_)
                     | Part::Pickup(_)
+                    | Part::Spike(_)
             )
         {
             return;
@@ -1049,7 +1070,16 @@ impl RolloutWorld {
                 }
                 _ => {}
             },
-            Part::Rock(rock) => self.rock_on_collide(rock, contact.normal, self.part_layer(other, data)),
+            // The form's circle calls BounceBall's OnCollide and its
+            // PlayerCollision's (DPhysicsCircle.cs:330-346), and a spike's
+            // zero-owner Explosion kills it as it does a slime.
+            Part::Rock(rock) => {
+                self.rock_on_collide(rock, contact.normal, self.part_layer(other, data));
+                if matches!(other, Part::Spike(_)) && !self.collider_destroyed(collider) {
+                    let hit = CallbackHit::Kill { player: rock, killer: 0, cause: CAUSE_OTHER, slime: false };
+                    self.run_callback_hit(hit, data);
+                }
+            }
             // DynamicAbilityPickup.OnCollide hands its ability to the
             // SlimeController on the collider's FixTransform, a slime's own
             // box or an abilityless clone's, and to nothing else, whatever an
@@ -1105,6 +1135,18 @@ impl RolloutWorld {
                 self.rope_hook_collide(rope, target);
             }
             Part::Spike(spike) => {
+                // SpikeAttack.OnCollide returns only on a destroyed collider
+                // (SpikeAttack.cs:118): a killPlayer earlier in the queue
+                // DestroyFix'd the slime's box, while one through a form only
+                // exits it (PlayerCollision.cs:121-132, 211).
+                if let (Part::Body(player), Some(entity)) = (other, collider) {
+                    let slot = &self.players[player];
+                    if (entity == slot.body_entity && slot.slime_destroyed_tick == Some(self.tick))
+                        || self.entities[entity].flags & (E_DESTROYED | E_REMOVED) != 0
+                    {
+                        return;
+                    }
+                }
                 let hit = CallbackHit::SpikeShove { spike, target: other, point: contact.point };
                 self.run_callback_hit(hit, data);
             }
@@ -1135,6 +1177,8 @@ impl RolloutWorld {
                     // A SimpleSparkNode never assigns its Explosion's
                     // PlayerOwnerId, so the kill credits its zero default.
                     Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
+                    // Nor does a SpikeAttack's.
+                    Part::Spike(_) => (0, CAUSE_OTHER),
                     Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
                     Part::DuplicatedRock(rock) => {
                         let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
@@ -1165,6 +1209,7 @@ impl RolloutWorld {
                         let entity = state.entity.expect("registered arrow");
                         (self.entities[entity].owner, CAUSE_OTHER)
                     }
+                    Part::Spike(_) => (0, CAUSE_OTHER),
                     _ => return,
                 };
                 self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, data);

@@ -4401,10 +4401,7 @@ enum CallbackHit {
     /// DynamicAbilityPickup.OnCollide with a slime's or an abilityless
     /// clone's box, whose hurtbox row was `body` when the pair was found.
     Pickup { pickup: usize, taker: PickupTaker, body: usize },
-    /// A young SpikeAttack.OnCollide with a Player-layer box.
-    SpikeKnock { spike: usize, player: usize, entity: usize, point: Vec2 },
-    /// A young SpikeAttack.OnCollide with any other collider off the wall
-    /// layer: another composite's box, an item, a shot or a Tesla node.
+    /// A young SpikeAttack.OnCollide with any collider off the wall layer.
     SpikeShove { spike: usize, target: Part, point: Vec2 },
     /// SlimeController.OnCollide of a slime's or an abilityless clone's box
     /// with another Player-layer collider; `lower` is whether the slime's
@@ -8233,6 +8230,7 @@ impl RolloutWorld {
             || has(ABILITY_DUPLICATOR)
             || has(ABILITY_BOW)
             || has(ABILITY_BLACK_HOLE)
+            || has(ABILITY_SPIKE)
             || has_pickups
         {
             self.thrown_item_pair_contacts(data);
@@ -8263,9 +8261,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_SMOKE) {
             self.smoke_contacts(data);
-        }
-        if has(ABILITY_SPIKE) {
-            self.spike_contacts(data);
         }
         if has(ABILITY_TESLA) {
             self.tesla_contacts(data);
@@ -16495,121 +16490,6 @@ impl RolloutWorld {
             direction,
         );
         self.spike_attacks[spike_index].pushed_this_frame = true;
-    }
-
-    fn spike_contacts(&mut self, data: &data::RolloutData) {
-        // Circle/Box and Box/Box callbacks run after all rigid-body groups.
-        // Player colliders are triggers, so contact only schedules callbacks:
-        // PlayerCollision sees the persistent LethalTerrain Explosion first.
-        for spike_index in 0..self.spike_attacks.len() {
-            let spike = self.spike_attacks[spike_index];
-            if !spike.active
-                || spike.macho_carried
-                || spike.platform_index >= self.platforms.len()
-                || self.attached_hidden(spike.platform_index, spike.entity)
-            {
-                continue;
-            }
-            // SpikeAttack's Explosion has igniteFlammables, but its
-            // LethalTerrain layer never pairs with Smoke, so the attack does
-            // not light a cloud.
-            let attack_box = self.spike_attack_box(spike);
-            let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(attack_box), spike.entity);
-            let mut victims = [None; MAX_BODIES];
-            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.hittable(player_index) {
-                    continue;
-                }
-                let slot = &self.players[player_index];
-                let entity = match slot.active {
-                    ActiveAbility::None => slot.body_entity,
-                    ActiveAbility::Dash => slot.dash_entity,
-                    ActiveAbility::Bow => slot.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => slot.throw_entity,
-                    ActiveAbility::Mine => slot.mine_entity,
-                    ActiveAbility::Rock => slot.rock_entity,
-                    ActiveAbility::Roll => slot.roll_entity,
-                    ActiveAbility::Meteor => slot.meteor_entity,
-                    ActiveAbility::Push => slot.push_entity,
-                    ActiveAbility::Freeze => slot.freeze_entity,
-                    ActiveAbility::Blink => slot.blink_entity,
-                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
-                    ActiveAbility::Duplicator => slot.duplicator_entity,
-                    ActiveAbility::Magnet => slot.magnet_entity,
-                    ActiveAbility::Spike => slot.spike_entity,
-                    ActiveAbility::Engine => slot.engine_entity,
-                    ActiveAbility::Tesla => slot.tesla_entity,
-                    ActiveAbility::TimeStop => slot.time_stop_entity,
-                    ActiveAbility::Gust => slot.gust_entity,
-                    ActiveAbility::Revival => slot.revival_entity,
-                    ActiveAbility::BlackHole => slot.black_hole_entity,
-                    ActiveAbility::Throw => slot.macho_throw_entity,
-                    ActiveAbility::Drill => slot.drill_entity,
-                    ActiveAbility::Beam => slot.beam_entity,
-                    ActiveAbility::Platform => slot.circle_entity,
-                };
-                if !self.collides(entity) {
-                    continue;
-                }
-                // SortAndSweep pairs the attack where integration left it,
-                // before the ground under it pushes it out this pass; only
-                // then does the narrow phase test the corrected box.
-                if !self.swept_pair(Swept::Part(Part::Spike(spike_index)), Swept::Player(player_index)) {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let contact = if row.kind == 0 {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            radius: Fix::from_raw(row.radius),
-                        },
-                        attack_box,
-                    )
-                } else {
-                    let player_box = Self::row_box(&self.entity_inverse_extents, entity, row);
-                    swept_box_box(attack_box, hitbox_rank, player_box, self.player_sweep_rank(player_index))
-                        .map(|(contact, _)| contact)
-                };
-                *victim = contact.map(|contact| (entity, contact.point));
-            }
-            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                let Some((entity, point)) = victim else {
-                    continue;
-                };
-                // A young spike's OnCollide knocks the Player-layer box away
-                // from its root and pushes itself back (SpikeAttack.cs:
-                // 133-141); rocks_contacts knocks a Rock's circle. It returns
-                // on a destroyed collider, so when the victim's box comes first
-                // in the pair, its PlayerCollision kill leaves no knock.
-                // Spike's Explosion.PlayerOwnerId is never assigned and
-                // therefore remains zero, which is neither a live player id
-                // nor the game's environmental sentinel.
-                let knock = (self.players[player_index].active != ActiveAbility::Rock
-                    && spike.time < data.spike.push_time
-                    && self.player_time_scale >= Fix::from_f32(0.01))
-                .then_some(CallbackHit::SpikeKnock {
-                    spike: spike_index,
-                    player: player_index,
-                    entity,
-                    point,
-                });
-                let spike_first = hitbox_rank < self.player_sweep_rank(player_index);
-                if let Some(knock) = knock.filter(|_| spike_first) {
-                    self.queue_callback_hit(player_index, false, hitbox_rank, knock);
-                }
-                self.queue_callback_kill(player_index, false, hitbox_rank, 0, CAUSE_OTHER);
-                if let Some(knock) = knock.filter(|_| !spike_first) {
-                    self.queue_callback_hit(player_index, false, hitbox_rank, knock);
-                }
-            }
-        }
     }
 
     fn tesla_contacts(&mut self, data: &data::RolloutData) {
@@ -35978,31 +35858,12 @@ impl RolloutWorld {
                 }
             }
             CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause),
-            CallbackHit::SpikeKnock { spike, player, entity, point } => {
-                // SpikeAttack.OnCollide returns only on a destroyed collider
-                // (SpikeAttack.cs:118): a killPlayer earlier in the queue
-                // DestroyFix'd the slime's box, while one through a form only
-                // exits it (PlayerCollision.cs:121-132, 211).
-                let slot = &self.players[player];
-                if (entity == slot.body_entity && slot.slime_destroyed_tick == Some(self.tick))
-                    || self.entities[entity].flags & (E_DESTROYED | E_REMOVED) != 0
-                {
-                    return;
-                }
-                let direction = (point - self.spike_attack_root(spike)).normalized_safe();
-                let row = &mut self.entities[entity];
-                let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy))
-                    + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
-                row.vx = velocity.x.raw();
-                row.vy = velocity.y.raw();
-                self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
-            }
             CallbackHit::SpikeShove { spike, target, point } => {
                 // Off the wall layer, so knockAwayStr, pushed from the
                 // target's synced FixTransform (SpikeAttack.cs:116-141).
                 if self.player_time_scale < Fix::from_f32(0.01)
                     || self.spike_attacks[spike].time >= data.spike.push_time
-                    || self.part_destroyed(target)
+                    || (!matches!(target, Part::Body(_)) && self.part_destroyed(target))
                 {
                     return;
                 }
@@ -38012,6 +37873,10 @@ impl RolloutWorld {
                     || !self.collides(entity)
                     || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18)
                 {
+                    continue;
+                }
+                // A spike's pairs are the groups'.
+                if self.spike_attacks.iter().any(|spike| spike.entity == Some(entity)) {
                     continue;
                 }
                 // An arrow DetPhysics simulates pairs in circle_box_group.
