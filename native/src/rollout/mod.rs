@@ -33582,6 +33582,13 @@ impl RolloutWorld {
         let item = self.thrown_items[item_index];
         let ability_slot = item.ability_slot;
         let ability_generation = item.ability_generation;
+        // Detonate adds each cloud to `grenade.thrower.effectBuffer` only
+        // while the ThrowItem2 that threw it is live (SmokeGrenadeExplode2.cs:42-45):
+        // not a Duplicator copy's, whose Grenade has no thrower, nor one that
+        // went with a dead slime or a replaced ability.
+        let thrower_live = !item.duplicated
+            && Self::slime_listed(&self.players[item.owner])
+            && self.players[item.owner].ability_generation[ability_slot] == ability_generation;
         for &authored_offset in &data.smoke.cloud_offsets {
             let noise_angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
             let noise_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
@@ -33607,7 +33614,7 @@ impl RolloutWorld {
                         && cloud.ability_generation == ability_generation
                 })
                 .count();
-            if !item.duplicated
+            if thrower_live
                 && active_for_ability >= 40
                 && let Some((oldest, _)) = self
                     .smoke_clouds
@@ -41189,6 +41196,9 @@ mod tests {
                 ..SmokeCloud::default()
             });
         }
+        // The thrower's ThrowItem2 is still live: only its effectBuffer takes
+        // the new clouds (SmokeGrenadeExplode2.cs:42-45).
+        world.players[0].ability_generation[1] = 7;
         world.thrown_items.push(ThrownItem {
             active: true,
             owner: 0,
