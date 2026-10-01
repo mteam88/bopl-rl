@@ -40022,60 +40022,14 @@ impl RolloutWorld {
             row.y = center.y.raw();
             row.rotation = slot.base.rotation.raw();
         }
-        if form_exit
-            && matches!(
-                self.players[index].active,
-                ActiveAbility::Bow
-                    | ActiveAbility::Blink
-                    | ActiveAbility::Freeze
-                    | ActiveAbility::GrowthRay
-                    | ActiveAbility::ShrinkRay
-                    | ActiveAbility::Duplicator
-                    | ActiveAbility::Magnet
-                    | ActiveAbility::TimeStop
-            )
-        {
-            // PlayerCollision.killPlayer calls the form's ExitAbility
-            // (BowTransform, GunTransform, MagnetGun, CastSpell) with isDead=true. Each
-            // resets rotation, then PlayerPhysics.UnGround moves the form one
-            // 0.05-unit surface-normal step before Ability copies that
-            // position back to the slime and stock logic reads it.
-            UngroundBody::Form(&mut self.players[index]).unground(&self.platforms, self.tick, true);
-        }
-        if form_exit
-            && matches!(self.players[index].active, ActiveAbility::Gust | ActiveAbility::Revival)
-        {
-            // QuickSpell.ExitAbility makes the same UnGround call on a kill as
-            // on its own exit (QuickSpell.cs:93-99), so the ground kept from
-            // entry nudges the form before the slime takes its position.
-            let slot = &mut self.players[index];
-            let ground = if slot.active == ActiveAbility::Gust {
-                slot.gust.attached_ground
-            } else {
-                slot.revival.attached_ground
-            };
-            let surface = ground.and_then(|id| {
-                self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
-            });
-            slot.base.unground(surface, true);
-        }
-        // Roll.ExitAbility hands a grounded ball's exit position in by the
-        // radius difference along the ground normal (Roll.cs:216-219), and
-        // onExitAbility moves the dying slime there before DropAbilities. The
-        // player keeps publishing the ball's position.
-        let mut drop_inset = Vec2::ZERO;
-        if form_exit && self.players[index].active == ActiveAbility::Roll {
-            let slot = &self.players[index];
-            let normal = slot
-                .base
-                .grounded
-                .then(|| self.platforms.iter().find(|p| Some(p.id) == slot.base.ground))
-                .flatten()
-                .map(|platform| platform.surface.normal(slot.base.position));
-            if let Some(normal) = normal {
-                let difference = slot.base.radius - data::get().player.radius * slot.player_scale;
-                drop_inset = normal * difference;
-            }
+        // killPlayer hands the form's own ExitAbility a dead packet at its
+        // body (PlayerCollision.cs:121-131), and onExitAbility moves the slime
+        // to the position that comes back (SlimeController.cs:213-219), where
+        // DropAbilities reads it. The player keeps publishing the form's.
+        let mut drop_position = self.players[index].base.position;
+        if form_exit && self.players[index].active != ActiveAbility::None {
+            let handed = ExitInfo { position: drop_position, ..ExitInfo::default() };
+            drop_position = self.form_exit_ability(index, handed).position;
         }
         // BlackHole hands the form's Ability its exit, skipping
         // Drill.ExitAbility, so nothing turns the hitboxes off this pass.
@@ -40145,16 +40099,6 @@ impl RolloutWorld {
             self.players[index].set_blink_tunnel(&mut self.entities, false);
         }
         let slot = &mut self.players[index];
-        // SlimeController.DropAbilities reads the slime body. A death inside
-        // an ability first moves that body to the ability object's position
-        // (PlayerCollision.cs:124-131, SlimeController.cs:215-219).
-        let mut drop_position = slot.base.position - drop_inset;
-        if form_exit && slot.active == ActiveAbility::TimeStop {
-            // CastSpell.ExitAbility hands the slime its body position plus
-            // ExitAbilityOffset, while Ability.ExitAbility publishes the
-            // form's own position.
-            drop_position += data::get().time_stop.exit_offset * slot.player_scale;
-        }
         if slot.active != ActiveAbility::None {
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
