@@ -2246,6 +2246,21 @@ pub struct FrozenSlime {
     pub scale: Fix,
     /// PlayerPhysics keeps its ground while in a form.
     pub ground: Option<u32>,
+    /// PlayerPhysics.LocalPlatformPos on that ground.
+    pub local: Fix,
+}
+
+impl FrozenSlime {
+    /// The slime's PlayerBody and PlayerPhysics enabled again as they froze,
+    /// before any SyncPhysicsTo.
+    fn wake(&self, base: &mut Player) {
+        base.set_rotation(self.rotation);
+        base.external_velocity = self.external;
+        base.velocity = self.velocity - self.external;
+        base.ground = self.ground;
+        base.grounded = self.ground.is_some();
+        base.local = self.local;
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -5965,6 +5980,7 @@ impl RolloutWorld {
                     state: STATE_FALL,
                     scale: Fix::ONE,
                     ground: None,
+                    local: Fix::ZERO,
                 },
                 pass_start: (u32::MAX, Vec2::ZERO),
                 ability_entry_action: Action::default(),
@@ -10837,6 +10853,7 @@ impl RolloutWorld {
                         state: slot.obs_state,
                         scale,
                         ground: frozen.ground.filter(|_| frozen.grounded),
+                        local: frozen.local,
                     };
                     slot.slime_radius = slot.base.radius;
                     slot.select_form(s);
@@ -14160,14 +14177,8 @@ impl RolloutWorld {
     /// for the next one.
     fn ability_exit(&mut self, index: usize, info: ExitInfo) {
         let tick = self.tick;
+        self.form_returns_slime(index);
         let slot = &mut self.players[index];
-        if slot.active != ActiveAbility::None {
-            slot.keep_form_rotation();
-        }
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = tick;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.base.constants = data::get().player.constants.clone();
         slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
         slot.facing_right = info.facing_right;
         slot.base.grounded = info.grounded;
@@ -14221,6 +14232,23 @@ impl RolloutWorld {
         }
         // hurtBox.UpdatePhysicsPositions: later updaters this pass see the slime.
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+    }
+
+    /// Ability.ExitAbility's own part (Ability.cs:139-152) and the head of the
+    /// slime's onExitAbility (SlimeController.cs:198): the form publishes its
+    /// position and goes inactive, and the body is the slime's again, on its
+    /// own PlayerPhysics and radius.
+    fn form_returns_slime(&mut self, index: usize) {
+        let tick = self.tick;
+        let slot = &mut self.players[index];
+        if slot.active != ActiveAbility::None {
+            slot.keep_form_rotation();
+        }
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = tick;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.base.constants = data::get().player.constants.clone();
+        slot.base.radius = slot.slime_radius;
     }
 
     fn gold_mushroom_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
@@ -17763,7 +17791,9 @@ impl RolloutWorld {
                 // killPlayer's ignoreInvulnerability also takes a stock clone
                 // that ReSpawnFast is still animating in, and asks for no
                 // death effect. A form gets Ability.ExitAbility at its
-                // FixTransform, not the form's own exit (BlackHole.cs:486-495).
+                // FixTransform, not the form's own exit (BlackHole.cs:486-495);
+                // no form overrides it, and its onExitAbility kills the slime
+                // without ignoreInvulnerability.
                 let killer = hole.killer(&self.players);
                 // BlackHole.OnCollide calls killPlayer itself, past
                 // wasKilledThisFrame, so a slime an earlier callback destroyed
@@ -39486,8 +39516,15 @@ impl RolloutWorld {
         // PlayerCollision.killPlayer still destroys the slime and its ability
         // objects around that call (DropAbilities returns once the game ended).
         let already_won = self.players[index].won;
-        // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
-        if self.players[index].poke_invulnerable && !ignore_invulnerability {
+        // Poke Ball sets the slime's PlayerCollision mask 16 while a victim
+        // is inside. A form's death reaches the slime only through the
+        // killPlayer(ignoreInvulnerability: false) at the end of its dead
+        // exit, which that mask refuses: the form exits and the slime lives
+        // on (SlimeController.cs:215-221). The steps of the slime's killPlayer
+        // taken ahead of the form's exit below wait on that answer.
+        let in_form = self.players[index].ability_entered;
+        let slime_kill_refused = in_form && self.players[index].poke_invulnerable;
+        if self.players[index].poke_invulnerable && !in_form && !ignore_invulnerability {
             return false;
         }
         let owner = self.players[index].owner;
@@ -39507,14 +39544,17 @@ impl RolloutWorld {
         // hold the clone that replaced it: what is left is the branch the
         // counter picks and Player.Kill.
         let destroyed = self.players[index].slime_destroyed_tick == Some(self.tick);
-        if callback {
+        if callback && !slime_kill_refused {
             self.players[index].slime_destroyed_tick = Some(self.tick);
         }
         // No death effect while the player is being revived
         // (PlayerCollision.cs:115-120).
         let extra_life = self.players[owner].extra_life;
         let death_effect = spawn_effect && extra_life != REVIVE_BEING;
-        if !destroyed && let Some(row) = self.entities.get(self.players[index].body_entity) {
+        if !destroyed
+            && !slime_kill_refused
+            && let Some(row) = self.entities.get(self.players[index].body_entity)
+        {
             let tag = self.scratch.updater_hierarchy;
             let position = self.body_set_position(index);
             self.scratch.position_calls.push((tag, PositionCall::Gone(Some(position)), row.id, 0));
@@ -39565,8 +39605,10 @@ impl RolloutWorld {
         // killPlayer destroys every ability object the slime holds, active or
         // not (PlayerCollision.cs:159-167, 184-192, 203-211), so each Beam's
         // orb loses its holder.
-        for orb in self.players[index].beam_orb_slots.into_iter().flatten() {
-            self.beam_orbs[orb].holder_destroyed = Some(self.tick);
+        if !slime_kill_refused {
+            for orb in self.players[index].beam_orb_slots.into_iter().flatten() {
+                self.beam_orbs[orb].holder_destroyed = Some(self.tick);
+            }
         }
         // killPlayer hands the form's own ExitAbility a dead packet at its
         // body (PlayerCollision.cs:121-131), and onExitAbility moves the slime
@@ -39589,6 +39631,18 @@ impl RolloutWorld {
             self.players[index].drill.hitboxes_kept = true;
         } else {
             self.deactivate_drill_hitboxes(index);
+        }
+        if slime_kill_refused {
+            // onExitAbility puts the slime at the packet's position and, its
+            // killPlayer refused, clears isInAbility and returns
+            // (SlimeController.cs:215-221): no SyncPhysicsTo, so the slime
+            // is on the PlayerPhysics it froze with.
+            self.form_returns_slime(index);
+            let slot = &mut self.players[index];
+            slot.frozen_slime.wake(&mut slot.base);
+            slot.base.position = drop_position;
+            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+            return true;
         }
         // Player.RespawnPositions: the marker of every Revive on the player's
         // bodies, in the order they were set (Revive.SetReviveFlag).
