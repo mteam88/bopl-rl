@@ -35970,6 +35970,10 @@ impl RolloutWorld {
             // carries out once the Updater is done.
             if spawn.removal_time >= end {
                 spawn.destroy_pending = true;
+                // DestroyFix marks the Tesla nodes on it IsDestroyed at once,
+                // so a younger one skips its UpdateSim this pass
+                // (ResizablePlatform.cs:125-131, Updater.cs:89-100).
+                self.mark_wall_nodes_destroyed(i);
                 // A newer RopeAttachment on it sees IsDestroyed this pass.
                 let hierarchy = self.platform_turn_key(i).2 - 100_000_000;
                 for rope in &mut self.ropes {
