@@ -7605,17 +7605,28 @@ impl RolloutWorld {
         self.scratch.turn_dt = updater_dt;
         self.scratch.turn_rewind = has(ABILITY_REWIND);
         // Updater updates every Player's frame-dependent button edges before
-        // any MonoUpdatable, so a clone whose turn comes ahead of its owner's
-        // already reads this pass's jump edge.
+        // any MonoUpdatable, time stopped for it or not, and with its slime
+        // parked for a stock choice (Updater.cs:248-257): a clone whose turn
+        // comes ahead of its owner's already reads this pass's jump edge, and
+        // the edge after a Time Stop compares with the last pass's buttons.
         self.scratch.frozen_turns = 0;
         self.scratch.clone_jump_pressed = [false; MAX_BODIES];
         for &index in &player_order[..player_count] {
             if index >= self.player_count && !self.players[index].base.alive {
                 continue;
             }
-            let action = self.scratch.clone_actions[self.players[index].owner].aim_action();
-            self.scratch.clone_jump_pressed[index] =
-                action.buttons & 1 != 0 && !self.players[index].input_jump_was_down;
+            let packet = self.scratch.clone_actions[self.players[index].owner];
+            let action = packet.aim_action();
+            let jump_down = action.buttons & 1 != 0;
+            let slot = &mut self.players[index];
+            self.scratch.clone_jump_pressed[index] = jump_down && !slot.input_jump_was_down;
+            slot.last_action = action;
+            slot.last_movement_input = packet.input_direction(slot.keyboard);
+            // SlimeController.Jump reads that same edge
+            // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
+            // movement slice's copy must not go stale while an ability runs.
+            slot.base.previous_jump = slot.input_jump_was_down;
+            slot.input_jump_was_down = jump_down;
         }
         // A form's entry takes the turns of the slimes between it and the
         // form's own turn first (`form_entry_turn`).
@@ -37133,9 +37144,13 @@ impl RolloutWorld {
             } else {
                 Fix::from_f64(0.95)
             };
+            // SlimeController.OldUpdate publishes Player.Position with no
+            // time-stop gate, but only a live controller does: a destroyed
+            // slime, parked for a stock choice or out, publishes nothing.
+            if self.players[index].base.alive && !stock_clone_spawned {
+                self.publish_ability_position(index);
+            }
             if !stock_clone_spawned {
-                self.players[index].reported_position = self.players[index].base.position;
-                self.players[index].reported_tick = self.tick;
                 self.record_position_call(index);
             }
             return;
@@ -37163,19 +37178,8 @@ impl RolloutWorld {
             self.record_position_call(index);
         }
         let action = packet.aim_action();
-        self.players[index].last_action = action;
-        // Updater updates Player's frame-dependent button edges before
-        // any MonoUpdatable, including while its slime is parked for a
-        // stock choice.
-        let movement_input = packet.input_direction(self.players[index].keyboard);
-        self.players[index].last_movement_input = movement_input;
-        let jump_down = action.buttons & 1 != 0;
-        let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
-        // SlimeController.Jump reads that same edge
-        // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
-        // movement slice's copy must not go stale while an ability runs.
-        self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
-        self.players[index].input_jump_was_down = jump_down;
+        let movement_input = self.players[index].last_movement_input;
+        let jump_pressed = self.scratch.clone_jump_pressed[index];
         // An older updater's stock kill (a Tack's slip) destroyed the
         // slime before its turn, so none of its updatables run.
         if stock_clone_spawned {
