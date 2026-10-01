@@ -18160,14 +18160,9 @@ impl RolloutWorld {
                 center: self.players[index].base.position,
                 radius: self.players[index].base.radius,
             };
-            if let Some(wall) = self.platforms.iter().position(|platform| {
-                platform.active
-                    && crate::physics::contact::circle_box_overlaps(
-                        Circle { radius: circle.radius + platform.collider.radius, ..circle },
-                        platform.collider.inner,
-                    )
-            }) {
-                self.players[index].base.attach(&self.platforms[wall], circle.center);
+            let mut hits = [0; 1];
+            if self.circle_cast_rounded_rect(circle, &mut hits) > 0 {
+                self.players[index].base.attach(&self.platforms[hits[0]], circle.center);
             }
             if self.players[index].base.grounded {
                 self.stop_beam(index);
@@ -26662,6 +26657,30 @@ impl RolloutWorld {
             return None;
         }
         self.raycast_entity_row(entity, row, origin, direction).map(|hit| hit.near)
+    }
+
+    /// DetPhysics.circleCastRoundedRect (DetPhysics.cs:1882-1904): purges
+    /// destroyed colliders, then writes each active rounded rect the circle
+    /// touches, in registration order, until `hits` is full. Returns the
+    /// count.
+    fn circle_cast_rounded_rect(&mut self, query: Circle, hits: &mut [usize]) -> usize {
+        self.remove_destroyed_colliders();
+        let mut count = 0;
+        for (platform, wall) in self.platforms.iter().enumerate() {
+            if wall.active
+                && crate::physics::contact::circle_box_overlaps(
+                    Circle { radius: query.radius + wall.collider.radius, ..query },
+                    wall.collider.inner,
+                )
+            {
+                hits[count] = platform;
+                count += 1;
+                if count == hits.len() {
+                    break;
+                }
+            }
+        }
+        count
     }
 
     /// DetPhysics.CircleCastAll (DetPhysics.cs:1950-1995): purges destroyed
