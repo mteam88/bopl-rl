@@ -32731,32 +32731,46 @@ impl RolloutWorld {
         }
     }
 
-    /// Item `item_index`'s updatables at its Updater turn: BoplBody.UpdateSim,
-    /// the item's own UpdateSim (a Poke Ball's, a Tack's BananaPeel or a
-    /// Mjolnir's), then Grenade.UpdateSim and DestroyIfOutsideSceneBounds. A
-    /// fuse that runs out detonates at the item's own turn, before a younger
-    /// cloud's FlammableSmoke detonates. The TeleportedObjectEffect that
-    /// reactivates an item is newer, so the item's own updatables were
-    /// skipped this pass.
+    /// Item `item_index`'s updatables at its Updater turn, in its prefab's
+    /// component order. PokeBall, BananaPeel and MjolnirItem list BoplBody,
+    /// the item's own component (PokeBall, BananaPeel, Mjolnir),
+    /// DestroyIfOutsideSceneBounds, then Grenade. Grenade and SmokeGrenade
+    /// list Grenade, DestroyIfOutsideSceneBounds, then BoplBody; Mine_0
+    /// lists DestroyIfOutsideSceneBounds before BoplBody, and its Mine runs
+    /// in LateUpdateSim. A fuse that runs out detonates at the item's own
+    /// turn, before a younger cloud's FlammableSmoke detonates. The
+    /// TeleportedObjectEffect that reactivates an item is newer, so the
+    /// item's own updatables were skipped this pass.
     fn thrown_item_turn(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
-        self.thrown_item_body_step(item_index);
-        if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
-            return;
-        }
+        let revealed = self.teleport_revealed_this_pass(self.thrown_items[item_index].entity);
         match self.thrown_items[item_index].ability {
-            ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
-            ABILITY_TACK => {
-                self.tack_tick(item_index, data, updater_dt);
-                let item = &mut self.thrown_items[item_index];
-                if item.active && item.pending_gust_impulse != Vec2::ZERO {
-                    item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+            ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE => {
+                if !revealed {
+                    self.thrown_item_update(item_index, data, updater_dt);
                 }
-                item.pending_gust_impulse = Vec2::ZERO;
+                self.thrown_item_body_step(item_index);
             }
-            ABILITY_MJOLNIR => self.mjolnir_hammer_update(item_index, data, updater_dt),
-            _ => {}
+            ability => {
+                self.thrown_item_body_step(item_index);
+                if revealed {
+                    return;
+                }
+                match ability {
+                    ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
+                    ABILITY_TACK => {
+                        self.tack_tick(item_index, data, updater_dt);
+                        let item = &mut self.thrown_items[item_index];
+                        if item.active && item.pending_gust_impulse != Vec2::ZERO {
+                            item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+                        }
+                        item.pending_gust_impulse = Vec2::ZERO;
+                    }
+                    ABILITY_MJOLNIR => self.mjolnir_hammer_update(item_index, data, updater_dt),
+                    _ => {}
+                }
+                self.thrown_item_update(item_index, data, updater_dt);
+            }
         }
-        self.thrown_item_update(item_index, data, updater_dt);
     }
 
     fn poke_ball_tick(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
@@ -33345,7 +33359,30 @@ impl RolloutWorld {
     }
 
     /// Grenade.UpdateSim and DestroyIfOutsideSceneBounds, for every thrown item.
+    /// DestroyIfOutsideSceneBounds.UpdateSim and Grenade.UpdateSim in the
+    /// item prefab's component order: Grenade comes first on the Grenade and
+    /// SmokeGrenade prefabs, so a fuse that runs out on the pass the item
+    /// leaves the bounds detonates it before DestroyIfOutsideSceneBounds
+    /// sees it. PokeBall, BananaPeel and MjolnirItem list
+    /// DestroyIfOutsideSceneBounds first, so an item out of bounds is
+    /// destroyed before its Grenade lets go of it.
     fn thrown_item_update(
+        &mut self,
+        item_index: usize,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+    ) {
+        if matches!(self.thrown_items[item_index].ability, ABILITY_GRENADE | ABILITY_SMOKE) {
+            self.grenade_update(item_index, data, updater_dt);
+            self.destroy_if_outside_update(item_index, data);
+        } else {
+            self.destroy_if_outside_update(item_index, data);
+            self.grenade_update(item_index, data, updater_dt);
+        }
+    }
+
+    /// Grenade.UpdateSim (Grenade.cs:52-75).
+    fn grenade_update(
         &mut self,
         item_index: usize,
         data: &data::RolloutData,
@@ -33397,9 +33434,6 @@ impl RolloutWorld {
                 self.register_held_item(item_index, false, data);
             }
         }
-        // Grenade.UpdateSim comes first on the Grenade and SmokeGrenade
-        // prefabs, so a fuse that runs out on the pass the item leaves the
-        // bounds detonates it before DestroyIfOutsideSceneBounds sees it.
         let timed_out = {
             let item = &mut self.thrown_items[item_index];
             let mut timed_out = false;
@@ -33424,8 +33458,20 @@ impl RolloutWorld {
             } else {
                 self.detonate_grenade(item_index, false, data);
             }
+        }
+    }
+
+    /// DestroyIfOutsideSceneBounds.UpdateSim (DestroyIfOutsideSceneBounds.cs:53-115).
+    fn destroy_if_outside_update(&mut self, item_index: usize, data: &data::RolloutData) {
+        // A tunnel's release comes after this updater's turn.
+        let entity = self.thrown_items[item_index].entity;
+        if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
             return;
         }
+        if !self.thrown_items[item_index].active {
+            return;
+        }
+        let ability = self.thrown_items[item_index].ability;
         // Below the water Grenade, Smoke and Mine instantiate the
         // two-updatable splash. Past the space floor or the sides the
         // grenade's UpEffect/XEffect is XGunExplosion, its own unowned
