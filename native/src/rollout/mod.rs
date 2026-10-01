@@ -27853,7 +27853,7 @@ impl RolloutWorld {
         body.velocity = (position - source.position).normalized_safe()
             * (source.body.velocity.length() + Fix::from_int(15));
         body.orientation = source.body.orientation;
-        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), 4, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, 4, 1);
         self.pending_duplicated_rocks.push(DuplicatedRock {
             active: true,
             appended: self.tick + 1,
@@ -27973,7 +27973,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.spike.attack_updatable_count, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.spike.attack_updatable_count, 1);
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -28079,7 +28079,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.engine.rocket_updatable_count, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.engine.rocket_updatable_count, 1);
         let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -28185,7 +28185,7 @@ impl RolloutWorld {
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.tesla.node_updatable_count, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.tesla.node_updatable_count, 1);
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
@@ -28311,7 +28311,7 @@ impl RolloutWorld {
                 angle,
                 clone_index,
             );
-            let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), updatable_count, 1);
+            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, updatable_count, 1);
             let mut clone = source;
             clone.active = true;
             clone.id = 0;
@@ -28396,7 +28396,7 @@ impl RolloutWorld {
                 clone_index,
             );
             let up = (position - source.position).normalized_safe();
-            let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.missile.spark_updatable_count, 1);
+            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.missile.spark_updatable_count, 1);
             let mut body = data.missile.spark_body;
             body.velocity = up * speed;
             // duplicateBoplBody first copies the live rotation, then the
@@ -31592,12 +31592,11 @@ impl RolloutWorld {
         // DuplicateObject renumbers the source's updatables from 1 through
         // GetComponentsInChildren, which skips a source out of the hierarchy
         // now, as SetActive takes effect at once; the clone then keeps the
-        // scene's own hierarchy numbers.
+        // source's own numbers, offset like any prefab's.
         let hidden = self.wall_deactivated(source);
         let (updatable_count, collider_hierarchy) = if definition != usize::MAX {
             let def = &data.maps[self.map].platforms[definition];
-            let collider = if hidden { def.hierarchy } else { def.duplicate_collider_hierarchy };
-            (def.updatable_count, collider)
+            (def.updatable_count, def.duplicate_collider_hierarchy)
         } else if self.platform_dynamics[source].body_resizable {
             // A Platform ability's ResizablePlatform: six updatables, the
             // DPhysicsRoundedRect sixth.
@@ -31611,8 +31610,10 @@ impl RolloutWorld {
                 data.macho_throw.boulder_collider_hierarchy,
             )
         };
-        let source_hierarchy = (!hidden).then(|| self.entities[self.platform_entities[source]].hierarchy);
-        let hierarchy_base = self.duplicate_hierarchy(source_hierarchy, updatable_count, collider_hierarchy);
+        // A hidden source's collider keeps its own number in the copy.
+        let source_hierarchy = self.entities[self.platform_entities[source]].hierarchy;
+        let collider_hierarchy = if hidden { source_hierarchy } else { collider_hierarchy };
+        let hierarchy_base = self.duplicate_hierarchy(source_hierarchy, !hidden, updatable_count, collider_hierarchy);
 
         let mut platform = self.platforms[source].clone();
         platform.id = self.next_platform_id;
@@ -34994,32 +34995,39 @@ impl RolloutWorld {
         }
     }
 
-    /// DuplicateObject's GetComponentsInChildren: a source in the hierarchy
-    /// (`source`, by a HierarchyNumber of its own) brings its Arrow
-    /// children, sorted with its `own` updatables by HierarchyNumber and the
-    /// whole set renumbered for the copy. Reserves the copy's numbers and
-    /// returns the base of its own; each copied arrow is a new child of the
-    /// copy, whose own HierarchyNumber `key_offset` past that base names it
-    /// (ShootDuplicator.cs:707-753, Updater.cs:143-152).
-    fn duplicate_hierarchy(&mut self, source: Option<u32>, own: u32, key_offset: u32) -> u32 {
+    /// DuplicateObject's copy of `source` (by a HierarchyNumber of its own)
+    /// and its Arrow children. A source in the hierarchy has them all found
+    /// by GetComponentsInChildren, sorted with its `own` updatables by
+    /// HierarchyNumber and renumbered from one; a source out of it is found
+    /// empty and keeps its numbers. InstantiateFixed then wakes an inactive
+    /// copy for a moment, so either way every updatable, arrows included,
+    /// registers inside the prefab and has prefabsAdded added. Reserves the
+    /// copy's numbers and returns the base of its own; each copied arrow is
+    /// a new child of the copy, whose own HierarchyNumber `key_offset` past
+    /// that base names it (ShootDuplicator.cs:707-753, FixTransform.cs:160-168,
+    /// Arrow.cs:33-45, Updater.cs:143-152).
+    fn duplicate_hierarchy(&mut self, source: u32, in_hierarchy: bool, own: u32, key_offset: u32) -> u32 {
         let next = self.next_spawn_hierarchy;
-        let arrows: Vec<u32> = source.map_or(Vec::new(), |source| {
-            self.landed_arrows
-                .iter()
-                .filter(|arrow| arrow.parent == source && arrow.trimmed.is_none())
-                .map(|arrow| arrow.hierarchy)
-                .collect()
-        });
+        let arrows: Vec<u32> = self
+            .landed_arrows
+            .iter()
+            .filter(|arrow| arrow.parent == source && arrow.trimmed.is_none())
+            .map(|arrow| arrow.hierarchy)
+            .collect();
         let mut sorted = arrows.clone();
         sorted.sort_unstable();
-        let earlier = source.map_or(0, |source| sorted.partition_point(|&hierarchy| hierarchy < source)) as u32;
+        let earlier = if in_hierarchy { sorted.partition_point(|&hierarchy| hierarchy < source) as u32 } else { 0 };
         let base = next + earlier;
         self.next_spawn_hierarchy += own + arrows.len() as u32;
         let parent = 100_000_000 + base + key_offset;
         for hierarchy in arrows {
-            let rank = sorted.binary_search(&hierarchy).unwrap() as u32;
-            let rank = if rank < earlier { rank } else { rank + own };
-            self.landed_arrows.push(LandedArrow { parent, hierarchy: spawned_hierarchy(next + rank), trimmed: None });
+            let hierarchy = if in_hierarchy {
+                let rank = sorted.binary_search(&hierarchy).unwrap() as u32;
+                spawned_hierarchy(next + if rank < earlier { rank } else { rank + own })
+            } else {
+                100_000_000 + next + hierarchy
+            };
+            self.landed_arrows.push(LandedArrow { parent, hierarchy, trimmed: None });
         }
         base
     }
