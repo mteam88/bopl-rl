@@ -26733,6 +26733,27 @@ impl RolloutWorld {
         count
     }
 
+    /// DetPhysics.roundedRectCastRoundedRects (DetPhysics.cs:1906-1924):
+    /// purges destroyed colliders, then writes each active rounded rect the
+    /// query touches, in registration order, until `hits` is full. Returns
+    /// the count.
+    fn rounded_rect_cast_rounded_rects(&mut self, query: RoundedRect, hits: &mut [usize]) -> usize {
+        self.remove_destroyed_colliders();
+        let mut count = 0;
+        for (platform, wall) in self.platforms.iter().enumerate() {
+            // A copy an older effect spawned this pass is still the
+            // unrotated box its Initialize stored.
+            if wall.active && crate::physics::contact::rounded_rounded(query, wall.collider).is_some() {
+                hits[count] = platform;
+                count += 1;
+                if count == hits.len() {
+                    break;
+                }
+            }
+        }
+        count
+    }
+
     /// DetPhysics.circleCastRoundedRect (DetPhysics.cs:1882-1904): purges
     /// destroyed colliders, then writes each active rounded rect the circle
     /// touches, in registration order, until `hits` is full. Returns the
@@ -30896,17 +30917,11 @@ impl RolloutWorld {
             query.inner.inverse_extents =
                 Vec2::new(inverse(cast_extents.x), inverse(cast_extents.y));
             query.radius = self.platform_dynamics[source].start_radius + Fix::ONE;
-            // roundedRectCastRoundedRects (DuplicatePlatformEffect.cs:268).
-            self.remove_destroyed_colliders();
-            for platform_index in 0..self.platforms.len() {
-                // A copy an older effect spawned this pass is still the
-                // unrotated box its Initialize stored.
-                let collider = self.platforms[platform_index].collider;
-                if !self.platforms[platform_index].active
-                    || crate::physics::contact::rounded_rounded(query, collider).is_none()
-                {
-                    continue;
-                }
+            // DuplicatePlatformEffect.cs:268-279, into its ten-slot buffer
+            // (RlWorldState.cs:62).
+            let mut hits = [0; 10];
+            let count = self.rounded_rect_cast_rounded_rects(query, &mut hits);
+            for &platform_index in &hits[..count] {
                 let direction = (self.platforms[platform_index].surface.center - source_center)
                     .normalized_safe();
                 let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
