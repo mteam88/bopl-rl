@@ -14069,6 +14069,16 @@ impl RolloutWorld {
                 };
                 info.facing_right = aim.x >= Fix::ZERO;
             }
+            ActiveAbility::Magnet => {
+                // MagnetGun.ExitAbility (MagnetGun.cs:356-373).
+                self.drop_magnet_held_item(index);
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                slot.magnet.null_body_rotation();
+                UngroundBody::Form(slot).unground(&self.platforms, tick, true);
+                info.take_body(&slot.base);
+                info.facing_right = slot.magnet.aim.x >= Fix::ZERO;
+            }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
         info
@@ -14085,6 +14095,10 @@ impl RolloutWorld {
     /// Ability.ExitAbility (BowTransform.cs:222-237, GunTransform.cs:166-181,
     /// MagnetGun.cs:1225-1246).
     fn landing_exit(&mut self, index: usize) {
+        if self.players[index].active == ActiveAbility::Magnet {
+            self.drop_magnet_held_item(index);
+            self.players[index].magnet.null_body_rotation();
+        }
         let slot = &mut self.players[index];
         slot.base.rotation = Fix::ZERO;
         let aim = match slot.active {
@@ -26370,7 +26384,7 @@ impl RolloutWorld {
                     state.animation_ticks = 0;
                 }
                 3 if state.animation_ticks > magnet.exit_ticks => {
-                    self.exit_magnet(index, false, data);
+                    self.exit_form(index);
                     return;
                 }
                 _ => {}
@@ -26467,7 +26481,7 @@ impl RolloutWorld {
             }
             let slot = &mut self.players[index];
             if slot.base.grounded && slot.magnet.has_fired {
-                self.exit_magnet(index, true, data);
+                self.landing_exit(index);
                 return;
             }
         }
@@ -27400,7 +27414,7 @@ impl RolloutWorld {
                     // and hands over its body's position and velocities
                     // (MagnetGun.cs:356-373). ApplyRagDoll then zeroes only
                     // the self-imposed part.
-                    self.exit_magnet(i, false, data);
+                    self.exit_form(i);
                     let slot = &mut self.players[i];
                     slot.base.velocity = Vec2::ZERO;
                     freeze(slot);
@@ -28114,52 +28128,6 @@ impl RolloutWorld {
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
         }
-    }
-
-    fn exit_magnet(&mut self, index: usize, landed: bool, data: &data::RolloutData) {
-        self.drop_magnet_held_item(index);
-        let terrain = terrain!(self);
-        let landed_surface = landed.then(|| {
-            let ground = self.players[index]
-                .base
-                .ground
-                .expect("landed Magnet has a ground");
-            terrain
-                .platforms
-                .iter()
-                .find(|platform| platform.id == ground)
-                .expect("landed Magnet ground remains registered")
-        });
-        let ordinary_radius = self.players[index].exit_slime_radius();
-        let landed_local = landed_surface.map(|platform| {
-            platform
-                .surface
-                .local_position(self.players[index].base.position, ordinary_radius)
-                .expect("Magnet landing position lies on its platform")
-        });
-        let slot = &mut self.players[index];
-        // MagnetGun.ExitAbility: `isFacingRight = inputVector.x >= 0`.
-        slot.facing_right = slot.magnet.aim.x >= Fix::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.magnet.null_body_rotation();
-        slot.base.up = Vec2::UP;
-        if !landed {
-            UngroundBody::Form(slot).unground(terrain.platforms, self.tick, true);
-        }
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
-        slot.restore_slime_radius();
-        if !landed {
-            slot.base.ground = None;
-        } else if let (Some(platform), Some(local)) = (landed_surface, landed_local) {
-            slot.base.local = local;
-            slot.base.velocity = Vec2::ZERO;
-            slot.base.align(platform);
-        }
-        slot.exit_to_fall(terrain);
-        slot.base.constants = data.player.constants.clone();
-        slot.set_ordinary_body_scale(slot.player_scale);
     }
 
     fn fire_duplicator(&mut self, index: usize, data: &data::RolloutData) {
