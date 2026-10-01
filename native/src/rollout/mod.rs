@@ -7518,12 +7518,6 @@ impl RolloutWorld {
         let has_rope = has(ABILITY_GRAPPLING_HOOK) || has(ABILITY_WEB_SWING);
         // Gold Mushroom and a Duplicator shot at a slime both make ability-less clones.
         let has_clones = has(ABILITY_GOLD_MUSHROOM) || has(ABILITY_DUPLICATOR);
-        let has_thrown_item = has(ABILITY_GRENADE)
-            || has(ABILITY_SMOKE)
-            || has(ABILITY_TACK)
-            || has(ABILITY_MJOLNIR)
-            || has(ABILITY_POKE_BALL)
-            || has(ABILITY_MINE);
         // DestroyFix from a BlackHole wall callback leaves the rounded body
         // visible as destroyed for that contact pass. DetPhysics removes it
         // at the beginning of the following simulation pass.
@@ -7862,36 +7856,16 @@ impl RolloutWorld {
             clone.base.synced = clone.base.collider;
         }
         let physics_dt = DT * self.player_time_scale;
-        if has(ABILITY_BOW) {
-            self.arrows_integrate(data, updater_dt, physics_dt);
-        }
-        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
-            self.ability_pickups_integrate(physics_dt);
-        }
-        if has(ABILITY_MISSILE) {
-            self.guided_missiles_integrate(data, physics_dt);
-        }
-        if has_thrown_item {
-            self.thrown_items_integrate(data, updater_dt, physics_dt);
-        }
-        if has(ABILITY_PORTAL_GUN) {
-            self.portal_shots_integrate(physics_dt);
-        }
-        if has(ABILITY_SMOKE) {
-            self.smoke_clouds_integrate(physics_dt);
-        }
-        if has(ABILITY_REVIVAL) {
-            self.revival_markers_integrate(physics_dt, data.maps[self.map].is_space());
-        }
-        if has(ABILITY_TELEPORT) {
-            self.teleport_markers_integrate(physics_dt);
-        }
-        if has(ABILITY_ROCK) {
-            self.rocks_integrate(physics_dt);
-        }
-        if has(ABILITY_DUPLICATOR) {
-            self.duplicated_rocks_integrate(physics_dt, data);
-        }
+        self.arrows_integrate(data, updater_dt, physics_dt);
+        self.ability_pickups_integrate(physics_dt);
+        self.guided_missiles_integrate(data, physics_dt);
+        self.thrown_items_integrate(data, updater_dt, physics_dt);
+        self.portal_shots_integrate(physics_dt);
+        self.smoke_clouds_integrate(physics_dt);
+        self.revival_markers_integrate(physics_dt, data.maps[self.map].is_space());
+        self.teleport_markers_integrate(physics_dt);
+        self.rocks_integrate(physics_dt);
+        self.duplicated_rocks_integrate(physics_dt, data);
         self.claim_queued_spawns(u32::MAX);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
@@ -7957,45 +7931,33 @@ impl RolloutWorld {
         self.slime_pairs();
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
-        if has_rope {
-            self.ropes_physics(physics_dt);
-        }
-        if has(ABILITY_BEAM) {
-            self.scratch.beam_contacts = self
-                .beam_pool
-                .iter()
-                .take_while(|slot| {
-                    slot.active
-                        && slot
-                            .entity
-                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-                })
-                .count();
-            self.beam_physics_tick(data);
-        }
+        self.ropes_physics(physics_dt);
+        self.scratch.beam_contacts = self
+            .beam_pool
+            .iter()
+            .take_while(|slot| {
+                slot.active
+                    && slot
+                        .entity
+                        .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+            })
+            .count();
+        self.beam_physics_tick(data);
         // DetPhysics runs every narrow-phase group every Simulate; one with
         // no parts makes no pairs. It corrects every Circle/RR pair before any
         // Circle/Circle one, so an item's wall correction moves it before an
         // arrow's manifold with it is built.
         self.circle_wall_group(data);
         self.circle_circle_group(data);
-        if has(ABILITY_GRAPPLING_HOOK) {
-            self.grapple_hook_pairs();
-        }
+        self.grapple_hook_pairs();
         // The Circle/Box group, after the corrections of every Circle/Circle
         // pair, then the Box/Box group.
         self.thrown_item_pair_contacts(data);
         self.box_box_group(data);
-        if has(ABILITY_MISSILE) {
-            self.sync_guided_missile_rows();
-        }
-        if has_thrown_item {
-            self.thrown_items_contacts(data);
-        }
-        if has(ABILITY_ROLL) {
-            for roller in 0..self.players.len() {
-                self.roll_hurtbox_contacts(roller, data);
-            }
+        self.sync_guided_missile_rows();
+        self.thrown_items_contacts(data);
+        for roller in 0..self.players.len() {
+            self.roll_hurtbox_contacts(roller, data);
         }
         // DetPhysics.SyncGameObject: each child's FixTransform takes its
         // collider's pose before the collision callbacks (DetPhysics.cs:3172-3192).
@@ -8013,9 +7975,7 @@ impl RolloutWorld {
             node.transform_offset = node.collider_offset;
         }
         self.run_callback_hits(data);
-        if has(ABILITY_GRAPPLING_HOOK) {
-            self.grapple_hook_callbacks();
-        }
+        self.grapple_hook_callbacks();
         // The live form's PlayerPhysics.LateUpdateSim ends clearing its
         // jumpedThisFrame (PlayerPhysics.cs:163); one that jumped out is
         // inactive by now and keeps it.
