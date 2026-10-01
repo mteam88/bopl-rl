@@ -2431,9 +2431,6 @@ pub struct BlackHoleCastState {
     pub phase: u32,
     pub ticks: u32,
     pub grounded: bool,
-    pub collider_position: Vec2,
-    pub collider_up: Vec2,
-    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -16862,18 +16859,6 @@ impl RolloutWorld {
             self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
         }
         self.form_body_step(index);
-        let slot = &mut self.players[index];
-        // The hurtbox is a DPhysicsBox, and DPhysicsBox.UpdateSim is empty
-        // (DPhysicsBox.cs:374-376) - its hierarchyNumber 7 does nothing. The
-        // collider follows the body through UpdatePhysicsPositions, which
-        // reads fixTrans.position (DPhysicsBox.cs:287-288) and is driven by
-        // DetPhysics after the updater pass has run, so the box the next
-        // observation exports sits at the position PlayerBody just integrated
-        // to, not at the one the pass began with. The port snapshotted it
-        // before the motion and published a hurtbox a pass stale.
-        slot.black_hole_cast.collider_position = slot.base.position;
-        slot.black_hole_cast.collider_up = slot.base.up();
-        slot.black_hole_cast.collider_rotation = slot.base.rotation();
     }
 
     fn black_hole_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
@@ -29958,11 +29943,6 @@ impl RolloutWorld {
         // Every later Simulate still syncs the hidden box from that transform,
         // which the form's own UpdateSim, skipped while hidden, no longer
         // moves (DetPhysics.cs:2499-2531).
-        if slot.active == ActiveAbility::BlackHole {
-            slot.black_hole_cast.collider_position = slot.base.position;
-            slot.black_hole_cast.collider_up = slot.base.up();
-            slot.black_hole_cast.collider_rotation = slot.base.rotation();
-        }
         if slot.active != ActiveAbility::None {
             slot.sync_form_pose();
         }
@@ -30334,20 +30314,10 @@ impl RolloutWorld {
                 if self.release_grounded_blink_player(victim) {
                     self.players[victim].ground_destroyed = None;
                 }
-                let slot = &mut self.players[victim];
-                if slot.active == ActiveAbility::BlackHole {
-                    slot.black_hole_cast.collider_up = slot.base.up();
-                    slot.black_hole_cast.collider_rotation = slot.base.rotation();
-                }
             } else {
                 self.release_airborne_blink_player(victim);
             }
-            // DetPhysics keeps syncing the inactive form's box, which
-            // follows the body the release just moved.
             let slot = &mut self.players[victim];
-            if slot.active == ActiveAbility::BlackHole {
-                slot.black_hole_cast.collider_position = slot.base.position;
-            }
             // The release moved victimFixTrans, a form's own transform,
             // which the next Simulate syncs to its hidden box
             // (QuantumTunnel.cs:180-182, DetPhysics.cs:2499-2531).
@@ -41718,14 +41688,12 @@ impl RolloutWorld {
                         frozen_pose(black_hole_e)
                     {
                         (position, rotation, up.perp_cw())
-                    } else if casting_black_hole {
-                        (
-                            slot.black_hole_cast.collider_position,
-                            slot.black_hole_cast.collider_rotation,
-                            slot.black_hole_cast.collider_up.perp_cw(),
-                        )
                     } else {
-                        (exit_position, slot.base.rotation(), slot.base.up().perp_cw())
+                        // BlackHoleClap.ExitAbility leaves the form's rotation
+                        // (BlackHoleClap.cs:153-166), which the out box keeps.
+                        let at_sync = slot.forms[slot.entity_slot(black_hole_e)].synced;
+                        let position = if casting_black_hole { at_sync.position } else { exit_position };
+                        (position, at_sync.orientation.rotation(), at_sync.orientation.up().perp_cw())
                     };
                     let form = slot.forms[slot.active_slot];
                     let offset = if form.scale == Fix::ZERO {
