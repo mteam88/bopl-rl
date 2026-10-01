@@ -2577,8 +2577,9 @@ pub struct BeamOrbState {
     /// destroys the orb once its holder is gone at the start of its update,
     /// so a holder killed earlier in the same pass just deactivates it.
     pub holder_destroyed: Option<u32>,
-    /// Last pass Beam.UpdateSim called DisableIfNotHeld_deter.HoldThisFrame.
-    pub held_tick: Option<u32>,
+    /// DisableIfNotHeld_deter.isHeld: a HoldThisFrame since the orb's last
+    /// UpdateSim, which spends it (DisableIfNotHeld_deter.cs:22-47).
+    pub held: bool,
 }
 
 #[derive(Clone, Default)]
@@ -17322,7 +17323,9 @@ impl RolloutWorld {
         {
             let state = &mut self.beam_orbs[orb];
             state.enabled = false;
-            state.appended = self.tick + 1;
+            // Beam.OnEnterAbility's HoldThisFrame (Beam.cs:270): the revived
+            // orb is still in the Updater and spends it later this pass.
+            state.held = true;
             state.exit_ticks = 0;
             state.holder_destroyed = None;
             if let Some(entity) = state.entity {
@@ -17360,7 +17363,8 @@ impl RolloutWorld {
             position,
             exit_ticks: 0,
             holder_destroyed: None,
-            held_tick: None,
+            // Beam.OnEnterAbility's HoldThisFrame (Beam.cs:270).
+            held: true,
         });
         self.players[owner].beam_orb_slots[ability_slot] = Some(orb);
         self.players[owner].beam.orb = Some(orb);
@@ -17953,7 +17957,7 @@ impl RolloutWorld {
         let Some(orb) = self.players[index].beam.orb else {
             return;
         };
-        self.beam_orbs[orb].held_tick = Some(self.tick);
+        self.beam_orbs[orb].held = true;
         if self.beam_orbs[orb].active
             && let Some(entity) = self.beam_orbs[orb].entity
             && self.entities[entity].flags & (E_REMOVED | E_DESTROYED) == 0
@@ -17977,25 +17981,23 @@ impl RolloutWorld {
             if orb.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0) {
                 continue;
             }
-            // Only the active Beam instance's UpdateSim holds its own orb
-            // (Beam.cs:719-724), and only on a pass it runs. An orb nothing
-            // held goes inactive at its DisableIfNotHeld_deter turn: one a
+            // A new orb joins the Updater on the pass after its creation.
+            if orb.appended > self.tick {
+                continue;
+            }
+            // DisableIfNotHeld_deter.UpdateSim spends isHeld, which the
+            // creating or reviving Beam.OnEnterAbility (Beam.cs:270) or the
+            // active Beam instance's UpdateSim (Beam.cs:719-724) set since
+            // the orb's last turn. An orb nothing held goes inactive: one a
             // slime's other Beam slot left, or the current one when a Blink
-            // hid its form before the form's turn (DisableIfNotHeld_deter.cs:33-47).
+            // hid its form (DisableIfNotHeld_deter.cs:22-47).
+            let held = std::mem::take(&mut orb.held);
             let owner = &self.players[orb.owner];
             let current = owner.active == ActiveAbility::Beam && owner.beam.orb == Some(orb_index);
-            // Beam.OnEnterAbility holds the orb through
-            // DisableIfNotHeld_deter.HoldThisFrame on the very pass it
-            // creates or revives it (Beam.cs:261-274), so that pass's
-            // UpdateSim sees isHeld and neither deactivates nor destroys
-            // the object (DisableIfNotHeld_deter.cs:22-47). A death on the
-            // entry pass therefore still publishes the orb; it leaves on
-            // the pass after.
-            // Likewise a form that left during its own UpdateSim held
-            // the orb first.
-            let held = orb.appended > self.tick || orb.held_tick == Some(self.tick);
-            if !held {
-                let destroy = orb.holder_destroyed.is_some_and(|tick| tick < self.tick);
+            // A holder destroyed on an earlier pass is null whether or not it
+            // held the orb.
+            let destroy = orb.holder_destroyed.is_some_and(|tick| tick < self.tick);
+            if destroy || !held {
                 if let Some(entity) = orb.entity {
                     if destroy {
                         self.entities[entity].flags = E_REMOVED;
@@ -18010,7 +18012,7 @@ impl RolloutWorld {
             if !current {
                 continue;
             }
-            if orb.enabled || orb.exit_ticks == 0 && orb.appended > self.tick {
+            if orb.enabled {
                 continue;
             }
             // An orb with a zero counter may still be charging. Only a form
