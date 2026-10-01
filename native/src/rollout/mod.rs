@@ -651,10 +651,23 @@ pub struct AbilityPickup {
 }
 
 impl AbilityPickup {
-    /// The circle's centre, which DetPhysics places at the FixTransform
-    /// position plus its offset turned by `right` (DetPhysics.cs:2514).
-    fn center(&self) -> Vec2 {
-        self.position + Vec2::angle(self.body.orientation).complex_mul(self.offset)
+    /// `Vec2.ComplexMul(fixTrans.right, fixTrans.offset)`: the offset turned
+    /// by the rotation.
+    fn turned_offset(&self) -> Vec2 {
+        Vec2::angle(self.body.orientation).complex_mul(self.offset)
+    }
+
+    /// SyncAllPhysicsObjectsToFixTransformPosition and UpdatePhysicsPositions:
+    /// the collider's centre takes the FixTransform position plus the turned
+    /// offset (DetPhysics.cs:2514, DPhysicsCircle.cs:318).
+    fn sync_collider_to_fix_trans(&mut self) {
+        self.synced_center = self.position + self.turned_offset();
+    }
+
+    /// SyncGameObject: the FixTransform goes back from the collider's centre
+    /// by the offset turned to the new rotation (DetPhysics.cs:1654-1655).
+    fn sync_fix_trans_to_collider(&mut self) {
+        self.position = self.synced_center - self.turned_offset();
     }
 }
 
@@ -5975,6 +5988,20 @@ impl RolloutWorld {
         // BoplBody.AddForce(..., Impulse) multiplies by 60; the collider is
         // disabled initially, so this force remains queued until activation.
         body.force += direction * pickup.launch_force * Fix::from_int(60);
+        let mut state = AbilityPickup {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: Some(self.entities.len()),
+            ability,
+            position,
+            scale: Fix::ONE,
+            offset: pickup.offset,
+            radius: pickup.radius,
+            body,
+            ..AbilityPickup::default()
+        };
+        state.sync_collider_to_fix_trans();
         self.entities.push(CEntity {
             id,
             kind: 0,
@@ -5982,27 +6009,14 @@ impl RolloutWorld {
             flags: E_ACTIVE | E_TIMER_KNOWN | E_PICKUP,
             reserved: [ability, remaining_ticks(pickup.swap_period)],
             hierarchy: 100_000_000 + hierarchy_base + pickup.collider_hierarchy,
-            x: (position + pickup.offset).x.raw(),
-            y: (position + pickup.offset).y.raw(),
+            x: state.synced_center.x.raw(),
+            y: state.synced_center.y.raw(),
             radius: pickup.radius.raw(),
             inverse_mass: body.inverse_mass.raw(),
             clock_rate: Fix::ONE.raw(),
             ..CEntity::default()
         });
-        self.ability_pickups.push(AbilityPickup {
-            active: true,
-            born_tick: self.tick,
-            hierarchy_base,
-            entity: Some(self.entities.len() - 1),
-            ability,
-            position,
-            scale: Fix::ONE,
-            offset: pickup.offset,
-            radius: pickup.radius,
-            synced_center: position + pickup.offset,
-            body,
-            ..AbilityPickup::default()
-        });
+        self.ability_pickups.push(state);
     }
 
     fn ability_spawner_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
@@ -6178,9 +6192,8 @@ impl RolloutWorld {
         if let Some(entity) = state.entity {
             let row = &mut self.entities[entity];
             row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
-            let center = state.center();
-            row.x = center.x.raw();
-            row.y = center.y.raw();
+            row.x = state.synced_center.x.raw();
+            row.y = state.synced_center.y.raw();
             row.vx = state.body.velocity.x.raw();
             row.vy = state.body.velocity.y.raw();
         }
@@ -6262,12 +6275,12 @@ impl RolloutWorld {
             // Simulate moves the centre, then SyncGameObject takes the
             // rotation and puts the FixTransform the turned offset back from
             // the centre (DetPhysics.cs:1654-1655).
+            state.sync_collider_to_fix_trans();
             if state.enabled && !hidden {
-                let center = state.center() + state.body.integrate(physics_dt, Fix::ZERO);
-                state.position = center - Vec2::angle(state.body.orientation).complex_mul(state.offset);
+                state.synced_center += state.body.integrate(physics_dt, Fix::ZERO);
+                state.sync_fix_trans_to_collider();
             }
-            let center = state.center();
-            state.synced_center = center;
+            let center = state.synced_center;
             if let Some(entity) = state.entity {
                 // The circle's orientation turns at the angularVelocity a
                 // MagnetGun lock gives it (MagnetGun.cs:740).
@@ -26932,15 +26945,14 @@ impl RolloutWorld {
             }
             MagnetHeld::AbilityPickup(i) => {
                 let velocity = self.ability_pickups[i].body.velocity;
-                let pickup = self.ability_pickups[i];
-                let offset = Vec2::angle(pickup.body.orientation).complex_mul(pickup.offset);
-                let radius = pickup.radius;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let circle = Circle { center: position + offset, radius };
+                let pickup = &mut self.ability_pickups[i];
+                pickup.position = position;
+                pickup.sync_collider_to_fix_trans();
+                let circle = Circle { center: pickup.synced_center, radius: pickup.radius };
                 let own = pickup.entity;
                 let correction = self.move_object_out_of_walls(WallMover::Circle(circle), own);
                 let pickup = &mut self.ability_pickups[i];
-                pickup.synced_center = circle.center;
                 pickup.position = correction.map_or(position, |correction| circle.center + correction);
                 pickup.body.velocity = Vec2::ZERO;
             }
@@ -27666,7 +27678,7 @@ impl RolloutWorld {
             let mut body = data.pickup.body;
             body.velocity = (position - source.position).normalized_safe() * speed;
             body.orientation = source.body.orientation;
-            let clone = AbilityPickup {
+            let mut clone = AbilityPickup {
                 active: true,
                 born_tick: self.tick,
                 updater_tick: u32::MAX,
@@ -27677,8 +27689,7 @@ impl RolloutWorld {
                 scale: source.scale,
                 offset: source.offset,
                 radius: source.radius,
-                synced_center: position
-                    + Vec2::angle(source.body.orientation).complex_mul(source.offset),
+                synced_center: Vec2::ZERO,
                 body,
                 enabled: false,
                 time_passed: Fix::ZERO,
@@ -27688,6 +27699,7 @@ impl RolloutWorld {
                 duplicate_lifespan: 1800,
                 duplicate_shake_offset: Vec2::ZERO,
             };
+            clone.sync_collider_to_fix_trans();
             if let Some(free) = self
                 .ability_pickups
                 .iter()
@@ -28933,10 +28945,12 @@ impl RolloutWorld {
     }
 
     fn register_duplicated_pickup(&mut self, index: usize, data: &data::RolloutData) {
+        // Registering the collider syncs it to the FixTransform.
+        self.ability_pickups[index].sync_collider_to_fix_trans();
         let pickup = self.ability_pickups[index];
         let entity = self.entities.len();
         let id = self.next_id();
-        let center = pickup.center();
+        let center = pickup.synced_center;
         self.entities.push(CEntity {
             id,
             kind: 0,

@@ -160,7 +160,7 @@ impl RolloutWorld {
             }
             Swept::Pickup(index) => {
                 let pickup = &self.ability_pickups[index];
-                bounds(pickup.position + pickup.offset, Vec2::new(pickup.radius, pickup.radius))
+                bounds(pickup.synced_center, Vec2::new(pickup.radius, pickup.radius))
             }
             Swept::Row(entity) => {
                 // A slime's, form's or clone's collider is where DetPhysics

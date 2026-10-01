@@ -61,7 +61,7 @@ impl RolloutWorld {
             }),
             Part::Pickup(i) => {
                 let pickup = &self.ability_pickups[i];
-                Collider::Circle(Circle { center: pickup.position + pickup.offset, radius: pickup.radius })
+                Collider::Circle(Circle { center: pickup.synced_center, radius: pickup.radius })
             }
             Part::DuplicatedRock(i) => Collider::Circle(Circle {
                 center: self.duplicated_rocks[i].position,
@@ -221,7 +221,7 @@ impl RolloutWorld {
             (Part::Rock(i), None) => (self.players[i].rock.body, self.players[i].base.position),
             (Part::Pickup(i), None) => {
                 let pickup = &self.ability_pickups[i];
-                (pickup.body, pickup.position + pickup.offset)
+                (pickup.body, pickup.synced_center)
             }
             (Part::DuplicatedRock(i), None) => (self.duplicated_rocks[i].body, self.duplicated_rocks[i].position),
             (Part::Hook(r), None) => (self.part_body(part), self.ropes[r].hook_position),
@@ -263,9 +263,9 @@ impl RolloutWorld {
             Part::Pickup(i) => {
                 let pickup = &mut self.ability_pickups[i];
                 pickup.body = body;
-                pickup.position += delta;
-                let center = pickup.position + pickup.offset;
-                pickup.synced_center = center;
+                pickup.synced_center += delta;
+                pickup.sync_fix_trans_to_collider();
+                let center = pickup.synced_center;
                 if let Some(entity) = pickup.entity {
                     let row = &mut self.entities[entity];
                     row.x = center.x.raw();
