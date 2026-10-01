@@ -31326,7 +31326,6 @@ impl RolloutWorld {
         // Movement (UpdateSim). PlayerBody integrates after BowTransform.
         let mut exit = false;
         let mut integrate = false;
-        let mut step_integrate = false;
         let mut drop_test = false;
         let this = &mut *self;
         let slot = &mut this.players[index];
@@ -31368,7 +31367,7 @@ impl RolloutWorld {
             } else {
                 // Grounded aiming: physics.Move(zero) = friction, stay attached.
                 let action = Action::default();
-                step_integrate = slot.base.step_unintegrated(action, action.direction(), terrain, None);
+                integrate = slot.base.step_unintegrated(action, action.direction(), terrain, None);
                 drop_test = true;
             }
         } else if !slot.bow.has_fired {
@@ -31474,9 +31473,6 @@ impl RolloutWorld {
         }
         if dropped {
             return;
-        }
-        if step_integrate {
-            self.players[index].base.integrate();
         }
         if integrate {
             self.form_body_step(index);
