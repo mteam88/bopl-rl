@@ -4085,6 +4085,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Engine
             | ActiveAbility::Tesla
             | ActiveAbility::BlackHole
+            | ActiveAbility::Drill
     )
 }
 
@@ -14138,6 +14139,18 @@ impl RolloutWorld {
                 info.take_body(&slot.base);
                 info.facing_right = slot.facing_right;
             }
+            ActiveAbility::Drill => {
+                // Drill.ExitAbility (Drill.cs:125-133) keeps the packet's
+                // position and grounding.
+                self.deactivate_drill_hitboxes(index);
+                let slot = &mut self.players[index];
+                slot.drill.collider_position = slot.base.position;
+                slot.drill.collider_up = slot.base.up;
+                slot.drill.collider_rotation = slot.base.rotation;
+                info.velocity = slot.base.velocity;
+                info.external_velocity = slot.base.external_velocity;
+                info.facing_right = (info.velocity + info.external_velocity).x >= Fix::ZERO;
+            }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
         info
@@ -18445,36 +18458,16 @@ impl RolloutWorld {
         self.players[index].update_drill_hitboxes(data);
     }
 
+    /// Drill.exitAbility(useOffset) (Drill.cs:471-482): a packet holding only
+    /// the body's position, less the entry offset after the exit animation.
     fn exit_drill(&mut self, index: usize, use_offset: bool, data: &data::RolloutData) {
-        self.deactivate_drill_hitboxes(index);
-        let scale = self.players[index].player_scale;
-        self.players[index].drill.collider_position = self.players[index].base.position;
-        self.players[index].drill.collider_up = self.players[index].base.up;
-        self.players[index].drill.collider_rotation = self.players[index].base.rotation;
-        let ability_position = self.players[index].base.position;
-        let mut position = self.players[index].base.position;
+        let slot = &self.players[index];
+        let mut position = slot.base.position;
         if use_offset {
-            position -= (data.drill.on_enter_offset * scale)
-                .complex_mul(self.players[index].base.up.perp_cw());
+            position -= (data.drill.on_enter_offset * slot.player_scale)
+                .complex_mul(slot.base.up.perp_cw());
         }
-        let slot = &mut self.players[index];
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.base.position = position;
-        slot.set_ordinary_body_scale(slot.player_scale);
-        slot.restore_slime_radius();
-        slot.base.constants = data.player.constants.clone();
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
-        slot.base.grounded = false;
-        slot.facing_right = (slot.base.velocity + slot.base.external_velocity).x >= Fix::ZERO;
-        slot.exit_to_fall(terrain!(self));
-        // SlimeController.onExitAbility syncs the hurtbox, so later updaters
-        // this pass (BlackHole's pull) see the exit position.
-        slot.base.sync_collider();
-        // Ability.ExitAbility publishes the form collider before the slime's
-        // offset exit position is synchronized back into PlayerPhysics.
-        slot.reported_position = ability_position;
-        slot.reported_tick = self.tick;
+        self.exit_form_with(index, ExitInfo { position, ..ExitInfo::default() });
     }
 
     /// The three Explosion-layer boxes spawned by HitboxCombo use the drill
@@ -27131,11 +27124,11 @@ impl RolloutWorld {
         };
         // MagnetGun exits an ability form with an ungrounded packet placed at
         // its CurrentFirePoint, but the form's own ExitAbility overwrites that
-        // position with its body's. Only Drill and MeteorSmash pass it on.
+        // position with its body's. MeteorSmash passes it on.
         let firepoint = self.magnet_firepoint(index, data);
         if let MagnetHeld::Player(victim) = held {
             match self.players[victim].active {
-                ActiveAbility::Drill | ActiveAbility::Meteor => position = firepoint,
+                ActiveAbility::Meteor => position = firepoint,
                 ActiveAbility::Throw => self.drop_macho_held_boulder(victim, data),
                 _ => {}
             }
@@ -27216,26 +27209,6 @@ impl RolloutWorld {
                     let grounded = self.players[i].base.grounded;
                     self.exit_macho_throw(i, grounded, data);
                     freeze(&mut self.players[i]);
-                    self.players[index].magnet.held_position = self.players[i].base.position;
-                } else if self.players[i].active == ActiveAbility::Drill {
-                    // Drill.ExitAbility hands the packet its body's velocities,
-                    // so EnterFall's rays leave the fire point along the
-                    // drill's motion. ApplyRagDoll then zeroes only the
-                    // self-imposed part.
-                    self.deactivate_drill_hitboxes(i);
-                    let (velocity, external) =
-                        (self.players[i].base.velocity, self.players[i].base.external_velocity);
-                    let body = self.players[i].base.position;
-                    self.exit_form_for_freeze_at(i, position, velocity, external, data);
-                    let slot = &mut self.players[i];
-                    slot.facing_right = (velocity + external).x >= Fix::ZERO;
-                    slot.base.velocity = Vec2::ZERO;
-                    freeze(slot);
-                    // Ability.ExitAbility publishes the drill body's position.
-                    // A slime updating after its holder publishes its own.
-                    if i < index {
-                        slot.reported_position = body;
-                    }
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if matches!(
                     self.players[i].active,
