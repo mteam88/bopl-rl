@@ -642,6 +642,14 @@ pub struct AbilityPickup {
     pub duplicate_shake_offset: Vec2,
 }
 
+impl AbilityPickup {
+    /// The circle's centre, which DetPhysics places at the FixTransform
+    /// position plus its offset turned by `right` (DetPhysics.cs:2514).
+    fn center(&self) -> Vec2 {
+        self.position + Vec2::angle(self.body.orientation).complex_mul(self.offset)
+    }
+}
+
 /// Shared `ThrowItem2` payload state. Grenade is the first consumer; Smoke,
 /// Poke Ball, Tack, and Mjolnir use the same held-item/throw lifecycle.
 #[derive(Clone, Copy, Default)]
@@ -6119,8 +6127,9 @@ impl RolloutWorld {
         if let Some(entity) = state.entity {
             let row = &mut self.entities[entity];
             row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
-            row.x = (state.position + state.offset).x.raw();
-            row.y = (state.position + state.offset).y.raw();
+            let center = state.center();
+            row.x = center.x.raw();
+            row.y = center.y.raw();
             row.vx = state.body.velocity.x.raw();
             row.vy = state.body.velocity.y.raw();
         }
@@ -6199,17 +6208,25 @@ impl RolloutWorld {
             // SyncAllPhysicsObjectsToFixTransformPosition carries a disabled
             // hitbox to its FixTransform too, so the row publishes where a
             // portal or a moving platform put a freshly dropped pickup.
+            // Simulate moves the centre, then SyncGameObject takes the
+            // rotation and puts the FixTransform the turned offset back from
+            // the centre (DetPhysics.cs:1654-1655).
             if state.enabled && !hidden {
-                state.position += state.body.integrate(physics_dt, Fix::ZERO);
+                let center = state.center() + state.body.integrate(physics_dt, Fix::ZERO);
+                state.position = center - Vec2::angle(state.body.orientation).complex_mul(state.offset);
             }
-            let center = state.position + state.offset;
+            let center = state.center();
             state.synced_center = center;
             if let Some(entity) = state.entity {
+                // The circle's orientation turns at the angularVelocity a
+                // MagnetGun lock gives it (MagnetGun.cs:740).
                 let row = &mut self.entities[entity];
                 row.x = center.x.raw();
                 row.y = center.y.raw();
                 row.vx = state.body.velocity.x.raw();
                 row.vy = state.body.velocity.y.raw();
+                row.rotation = state.body.orientation.raw();
+                row.angular_velocity = state.body.angular_velocity.raw();
             }
         }
     }
@@ -17355,7 +17372,7 @@ impl RolloutWorld {
                 if pickup.entity.and_then(|entity| self.detphysics_collider(entity)).is_none() {
                     continue;
                 }
-                let center = pickup.position + pickup.offset;
+                let center = pickup.center();
                 if let Some(force) = Self::black_hole_force(
                     position,
                     center,
@@ -27550,7 +27567,9 @@ impl RolloutWorld {
             }
             MagnetHeld::AbilityPickup(i) => {
                 let velocity = self.ability_pickups[i].body.velocity;
-                let (offset, radius) = (self.ability_pickups[i].offset, self.ability_pickups[i].radius);
+                let pickup = self.ability_pickups[i];
+                let offset = Vec2::angle(pickup.body.orientation).complex_mul(pickup.offset);
+                let radius = pickup.radius;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let correction = self.magnet_circle_out_of_walls(Circle {
                     center: position + offset,
@@ -29627,7 +29646,7 @@ impl RolloutWorld {
         let pickup = self.ability_pickups[index];
         let entity = self.entities.len();
         let id = self.next_id();
-        let center = pickup.position + pickup.offset;
+        let center = pickup.center();
         self.entities.push(CEntity {
             id,
             kind: 0,
