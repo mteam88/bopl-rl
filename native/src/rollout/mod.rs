@@ -738,6 +738,14 @@ pub struct ThrownItem {
 }
 
 impl ThrownItem {
+    /// Grenade.hasBeenThrown on the Grenade and Smoke payloads, which carry
+    /// the Grenade component. Once set, ThrowItem2 still references the
+    /// payload but neither holds it in the hand nor throws it again
+    /// (ThrowItem2.cs:221, 282).
+    fn has_been_thrown(&self) -> bool {
+        matches!(self.ability, ABILITY_GRENADE | ABILITY_SMOKE) && self.launched
+    }
+
     /// BoplBody.UpdateSim's rescale: `inverseMass *= prevScale / scale` once
     /// the collider's scale moved (BoplBody.cs:332-344).
     fn rescale_mass(&mut self) {
@@ -25069,6 +25077,7 @@ impl RolloutWorld {
         // (ThrowItem2.cs:282-285).
         if self.players[index].throw_item.phase == 0
             && let Some(item_index) = self.held_throw_item(index)
+            && !self.thrown_items[item_index].has_been_thrown()
         {
             self.thrown_items[item_index].position = self.throw_dummy_position(index, gd);
         }
@@ -25295,7 +25304,9 @@ impl RolloutWorld {
         if self.players[index].throw_item.item.is_none() {
             self.spawn_held_item(index, data);
         }
-        let held = self.held_throw_item(index);
+        // A payload Grenade.UpdateSim already let go takes Fire's other
+        // branch: the recoil without a throw (ThrowItem2.cs:221-241).
+        let held = self.held_throw_item(index).filter(|&item| !self.thrown_items[item].has_been_thrown());
         let new_collider_id = held
             .filter(|&item| self.thrown_items[item].entity.is_none())
             .map(|_| self.next_id());
@@ -35277,8 +35288,10 @@ impl RolloutWorld {
         self.thrown_items[item_index].update_ran_tick = Some(self.tick);
         let ability = self.thrown_items[item_index].ability;
         // Grenade.UpdateSim lets go of a payload whose ThrowItem2 form was
-        // deactivated without its ExitAbility, as a freeze ray does: the
-        // payload is thrown where it hangs, with a second's owner grace.
+        // deactivated without its ExitAbility, as a freeze ray does, or as a
+        // Blink tunnel or a Teleport does when it SetActive(false)s the form
+        // mid-throw: the payload is thrown where it hangs, with a second's
+        // owner grace (Grenade.cs:54-58, QuantumTunnel.cs:136).
         if self.thrown_items[item_index].entity.is_none()
             && self.thrown_items[item_index].born_tick < self.tick
             && matches!(
@@ -35301,8 +35314,11 @@ impl RolloutWorld {
                         | ActiveAbility::Mjolnir
                         | ActiveAbility::PokeBall
                 )
-                && active_throw_ability(thrower.active) == ability;
+                && active_throw_ability(thrower.active) == ability
+                && !thrower.blink_tunnel_active
+                && !thrower.teleport_effect_active;
             if !holding {
+                self.thrown_items[item_index].launched |= matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE);
                 self.thrown_items[item_index].hurt_owner_delay = Fix::ONE;
                 self.register_held_item(item_index, false, data);
             }
