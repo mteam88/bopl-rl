@@ -33919,9 +33919,12 @@ impl RolloutWorld {
         let mut victim = None;
         let mut victim_is_clone = false;
         let mut victim_owner = usize::MAX;
+        // TryProximityCapture skips a slime whose GameObject is inactive: a
+        // form, a Teleport or a tunnel hid it (PokeBall.cs:153).
         for player_index in 0..self.players.len() {
             let player = &self.players[player_index];
             if player_index == owner
+                || !self.slime_active(player_index)
                 || !self.playable_slot(player)
                 || player.active != ActiveAbility::None
                 || player.base.dash.active
@@ -33940,6 +33943,7 @@ impl RolloutWorld {
         }
         for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
             if !clone.active
+                || self.abilityless_clone_hidden(clone)
                 || !clone.base.alive
                 || clone.owner == owner
                 || clone.poke_invulnerable
