@@ -31731,9 +31731,10 @@ impl RolloutWorld {
         // resizable platforms are handled by the dynamic-object duplication
         // path, which supplies their prefab hierarchy separately.
         // DuplicateObject renumbers the source's updatables from 1 through
-        // GetComponentsInChildren, which skips a source Blink has hidden; the
-        // clone then keeps the scene's own hierarchy numbers.
-        let hidden = self.entities[self.platform_entities[source]].flags & E_ACTIVE == 0;
+        // GetComponentsInChildren, which skips a source out of the hierarchy
+        // now, as SetActive takes effect at once; the clone then keeps the
+        // scene's own hierarchy numbers.
+        let hidden = self.wall_deactivated(source);
         let (updatable_count, collider_hierarchy) = if definition != usize::MAX {
             let def = &data.maps[self.map].platforms[definition];
             let collider = if hidden { def.hierarchy } else { def.duplicate_collider_hierarchy };
