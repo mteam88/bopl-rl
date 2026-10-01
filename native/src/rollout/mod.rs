@@ -3873,6 +3873,8 @@ enum CallbackHit {
     RopeHook { rope: usize, target: HookTarget },
     /// PlayerCollision.OnCollide with a player's own or another's arrow.
     ArrowKill { victim: usize, owner: u32 },
+    /// PortalShot.OnCollide with a wall, with the surface's outward normal.
+    PortalShotLand { shot: usize, normal: Vec2 },
     /// PlayerCollision.OnCollide with a lethal hitbox.
     Kill { player: usize, killer: u32, cause: u32 },
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
@@ -7776,7 +7778,7 @@ impl RolloutWorld {
         }
         if has(ABILITY_PORTAL_GUN) {
             let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
-            self.land_portal_shots_on_walls(&shot_contacts, data);
+            self.queue_portal_shot_landings(&shot_contacts);
             shot_contacts.clear();
             self.scratch.portal_shot_wall_contacts = shot_contacts;
         }
@@ -8495,20 +8497,32 @@ impl RolloutWorld {
         self.shift_platform_collider(wall_index, correction[1]);
     }
 
-    fn land_portal_shots_on_walls(&mut self, shot_contacts: &[(usize, usize, Contact)], data: &data::RolloutData) {
-        for &(shot_index, _, contact) in shot_contacts {
-            if let Some(entity) = self.portal_shots[shot_index].entity {
-                let shot = self.portal_shots[shot_index];
-                let row = &mut self.entities[entity];
-                row.x = shot.position.x.raw();
-                row.y = shot.position.y.raw();
-                row.vx = shot.body.velocity.x.raw();
-                row.vy = shot.body.velocity.y.raw();
-                row.rotation = shot.body.orientation.raw();
-                row.angular_velocity = shot.body.angular_velocity.raw();
-            }
-            self.land_portal_shot(shot_index, -contact.normal, true, data);
+    /// PortalShot.OnCollide with a wall is a DetPhysics callback, queued at
+    /// its Circle/RoundedRect pair's place (PortalShot.cs:78-87).
+    fn queue_portal_shot_landings(&mut self, shot_contacts: &[(usize, usize, Contact)]) {
+        for &(shot, wall, contact) in shot_contacts {
+            let (later, earlier) = sweep_pair(self.part_rank(Part::Shot(shot)), self.wall_rank(wall));
+            let hit = CallbackHit::PortalShotLand { shot, normal: -contact.normal };
+            self.scratch.callback_hits.push(((GROUP_CIRCLE_RR, later, earlier), hit));
         }
+    }
+
+    /// A shot another callback destroyed or landed first does nothing.
+    fn portal_shot_wall_callback(&mut self, shot_index: usize, outward_normal: Vec2, data: &data::RolloutData) {
+        let shot = self.portal_shots[shot_index];
+        if !shot.active {
+            return;
+        }
+        if let Some(entity) = shot.entity {
+            let row = &mut self.entities[entity];
+            row.x = shot.position.x.raw();
+            row.y = shot.position.y.raw();
+            row.vx = shot.body.velocity.x.raw();
+            row.vy = shot.body.velocity.y.raw();
+            row.rotation = shot.body.orientation.raw();
+            row.angular_velocity = shot.body.angular_velocity.raw();
+        }
+        self.land_portal_shot(shot_index, outward_normal, true, data);
     }
 
     fn land_portal_shot(
@@ -36988,6 +37002,7 @@ impl RolloutWorld {
         for &(_, hit) in &hits {
             match hit {
                 CallbackHit::ArrowKill { victim, owner } => self.arrow_kill(victim, owner),
+                CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
                 CallbackHit::Kill { player, killer, cause } => {
                     if self.hittable(player) {
                         self.kill(player, killer, cause, true, true);
