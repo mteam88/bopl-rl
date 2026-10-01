@@ -32051,10 +32051,16 @@ impl RolloutWorld {
         };
         let slot = &self.players[index];
         let ring = (slot.active_slot, slot.ability_generation[slot.active_slot]);
+        // The arrow's FixTransform starts on the bow's (BowTransform.cs:176,
+        // 184), which this pass's aim has not yet turned. Its first
+        // Arrow.UpdateSim turns it to the flight, unless a Teleport or a
+        // Blink tunnel takes it first.
+        let rotation = slot.bow.form_rotation;
         self.spawn_arrow(
             owner,
             ring,
             position,
+            rotation,
             start_velocity,
             hurt_owner_after,
             bow.max_arrows,
@@ -32757,6 +32763,7 @@ impl RolloutWorld {
         owner: u32,
         ring: (usize, u32),
         position: Vec2,
+        rotation: Fix,
         velocity: Vec2,
         hurt_owner_after: Fix,
         max_arrows: u32,
@@ -32804,7 +32811,7 @@ impl RolloutWorld {
             force: Vec2::ZERO,
             angular_velocity: Fix::ZERO,
             updater_tick: u32::MAX,
-            rotation: Fix::ZERO,
+            rotation,
             time_passed: Fix::ZERO,
             hurt_owner_after,
             can_hurt_owner: false,
