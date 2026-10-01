@@ -1835,10 +1835,6 @@ pub struct PlatformDynamics {
     /// centre. Box/RR positional correction can move the former without
     /// moving the latter until a later operation rebuilds the composite.
     pub composite_position: Vec2,
-    /// A child left the composite. DestroyFix only marks it; DetPhysics
-    /// drops it and rebuilds the composite at the start of the next
-    /// Simulate (RemoveDestroyedColliders).
-    pub composite_rebuild: bool,
     /// FixTransform rotation written by a component this tick.
     /// DetPhysics.Simulate copies it into the body only after AnimateVelocity
     /// has computed its torque against the stale orientation
@@ -5754,7 +5750,6 @@ impl RolloutWorld {
                 attached_children: 0,
                 attach_count: 0,
                 composite_position: intro_surface.center,
-                composite_rebuild: false,
                 being_controlled: false,
                 home_position: intro_surface.center,
                 transform_rotation: None,
@@ -14950,7 +14945,7 @@ impl RolloutWorld {
         let node_index = if let Some(free) = self
             .tesla_nodes
             .iter()
-            .position(|node| !node.active && node.destroyed_tick != Some(self.tick))
+            .position(|node| self.child_slot_free(node.active, node.entity) && node.destroyed_tick != Some(self.tick))
         {
             self.tesla_nodes[free] = node;
             free
@@ -15073,14 +15068,10 @@ impl RolloutWorld {
         } else {
             self.tesla_node_destroyed(node_index, false);
         }
-        let platform_index = self.tesla_nodes[node_index].platform_index;
         self.tesla_nodes[node_index].active = false;
         self.tesla_nodes[node_index].macho_carried = false;
         if let Some(entity) = self.tesla_nodes[node_index].entity {
-            self.entities[entity].flags = E_REMOVED;
-        }
-        if platform_index < self.platforms.len() {
-            self.platform_dynamics[platform_index].composite_rebuild = true;
+            self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
         }
         self.platforms_changed();
     }
@@ -15280,7 +15271,7 @@ impl RolloutWorld {
             duplicate_shake_offset: Vec2::ZERO,
             placed_up: Some(normal),
         };
-        if let Some(free) = self.engines.iter().position(|engine| !engine.active) {
+        if let Some(free) = self.engines.iter().position(|engine| self.child_slot_free(engine.active, engine.entity)) {
             self.engines[free] = engine;
         } else {
             self.engines.push(engine);
@@ -15363,14 +15354,10 @@ impl RolloutWorld {
         if !self.engines[engine_index].active {
             return;
         }
-        let platform_index = self.engines[engine_index].platform_index;
         self.engines[engine_index].active = false;
         self.engines[engine_index].macho_carried = false;
         if let Some(entity) = self.engines[engine_index].entity {
-            self.entities[entity].flags = E_REMOVED;
-        }
-        if platform_index < self.platforms.len() {
-            self.platform_dynamics[platform_index].composite_rebuild = true;
+            self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
         }
         self.platforms_changed();
     }
@@ -15452,7 +15439,6 @@ impl RolloutWorld {
         dynamics.attached_children = count;
         dynamics.composite_position = self.platforms[platform_index].surface.center;
         dynamics.basis = None;
-        dynamics.composite_rebuild = false;
         if count == 0 {
             return;
         }
@@ -15621,7 +15607,7 @@ impl RolloutWorld {
             duplicate_shake_offset: Vec2::ZERO,
             stepped_tick: None,
         };
-        let attack_index = if let Some(free) = self.spike_attacks.iter().position(|s| !s.active) {
+        let attack_index = if let Some(free) = self.spike_attacks.iter().position(|s| self.child_slot_free(s.active, s.entity)) {
             // A pooled collider receives a fresh DetPhysics id on ManualInit;
             // the old entity row remains removed like the oracle's shape list.
             self.spike_attacks[free] = attack;
@@ -15646,7 +15632,6 @@ impl RolloutWorld {
         if !self.spike_attacks[spike_index].active {
             return;
         }
-        let platform_index = self.spike_attacks[spike_index].platform_index;
         if let Some((owner, slot)) = self.spike_attacks[spike_index].owner_slot
             && self.players[owner].spike_attacks[slot] == Some(spike_index)
         {
@@ -15655,10 +15640,7 @@ impl RolloutWorld {
         self.spike_attacks[spike_index].active = false;
         self.spike_attacks[spike_index].macho_carried = false;
         if let Some(entity) = self.spike_attacks[spike_index].entity {
-            self.entities[entity].flags = E_REMOVED;
-        }
-        if platform_index < self.platforms.len() {
-            self.platform_dynamics[platform_index].composite_rebuild = true;
+            self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
         }
         self.platforms_changed();
     }
@@ -17787,23 +17769,20 @@ impl RolloutWorld {
             // collider stays in its CompositeBody for the pass.
             HoleTarget::Spike(index) => {
                 grow(self, Fix::ZERO);
-                if let Some(entity) = self.spike_attacks[index].entity.filter(|_| self.spike_attacks[index].active) {
+                if self.spike_attacks[index].active {
                     self.remove_spike(index);
-                    self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
                 }
             }
             HoleTarget::Engine(index) => {
                 grow(self, Fix::ZERO);
-                if let Some(entity) = self.engines[index].entity.filter(|_| self.engines[index].active) {
+                if self.engines[index].active {
                     self.remove_engine(index);
-                    self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
                 }
             }
             HoleTarget::Node(index) => {
                 grow(self, Fix::ZERO);
-                if let Some(entity) = self.tesla_nodes[index].entity.filter(|_| self.tesla_nodes[index].active) {
+                if self.tesla_nodes[index].active {
                     self.remove_tesla_node(index, true);
-                    self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
                 }
             }
         }
@@ -19970,7 +19949,6 @@ impl RolloutWorld {
             attached_children: 0,
             attach_count: 0,
             composite_position: position,
-            composite_rebuild: false,
             transform_rotation: None,
             init_tick: None,
             prefab: PlatformPrefab::Boulder,
@@ -28048,7 +28026,7 @@ impl RolloutWorld {
             duplicate_shake_offset: Vec2::ZERO,
             stepped_tick: None,
         };
-        if let Some(free) = self.spike_attacks.iter().position(|spike| !spike.active) {
+        if let Some(free) = self.spike_attacks.iter().position(|spike| self.child_slot_free(spike.active, spike.entity)) {
             self.spike_attacks[free] = clone;
         } else {
             self.spike_attacks.push(clone);
@@ -28159,7 +28137,7 @@ impl RolloutWorld {
             duplicate_shake_offset: Vec2::ZERO,
             placed_up: None,
         };
-        if let Some(free) = self.engines.iter().position(|engine| !engine.active) {
+        if let Some(free) = self.engines.iter().position(|engine| self.child_slot_free(engine.active, engine.entity)) {
             self.engines[free] = clone;
         } else {
             self.engines.push(clone);
@@ -28262,7 +28240,7 @@ impl RolloutWorld {
             duplicate_shake_offset: Vec2::ZERO,
             ..SpawnedTeslaNode::default()
         };
-        if let Some(free) = self.tesla_nodes.iter().position(|node| !node.active) {
+        if let Some(free) = self.tesla_nodes.iter().position(|node| self.child_slot_free(node.active, node.entity)) {
             self.tesla_nodes[free] = clone;
         } else {
             self.tesla_nodes.push(clone);
@@ -31704,7 +31682,7 @@ impl RolloutWorld {
         dynamics.unscaled_inverse_mass = None;
         dynamics.scale = copy_scale;
         dynamics.start_radius = effect_radius / effect_scale;
-        if dynamics.attached_children != 0 || dynamics.composite_rebuild {
+        if dynamics.attached_children != 0 {
             // The effect unparents the source's terrain children around
             // DuplicateObject (DuplicatePlatformEffect.cs:298-316), so the copy
             // is a lone rounded rect on its own body.
@@ -31713,7 +31691,6 @@ impl RolloutWorld {
             dynamics.body.orientation = orientation;
             dynamics.attached_children = 0;
             dynamics.attach_count = 0;
-            dynamics.composite_rebuild = false;
         }
         // InstantiateFixed builds a fresh PhysicsBody from BoplBody's
         // StartVelocity fields; it does not copy the source collider's live
@@ -32530,7 +32507,6 @@ impl RolloutWorld {
             attached_children: 0,
             attach_count: 0,
             composite_position: position,
-            composite_rebuild: false,
             being_controlled: false,
             home_position: position,
             transform_rotation: None,
@@ -32640,8 +32616,14 @@ impl RolloutWorld {
             }
         }
         self.entities[entity].flags = E_REMOVED;
+        // DestroyRoundedRect drops every child its composite holds, one
+        // DestroyFix already marked and RemoveDestroyedColliders has not yet
+        // dropped included (DetPhysics.cs:1617-1634).
+        let held = |active: bool, entity: Option<usize>, entities: &[CEntity]| {
+            active || entity.is_some_and(|entity| entities[entity].flags & E_REMOVED == 0)
+        };
         for spike in &mut self.spike_attacks {
-            if !spike.active || spike.macho_carried {
+            if !held(spike.active, spike.entity, &self.entities) || spike.macho_carried {
                 continue;
             }
             if spike.platform_index == index {
@@ -32654,7 +32636,7 @@ impl RolloutWorld {
             }
         }
         for engine in &mut self.engines {
-            if !engine.active || engine.macho_carried {
+            if !held(engine.active, engine.entity, &self.entities) || engine.macho_carried {
                 continue;
             }
             if engine.platform_index == index {
@@ -32668,7 +32650,7 @@ impl RolloutWorld {
         }
         for node_index in 0..self.tesla_nodes.len() {
             let node = self.tesla_nodes[node_index];
-            if (node.active || node.destroyed_tick == Some(self.tick))
+            if (held(node.active, node.entity, &self.entities) || node.destroyed_tick == Some(self.tick))
                 && !node.macho_carried
                 && node.platform_index == index
             {
@@ -32676,11 +32658,14 @@ impl RolloutWorld {
                 // so destroying it destroys them.
                 self.remove_tesla_node(node_index, deferred);
                 self.tesla_nodes[node_index].platform_index = usize::MAX;
+                if let Some(entity) = node.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
             }
         }
         let tick = self.tick;
         for node in &mut self.tesla_nodes {
-            if (node.active || node.destroyed_tick == Some(tick))
+            if (held(node.active, node.entity, &self.entities) || node.destroyed_tick == Some(tick))
                 && !node.macho_carried
                 && node.platform_index != usize::MAX
                 && node.platform_index > index
@@ -33351,36 +33336,73 @@ impl RolloutWorld {
     /// DetPhysics.RemoveDestroyedColliders (DetPhysics.cs:2439-2466), which
     /// Simulate and every DetPhysics query that purges run first: a collider
     /// DestroyFix marked is dropped, so it is gone from the pass's
-    /// observation instead of showing once as destroyed, and
-    /// DestroyCircle/DestroyBox rebuild each composite that lost a child
-    /// (DetPhysics.cs:1588-1611). Index-stable, so any query may run it: a
-    /// dropped platform keeps its storage, hidden and marked removed, until
-    /// the next pass compacts it.
+    /// observation instead of showing once as destroyed. It walks circles,
+    /// rounded rects, then boxes, each in registration order, and a
+    /// composite child's DestroyCircle/DestroyBox syncs its composite and
+    /// rebuilds it there and then (DetPhysics.cs:1588-1611). Index-stable, so
+    /// any query may run it: a dropped platform keeps its storage, hidden and
+    /// marked removed, until the next pass compacts it.
     fn remove_destroyed_colliders(&mut self) {
         let mut hidden = false;
-        for i in 0..self.platforms.len() {
-            let row = &mut self.entities[self.platform_entities[i]];
-            if row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED {
-                // The kept E_DESTROYED bit leaves the row to the start-of-pass
-                // compaction and keeps the refresh from rewriting it.
-                row.flags = E_REMOVED | E_DESTROYED;
-                self.platforms[i].active = false;
-                hidden = true;
+        for kind in [0u32, 2, 1] {
+            for entity in 0..self.entities.len() {
+                let row = self.entities[entity];
+                if row.kind != kind || row.flags & (E_DESTROYED | E_REMOVED) != E_DESTROYED {
+                    continue;
+                }
+                if let Some(platform) = self.platform_entities.iter().position(|&candidate| candidate == entity) {
+                    // The kept E_DESTROYED bit leaves the row to the
+                    // start-of-pass compaction and keeps the refresh from
+                    // rewriting it.
+                    self.entities[entity].flags = E_REMOVED | E_DESTROYED;
+                    self.platforms[platform].active = false;
+                    hidden = true;
+                    continue;
+                }
+                self.entities[entity].flags = E_REMOVED;
+                // A composite already gone with its wall is not touched.
+                if row.flags & E_COMPOSITE != 0
+                    && let Some(platform) = self.destroyed_child_wall(entity)
+                    && self.entities[self.platform_entities[platform]].flags & E_REMOVED == 0
+                {
+                    self.rebuild_platform_attachment_body(platform, true);
+                }
             }
         }
         for row in &mut self.entities {
-            if row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED {
+            if row.kind > 2 && row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED {
                 row.flags = E_REMOVED;
-            }
-        }
-        for index in 0..self.platforms.len() {
-            if self.platform_dynamics[index].composite_rebuild {
-                self.rebuild_platform_attachment_body(index, true);
             }
         }
         if hidden {
             self.platforms_changed();
         }
+    }
+
+    /// A destroyed platform child's row: DestroyFix leaves one its wall's
+    /// CompositeBody holds there, destroyed, until RemoveDestroyedColliders
+    /// drops it; one MachoThrow2 carries is out of the composite already.
+    fn destroyed_child_flags(flags: u32) -> u32 {
+        if flags & E_COMPOSITE != 0 { E_DESTROYED | E_COMPOSITE } else { E_REMOVED }
+    }
+
+    /// The wall whose composite still holds destroyed child `entity`: its
+    /// Tesla node, spike box or rocket engine, out of play since DestroyFix.
+    fn destroyed_child_wall(&self, entity: usize) -> Option<usize> {
+        let wall = |active: bool, child: Option<usize>, platform: usize| {
+            (!active && child == Some(entity) && platform < self.platforms.len()).then_some(platform)
+        };
+        self.tesla_nodes
+            .iter()
+            .find_map(|node| wall(node.active, node.entity, node.platform_index))
+            .or_else(|| self.spike_attacks.iter().find_map(|spike| wall(spike.active, spike.entity, spike.platform_index)))
+            .or_else(|| self.engines.iter().find_map(|engine| wall(engine.active, engine.entity, engine.platform_index)))
+    }
+
+    /// A pooled platform child's slot is free once DetPhysics has dropped
+    /// its collider: until then its composite still holds it.
+    fn child_slot_free(&self, active: bool, entity: Option<usize>) -> bool {
+        !active && entity.is_none_or(|entity| self.entities[entity].flags & E_REMOVED != 0)
     }
 
     fn mine_scan_target(&self, item_index: usize, data: &data::RolloutData) -> Option<Vec2> {
