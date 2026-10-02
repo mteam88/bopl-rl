@@ -682,6 +682,7 @@ pub struct AbilityPickup {
     /// of a later updater in the same pass still meet the circle here.
     pub synced_center: Vec2,
     pub body: Body,
+    pub hold: Hold,
     pub enabled: bool,
     pub time_passed: Fix,
     pub time_since_swap: Fix,
@@ -2698,6 +2699,7 @@ pub struct PortalShotState {
     pub collider_radius: Fix,
     /// BoplBody.prevScale: the body follows a rescale on its next update.
     pub body_prev_scale: Fix,
+    pub hold: Hold,
 }
 
 /// Allocation-retaining equivalent of one `QuantumTunnel` prefab for a
@@ -6512,6 +6514,8 @@ impl RolloutWorld {
         let state = &mut self.ability_pickups[index];
         state.body.velocity.y -= pickup.gravity * DT;
         state.body.force.y += wobble + pickup.up_force / divisor;
+        // BoplBody.UpdateSim (hierarchy 2) follows DynamicAbilityPickup's (1).
+        state.hold.update_sim();
         if let Some(entity) = state.entity {
             let row = &mut self.entities[entity];
             row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
@@ -8664,26 +8668,14 @@ impl RolloutWorld {
         }
     }
 
-    /// Shot `shot_index`'s updatables at its turn: BoplBody.UpdateSim,
-    /// PortalShot.UpdateSim and DestroyIfOutsideSceneBounds.
+    /// Shot `shot_index`'s updatables at its turn, in HierarchyNumber order:
+    /// PortalShot.UpdateSim, BoplBody.UpdateSim and DestroyIfOutsideSceneBounds.
+    /// A shot PortalShot landed is destroyed and skips the rest.
     fn portal_shot_step(&mut self, shot_index: usize, data: &data::RolloutData, updater_dt: Fix) {
         if self.blink_object_hidden(self.portal_shots[shot_index].entity)
             || !self.portal_shots[shot_index].active
         {
             return;
-        }
-        // BoplBody.UpdateSim (BoplBody.cs:332-344): the shot's body is
-        // older than any ray's ScaleChanger on it, so its mass follows
-        // the collider's rescale one pass late.
-        let shot = &mut self.portal_shots[shot_index];
-        if shot.body_prev_scale != Fix::ZERO && shot.body_prev_scale != shot.scale {
-            let ratio = shot.body_prev_scale / shot.scale;
-            shot.body.inverse_mass = shot.body.inverse_mass * ratio;
-            shot.body.inverse_inertia = shot.body.inverse_inertia * ratio;
-            shot.body_prev_scale = shot.scale;
-            if let Some(entity) = shot.entity {
-                self.entities[entity].inverse_mass = shot.body.inverse_mass.raw();
-            }
         }
         if !self.portal_shots[shot_index].fire_applied {
             self.portal_shots[shot_index].fire_applied = true;
@@ -8699,6 +8691,21 @@ impl RolloutWorld {
                 outward = Vec2::UP;
             }
             self.land_portal_shot(shot_index, outward, false, data);
+            return;
+        }
+        // BoplBody.UpdateSim (BoplBody.cs:325-344): the hold's countdown,
+        // then, the shot's body being older than any ray's ScaleChanger on
+        // it, its mass follows the collider's rescale one pass late.
+        let shot = &mut self.portal_shots[shot_index];
+        shot.hold.update_sim();
+        if shot.body_prev_scale != Fix::ZERO && shot.body_prev_scale != shot.scale {
+            let ratio = shot.body_prev_scale / shot.scale;
+            shot.body.inverse_mass = shot.body.inverse_mass * ratio;
+            shot.body.inverse_inertia = shot.body.inverse_inertia * ratio;
+            shot.body_prev_scale = shot.scale;
+            if let Some(entity) = shot.entity {
+                self.entities[entity].inverse_mass = shot.body.inverse_mass.raw();
+            }
         }
         // The shot prefab's DestroyIfOutsideSceneBounds (DoNotDestroyUp)
         // runs after PortalShot and drops it below the water or past the
@@ -9077,7 +9084,7 @@ impl RolloutWorld {
         for pickup in &self.ability_pickups {
             if let Some(entity) = pickup
                 .entity
-                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO)
+                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO && !pickup.hold.held())
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, pickup.position, data)
             {
@@ -9346,7 +9353,7 @@ impl RolloutWorld {
             // hitbox of a freshly dropped pickup.
             let Some(entity) = pickup
                 .entity
-                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO)
+                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO && !pickup.hold.held())
             else {
                 continue;
             };
@@ -24678,10 +24685,14 @@ impl RolloutWorld {
                 }
             }
             MagnetHeld::AbilityPickup(i) => {
-                self.ability_pickups[i].body.angular_velocity = data.magnet.locked_angular_velocity;
+                let pickup = &mut self.ability_pickups[i];
+                pickup.body.angular_velocity = data.magnet.locked_angular_velocity;
+                pickup.hold.hold(3, index);
             }
             MagnetHeld::PortalShot(i) => {
-                self.portal_shots[i].body.angular_velocity = data.magnet.locked_angular_velocity;
+                let shot = &mut self.portal_shots[i];
+                shot.body.angular_velocity = data.magnet.locked_angular_velocity;
+                shot.hold.hold(3, index);
             }
             MagnetHeld::RevivalMarker(i) => {
                 let marker = &mut self.revival_marker_pool[i];
@@ -25088,6 +25099,7 @@ impl RolloutWorld {
                 let pickup = &mut self.ability_pickups[i];
                 pickup.position = correction.map_or(position, |correction| circle.center + correction);
                 pickup.body.velocity = Vec2::ZERO;
+                pickup.hold.hold(2, index);
             }
             MagnetHeld::PortalShot(i) => {
                 let velocity = self.portal_shots[i].body.velocity;
@@ -25098,6 +25110,7 @@ impl RolloutWorld {
                 let shot = &mut self.portal_shots[i];
                 shot.position = position + correction.unwrap_or(Vec2::ZERO);
                 shot.body.velocity = Vec2::ZERO;
+                shot.hold.hold(2, index);
             }
             MagnetHeld::RevivalMarker(i) => {
                 let velocity = self.revival_marker_pool[i].body.velocity;
@@ -26104,6 +26117,7 @@ impl RolloutWorld {
                 radius: source.radius,
                 synced_center: Vec2::ZERO,
                 body,
+                hold: Hold::default(),
                 enabled: false,
                 time_passed: Fix::ZERO,
                 time_since_swap: Fix::ZERO,
