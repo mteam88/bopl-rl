@@ -1586,9 +1586,6 @@ pub struct RewindState {
     pub playback_ticks: u32,
     pub playback_tick: u32,
     pub ability_slot: usize,
-    /// `PlayerPhysics.UnGround` deliberately retains its attached platform;
-    /// ReleaseControl calls it again after arrival and repeats the 0.05 push.
-    pub attached_ground: Option<u32>,
     pub finish_next_tick: bool,
     /// The slime started this pass inside a form. Its GameObject was still
     /// inactive when RewindRecorder ran, so a form exiting later in the pass
@@ -1613,7 +1610,6 @@ impl Default for RewindState {
             playback_ticks: 0,
             playback_tick: 0,
             ability_slot: 0,
-            attached_ground: None,
             finish_next_tick: false,
             in_form_at_pass: false,
             destination: RewindSample::default(),
@@ -10281,11 +10277,6 @@ impl RolloutWorld {
                 self.slot_physics(index, |slot, world| slot.base.move_only(Vec2::ZERO, world));
             }
             let slot = &mut self.players[index];
-            // A landing inside Move retargets attachedGround, which the
-            // arrival's UnGround lifts off (RewindRecorder.cs:358).
-            if slot.base.grounded {
-                slot.rewind.attached_ground = slot.base.ground;
-            }
             // The slime's DestroyIfOutsideSceneBounds still runs before
             // PlayerBody, so a rewind path through the water drowns it.
             if slot.base.outside_bounds() {
@@ -10696,7 +10687,6 @@ impl RolloutWorld {
                         break;
                     }
                     ABILITY_REWIND => {
-                        let attached_ground = self.players[index].base.ground;
                         let started = {
                             let slot = &mut self.players[index];
                             slot.rewind.begin(slot.base.position, slot.base.rotation(), s)
@@ -10710,7 +10700,6 @@ impl RolloutWorld {
                             let top = slot.rope_top;
                             self.attach_player_rope(index, None, top);
                             let slot = &mut self.players[index];
-                            slot.rewind.attached_ground = attached_ground;
                             // UnGround raises OnNoLongerGrounded, which sets
                             // State.fall (PlayerPhysics.cs:377-380,
                             // SlimeController.cs:956), so a landing in the
@@ -10731,9 +10720,6 @@ impl RolloutWorld {
                             slot.base.scale = slot.body_collider_scale;
                             self.slot_physics(index, |slot, world| slot.base.move_only(movement_input, world));
                             let slot = &mut self.players[index];
-                            if slot.base.grounded {
-                                slot.rewind.attached_ground = slot.base.ground;
-                            }
                             // Rewind is instant: the slime stays active, so
                             // its own bounds component still runs here, in
                             // the same slot `move_step` tests -- after Move,
@@ -14035,16 +14021,14 @@ impl RolloutWorld {
                 slot.base.velocity = destination.velocity;
                 slot.base.external_velocity = destination.external_velocity;
                 slot.base.set_rotation(destination.rotation);
-                // ReleaseControl's UnGround keeps attachedGround, so the next
-                // UnGround (another Rewind's) lifts off it again.
-                let surface = slot.rewind.attached_ground.and_then(|id| {
-                    self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
-                });
-                slot.base.unground(surface, false);
-                // Its OnNoLongerGrounded sets State.fall (SlimeController.cs:956)
-                // over any ragdoll taken during the playback.
-                slot.obs_state = STATE_FALL;
-                slot.state_ticks = 0;
+                // ReleaseControl's UnGround lifts off attachedGround, which the
+                // last AttachToGround set: BeginRewind's ground, a landing in
+                // the playback, or a Blink tunnel's release, unless it has been
+                // destroyed since (RewindRecorder.cs:358, PlayerPhysics.cs:
+                // 362-370). Its OnNoLongerGrounded sets State.fall
+                // (SlimeController.cs:956) over any ragdoll taken during the
+                // playback.
+                UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, false);
                 slot.ragdoll_grounded_fall = false;
                 // FinishRewind overwrites the cooldowns outright and adds
                 // nothing (RewindRecorder.cs:325-333). SlimeController already
@@ -14060,7 +14044,6 @@ impl RolloutWorld {
                 slot.timers[slot.rewind.ability_slot] = preserved;
                 slot.rewind.rewinding = false;
                 slot.rewind.finish_next_tick = false;
-                slot.rewind.attached_ground = None;
                 continue;
             }
             // UpdateRewind holds the playback while time is stopped for the
