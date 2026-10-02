@@ -3976,7 +3976,6 @@ impl PlayerSlot {
         self.base.radius = form.radius; // leak: radius
         self.base.scale = form.scale; // leak: scale
         self.base.grounded_speed = form.grounded_speed; // leak: grounded_speed
-        self.base.constants = form.constants.clone(); // leak: constants
         self.base.collider = form.collider; // leak: collider
         self.base.synced = form.synced; // leak: synced
         self.base.collider_rotation = form.collider_rotation; // leak: collider_rotation
@@ -13703,7 +13702,6 @@ impl RolloutWorld {
         // The slime's own radius, which the form's would leak over.
         let radius = slot.slime.radius;
         slot.leave_form(&mut self.entities, woken);
-        slot.base.constants = data::get().player.constants.clone();
         slot.base.radius = radius;
     }
 
