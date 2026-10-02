@@ -13372,8 +13372,9 @@ impl RolloutWorld {
                 info.velocity = velocity;
             }
             ActiveAbility::Magnet => {
-                // MagnetGun.ExitAbility (MagnetGun.cs:356-373).
-                self.magnet_forget_held(index);
+                // MagnetGun.ExitAbility (MagnetGun.cs:356-373) keeps what it
+                // held: the held BoplBody's Hold lapses with its own countdown,
+                // and a Boulder's own UpdateSim drops it once nobody Holds it.
                 let slot = &mut self.players[index];
                 slot.base.set_rotation(Fix::ZERO);
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
@@ -13593,9 +13594,6 @@ impl RolloutWorld {
     /// Ability.ExitAbility (BowTransform.cs:222-237, GunTransform.cs:166-181,
     /// MagnetGun.cs:1225-1246).
     fn landing_exit(&mut self, index: usize) {
-        if self.players[index].active == ActiveAbility::Magnet {
-            self.magnet_forget_held(index);
-        }
         // `body.rotation = 0`: the FixTransform setter rebuilds up too.
         let slot = &mut self.players[index];
         slot.base.set_rotation(Fix::ZERO);
@@ -25365,14 +25363,6 @@ impl RolloutWorld {
         }
     }
 
-    /// A MagnetGun that exits or dies only forgets what it held: the held
-    /// BoplBody's Hold lapses with its own countdown, and a Boulder's own
-    /// UpdateSim drops it once nobody Holds it (MagnetGun.cs:356-373,
-    /// BoplBody.cs:325-331, Boulder.cs:21-29).
-    fn magnet_forget_held(&mut self, index: usize) {
-        self.players[index].magnet.held = MagnetHeld::Nothing;
-    }
-
     fn fire_magnet(&mut self, index: usize, data: &data::RolloutData) {
         // MagnetGun.Fire faces the body along the aim as stored and only
         // renormalizes it for the shot and the knockback.
@@ -36744,9 +36734,6 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data::get());
-        }
-        if self.players[index].active == ActiveAbility::Magnet {
-            self.magnet_forget_held(index);
         }
         // killPlayer destroys every ability object the slime holds, active or
         // not (PlayerCollision.cs:159-167, 184-192, 203-211), so each Beam's
