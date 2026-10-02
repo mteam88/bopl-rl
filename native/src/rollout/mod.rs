@@ -21002,10 +21002,12 @@ impl RolloutWorld {
             let entity = self.entities.len();
             let indicator_position = data.maps[self.map].respawn_points[indicator];
             *target = Some(self.revival_marker_pool.len());
+            // Setup instantiated them with the chooser, so they join the
+            // same pass's updatables and update on this one.
             self.revival_marker_pool.push(RevivalMarker {
                 active: true,
                 registered: true,
-                appended: self.tick + 1,
+                appended: self.players[index].chooser_appended,
                 owner: index,
                 ability_slot: 0,
                 entity: Some(entity),
