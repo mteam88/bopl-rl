@@ -22255,16 +22255,19 @@ impl RolloutWorld {
                     }
                 }
                 // The hit's collisionCallback.OnCollide with the Dash hitbox
-                // at nearPos, before the body moves (Dash.cs:150-163). A
-                // positive BlackHole hands the Dash its dead exit where the
-                // dash began, and the walk has nothing left to move.
+                // at nearPos, before the body moves (Dash.cs:150-163). It runs
+                // for every hit before the first wall, even once an earlier
+                // one ended the Dash: a positive BlackHole hands it its dead
+                // exit where the dash began.
                 let near = origin + direction * hit.distance;
                 if let Some(part) = self.hit_part(hit.index) {
                     let contact = Contact { point: near, normal: (near - origin).normalized_safe(), penetration: Fix::ONE };
                     self.on_collide(part, Part::Body(index), Some(own), contact, KillRoute::UPDATER_ON_COLLIDE, data);
-                    if self.players[index].active != dasher_form || !self.players[index].base.alive {
-                        return;
-                    }
+                }
+                // An ended Dash's PlayerCollision refuses its own kill: its
+                // object is inactive or destroyed (PlayerCollision.cs:111).
+                if self.players[index].active != dasher_form || !self.players[index].base.alive {
+                    continue;
                 }
                 // The Dash's own KillPlayerOnCollision, from nearPos
                 // (Dash.cs:164-182): a Player-layer collider kills only as a
