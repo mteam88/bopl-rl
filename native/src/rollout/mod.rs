@@ -30364,12 +30364,13 @@ impl RolloutWorld {
             // selfImposedVelocity = -groundNormal * KnockBack, then UnGround:
             // the shooter slams onto the platform and exits on landing.
             // currentNormal(body) is read now, so a turning platform gives
-            // this pass's normal rather than the up the last Move aligned to.
+            // this pass's normal rather than the up the last Move aligned to,
+            // and a ground deactivated since is still the attached one.
             let normal = match &slot.ground_destroyed {
                 Some(lost) => lost.surface.normal(slot.base.position),
                 None => slot
                     .base
-                    .platform(platforms)
+                    .attached_ground(platforms)
                     .map_or(slot.base.up(), |platform| platform.surface.normal(slot.base.position)),
             };
             slot.base.velocity = -(normal * bow.knockback);
