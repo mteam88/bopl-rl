@@ -4604,7 +4604,7 @@ enum CallbackHit {
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
     MissileBlast { missile: usize },
     /// An abilityless clone's PlayerCollision.OnCollide with a lethal hitbox.
-    CloneKill { clone: usize, killer: u32, cause: u32 },
+    CloneKill { clone: usize, killer: u32, cause: u32, arrow: bool },
     /// GrenadeExplode or SmokeGrenadeExplode2.OnCollide with a Tesla line or
     /// Meteor smear, once per pair.
     ItemDetonate { item: usize, count: usize },
@@ -9848,9 +9848,11 @@ impl RolloutWorld {
         }
         match victim {
             Slime::Clone(clone) => {
+                // Chew asks the bitten PlayerCollision's killPlayer, which
+                // answers an invulnerable one itself (SlimeController.cs:1172-1177).
                 let clone_state = &self.abilityless_clones[clone];
-                if clone_state.active && clone_state.invulnerable == 0 {
-                    self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false);
+                if clone_state.active && !fix_destroyed(&self.entities, clone_state.entity) {
+                    self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false, false);
                 }
             }
             Slime::Player(player) => {
@@ -16564,7 +16566,7 @@ impl RolloutWorld {
                 grow(self, Fix::ZERO);
                 let clone = &self.abilityless_clones[index];
                 let (entity, alive) = (clone.entity, clone.active);
-                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, kill_route, false);
+                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, kill_route, false, true);
                 // A callback casualty stays visible as destroyed until the
                 // next pass's DetPhysics.Simulate drops it.
                 if let Some(entity) = entity.filter(|_| alive && route.callback()) {
@@ -32256,7 +32258,7 @@ impl RolloutWorld {
         if victim.is_none() {
             for clone_index in 0..self.abilityless_clones.len() {
                 let clone = &self.abilityless_clones[clone_index];
-                if !clone.active || !clone.base.alive {
+                if !clone.active || !clone.base.alive || clone.invulnerable != 0 {
                     continue;
                 }
                 let player_index = clone.owner;
@@ -32285,7 +32287,7 @@ impl RolloutWorld {
             // DetPhysics removes all killed colliders before contacts.
             self.register_prefab(data::get().prefab("deathEffect"));
             if victim_is_clone {
-                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER, KillRoute::UPDATER, false);
+                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER, KillRoute::UPDATER, false, false);
             } else {
                 self.kill(victim, killer, CAUSE_OTHER, false, false);
             }
@@ -32473,8 +32475,8 @@ impl RolloutWorld {
                 }
                 MjolnirVictim::Clone(clone_index) => {
                     let clone = &self.abilityless_clones[clone_index];
-                    // Player.IsAlive (Mjolnir.cs:206).
-                    if self.players[clone.owner].bodies_alive <= 0 {
+                    // Player.IsAlive and IsInvulnerable (Mjolnir.cs:206).
+                    if self.players[clone.owner].bodies_alive <= 0 || clone.invulnerable != 0 {
                         continue;
                     }
                     (clone.owner, clone.base.position)
@@ -32537,7 +32539,7 @@ impl RolloutWorld {
                 }
                 MjolnirVictim::Clone(clone_index) => {
                     let killer = player_id(&self.players, owner);
-                    self.kill_abilityless_clone(clone_index, killer, CAUSE_OTHER, KillRoute::UPDATER, false);
+                    self.kill_abilityless_clone(clone_index, killer, CAUSE_OTHER, KillRoute::UPDATER, false, false);
                 }
             }
         }
@@ -33467,7 +33469,12 @@ impl RolloutWorld {
                     self.destroy_guided_missile(missile, true);
                 }
             }
-            CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause, route),
+            CallbackHit::CloneKill { clone, killer, cause, arrow } => {
+                if self.clone_collision_kill(clone, killer, cause, route) && arrow {
+                    let owner = self.abilityless_clones[clone].owner;
+                    self.count_arrow_hit(killer, self.players[owner].base.id);
+                }
+            }
             CallbackHit::SpikeShove { spike, target, point } => {
                 // Off the wall layer, so knockAwayStr, pushed from the
                 // target's synced FixTransform (SpikeAttack.cs:116-141).
@@ -34917,7 +34924,7 @@ impl RolloutWorld {
             // water/bounds effect too.
             self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
             self.abilityless_clones[clone_index].drowned_tick = self.tick;
-            self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, false);
+            self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, false, true);
             return;
         }
         let clone = &mut self.abilityless_clones[clone_index];
@@ -35017,23 +35024,38 @@ impl RolloutWorld {
         cause: u32,
         route: KillRoute,
         spawn_effect: bool,
-    ) {
+        ignore_invulnerability: bool,
+    ) -> bool {
         let tick = self.tick;
         let owner = self.abilityless_clones[clone_index].owner;
         // activeSelf: a live clone, or one a callback's killPlayer destroyed
         // earlier this pass, which then has nothing left to tear down.
         let destroyed = fix_destroyed(&self.entities, self.abilityless_clones[clone_index].entity);
         if !self.abilityless_clones[clone_index].active && !destroyed {
-            return;
+            return false;
         }
-        // KillPlayerOnCollision's guards (PlayerCollision.cs:305-316, 449-470).
+        // A Poke Ball's mask on the clone's PlayerCollision.
+        let invulnerable = self.abilityless_clones[clone_index].invulnerable != 0;
+        // KillPlayerOnCollision's guards, all ahead of killPlayer
+        // (PlayerCollision.cs:305-316, 449-470).
         if route.on_collide {
-            if self.abilityless_clones[clone_index].was_killed_tick == Some(tick)
+            if invulnerable
+                || self.abilityless_clones[clone_index].was_killed_tick == Some(tick)
                 || self.players[owner].bodies_alive <= 0
             {
-                return;
+                return false;
             }
             self.abilityless_clones[clone_index].was_killed_tick = Some(tick);
+        }
+        // killPlayer lets go of the rope before it refuses an invulnerable
+        // body (PlayerCollision.cs:106-114).
+        if invulnerable && !ignore_invulnerability {
+            let clone = &mut self.abilityless_clones[clone_index];
+            if clone.grip.rope.is_some() {
+                let top = clone.grip.top;
+                rope_abilities::attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, None, top, 0);
+            }
+            return false;
         }
         if spawn_effect && self.players[owner].extra_life != REVIVE_BEING {
             self.register_prefab(data::get().prefab("deathEffect"));
@@ -35047,21 +35069,20 @@ impl RolloutWorld {
             // has markers: SpawnClone copies its empty ability list to a clone
             // at every marker (PlayerCollision.cs:138-160), as a body's death
             // does.
-            if self.abilityless_clones[clone_index].invulnerable == 0
-                && self
-                    .players
-                    .iter()
-                    .any(|body| body.owner == owner && body.revival_markers.iter().any(Option::is_some))
+            if self
+                .players
+                .iter()
+                .any(|body| body.owner == owner && body.revival_markers.iter().any(Option::is_some))
                 && let Some(body) = self.promote_abilityless_clone(clone_index)
             {
-                self.kill(body, killer, cause, false, false);
+                self.kill_with(body, killer, cause, KillRoute::UPDATER, false, true, ignore_invulnerability);
                 // A callback's killPlayer DestroyFixes the clone, which is
                 // the extra body's GameObject.
                 if route.callback() {
                     let clone = &self.abilityless_clones[clone_index];
                     self.destroy_fix(clone.hierarchy_base, None, clone.entity);
                 }
-                return;
+                return true;
             }
             // PlayerCollision.killPlayer lets go of the body's rope first.
             let clone = &mut self.abilityless_clones[clone_index];
@@ -35100,6 +35121,7 @@ impl RolloutWorld {
             self.begin_stock_respawn(owner);
         }
         self.player_kill(owner, killer, cause);
+        true
     }
 
     /// Player.Kill (Player.cs:440-481): nothing once the player won, else a
@@ -35479,24 +35501,27 @@ impl RolloutWorld {
             Slime::Player(index) => {
                 self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
             }
-            Slime::Clone(index) => self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED, KillRoute::ON_COLLIDE),
+            Slime::Clone(index) => {
+                self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED, KillRoute::ON_COLLIDE);
+            }
         }
     }
 
     /// An abilityless clone's PlayerCollision.OnCollide kill:
     /// killPlayer(spawnEffect: true) creates the death effect
     /// (PlayerCollision.cs:457).
-    fn clone_collision_kill(&mut self, index: usize, killer: u32, cause: u32, route: KillRoute) {
+    fn clone_collision_kill(&mut self, index: usize, killer: u32, cause: u32, route: KillRoute) -> bool {
         let entity = self.abilityless_clones[index].entity;
         let alive = self.abilityless_clones[index].active;
-        self.kill_abilityless_clone(index, killer, cause, route, true);
+        let killed = self.kill_abilityless_clone(index, killer, cause, route, true, false);
         // A callback casualty stays visible as destroyed until the next
         // pass's DetPhysics.Simulate drops it.
-        if let Some(entity) = entity.filter(|_| alive && route.callback()) {
+        if let Some(entity) = entity.filter(|_| killed && alive && route.callback()) {
             let row = &mut self.entities[entity];
             row.flags = E_DESTROYED | E_TRIGGER | (row.flags & E_FIX_DESTROYED);
             row.owner = 0;
         }
+        killed
     }
 
     /// SyncAllPhysicsObjectsToFixTransformPosition still syncs an inactive

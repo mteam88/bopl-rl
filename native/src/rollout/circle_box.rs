@@ -1497,7 +1497,8 @@ impl RolloutWorld {
             }
             Part::Clone(clone) => {
                 if let Some((killer, cause)) = self.collision_kill(Slime::Clone(clone), other, collider) {
-                    self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, route, data);
+                    let arrow = matches!(other, Part::Arrow(_));
+                    self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause, arrow }, route, data);
                 }
             }
             _ => {}
