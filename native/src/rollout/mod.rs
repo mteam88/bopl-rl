@@ -32430,23 +32430,22 @@ impl RolloutWorld {
     /// list Grenade, DestroyIfOutsideSceneBounds, then BoplBody; Mine_0
     /// lists DestroyIfOutsideSceneBounds before BoplBody, and its Mine runs
     /// in LateUpdateSim. A fuse that runs out detonates at the item's own
-    /// turn, before a younger cloud's FlammableSmoke detonates. The
-    /// TeleportedObjectEffect that reactivates an item is newer, so the
-    /// item's own updatables were skipped this pass.
+    /// turn, before a younger cloud's FlammableSmoke detonates. Updater
+    /// skips all of them while the GameObject is inactive (Updater.cs:298-303,
+    /// MonoUpdatable.cs:27-30); the QuantumTunnel or TeleportedObjectEffect
+    /// that reactivates an item is newer, so on that pass the item's turn has
+    /// gone by.
     fn thrown_item_turn(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
-        let revealed = self.teleport_revealed_this_pass(self.thrown_items[item_index].entity);
+        if !self.active_self(self.thrown_items[item_index].entity) {
+            return;
+        }
         match self.thrown_items[item_index].ability {
             ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE => {
-                if !revealed {
-                    self.thrown_item_update(item_index, data, updater_dt);
-                }
-                self.thrown_item_body_step(item_index);
+                self.thrown_item_update(item_index, data, updater_dt);
+                self.thrown_item_body_step(item_index, updater_dt);
             }
             ability => {
-                self.thrown_item_body_step(item_index);
-                if revealed {
-                    return;
-                }
+                self.thrown_item_body_step(item_index, updater_dt);
                 match ability {
                     ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
                     ABILITY_TACK => {
@@ -32751,17 +32750,29 @@ impl RolloutWorld {
         }
     }
 
-    /// The item's BoplBody.UpdateSim, once per pass: the mass follows the
-    /// scale its collider had when this turn came.
-    fn thrown_item_body_step(&mut self, item_index: usize) {
-        // A tunnel's release comes after this updater's turn.
-        if !self.thrown_items[item_index].active
-            || self.blink_object_hidden(self.thrown_items[item_index].entity)
-            || self.blink_object_released(self.thrown_items[item_index].entity)
-        {
+    /// GameObject.activeSelf of the object on `entity`, as its row holds it:
+    /// the QuantumTunnel or TeleportedObjectEffect holding an object clears
+    /// and restores the row's E_ACTIVE at its own turn. A held payload with no
+    /// collider row yet is active.
+    fn active_self(&self, entity: Option<usize>) -> bool {
+        entity.is_none_or(|entity| self.entities.get(entity).is_some_and(|row| row.flags & E_ACTIVE != 0))
+    }
+
+    /// The item's BoplBody.UpdateSim at its turn: the Hold countdown lets go
+    /// of a holder that stopped refreshing it, then the mass follows the
+    /// scale its collider had when this turn came (BoplBody.cs:325-345).
+    fn thrown_item_body_step(&mut self, item_index: usize, updater_dt: Fix) {
+        if !self.thrown_items[item_index].active {
             return;
         }
         let item = &mut self.thrown_items[item_index];
+        if updater_dt > Fix::ZERO && item.magnet_holder.is_some() {
+            item.magnet_hold_ticks -= 1;
+            if item.magnet_hold_ticks == 0 {
+                item.magnet_holder = None;
+                item.magnet_hold_ticks = -1;
+            }
+        }
         // A held payload's collider has not run ManualInit, so BoplBody skips
         // the rescale and keeps prevScale (BoplBody.cs:332).
         if item.entity.is_some() {
@@ -32790,22 +32801,6 @@ impl RolloutWorld {
         updater_dt: Fix,
         physics_dt: Fix,
     ) {
-        // BoplBody.UpdateSim decrements the Hold frame count after player
-        // prefabs have had a chance to refresh it. A paused/destroyed Magnet
-        // therefore releases its item without retaining a stale owner.
-        for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
-                continue;
-            }
-            let item = &mut self.thrown_items[item_index];
-            if updater_dt > Fix::ZERO && item.active && item.magnet_holder.is_some() {
-                item.magnet_hold_ticks -= 1;
-                if item.magnet_hold_ticks == 0 {
-                    item.magnet_holder = None;
-                    item.magnet_hold_ticks = -1;
-                }
-            }
-        }
         // The items spawned this pass, which Updater lists from the next.
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.thrown_items, |item| self.updater_key(item.appended, 100_000_000 + item.hierarchy_base));
