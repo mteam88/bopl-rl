@@ -2469,9 +2469,6 @@ pub struct AbilitylessClone {
     /// The clone's PlayerBody hold on a rope a rope ability hooked it with.
     pub grip: rope_abilities::RopeGrip,
     pub eating: EatingState,
-    /// The pass and the position before this clone's updaters ran on it: an
-    /// Updater object older than the clone still sees it there.
-    pub pass_start: (u32, Vec2),
     /// The pass this clone left the scene bounds in its own update: an
     /// older Updater on that pass still found it alive.
     pub drowned_tick: u32,
@@ -6767,6 +6764,8 @@ impl RolloutWorld {
         let entity = self.abilityless_clones[clone_index].entity?;
         let body = self.free_extra_body()?;
         let clone = self.abilityless_clones[clone_index].clone();
+        let passed = self.slime_passed(Slime::Clone(clone_index));
+        let pass_start = (if passed { self.tick } else { u32::MAX }, clone.base.position);
         let owner = clone.owner;
         let mut slot = (**self.body_template.as_ref()?).clone();
         slot.take_player_state(&self.players[owner]);
@@ -6806,7 +6805,7 @@ impl RolloutWorld {
         slot.blink_tunnel_released = clone.blink_tunnel_released;
         slot.ground_destroyed = clone.ground_destroyed;
         slot.eating = clone.eating;
-        slot.pass_start = clone.pass_start;
+        slot.pass_start = pass_start;
         self.players[body] = slot;
         let retired = &mut self.abilityless_clones[clone_index];
         let grip = retired.grip;
@@ -8552,11 +8551,7 @@ impl RolloutWorld {
                     updater_dt,
                     Some(hierarchy - 99_999_999),
                 ),
-                14 => {
-                    let clone = &mut self.abilityless_clones[index];
-                    clone.pass_start = (tick, clone.base.position);
-                    self.abilityless_clone_update_tagged(index);
-                }
+                14 => self.abilityless_clone_update_tagged(index),
                 16 => self.tesla_nodes_update(data, updater_dt, hierarchy - 99_999_999),
                 17 => self.blink_object_tunnels_tick(data, updater_dt, Some(hierarchy - 99_999_999)),
                 20 => self.blink_tunnel_step(index, data, updater_dt),
@@ -26373,7 +26368,6 @@ impl RolloutWorld {
             ground_destroyed: None,
             grip: rope_abilities::RopeGrip::default(),
             eating: EatingState::default(),
-            pass_start: (u32::MAX, Vec2::ZERO),
             drowned_tick: u32::MAX,
             was_killed_tick: None,
         };
@@ -32294,10 +32288,6 @@ impl RolloutWorld {
             .find(|clone| clone.active && clone.owner == owner)
             .or_else(|| self.later_drowned_clone(owner, hierarchy))
         {
-            // A clone newer than the hammer moves after its UpdateSim.
-            if clone.hierarchy_base > hierarchy && clone.pass_start.0 == self.tick {
-                return Some(clone.pass_start.1);
-            }
             return Some(clone.base.position);
         }
         // A form instantiated after the hammer has not run its updaters yet
@@ -35170,11 +35160,6 @@ impl RolloutWorld {
     fn abilityless_clones_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.abilityless_clones, |clone| self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base));
-        for clone in &mut self.abilityless_clones {
-            if clone.pass_start.0 != self.tick {
-                clone.pass_start = (self.tick, clone.base.position);
-            }
-        }
         for &clone_index in &order {
             let clone = &self.abilityless_clones[clone_index];
             let key = self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base);
