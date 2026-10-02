@@ -276,6 +276,24 @@ def physics_body(props):
     }
 
 
+def player_physics(props):
+    """PlayerPhysics' serialized movement constants and radius."""
+    return {
+        "max_speed": fix(props, "maxSpeed"),
+        "jump_strength": fix(props, "jumpStrength"),
+        "accel": fix(props, "accel"),
+        "radius": fix(props, "radius"),
+        "gravity_accel": fix(props, "gravity_accel"),
+        "gravity_max_fall_speed": fix(props, "gravity_maxFallSpeed"),
+        "gravity_modifier": fix(props, "gravity_modifier"),
+        "jump_extra_x": fix(props, "jumpExtraXStrength"),
+        "jump_momentum": fix(props, "jumpKeptMomentum"),
+        "jump_normal_scale": fix(props, "jumpNormalScaleFactor"),
+        "jump_teleport": fix(props, "extraJumpTeleportMultiplier"),
+        "air_accel": fix(props, "airAccel"),
+    }
+
+
 def animations(guid):
     """AnimationData asset -> {name: [frameDuration...]} (sim ticks, sign = flip)."""
     p = ASSETS[guid]["data"]["properties"]
@@ -2191,6 +2209,10 @@ def main():
         # for a form with no PlayerBody.
         body_simulated = (component(prefab, "PlayerBody")["simulated"]
                           if "PlayerBody" in types else None)
+        # The form's own PlayerPhysics, whose serialized constants its body
+        # runs on from Awake. None for a form with no PlayerPhysics.
+        physics = (player_physics(component(prefab, "PlayerPhysics"))
+                   if "PlayerPhysics" in types else None)
         if item["name"] == "Gold mushroom":
             star = next(c for c in components if c["type"] == "SuperStar")
             effect = ASSETS[guid_of(star["properties"]["effectPrefab"])]
@@ -2225,6 +2247,7 @@ def main():
             "form_jump_strength": form_jump_strength,
             "sync_rotation_to_platform": sync_rotation_to_platform,
             "body_simulated": body_simulated,
+            "physics": physics,
             "effect_updatable_count": effect_updatable_count,
             "effect_prefab": effect["path"] if item["name"] == "Gold mushroom" else None,
         })

@@ -1247,6 +1247,7 @@ struct RawAbility {
     effect_prefab: Option<String>,
     sync_rotation_to_platform: Option<bool>,
     body_simulated: Option<bool>,
+    physics: Option<RawPhysics>,
 }
 
 /// A platform component whose UpdateSim the rollout runs, as the exporter
@@ -2357,6 +2358,9 @@ pub struct AbilityData {
     /// The form prefab's authored PlayerBody.simulated, when it has a
     /// PlayerBody.
     pub body_simulated: Option<bool>,
+    /// The form prefab's PlayerPhysics serialized constants, which the form's
+    /// own body runs on from Awake; None for a form with no PlayerPhysics.
+    pub constants: Option<crate::world::MovementConstants>,
 }
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
@@ -3805,6 +3809,7 @@ pub fn get() -> &'static RolloutData {
                         effect_registrations,
                         sync_rotation_to_platform: ability.sync_rotation_to_platform,
                         body_simulated: ability.body_simulated,
+                        constants: ability.physics.as_ref().map(constants),
                     }
                 })
                 .collect(),

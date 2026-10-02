@@ -7,6 +7,7 @@
 //! approximately from sim/Gameplay for transferable fidelity, not
 //! byte-exactness; the .NET sim stays the reference.
 use crate::{
+    ability::PlayerInfo,
     fixed::Fix,
     geometry::{Circle, OrientedBox, RayHit, RoundedRect},
     orientation::Orientation,
@@ -1901,12 +1902,19 @@ fn scale_box(scale: &mut Fix, value: Fix, inverse_extents: &mut Vec2) {
 }
 
 impl FormBody {
-    /// The form object of `ability` before its first entry. Its PlayerBody's
-    /// simulated is the prefab's: Push.prefab's is off, so that body never
-    /// takes a turn (PlayerBody.cs:107-112), and nothing writes it after Awake.
+    /// The form object of `ability` before its first entry, as its prefab's
+    /// Awake leaves it: its PlayerBody's simulated (Push.prefab's is off, so
+    /// that body never takes a turn, PlayerBody.cs:107-112) and its own
+    /// PlayerPhysics' serialized constants (PlayerPhysics.cs); none for a form
+    /// without a PlayerPhysics.
     fn unentered(ability: u32) -> FormBody {
-        let simulated = data::get().abilities[ability as usize].body_simulated.unwrap_or(true);
-        FormBody { body: Player { simulated, physics_enabled: true, ..Player::default() }, ..FormBody::default() }
+        let data = data::get().abilities.get(ability as usize);
+        let simulated = data.and_then(|data| data.body_simulated).unwrap_or(true);
+        let mut body = Player { simulated, physics_enabled: true, ..Player::default() };
+        if let Some(constants) = data.and_then(|data| data.constants.as_ref()) {
+            body.constants = constants.clone();
+        }
+        FormBody { body, ..FormBody::default() }
     }
 
     /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135).
@@ -3034,6 +3042,20 @@ pub struct FrozenForm {
     pub posed: bool,
 }
 
+/// The Player object's own state, and the port's Dash state, which it keeps on
+/// whichever body is live: a form's entry and exit carry it across.
+fn carry_player_object(to: &mut Player, from: &Player) {
+    to.alive = from.alive;
+    to.out_of_bounds = from.out_of_bounds;
+    to.id = from.id;
+    to.space = from.space;
+    to.previous_jump = from.previous_jump;
+    to.fixed_delta_time = from.fixed_delta_time;
+    to.instant_cast_this_pass = from.instant_cast_this_pass;
+    to.cooldown = from.cooldown;
+    to.dash = from.dash.clone();
+}
+
 /// AbilityExitInfo (AbilityExitInfo.cs): what a form's exit hands the slime.
 /// `Default` is `default(AbilityExitInfo)`.
 #[derive(Clone, Copy, Default)]
@@ -3300,6 +3322,9 @@ pub struct PlayerSlot {
     /// it: an Updater object older than the form still sees it there.
     pub pass_start: (u32, Vec2),
     pub ability_entry_action: Action,
+    /// The live form's Ability.playerInfo: the PlayerInfo SlimeController
+    /// handed it at entry (Ability.cs:91, SlimeController.cs:643-680).
+    pub player_info: PlayerInfo,
     /// Player.Scale, which ScaleChanger mutates after the player updaters.
     pub player_scale: Fix,
     /// DPhysicsBox stores inverse extents and updates them by the rounded
@@ -3942,17 +3967,7 @@ impl PlayerSlot {
 
     fn slime_body_returns(&mut self, woken: bool) {
         let form = std::mem::replace(&mut self.base, std::mem::take(&mut self.slime));
-        // The Player object's own state, and the port's Dash state, which it
-        // keeps on whichever body is live.
-        self.base.alive = form.alive;
-        self.base.out_of_bounds = form.out_of_bounds;
-        self.base.id = form.id;
-        self.base.space = form.space;
-        self.base.previous_jump = form.previous_jump;
-        self.base.fixed_delta_time = form.fixed_delta_time;
-        self.base.instant_cast_this_pass = form.instant_cast_this_pass;
-        self.base.cooldown = form.cooldown;
-        self.base.dash = form.dash.clone();
+        carry_player_object(&mut self.base, &form);
         // The slime goes on from the form's body wherever the exit writes
         // nothing over it. ability_exit writes the pose, velocities, ground,
         // grounded, grounded_speed, scale, radius, constants and box again;
@@ -6042,6 +6057,7 @@ impl RolloutWorld {
                 inactive_obs_state: STATE_FALL,
                 pass_start: (u32::MAX, Vec2::ZERO),
                 ability_entry_action: Action::default(),
+                player_info: PlayerInfo::default(),
                 player_scale: Fix::ONE,
                 body_collider_scale: Fix::ONE,
                 invisible: false,
@@ -10115,32 +10131,44 @@ impl RolloutWorld {
         true
     }
 
-    /// PlayerInfo.selfImposedVelocity on ability entry (SlimeController.cs:659):
-    /// groundedSpeed along the ground's forwards direction when grounded.
-    fn entry_self_imposed(&self, index: usize) -> Vec2 {
-        let base = &self.players[index].base;
-        if !base.grounded {
-            return base.velocity;
+    /// SlimeController.EnterAbility's PlayerInfo for slot `s`
+    /// (SlimeController.cs:643-680), read off the slime's body as this pass's
+    /// PlayerPhysics.UpdateSim left it, before its Move. Grounded, its
+    /// forwardsVector runs along the attached ground's normal at the body,
+    /// selfImposedVelocity is groundedSpeed along it before the facing flip,
+    /// and upVector is that normal normalized, not PlayerBody.up; airborne,
+    /// forwardsVector is right either way.
+    fn player_info(&self, index: usize, s: usize) -> PlayerInfo {
+        let slot = &self.players[index];
+        let base = &slot.base;
+        let normal = (base.attached_ground(&self.platforms))
+            .filter(|_| base.grounded)
+            .map(|platform| platform.surface.normal(base.position));
+        let sign = if slot.facing_right { Fix::ONE } else { -Fix::ONE };
+        let forward = normal.map_or(Vec2::RIGHT * sign, Vec2::perp_cw);
+        let up = match normal {
+            Some(normal) => normal.normalized(),
+            None if base.grounded => base.up().normalized(),
+            None => Vec2::UP,
+        };
+        PlayerInfo {
+            slot: s as i32,
+            position: base.position,
+            external_velocity: base.external_velocity,
+            velocity: if normal.is_some() { forward * base.grounded_speed } else { base.velocity },
+            grounded: base.grounded,
+            grounded_speed: base.grounded_speed,
+            rotation: base.rotation(),
+            forward: if slot.facing_right { forward } else { forward * -Fix::ONE },
+            up,
+            facing_right: slot.facing_right,
+            ground: base.ground,
+            local: if base.grounded { base.local } else { Fix::ZERO },
+            radius: base.radius,
+            rope: slot.rope,
+            top: slot.rope_top,
+            ..PlayerInfo::default()
         }
-        base.ground
-            .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-            .map_or(base.velocity, |p| {
-                p.surface.normal(base.position).perp_cw() * base.grounded_speed
-            })
-    }
-
-    /// PlayerInfo.upVector on ability entry (SlimeController.cs:666): the
-    /// normalized ground normal at the body when grounded, not PlayerBody.up;
-    /// the re-normalisation can move the unit normal by an LSB.
-    fn entry_up(&self, index: usize) -> Vec2 {
-        let base = &self.players[index].base;
-        if !base.grounded {
-            return Vec2::UP;
-        }
-        base.ground
-            .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-            .map_or(base.up(), |p| p.surface.normal(base.position))
-            .normalized()
     }
 
     fn player_tick(
@@ -10517,6 +10545,7 @@ impl RolloutWorld {
                     // (SlimeController.cs:1084), which is what its record
                     // shows for the rest of the ability.
                     let mut frozen = slot.base.clone();
+                    let info = self.player_info(index, s);
                     frozen.move_only(movement_input, self);
                     let slot = &mut self.players[index];
                     // That Move still raises OnNoLongerGrounded and
@@ -10554,22 +10583,19 @@ impl RolloutWorld {
                             self.entity_inverse_extents[slot.body_entity] / ratio;
                         slot.body_collider_scale = scale;
                     }
-                    slot.slime = frozen;
-                    slot.slime.scale = scale;
-                    slot.slime_tick = self.tick;
-                    slot.inactive_obs_state = slot.obs_state;
+                    // An instant ability leaves the slime live in `base`.
                     if !data.abilities[ability as usize].instant {
+                        slot.slime = frozen;
+                        slot.slime.scale = scale;
+                        slot.slime_tick = self.tick;
+                        slot.inactive_obs_state = slot.obs_state;
                         // Ability.EnterAbility: the form's own PlayerPhysics
-                        // and PlayerBody become the live body.
+                        // and PlayerBody become the live body, and only
+                        // PlayerInfo crosses from the slime's (Ability.cs:89-112).
                         let form = std::mem::take(&mut slot.forms[s].body);
-                        let simulated = form.simulated;
                         let slime = std::mem::replace(&mut slot.base, form);
-                        // leak: the form's body is replaced whole by the slime's
-                        // as it was before this pass's Move; only
-                        // SyncPhysicsTo(PlayerInfo) and EnterAbility's writes
-                        // should cross (PlayerPhysics.cs:525-552, Ability.cs:89-112).
-                        slot.base = slime;
-                        slot.base.simulated = simulated;
+                        carry_player_object(&mut slot.base, &slime);
+                        slot.player_info = info;
                     }
                     slot.select_form(s);
                     // Ability.EnterAbility scales the enabled form collider
@@ -10759,6 +10785,7 @@ impl RolloutWorld {
                         // Dash.OnEnterAbility syncs its hitbox after SyncPhysicsTo
                         // (Dash.cs:94-95); readyDash then places the body itself.
                         let radius = slot.base.dash.radius;
+                        self.sync_physics_to_player_info(index, radius);
                         let (position, up) = (self.player_info_pose(index, radius))
                             .unwrap_or((self.players[index].base.position, Vec2::UP));
                         self.sync_form_entry(index, position, up, Vec2::ZERO);
@@ -10818,7 +10845,7 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_MISSILE => {
-                        let grounded = self.players[index].base.grounded;
+                        let grounded = self.players[index].player_info.grounded;
                         // SyncPhysicsTo's UpdateScale brings the form's
                         // PlayerPhysics radius to Player.Scale before placing it.
                         // Ability.EnterAbility assigns Player.Scale to the
@@ -10843,8 +10870,8 @@ impl RolloutWorld {
                         slot.forms[s].set_scale(scale, data.missile.physics_radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         // SparkShot.OnEnterAbility syncs the hurtbox after
                         // SyncPhysicsTo, then restores PlayerInfo's rotation
-                        // (SparkShot.cs:6-8).
-                        let entry = slot.base.rotation();
+                        // (SparkShot.cs:89-91).
+                        let entry = slot.player_info.rotation;
                         self.sync_physics_to_player_info(index, form_radius);
                         let slot = &mut self.players[index];
                         let entry_rotation = slot.base.rotation();
@@ -11001,18 +11028,18 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_ROCK => {
-                        let grounded = self.players[index].base.grounded;
+                        let info = &self.players[index].player_info;
+                        let grounded = info.grounded;
                         let form_position = if grounded {
-                            let base = &self.players[index].base;
-                            base.ground
+                            info.ground
                                 .and_then(|ground| {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
-                                .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, base.radius)
+                                .map_or(info.position, |platform| {
+                                    platform.surface.position(info.local, info.radius)
                                 })
                         } else {
-                            self.players[index].base.position
+                            info.position
                         };
                         if self.players[index].form_entities[s] == usize::MAX {
                             self.players[index].forms[s] =
@@ -11041,8 +11068,8 @@ impl RolloutWorld {
                         // radius. BounceBall.OnEnterAbility's ManualInit then
                         // registers a new circle at that radius (Ability.cs:103-110,
                         // BounceBall.cs:102-105).
-                        let self_imposed = self.entry_self_imposed(index);
                         let slot = &mut self.players[index];
+                        let self_imposed = slot.player_info.velocity;
                         let fresh = slot.forms[s].scale == Fix::ZERO;
                         let scale = slot.player_scale;
                         slot.forms[s].set_circle_scale(scale, data.rock.radius);
@@ -11051,7 +11078,7 @@ impl RolloutWorld {
                         }
                         let start_radius = slot.forms[s].start_radius;
                         let mut body = data.rock.body;
-                        let velocity = self_imposed + slot.base.external_velocity;
+                        let velocity = self_imposed + slot.player_info.external_velocity;
                         let direction = if self_imposed.x <= Fix::ZERO {
                             Fix::ONE
                         } else {
@@ -11075,9 +11102,6 @@ impl RolloutWorld {
                         slot.telemetry.ability_activations[s] += 1;
                         slot.base.position = form_position;
                         slot.base.set_rotation(Fix::ZERO);
-                        slot.base.grounded = false;
-                        slot.base.ground = None;
-                        slot.base.grounded_speed = Fix::ZERO;
                         slot.base.velocity = body.velocity;
                         slot.base.external_velocity = Vec2::ZERO;
                         // The Rock's Ability.UpdateSim publishes the placed body
@@ -11143,7 +11167,6 @@ impl RolloutWorld {
                             charging: true,
                             ..RollState::default()
                         };
-                        slot.base.constants = data.roll.constants.clone();
                         let (radius, offset) =
                             slot.form_circle(slot.roll_entity, data.roll.radius, Vec2::ZERO);
                         self.form_enter_circle(index, physics, radius, offset);
@@ -11174,7 +11197,7 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_METEOR => {
-                        let grounded = self.players[index].base.grounded;
+                        let grounded = self.players[index].player_info.grounded;
                         // Ability.EnterAbility scales the box, then
                         // SyncPhysicsTo's UpdateScale the radius it places the
                         // form with.
@@ -11185,7 +11208,6 @@ impl RolloutWorld {
                         slot.set_active_form(&mut self.entities, ActiveAbility::Meteor);
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.base.constants = data.meteor.constants.clone();
                         let form = &slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.meteor.collider_offset } else { form.offset };
                         self.form_enter(index, self.players[index].base.radius, offset);
@@ -11219,7 +11241,7 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_MINE => {
-                        let grounded = self.players[index].base.grounded;
+                        let grounded = self.players[index].player_info.grounded;
                         // Ability.EnterAbility scales the box, then
                         // SyncPhysicsTo's UpdateScale brings the form's radius
                         // to it before placing the form from the slime's local.
@@ -11236,7 +11258,7 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        let rotation = slot.base.rotation();
+                        let rotation = slot.player_info.rotation;
                         let form = &slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
                         self.form_enter(index, form_radius, offset);
@@ -11255,7 +11277,7 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_TIME_STOP => {
-                        let grounded = self.players[index].base.grounded;
+                        let grounded = self.players[index].player_info.grounded;
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::TimeStop);
@@ -11298,18 +11320,19 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.spike_cast = SpikeCastState::default();
-                        slot.sync_form_pose();
                         // Ability.EnterAbility scales the box, then
                         // PlayerPhysics.SyncPhysicsTo(PlayerInfo) UpdateScales
                         // the form's radius. Spike.OnEnterAbility syncs its
-                        // hitbox there and puts the body back at the slime's
+                        // hitbox there and puts the body back at PlayerInfo's
                         // position (Spike.cs:78-82).
                         self.scale_spike_form(index, data);
                         let slot = &mut self.players[index];
                         let radius = slot.forms[s].physics_radius();
-                        let (position, offset) = (slot.base.position, slot.forms[s].offset);
+                        let (position, offset) = (slot.player_info.position, slot.forms[s].offset);
                         self.form_enter(index, radius, offset);
-                        self.players[index].base.position = position;
+                        let slot = &mut self.players[index];
+                        slot.base.position = position;
+                        slot.sync_form_pose();
                         self.form_entry_turn(data, index);
                         // The entry pass's Ability.UpdateSim.
                         self.scale_spike_form(index, data);
@@ -11339,7 +11362,6 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.plant_cast = PlantCastState::default();
-                        slot.sync_form_pose();
                         // Ability.EnterAbility, then the entry pass's UpdateSim.
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
@@ -11371,7 +11393,6 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.plant_cast = PlantCastState::default();
-                        slot.sync_form_pose();
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_enter(index);
@@ -11391,21 +11412,9 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_FREEZE => {
-                        let grounded = self.players[index].base.grounded;
-                        let aim = {
-                            let slot = &self.players[index];
-                            // SlimeController signs an airborne forwardsVector
-                            // by facing and then flips it again for a left-facing
-                            // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up().perp_cw();
-                            if !grounded {
-                                Vec2::RIGHT
-                            } else if slot.facing_right {
-                                forward
-                            } else {
-                                -forward
-                            }
-                        };
+                        // The aim starts at PlayerInfo.forwardsVector
+                        // (GunTransform.cs:78, MagnetGun.cs:320).
+                        let aim = self.players[index].player_info.forward;
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Freeze);
@@ -11426,21 +11435,9 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_BLINK => {
-                        let grounded = self.players[index].base.grounded;
-                        let aim = {
-                            let slot = &self.players[index];
-                            // SlimeController signs an airborne forwardsVector
-                            // by facing and then flips it again for a left-facing
-                            // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up().perp_cw();
-                            if !grounded {
-                                Vec2::RIGHT
-                            } else if slot.facing_right {
-                                forward
-                            } else {
-                                -forward
-                            }
-                        };
+                        // The aim starts at PlayerInfo.forwardsVector
+                        // (GunTransform.cs:78, MagnetGun.cs:320).
+                        let aim = self.players[index].player_info.forward;
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Blink);
@@ -11462,21 +11459,9 @@ impl RolloutWorld {
                     }
                     ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                         let ray = scale_ray_data(data, ability);
-                        let grounded = self.players[index].base.grounded;
-                        let aim = {
-                            let slot = &self.players[index];
-                            // SlimeController signs an airborne forwardsVector
-                            // by facing and then flips it again for a left-facing
-                            // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up().perp_cw();
-                            if !grounded {
-                                Vec2::RIGHT
-                            } else if slot.facing_right {
-                                forward
-                            } else {
-                                -forward
-                            }
-                        };
+                        // The aim starts at PlayerInfo.forwardsVector
+                        // (GunTransform.cs:78, MagnetGun.cs:320).
+                        let aim = self.players[index].player_info.forward;
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, if ability == ABILITY_GROWTH_RAY {
@@ -11501,21 +11486,10 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_DUPLICATOR => {
-                        let grounded = self.players[index].base.grounded;
-                        let aim = {
-                            let slot = &self.players[index];
-                            // SlimeController signs an airborne forwardsVector
-                            // by facing and then flips it again for a left-facing
-                            // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up().perp_cw();
-                            if !grounded {
-                                Vec2::RIGHT
-                            } else if slot.facing_right {
-                                forward
-                            } else {
-                                -forward
-                            }
-                        };
+                        let grounded = self.players[index].player_info.grounded;
+                        // The aim starts at PlayerInfo.forwardsVector
+                        // (GunTransform.cs:78).
+                        let aim = self.players[index].player_info.forward;
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Duplicator);
@@ -11545,21 +11519,9 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_MAGNET => {
-                        let grounded = self.players[index].base.grounded;
-                        let aim = {
-                            let slot = &self.players[index];
-                            // SlimeController signs an airborne forwardsVector
-                            // by facing and then flips it again for a left-facing
-                            // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up().perp_cw();
-                            if !grounded {
-                                Vec2::RIGHT
-                            } else if slot.facing_right {
-                                forward
-                            } else {
-                                -forward
-                            }
-                        };
+                        // The aim starts at PlayerInfo.forwardsVector
+                        // (GunTransform.cs:78, MagnetGun.cs:320).
+                        let aim = self.players[index].player_info.forward;
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Magnet);
@@ -11583,7 +11545,6 @@ impl RolloutWorld {
                         form.set_scale_offset(scale, data.magnet.radius, data.magnet.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         let radius = form.physics_radius();
                         let offset = form.offset;
-                        slot.base.constants = data.magnet.constants.clone();
                         self.form_enter(index, radius, offset);
                         self.aim_form_entry_tail(index);
                         // OnEnterAbility ends with `body.rotation = Fix.Zero`
@@ -11604,8 +11565,8 @@ impl RolloutWorld {
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
-                        let aim = self.entry_up(index);
                         let slot = &mut self.players[index];
+                        let aim = slot.player_info.up;
                         // BowTransform.OnEnterAbility: aim starts at
                         // PlayerInfo.upVector. Airborne entry slows to a tenth
                         // (slow-mo).
@@ -11647,8 +11608,8 @@ impl RolloutWorld {
                         // nothing to push off from when the cast started
                         // mid-air, and skips its 0.05-unit separation
                         // (PlayerPhysics.cs:366-370).
-                        let slot = &self.players[index];
-                        let attached_ground = slot.base.ground.filter(|_| slot.base.grounded);
+                        let info = &self.players[index].player_info;
+                        let attached_ground = info.ground.filter(|_| info.grounded);
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Gust);
@@ -11659,7 +11620,7 @@ impl RolloutWorld {
                         let (radius, offset) =
                             slot.form_circle(slot.gust_entity, data.gust.hurtbox_radius, data.gust.collider_offset);
                         let physics = slot.forms[s].physics_radius();
-                        let position = slot.base.position;
+                        let position = slot.player_info.position;
                         // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
                         // sync places the circle, then the body returns to
                         // PlayerInfo's position (EnterAbilityOffset is zero).
@@ -11693,8 +11654,8 @@ impl RolloutWorld {
                     }
                     ABILITY_REVIVAL => {
                         // SyncPhysicsTo (PlayerPhysics.cs:525-551).
-                        let slot = &self.players[index];
-                        let attached_ground = slot.base.ground.filter(|_| slot.base.grounded);
+                        let info = &self.players[index].player_info;
+                        let attached_ground = info.ground.filter(|_| info.grounded);
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Revival);
@@ -11705,7 +11666,7 @@ impl RolloutWorld {
                         let (radius, offset) =
                             slot.form_circle(slot.revival_entity, data.revival.hurtbox_radius, data.revival.collider_offset);
                         let physics = slot.forms[s].physics_radius();
-                        let position = slot.base.position;
+                        let position = slot.player_info.position;
                         // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
                         // sync places the circle, then the body returns to
                         // PlayerInfo's position (EnterAbilityOffset is zero).
@@ -11730,7 +11691,7 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_BLACK_HOLE => {
-                        let grounded = self.players[index].base.grounded;
+                        let grounded = self.players[index].player_info.grounded;
                         // Ability.EnterAbility scales the box, then SyncPhysicsTo
                         // UpdateScales the radius the form is placed at.
                         let slot = &mut self.players[index];
@@ -11748,10 +11709,9 @@ impl RolloutWorld {
                             grounded,
                             ..BlackHoleCastState::default()
                         };
-                        slot.base.constants = data.black_hole.constants.clone();
                         // BlackHoleClap.OnEnterAbility syncs the box, then gives
-                        // the body PlayerInfo's rotation back (BlackHoleClap.cs).
-                        let entry = slot.base.rotation();
+                        // the body PlayerInfo's rotation back (BlackHoleClap.cs:57-59).
+                        let entry = slot.player_info.rotation;
                         self.form_enter(index, radius, offset);
                         let slot = &mut self.players[index];
                         slot.base.set_rotation(entry);
@@ -11789,7 +11749,7 @@ impl RolloutWorld {
                         // after SyncPhysicsTo (MachoThrow2.cs:385-388): groundedSpeed
                         // along the surface when grounded, a residue its PlayerBody
                         // integrates before the collider sync.
-                        let self_imposed = self.entry_self_imposed(index);
+                        let self_imposed = self.players[index].player_info.velocity;
                         // Ability.EnterAbility scales the box, then
                         // SyncPhysicsTo's UpdateScale the radius it places the
                         // form with.
@@ -11844,7 +11804,6 @@ impl RolloutWorld {
                             ..MachoThrowState::default()
                         };
                         slot.base.velocity = self_imposed;
-                        slot.base.constants = data.macho_throw.constants.clone();
                         // OnEnterAbility's hurtbox.UpdatePhysicsPositions.
                         let collider = self.macho_throw_box(index, form_position, form_up, data);
                         self.sync_form_box(index, collider);
@@ -11854,16 +11813,14 @@ impl RolloutWorld {
                     }
                     ABILITY_DRILL => {
                         self.ensure_drill_hitboxes(index, s, data);
-                        // PlayerInfo.selfImposedVelocity is groundedSpeed along
-                        // MulByNegI(ground normal) when grounded (taken before the
-                        // facing flip, SlimeController.cs:659).
-                        let self_imposed = self.entry_self_imposed(index);
-                        let player_up = self.entry_up(index);
-                        let (position, rotation, scale) = {
-                            let slot = &self.players[index];
-                            (slot.base.position, slot.base.rotation(), slot.player_scale)
-                        };
+                        // Drill.OnEnterAbility places its body from PlayerInfo
+                        // alone; the form has no PlayerPhysics (Drill.cs:162-181).
                         let slot = &mut self.players[index];
+                        let info = &slot.player_info;
+                        let (self_imposed, external, player_up) =
+                            (info.velocity, info.external_velocity, info.up);
+                        let (position, rotation) = (info.position, info.rotation);
+                        let scale = slot.player_scale;
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Drill);
                         slot.active_slot = s;
@@ -11878,11 +11835,9 @@ impl RolloutWorld {
                         slot.base.position = position
                             + (data.drill.on_enter_offset * scale).complex_mul(player_up.perp_cw());
                         slot.base.velocity = self_imposed;
+                        slot.base.external_velocity = external;
                         slot.base.set_rotation(rotation);
                         let right = Vec2::angle(rotation);
-                        slot.base.grounded = false;
-                        slot.base.ground = None;
-                        slot.base.grounded_speed = Fix::ZERO;
                         // EnterAbility assigns Player.Scale to the box
                         // (Ability.cs:103-106) before OnEnterAbility syncs it.
                         slot.scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
@@ -11902,22 +11857,16 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_BEAM => {
-                        let grounded = self.players[index].base.grounded
-                            && self.players[index].base.ground.is_some_and(|ground| {
+                        let info = &self.players[index].player_info;
+                        let grounded = info.grounded
+                            && info.ground.is_some_and(|ground| {
                                 self.platforms.iter().any(|platform| platform.id == ground)
                             });
-                        let entry_facing_right = self.players[index].facing_right;
+                        let entry_facing_right = info.facing_right;
                         // Beam.OnEnterAbility keeps PlayerInfo.selfImposedVelocity
                         // on a grounded entry: groundedSpeed along the ground
                         // tangent, which PlayerBody then integrates every pass.
-                        let self_imposed = {
-                            let base = &self.players[index].base;
-                            base.ground
-                                .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                                .map_or(Vec2::ZERO, |p| {
-                                    p.surface.normal(base.position).perp_cw() * base.grounded_speed
-                                })
-                        };
+                        let self_imposed = info.velocity;
                         // Ability.EnterAbility scales the box (Ability.cs:105), then
                         // SyncPhysicsTo's UpdateScale carries this slot's PlayerPhysics
                         // radius to it before placing the body (PlayerPhysics.cs:528-534).
@@ -11997,7 +11946,6 @@ impl RolloutWorld {
                                 self.entity_inverse_extents[slot.form_entities[s]],
                             );
                             Self::sync_form_row(&mut self.entities, slot.beam_entity, DetCollider::Box(collider));
-                            slot.base.constants = data.beam.constants.clone();
                             if grounded {
                                 slot.base.velocity = self_imposed;
                             } else {
@@ -12049,9 +11997,6 @@ impl RolloutWorld {
                         slot.base.external_velocity = Vec2::ZERO;
                         // PlatformTransform.OnEnterAbility (PlatformTransform.cs:122).
                         slot.base.set_rotation(Fix::ZERO);
-                        slot.base.grounded = false;
-                        slot.base.ground = None;
-                        slot.base.grounded_speed = Fix::ZERO;
                         // Ability.EnterAbility scales the form's hurtbox, and
                         // the form's Ability.UpdateSim assigns the same scale
                         // again later in this pass; each assignment keeps the
@@ -12061,7 +12006,8 @@ impl RolloutWorld {
                         slot.forms[s].set_circle_scale(scale, data.platform.hurtbox_radius);
                         // PlatformTransform.OnEnterAbility's hurtbox sync at
                         // PlayerInfo's position (PlatformTransform.cs:124-125).
-                        let center = slot.base.position;
+                        let center = slot.player_info.position;
+                        slot.base.position = center;
                         let circle = Circle { center, radius: slot.forms[s].circle_radius };
                         let circle = DetCollider::Circle(circle);
                         Self::sync_form_row(&mut self.entities, slot.circle_entity, circle);
@@ -14458,15 +14404,18 @@ impl RolloutWorld {
 
     /// PlantObjectOnPlatform.OnEnterAbility (PlantObjectOnPlatform.cs:80-85):
     /// SyncPhysicsTo at the radius UpdateScale gives the form, the hitbox at
-    /// that pose, then the body back at PlayerInfo's position.
+    /// that pose, then the body back at PlayerInfo's position, where the
+    /// form's FixTransform now stands.
     fn plant_form_enter(&mut self, index: usize) {
         let slot = &mut self.players[index];
-        let position = slot.base.position;
+        let position = slot.player_info.position;
         let s = slot.active_slot;
         let radius = slot.forms[s].physics_radius();
         let offset = slot.forms[s].offset;
         self.form_enter(index, radius, offset);
-        self.players[index].base.position = position;
+        let slot = &mut self.players[index];
+        slot.base.position = position;
+        slot.sync_form_pose();
     }
 
     /// PlayerPhysics.UpdateScale on a PlantObjectOnPlatform form.
@@ -21133,6 +21082,7 @@ impl RolloutWorld {
         slot.ability_instantiated = [true; 3];
         slot.beam_orb_slots = [None; 3];
         slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
+        // SpawnClone instantiates each form from its prefab (PlayerCollision.cs:255-263).
         slot.forms = slot.abilities.map(FormBody::unentered);
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.base.position = position;
@@ -21641,6 +21591,7 @@ impl RolloutWorld {
         slot.ability_instantiated = [true; 3];
         slot.beam_orb_slots = [None; 3];
         slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
+        // SpawnClone instantiates each form from its prefab (PlayerCollision.cs:255-263).
         slot.forms = slot.abilities.map(FormBody::unentered);
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.base.radius = data.player.radius;
@@ -28390,37 +28341,57 @@ impl RolloutWorld {
     }
 
     /// Where PlayerPhysics.SyncPhysicsTo(PlayerInfo) puts a grounded form of
-    /// `radius` (PlayerPhysics.cs:525-552): at the slime's local on its
-    /// attachedGround, a destroyed one included, and that ground's normal
-    /// there. None for an airborne slime, or one whose ground has gone.
+    /// `radius` (PlayerPhysics.cs:525-552): at PlayerInfo's local on its
+    /// currentlyAttachedGround, a destroyed one included, and that ground's
+    /// normal there. None for an airborne PlayerInfo, or one whose ground has
+    /// gone.
     fn player_info_pose(&self, index: usize, radius: Fix) -> Option<(Vec2, Vec2)> {
-        let base = &self.players[index].base;
-        let surface = (base.platform(&self.platforms).map(|platform| &platform.surface))
-            .or_else(|| self.players[index].dead_ground(self.tick))
-            .filter(|_| base.grounded)?;
-        let position = surface.position(base.local, radius);
+        let slot = &self.players[index];
+        let info = &slot.player_info;
+        let surface = (self.platforms.iter())
+            .find(|platform| platform.active && Some(platform.id) == info.ground)
+            .map(|platform| &platform.surface)
+            .or_else(|| slot.dead_ground(self.tick))
+            .filter(|_| info.grounded)?;
+        let position = surface.position(info.local, radius);
         Some((position, surface.normal(position)))
     }
 
-    /// PlayerPhysics.SyncPhysicsTo(PlayerInfo) on a form's own PlayerPhysics,
-    /// the mirror of `ability_exit`. The shared body still holds the
-    /// PlayerInfo SlimeController.EnterAbility read off the slime
-    /// (SlimeController.cs:643-680), and UpdateScale has brought the form to
-    /// `radius`. A grounded form drops its self-imposed velocity and keeps the
-    /// rest; an airborne one keeps position and velocities, unrotated and
-    /// with no ground.
+    /// PlayerPhysics.SyncPhysicsTo(PlayerInfo) on the live form's own
+    /// PlayerPhysics and PlayerBody (PlayerPhysics.cs:525-552), the mirror of
+    /// `ability_exit`, after UpdateScale has brought the form to `radius`. A
+    /// grounded form takes PlayerInfo's ground, local and groundedSpeed, sits
+    /// at that local and turns to the normal there, with no self-imposed
+    /// velocity; an airborne one takes its position and velocities, unrotated
+    /// and with no ground.
     fn sync_physics_to_player_info(&mut self, index: usize, radius: Fix) {
         let pose = self.player_info_pose(index, radius);
         let slot = &mut self.players[index];
-        slot.base.radius = radius;
-        if let Some((position, up)) = pose {
-            slot.base.position = position;
-            slot.base.velocity = Vec2::ZERO;
-            slot.base.align_to(up);
-        } else if !slot.base.grounded {
-            slot.base.set_rotation(Fix::ZERO);
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
+        let (info, base) = (&slot.player_info, &mut slot.base);
+        base.grounded = info.grounded;
+        base.radius = radius;
+        base.external_velocity = info.external_velocity;
+        if info.grounded {
+            base.ground = info.ground;
+            base.local = info.local;
+            base.velocity = Vec2::ZERO;
+            base.grounded_speed = info.grounded_speed;
+            match pose {
+                Some((position, up)) => {
+                    base.position = position;
+                    base.align_to(up);
+                }
+                None => {
+                    base.position = info.position;
+                    base.set_rotation(info.rotation);
+                }
+            }
+        } else {
+            base.velocity = info.velocity;
+            base.position = info.position;
+            base.set_rotation(Fix::ZERO);
+            base.ground = None;
+            base.grounded_speed = Fix::ZERO;
         }
     }
 
