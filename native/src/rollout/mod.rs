@@ -3881,10 +3881,15 @@ impl PlayerSlot {
     /// SyncAllPhysicsObjectsToFixTransformPosition for the player's boxes:
     /// each registered one takes its FixTransform, hidden or time-stopped
     /// alike (DetPhysics.cs:2517-2524). `hurtbox` is the registered live box's
-    /// inverseExtents; the live form's FixTransform is the body.
-    fn sync_boxes(&mut self, hurtbox: Option<Vec2>, forms: [bool; 3]) {
+    /// inverseExtents; the live form's FixTransform is the body. `slime_box`
+    /// is the slime's own hurtbox while a form hides it: still registered, it
+    /// takes the slime's FixTransform where the cast left it.
+    fn sync_boxes(&mut self, hurtbox: Option<Vec2>, slime_box: Option<Vec2>, forms: [bool; 3]) {
         if let Some(inverse_extents) = hurtbox {
             self.base.sync_collider(inverse_extents);
+        }
+        if let Some(inverse_extents) = slime_box.filter(|_| self.active != ActiveAbility::None) {
+            self.slime.sync_collider(inverse_extents);
         }
         let live = (self.active != ActiveAbility::None).then_some(self.active_slot);
         for s in (0..self.forms.len()).filter(|&s| forms[s]) {
@@ -8011,8 +8016,10 @@ impl RolloutWorld {
                 && !slot.slime_destroyed()
                 && registered(Self::hurtbox_entity(slot)))
             .then(|| slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+            let slime_box = (slot.unspawned == 0 && !slot.slime_destroyed() && registered(slot.body_entity))
+                .then(|| self.entity_inverse_extents[slot.body_entity]);
             let forms = slot.form_entities.map(registered);
-            self.players[index].sync_boxes(hurtbox, forms);
+            self.players[index].sync_boxes(hurtbox, slime_box, forms);
         }
         // Every registered clone box takes its FixTransform too, where its
         // update, a Portal or a Blink release left it.
@@ -36733,10 +36740,12 @@ impl RolloutWorld {
                 row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
                 row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
             }
-            let synced = &mut slot.slime.synced;
-            synced.right = synced.right * ratio;
-            synced.up = synced.up * ratio;
-            synced.inverse_extents = self.entity_inverse_extents[slot.body_entity];
+            let inverse_extents = self.entity_inverse_extents[slot.body_entity];
+            for synced in [&mut slot.slime.synced, &mut slot.slime.collider] {
+                synced.right = synced.right * ratio;
+                synced.up = synced.up * ratio;
+                synced.inverse_extents = inverse_extents;
+            }
         }
         // ThrowItem2.ExitAbility tosses a payload still held. It goes ahead
         // of the rest of the form's exit so a callback's kill registers the
