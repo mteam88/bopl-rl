@@ -31938,8 +31938,9 @@ impl RolloutWorld {
     }
 
     /// Mjolnir.TryFindOwnerPosition searches live SlimeControllers first,
-    /// then active Ability objects. An abilityless clone therefore becomes
-    /// the recall target while the owner's original slime is transformed.
+    /// then active Ability objects. FindObjectsOfType lists runtime objects
+    /// newest first, so the newest abilityless clone answers ahead of the
+    /// owner's own slime.
     fn mjolnir_owner_position(&self, owner: usize, hierarchy: u32) -> Option<Vec2> {
         // Both the slime and an Ability answer with their own transform. The
         // synced collider rows lag a form change on its own pass and sit at a
@@ -31966,19 +31967,20 @@ impl RolloutWorld {
         let (teleport_tick, marker, before) = slot.teleported_from;
         let teleported_later = teleport_tick == self.tick && marker > hierarchy;
         let present = (self.slime_present(owner) || teleported_later) && !released_later;
+        if let Some(clone) = self
+            .abilityless_clones
+            .iter()
+            .filter(|clone| clone.active && clone.owner == owner)
+            .max_by_key(|clone| clone.hierarchy_base)
+            .or_else(|| self.later_drowned_clone(owner, hierarchy))
+        {
+            return Some(clone.base.position);
+        }
         if slot.active == ActiveAbility::None && present {
             if teleported_later {
                 return Some(before);
             }
             return Some(self.mjolnir_view(owner, hierarchy));
-        }
-        if let Some(clone) = self
-            .abilityless_clones
-            .iter()
-            .find(|clone| clone.active && clone.owner == owner)
-            .or_else(|| self.later_drowned_clone(owner, hierarchy))
-        {
-            return Some(clone.base.position);
         }
         // A form instantiated after the hammer has not run its updaters yet
         // this pass: its FixTransform is where the last pass left it, or
