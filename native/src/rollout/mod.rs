@@ -32022,10 +32022,19 @@ impl RolloutWorld {
     /// MonoUpdatable.cs:27-30); the QuantumTunnel or TeleportedObjectEffect
     /// that reactivates an item is newer, so on that pass the item's turn has
     /// gone by.
+    /// Player.SetPosition's calls and destructions in the turn (a
+    /// BananaPeel's killPlayer) are tagged by the item's place in the Updater.
     fn thrown_item_turn(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
         if !self.active_self(self.thrown_items[item_index].entity) {
             return;
         }
+        let hierarchy = 100_000_000 + self.thrown_items[item_index].hierarchy_base;
+        let outer = std::mem::replace(&mut self.scratch.updater_hierarchy, hierarchy);
+        self.thrown_item_turn_untagged(item_index, data, updater_dt);
+        self.scratch.updater_hierarchy = outer;
+    }
+
+    fn thrown_item_turn_untagged(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
         match self.thrown_items[item_index].ability {
             ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE => {
                 self.thrown_item_update(item_index, data, updater_dt);
