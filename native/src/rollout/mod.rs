@@ -8300,11 +8300,11 @@ impl RolloutWorld {
                 base.align(platform);
             }
         }
-        self.beams_late_tick(data);
+        let beam_purge = self.beams_late_tick(data);
         self.ropes_late();
         self.magnets_late(data);
         self.macho_late_tick(data);
-        self.mines_late_tick(data);
+        self.mines_late_tick(data, beam_purge);
         self.ropes_late_on_older_mines();
         self.rocks_late_tick(data);
         for index in 0..self.players.len() {
@@ -17161,10 +17161,12 @@ impl RolloutWorld {
     /// Beam.LateUpdateSim: while the pre-glow shows (enter, and an exit
     /// straight from enter) UpdateGlowEffects raycasts the beam, and that
     /// DetPhysics query first drops every collider destroyed this pass.
-    fn beams_late_tick(&mut self, data: &data::RolloutData) {
+    /// Returns the last raycasting Beam's turn: a mine listed before it that
+    /// detonates this pass is dropped too.
+    fn beams_late_tick(&mut self, data: &data::RolloutData) -> Option<UpdaterKey> {
         let space = data.maps[self.map].is_space();
-        let mut purge = false;
-        for slot in &mut self.players {
+        let mut glowing = Vec::new();
+        for (index, slot) in self.players.iter_mut().enumerate() {
             if slot.active != ActiveAbility::Beam
                 || !slot.beam.orb.is_some_and(|orb| self.beam_orbs[orb].active)
             {
@@ -17186,11 +17188,13 @@ impl RolloutWorld {
             }
             let fire = slot.base.position
                 + slot.beam.staff_dir * Fix::from_f64(2.8) * slot.forms[slot.active_slot].scale;
-            purge |= slot.beam.glow && (space || fire.y >= Fix::from_f32(-11.22));
+            if slot.beam.glow && (space || fire.y >= Fix::from_f32(-11.22)) {
+                glowing.push(index);
+            }
         }
-        if purge {
-            self.raycast_beam();
-        }
+        let last = glowing.into_iter().map(|index| self.player_turn_key(index)).max()?;
+        self.raycast_beam();
+        Some(last)
     }
 
     /// DetPhysics.RaycastBeam (DetPhysics.cs:1124-1164): its RaycastToClosest
@@ -31696,7 +31700,7 @@ impl RolloutWorld {
         None
     }
 
-    fn mines_late_tick(&mut self, data: &data::RolloutData) {
+    fn mines_late_tick(&mut self, data: &data::RolloutData, beam_purge: Option<UpdaterKey>) {
         // Mine.LateUpdateSim runs in hierarchy order, not item slot order: an
         // older mine's scan purges destroyed colliders before a newer mine in
         // an earlier slot detonates.
@@ -31782,7 +31786,7 @@ impl RolloutWorld {
                     }
                 }
                 if detonate {
-                    self.detonate_mine(item_index, data);
+                    self.detonate_mine(item_index, beam_purge, data);
                 }
                 continue;
             }
@@ -31791,7 +31795,7 @@ impl RolloutWorld {
                 let elapsed = self.thrown_items[item_index].time_since_anticipation + DT;
                 self.thrown_items[item_index].time_since_anticipation = elapsed;
                 if elapsed >= data.mine.anticipation_duration {
-                    self.detonate_mine(item_index, data);
+                    self.detonate_mine(item_index, beam_purge, data);
                     continue;
                 }
                 let shake = data.mine.shake_force * (elapsed / data.mine.anticipation_duration);
@@ -31879,19 +31883,24 @@ impl RolloutWorld {
         }
     }
 
-    fn detonate_mine(&mut self, item_index: usize, data: &data::RolloutData) {
+    fn detonate_mine(&mut self, item_index: usize, beam_purge: Option<UpdaterKey>, data: &data::RolloutData) {
         if !self.thrown_items[item_index].active {
             return;
         }
         let item = self.thrown_items[item_index];
+        let key = self.updater_key(item.appended, 100_000_000 + item.hierarchy_base);
         // Mine and Missile both reference the same MineExplosion prefab. Mine
         // supplies Explosion.PlayerOwnerId for lethal attribution; the
         // co-located Shockwave/IPlayerIdHolder remains owner zero.
         self.spawn_missile_explosion(item.position, item.owner, true, item.scale, data);
         // Detonation runs in LateUpdateSim, after DetPhysics has already
         // built this observation's collider arrays. DestroyFix therefore
-        // leaves one destroyed row until the next Simulate pass removes it.
+        // leaves one destroyed row until the next Simulate pass removes it,
+        // unless a Beam listed after the mine raycasts its glow this pass.
         self.remove_thrown_item(item_index, true);
+        if beam_purge.is_some_and(|beam| key < beam) {
+            self.raycast_beam();
+        }
     }
 
     /// Whether a grounded player's attachedGround IsDestroyed: removed this
@@ -40076,7 +40085,7 @@ mod tests {
         world.player_time_scale = Fix::ZERO;
         world.time_stop_protected[0] = true;
 
-        world.mines_late_tick(data::get());
+        world.mines_late_tick(data::get(), None);
 
         assert_eq!(world.thrown_items[0].age, Fix::ONE + DT);
         assert_eq!(
