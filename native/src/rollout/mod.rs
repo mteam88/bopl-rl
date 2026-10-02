@@ -16417,7 +16417,9 @@ impl RolloutWorld {
 
             // A Smoke cloud is a registered circle body too; a lit one has
             // disabled its collider (FlammableSmoke.Ignite), so DetPhysics
-            // .IsActive passes it by.
+            // .IsActive passes it by. Its circle is where the last Simulate
+            // left it: a Portal's TeleportBody moves only the FixTransform
+            // (Portal.cs:257-262).
             for cloud_index in 0..self.smoke_clouds.len() {
                 let cloud = self.smoke_clouds[cloud_index];
                 let Some(entity) = cloud.entity else {
@@ -16429,9 +16431,10 @@ impl RolloutWorld {
                 {
                     continue;
                 }
+                let row = self.entities[entity];
                 if let Some(force) = Self::black_hole_force(
                     position,
-                    cloud.position,
+                    Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                     radius,
                     mass,
                     cloud.body.inverse_mass,
