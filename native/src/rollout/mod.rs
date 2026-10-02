@@ -32878,8 +32878,13 @@ impl RolloutWorld {
 
     fn release_poke_victim(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
         let item = self.thrown_items[item_index];
+        // ReleaseVictim returns for a victim killPlayer DestroyFixed, as its
+        // stock and Revival branches do before the replacement clone takes
+        // the slot, so the Player stays invisible (PokeBall.cs:211-219).
         if victim >= self.players.len()
             || !self.players[victim].base.alive
+            || self.players[victim].stock_clone_pending
+            || self.players[victim].revival_clone_pending
             || self.slime_instance(Slime::Player(victim)) != item.capture_victim_instance
         {
             return;
