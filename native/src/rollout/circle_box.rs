@@ -1272,13 +1272,16 @@ impl RolloutWorld {
     }
 
     /// The receiver's collisionCallback.OnCollide, run from DetPhysics' queue
-    /// (DetPhysics.cs:3202-3205).
+    /// (DetPhysics.cs:3202-3205), or from a dash's or form's own UpdateSim
+    /// for each collider its ray or cast reaches (Dash.cs:150-178,
+    /// MeteorSmash.cs:395-408, Roll.cs:314-325).
     pub(super) fn on_collide(
         &mut self,
         receiver: Part,
         other: Part,
         collider: Option<usize>,
         contact: Contact,
+        route: KillRoute,
         data: &data::RolloutData,
     ) {
         // A slime's or an abilityless clone's own box calls its
@@ -1315,7 +1318,7 @@ impl RolloutWorld {
                     // Projectile prefab does (SmokeGrenadeExplode2.cs:63-78;
                     // IgnitesExplosives 0 on Arrow, MeteorSmear, ...).
                     ABILITY_SMOKE if layer != LAYER_PROJECTILE => {
-                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
+                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, route, data);
                     }
                     // Mine.OnCollide arms on its Igniters' layers unless the
                     // collider is the holding MagnetGun's hurtbox, and sees an
@@ -1325,12 +1328,12 @@ impl RolloutWorld {
                         if state.magnet_holder.is_some_and(|holder| Some(self.players[holder].magnet_entity) == collider) {
                             return;
                         }
-                        self.run_callback_hit(CallbackHit::MineIgnite { item }, data);
+                        self.run_callback_hit(CallbackHit::MineIgnite { item }, route, data);
                     }
                     // GrenadeExplode.OnCollide goes off on the Explosion layer
                     // (GrenadeExplode.cs:78-81).
                     ABILITY_GRENADE if layer == LAYER_EXPLOSION => {
-                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
+                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, route, data);
                     }
                     // and on a Player-layer collider but its owner's, unless it
                     // detonates on its owner, and the holding MagnetGun's
@@ -1347,7 +1350,7 @@ impl RolloutWorld {
                             _ => self.entities[entity].owner,
                         };
                         if holder_id != player_id(&self.players, state.owner) || state.detonates_on_owner {
-                            self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
+                            self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, route, data);
                         }
                     }
                     // PokeBall.OnCollide captures the SlimeController on a
@@ -1367,7 +1370,7 @@ impl RolloutWorld {
                             }
                             _ => return,
                         };
-                        self.run_callback_hit(hit, data);
+                        self.run_callback_hit(hit, route, data);
                     }
                     _ => {}
                 }
@@ -1381,7 +1384,7 @@ impl RolloutWorld {
                     return;
                 }
                 let kill = match other {
-                    Part::Body(_) => self.lethal_roll(other, collider).map(|killer| (killer, CAUSE_OTHER)),
+                    Part::Body(_) => self.kills_on_contact(other, collider).map(|killer| (killer, CAUSE_OTHER)),
                     Part::Spike(_) => Some((0, CAUSE_OTHER)),
                     Part::Node(node) if self.tesla_nodes[node].lethal => Some((0, CAUSE_OTHER)),
                     Part::Explosion(_) | Part::Line(_) => self.blast_kill(other, Some(rock), self.players[rock].base.id),
@@ -1389,7 +1392,7 @@ impl RolloutWorld {
                 };
                 if let Some((killer, cause)) = kill {
                     let hit = CallbackHit::Kill { player: rock, killer, cause, slime: false };
-                    self.run_callback_hit(hit, data);
+                    self.run_callback_hit(hit, route, data);
                 }
             }
             // DynamicAbilityPickup.OnCollide hands its ability to the
@@ -1405,7 +1408,7 @@ impl RolloutWorld {
                     Part::Clone(clone) => PickupTaker::Clone(clone),
                     _ => return,
                 };
-                self.run_callback_hit(CallbackHit::Pickup { pickup, taker, body }, data);
+                self.run_callback_hit(CallbackHit::Pickup { pickup, taker, body }, route, data);
             }
             // Arrow.OnCollide on a StickTo layer Drops the arrow out of a
             // Magnet's hold, then lands, but not on a Player-layer collider
@@ -1469,18 +1472,18 @@ impl RolloutWorld {
                     return;
                 }
                 let hit = CallbackHit::SpikeShove { spike, target: other, point: contact.point };
-                self.run_callback_hit(hit, data);
+                self.run_callback_hit(hit, route, data);
             }
             // FlammableSmoke.OnCollide Ignites the cloud on an Explosion with
             // igniteFlammables, as the lightning's (FlammableSmoke.cs:91-98).
             Part::Cloud(cloud) => {
                 if let (true, Some(entity)) = (Self::ignites_flammables(other), self.smoke_clouds[cloud].entity) {
-                    self.run_callback_hit(CallbackHit::SmokeIgnite { cloud, entity }, data);
+                    self.run_callback_hit(CallbackHit::SmokeIgnite { cloud, entity }, route, data);
                 }
             }
             // Missile.OnCollide ignores RigidBodyAffector and Rope (Missile.cs:183).
             Part::Missile(missile) if !matches!(self.part_layer(other, data), LAYER_RIGID_BODY_AFFECTOR | LAYER_ROPE) => {
-                self.run_callback_hit(CallbackHit::MissileBlast { missile }, data);
+                self.run_callback_hit(CallbackHit::MissileBlast { missile }, route, data);
             }
             // PlayerCollision.OnCollide refuses a collider an earlier callback
             // destroyed (PlayerCollision.cs:313).
@@ -1498,7 +1501,7 @@ impl RolloutWorld {
                     }
                     let slime = self.players[player].active == ActiveAbility::None;
                     let hit = CallbackHit::ArrowKill { victim: player, owner: state.owner, arrow, slime };
-                    self.run_callback_hit(hit, data);
+                    self.run_callback_hit(hit, route, data);
                     return;
                 }
                 let (killer, cause) = match other {
@@ -1508,7 +1511,7 @@ impl RolloutWorld {
                     // Nor does a SpikeAttack's.
                     Part::Spike(_) => (0, CAUSE_OTHER),
                     Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
-                    Part::Body(_) => match self.lethal_roll(other, collider) {
+                    Part::Body(_) => match self.kills_on_contact(other, collider) {
                         Some(killer) => (killer, CAUSE_OTHER),
                         None => return,
                     },
@@ -1524,7 +1527,7 @@ impl RolloutWorld {
                     _ => return,
                 };
                 let slime = self.players[player].active == ActiveAbility::None;
-                self.run_callback_hit(CallbackHit::Kill { player, killer, cause, slime }, data);
+                self.run_callback_hit(CallbackHit::Kill { player, killer, cause, slime }, route, data);
             }
             // The Rock form kills a clone of its own slime too, as an
             // accident.
@@ -1547,7 +1550,7 @@ impl RolloutWorld {
                     }
                     Part::Spike(_) => (0, CAUSE_OTHER),
                     Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
-                    Part::Body(_) => match self.lethal_roll(other, collider) {
+                    Part::Body(_) => match self.kills_on_contact(other, collider) {
                         Some(killer) => (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER }),
                         None => return,
                     },
@@ -1563,22 +1566,34 @@ impl RolloutWorld {
                     },
                     _ => return,
                 };
-                self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, data);
+                self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, route, data);
             }
             _ => {}
         }
     }
 
-    /// The player whose Roll form's circle a Player-layer collider is, while
-    /// its Ability KillPlayersOnContact: Roll sets it on release and clears
-    /// it only on the next OnEnterAbility, so a Roll an earlier callback
-    /// killed still kills (Roll.cs:187, 527, PlayerCollision.cs:410-445).
-    fn lethal_roll(&self, other: Part, collider: Option<usize>) -> Option<u32> {
+    /// The player whose form's collider a Player-layer collider is, while
+    /// its Ability KillPlayersOnContact (PlayerCollision.cs:410-445).
+    fn kills_on_contact(&self, other: Part, collider: Option<usize>) -> Option<u32> {
         let Part::Body(player) = other else {
             return None;
         };
         let slot = &self.players[player];
-        (collider == Some(slot.roll_entity) && slot.roll.lethal).then_some(slot.base.id)
+        collider.is_some_and(|entity| slot.kills_on_contact(entity)).then_some(slot.base.id)
+    }
+
+    /// The live part whose collider a ray or cast reached, for its
+    /// collisionCallback: any grouped kind, a slime's, form's or clone's box
+    /// included.
+    pub(super) fn hit_part(&self, entity: usize) -> Option<Part> {
+        self.part_of_entity(entity).or_else(|| {
+            (0..self.players.len())
+                .map(Part::Body)
+                .chain((0..self.abilityless_clones.len()).map(Part::Clone))
+                .chain((0..self.black_holes.len()).map(Part::Hole))
+                .chain((0..self.smoke_clouds.len()).map(Part::Cloud))
+                .find(|&part| !self.part_destroyed(part) && self.part_entity(part) == Some(entity))
+        })
     }
 
     /// BlackHole.OnCollide with a collider of a narrow-phase group. It reads

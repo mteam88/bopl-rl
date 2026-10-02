@@ -3659,6 +3659,17 @@ impl PlayerSlot {
         self.base.radius
     }
 
+    /// Ability.KillPlayersOnContact of the form whose collider `entity` is:
+    /// Roll sets it on release and clears it only on the next
+    /// OnEnterAbility, so a Roll an earlier callback killed still kills;
+    /// MeteorSmash.Dash sets it and every exit clears it (Roll.cs:187, 527,
+    /// MeteorSmash.cs:121, 202, 227, 327). The Rock form's, always set, is
+    /// its own part's.
+    fn kills_on_contact(&self, entity: usize) -> bool {
+        (entity == self.roll_entity && self.roll.lethal)
+            || (entity == self.meteor_entity && self.active == ActiveAbility::Meteor && self.meteor.phase == 3)
+    }
+
     /// The active form's PlayerPhysics.Jump, which sets its own body's
     /// jumpedThisFrame (PlayerPhysics.cs:332). Only that PlayerPhysics'
     /// LateUpdateSim clears it, so a form that jumps out keeps it until its
@@ -4387,6 +4398,7 @@ impl KillRoute {
     const UPDATER: Self = Self { phase: PassPhase::Updater, on_collide: false };
     const CALLBACK: Self = Self { phase: PassPhase::Callback, on_collide: false };
     const ON_COLLIDE: Self = Self { phase: PassPhase::Callback, on_collide: true };
+    const UPDATER_ON_COLLIDE: Self = Self { phase: PassPhase::Updater, on_collide: true };
 
     fn callback(self) -> bool {
         self.phase == PassPhase::Callback
@@ -12779,8 +12791,10 @@ impl RolloutWorld {
     }
 
     fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
-        // MeteorSmash.Dash zeroes both velocities, then RaycastAll
-        // (MeteorSmash.cs:330-335).
+        // MeteorSmash.Dash sets KillPlayersOnContact and State.Dash, zeroes
+        // both velocities, then RaycastAll (MeteorSmash.cs:327-335).
+        self.players[index].meteor.phase = 3;
+        self.players[index].meteor.dash_updates = 0;
         self.players[index].base.velocity = Vec2::ZERO;
         self.players[index].base.external_velocity = Vec2::ZERO;
         let start = self.players[index].base.position;
@@ -12815,17 +12829,21 @@ impl RolloutWorld {
                     let entity = hit.index;
                     let target = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity);
                     self.players[index].base.position = near;
-                    self.form_target_on_collide(entity, index, Vec2::UP, PassPhase::Updater, data);
+                    // The hit's collisionCallback.OnCollide with the Meteor's
+                    // hitbox at nearPos (MeteorSmash.cs:395-408).
+                    let route = KillRoute::UPDATER_ON_COLLIDE;
+                    if let Some(part) = self.hit_part(entity) {
+                        let contact = Contact { point: near, normal: Vec2::UP, penetration: Fix::from_f32(0.1) };
+                        self.on_collide(part, Part::Body(index), Some(own), contact, route, data);
+                    }
                     // hitbox.OnCollide: the Meteor's own PlayerCollision, from
                     // its UpdateSim. A Rock (no PlayerCollision) or an
                     // invulnerable target survives, and can still kill the
                     // Meteor as a lethal form.
-                    let route = KillRoute { phase: PassPhase::Updater, on_collide: true };
                     if let Some(target) = target {
                         if self.hittable(target)
                             && (self.players[target].active == ActiveAbility::Rock
-                                || (self.players[target].active == ActiveAbility::Roll
-                                    && self.players[target].roll.lethal))
+                                || self.players[target].kills_on_contact(entity))
                         {
                             let killer = self.players[target].base.id;
                             self.kill_with(index, killer, CAUSE_OTHER, route, true, true, false);
@@ -12857,8 +12875,6 @@ impl RolloutWorld {
             // UpdateSim counts the passes from here.
             let slot = &mut self.players[index];
             let published = slot.base.collider.center;
-            slot.meteor.phase = 3;
-            slot.meteor.dash_updates = 0;
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
             if self.ability_boundary_kill(index) {
@@ -12980,91 +12996,6 @@ impl RolloutWorld {
             _ => return,
         };
         self.players[index].rock.body.force += impulse * Fix::from_int(60);
-    }
-
-    /// The target's collisionCallback.OnCollide with a form's hitbox.
-    /// MeteorSmash.Dash and Roll.CollideExtraHurtBoxes call it from their own
-    /// UpdateSim, so whatever it kills or destroys there is gone before this
-    /// pass's DetPhysics (MeteorSmash.cs:408, Roll.cs:298, 332).
-    ///
-    /// `normal` is the CollisionInformation's: Vec2.up from the Dash
-    /// (MeteorSmash.cs:404), unset from CollideExtraHurtBoxes (Roll.cs:323-331).
-    fn form_target_on_collide(
-        &mut self,
-        entity: usize,
-        caster: usize,
-        normal: Vec2,
-        phase: PassPhase,
-        data: &data::RolloutData,
-    ) {
-        let route = KillRoute { phase, on_collide: true };
-        let by_callback = route.callback();
-        let killer = self.players[caster].base.id;
-        if let Some(target) = self
-            .players
-            .iter()
-            .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
-        {
-            if self.players[target].active == ActiveAbility::Rock {
-                let layer = self.entities[Self::hurtbox_entity(&self.players[caster])].layer;
-                self.rock_on_collide(target, normal, layer);
-            } else if self.hittable(target) {
-                // PlayerCollision.OnCollide.
-                self.kill_with(target, killer, CAUSE_OTHER, route, true, true, false);
-            }
-            return;
-        }
-        if let Some(clone) = self
-            .abilityless_clones
-            .iter()
-            .position(|clone| clone.active && clone.entity == Some(entity))
-        {
-            self.kill_abilityless_clone(clone, killer, CAUSE_OTHER, route, true);
-            return;
-        }
-        if let Some(arrow_index) = self
-            .arrows
-            .iter()
-            .position(|arrow| arrow.active && arrow.entity == Some(entity))
-        {
-            // Arrow.OnCollide: BoplBody.Drop lets go of a Magnet's hold, and a
-            // Player-layer collider without a BoplBody is nothing to stick
-            // to. Meteor and Roll are both (Arrow.cs:87-98, Meteor.prefab,
-            // Roll.prefab), so the arrow flies on.
-            let arrow = &mut self.arrows[arrow_index];
-            arrow.magnet_holder = None;
-            arrow.magnet_hold_ticks = -1;
-            return;
-        }
-        if let Some(missile_index) = self
-            .guided_missiles
-            .iter()
-            .position(|missile| missile.active && missile.entity == Some(entity))
-        {
-            let missile = self.guided_missiles[missile_index];
-            self.spawn_missile_explosion(missile.position, missile.owner, false, missile.scale, data);
-            self.destroy_guided_missile(missile_index, true);
-            return;
-        }
-        if let Some(item_index) = self
-            .thrown_items
-            .iter()
-            .position(|item| item.active && item.entity == Some(entity))
-        {
-            let item = self.thrown_items[item_index];
-            if item.ability == ABILITY_GRENADE && (item.owner != caster || item.detonates_on_owner)
-            {
-                self.detonate_grenade(item_index, by_callback, data);
-            } else if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
-                // SmokeGrenadeExplode2.OnCollide asks only DetonatesOnOwner,
-                // whoever hit it (SmokeGrenadeExplode2.cs:63-77).
-                self.detonate_smoke(item_index, by_callback, data);
-            } else if item.ability == ABILITY_MINE && matches!(item.phase, 1 | 2) {
-                let mine = &mut self.thrown_items[item_index];
-                mine.phase = 3;
-                mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f64(0.8);
-            }
-        }
     }
 
     fn meteor_land(
@@ -22379,7 +22310,7 @@ impl RolloutWorld {
                                 target: Part::Body(index),
                                 point: origin + direction * hit.distance,
                             };
-                            self.run_callback_hit(knock, data);
+                            self.run_callback_hit(knock, KillRoute::UPDATER_ON_COLLIDE, data);
                         }
                         let mut killer = row.owner;
                         let mut can_hurt_owner = matches!(row.layer, 16 | 18);
@@ -34031,14 +33962,15 @@ impl RolloutWorld {
         let mut hits = std::mem::take(&mut self.scratch.callback_hits);
         hits.sort_by_key(|&(key, _)| key);
         for &(_, hit) in &hits {
-            self.run_callback_hit(hit, data);
+            self.run_callback_hit(hit, KillRoute::ON_COLLIDE, data);
         }
         hits.clear();
         self.scratch.callback_hits = hits;
     }
 
-    /// One entry of DetPhysics' callback queue (DetPhysics.cs:3202-3205).
-    fn run_callback_hit(&mut self, hit: CallbackHit, data: &data::RolloutData) {
+    /// One entry of DetPhysics' callback queue (DetPhysics.cs:3202-3205), or
+    /// one OnCollide a dash's or form's UpdateSim calls, by `route`.
+    fn run_callback_hit(&mut self, hit: CallbackHit, route: KillRoute, data: &data::RolloutData) {
         match hit {
             CallbackHit::ArrowKill { victim, owner, arrow, slime } => self.arrow_kill(victim, owner, arrow, slime),
             CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
@@ -34059,9 +33991,13 @@ impl RolloutWorld {
                     self.capture_poke_victim(item, victim, data, false);
                 }
             }
+            // PlayerCollision.OnCollide's killPlayer, which Rock.prefab, with
+            // no PlayerCollision, never reaches. Only a scene-boundary death
+            // ignores invulnerability.
             CallbackHit::Kill { player, killer, cause, slime } => {
-                if self.player_collision_active(player, slime) {
-                    self.kill(player, killer, cause, true, true);
+                if self.player_collision_active(player, slime) && self.players[player].active != ActiveAbility::Rock {
+                    let ignore_invulnerability = killer == ENVIRONMENT && cause == CAUSE_ACCIDENT;
+                    self.kill_with(player, killer, cause, route, true, true, ignore_invulnerability);
                 }
             }
             CallbackHit::Pickup { pickup, taker, body } => {
@@ -34083,7 +34019,7 @@ impl RolloutWorld {
                     self.destroy_guided_missile(missile, true);
                 }
             }
-            CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause),
+            CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause, route),
             CallbackHit::SpikeShove { spike, target, point } => {
                 // Off the wall layer, so knockAwayStr, pushed from the
                 // target's synced FixTransform (SpikeAttack.cs:116-141).
@@ -34117,7 +34053,7 @@ impl RolloutWorld {
                 self.spike_attack_self_push(spike, point, strength, data);
             }
             CallbackHit::Collide { receiver, other, collider, contact } => {
-                self.on_collide(receiver, other, collider, contact, data);
+                self.on_collide(receiver, other, collider, contact, route, data);
             }
             CallbackHit::MineIgnite { item } => {
                 let mine = &mut self.thrown_items[item];
@@ -34137,22 +34073,22 @@ impl RolloutWorld {
                         && state.entity.is_some_and(|entity| self.entities[entity].flags & E_DESTROYED != 0)
                     {
                         for _ in 0..count {
-                            self.spawn_grenade_explosion(state.position, state.owner, true, state.scale, data);
+                            self.spawn_grenade_explosion(state.position, state.owner, route.callback(), state.scale, data);
                         }
                     }
                     return;
                 }
                 if state.ability == ABILITY_SMOKE {
                     if state.detonates_on_owner {
-                        self.detonate_smoke(item, true, data);
+                        self.detonate_smoke(item, route.callback(), data);
                     }
                 } else {
-                    self.detonate_grenade(item, true, data);
+                    self.detonate_grenade(item, route.callback(), data);
                     for _ in 1..count {
                         self.spawn_grenade_explosion(
                             state.position,
                             state.owner,
-                            true,
+                            route.callback(),
                             state.scale,
                             data,
                         );
@@ -36029,11 +35965,16 @@ impl RolloutWorld {
             let mut hits = [0usize; 10];
             let hit_count = self.circle_cast_all(query, data.roll.collision_mask, |_, _| false, &mut hits);
 
-            // CollideExtraHurtBoxes invokes every target callback before
-            // it begins the reciprocal Roll hurtbox callback walk.
+            // CollideExtraHurtBoxes invokes every target callback, with the
+            // contact at the cast's centre and no normal, before it begins the
+            // reciprocal Roll hurtbox callback walk (Roll.cs:314-325).
             for &entity in &hits[..hit_count] {
-                if entity != roller_entity {
-                    self.form_target_on_collide(entity, roller, Vec2::ZERO, PassPhase::Updater, data);
+                if entity == roller_entity {
+                    continue;
+                }
+                if let Some(part) = self.hit_part(entity) {
+                    let contact = Contact { point: center, normal: Vec2::ZERO, penetration: Fix::ZERO };
+                    self.on_collide(part, Part::Body(roller), Some(roller_entity), contact, KillRoute::UPDATER_ON_COLLIDE, data);
                 }
             }
 
@@ -36133,20 +36074,20 @@ impl RolloutWorld {
             Slime::Player(index) => {
                 self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
             }
-            Slime::Clone(index) => self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED),
+            Slime::Clone(index) => self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED, KillRoute::ON_COLLIDE),
         }
     }
 
-    /// An abilityless clone's PlayerCollision.OnCollide kill, from the
-    /// callback queue: killPlayer(spawnEffect: true) creates the death effect
+    /// An abilityless clone's PlayerCollision.OnCollide kill:
+    /// killPlayer(spawnEffect: true) creates the death effect
     /// (PlayerCollision.cs:457).
-    fn clone_collision_kill(&mut self, index: usize, killer: u32, cause: u32) {
+    fn clone_collision_kill(&mut self, index: usize, killer: u32, cause: u32, route: KillRoute) {
         let entity = self.abilityless_clones[index].entity;
         let alive = self.abilityless_clones[index].active;
-        self.kill_abilityless_clone(index, killer, cause, KillRoute::ON_COLLIDE, true);
+        self.kill_abilityless_clone(index, killer, cause, route, true);
         // A callback casualty stays visible as destroyed until the next
         // pass's DetPhysics.Simulate drops it.
-        if let Some(entity) = entity.filter(|_| alive) {
+        if let Some(entity) = entity.filter(|_| alive && route.callback()) {
             let row = &mut self.entities[entity];
             row.flags = E_DESTROYED | E_TRIGGER | (row.flags & E_FIX_DESTROYED);
             row.owner = 0;
@@ -37933,18 +37874,13 @@ impl RolloutWorld {
                     row.flags |= ability_collider_flags(ABILITY_ROCK);
                 }
             }
-            if slot.roll_entity != usize::MAX
-                && slot.roll.lethal
-                && self.entities[slot.roll_entity].flags & E_DESTROYED == 0
-            {
-                self.entities[slot.roll_entity].flags |= E_CONTACT_DAMAGE;
-            }
-            if slot.meteor_entity != usize::MAX
-                && slot.active == ActiveAbility::Meteor
-                && slot.meteor.phase == 3
-                && self.entities[slot.meteor_entity].flags & E_DESTROYED == 0
-            {
-                self.entities[slot.meteor_entity].flags |= E_CONTACT_DAMAGE;
+            for entity in [slot.roll_entity, slot.meteor_entity] {
+                if entity != usize::MAX
+                    && slot.kills_on_contact(entity)
+                    && self.entities[entity].flags & E_DESTROYED == 0
+                {
+                    self.entities[entity].flags |= E_CONTACT_DAMAGE;
+                }
             }
             for entities in &slot.drill_hitbox_entities {
                 for &entity in entities {
