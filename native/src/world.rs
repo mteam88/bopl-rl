@@ -51,6 +51,11 @@ pub struct MovementConstants {
     pub jump_teleport: Fix,
     pub friction: Fix,
     pub ice_friction: Fix,
+    /// PlayerPhysics.cannotBeUngroundedByRopes: on for the Throw and Roll
+    /// forms', so a grounded rope end's pull never UnGrounds that body
+    /// (PlayerPhysics.cs:156).
+    #[serde(default)]
+    pub cannot_be_ungrounded_by_ropes: bool,
 }
 
 fn default_fixed_delta_time() -> Fix {

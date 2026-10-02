@@ -135,6 +135,8 @@ struct RawPhysics {
     #[serde(default)]
     jump_teleport: Option<i64>,
     air_accel: i64,
+    #[serde(default)]
+    cannot_unground_by_ropes: bool,
 }
 #[derive(Deserialize)]
 struct RawPlayer {
@@ -2420,6 +2422,7 @@ fn constants(physics: &RawPhysics) -> crate::world::MovementConstants {
         jump_teleport: Fix::from_raw(physics.jump_teleport.unwrap_or(42_949_672)),
         friction: FRICTION,
         ice_friction: ICE_FRICTION,
+        cannot_be_ungrounded_by_ropes: physics.cannot_unground_by_ropes,
     }
 }
 

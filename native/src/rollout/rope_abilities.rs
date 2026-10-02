@@ -416,9 +416,11 @@ fn pin_grounded_rope_end(
         base.external_velocity += delta * GROUNDED_ROPE_STRENGTH;
     }
     // Gated on a live ground: nothing destroyed to fall back on.
-    if base.platform(platforms).is_some_and(|platform| {
-        platform.surface.normal(base.position).dot(base.external_velocity) > Fix::from_int(30)
-    }) {
+    if !base.constants.cannot_be_ungrounded_by_ropes
+        && base.platform(platforms).is_some_and(|platform| {
+            platform.surface.normal(base.position).dot(base.external_velocity) > Fix::from_int(30)
+        })
+    {
         body.unground(platforms, tick, true);
     }
     rope.physics.segment[endpoint] = body.base().position;

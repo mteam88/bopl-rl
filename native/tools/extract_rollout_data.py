@@ -277,7 +277,8 @@ def physics_body(props):
 
 
 def player_physics(props):
-    """PlayerPhysics' serialized movement constants and radius."""
+    """PlayerPhysics' serialized movement constants, radius and
+    cannotBeUngroundedByRopes."""
     return {
         "max_speed": fix(props, "maxSpeed"),
         "jump_strength": fix(props, "jumpStrength"),
@@ -291,6 +292,7 @@ def player_physics(props):
         "jump_normal_scale": fix(props, "jumpNormalScaleFactor"),
         "jump_teleport": fix(props, "extraJumpTeleportMultiplier"),
         "air_accel": fix(props, "airAccel"),
+        "cannot_unground_by_ropes": props["cannotBeUngroundedByRopes"],
     }
 
 
