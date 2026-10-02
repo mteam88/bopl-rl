@@ -1466,19 +1466,31 @@ impl RolloutWorld {
         }
     }
 
-    /// A SpikeAttack, SparkNode or RocketEngine hangs under its platform's
-    /// GameObject (Spike.cs:122, PlaceSparkNode.cs:40, PlaceRocketEngine.cs:45),
-    /// so it leaves the hierarchy with
-    /// the platform, and RopeAttachment.UpdateSim's activeInHierarchy test
-    /// lets go of it (RopeAttachment.cs:96-100).
-    fn parent_platform_active(&self, parent: RopeParent) -> bool {
-        let platform = match parent {
-            RopeParent::Spike(spike, _) => self.spike_attacks[spike].platform_index,
-            RopeParent::Node(node, _) => self.tesla_nodes[node].platform_index,
-            RopeParent::Engine(engine, _) => self.engines[engine].platform_index,
-            _ => return true,
-        };
-        self.platforms[platform].active
+    /// RopeAttachment.UpdateSim lets go of a parent out of the hierarchy
+    /// (RopeAttachment.cs:96-100). A QuantumTunnel or TeleportedObjectEffect
+    /// takes any parent out while it holds it. A SpikeAttack, SparkNode or
+    /// RocketEngine hangs under its platform's GameObject (Spike.cs:122,
+    /// PlaceSparkNode.cs:40, PlaceRocketEngine.cs:45), so it also leaves with
+    /// the platform or MachoThrow2's carry.
+    fn rope_parent_active(&self, parent: RopeParent) -> bool {
+        match parent {
+            RopeParent::Spike(spike, _) => {
+                let spike = &self.spike_attacks[spike];
+                self.attached_live(spike.platform_index, spike.entity)
+            }
+            RopeParent::Node(node, _) => {
+                let node = &self.tesla_nodes[node];
+                self.attached_live(node.platform_index, node.entity)
+            }
+            RopeParent::Engine(engine, _) => {
+                let engine = &self.engines[engine];
+                self.attached_live(engine.platform_index, engine.entity)
+            }
+            RopeParent::Rock(player) => !self.blink_object_hidden(Some(self.players[player].rock_entity)),
+            RopeParent::Item(item, _) => !self.blink_object_hidden(self.thrown_items[item].entity),
+            RopeParent::Shot(shot, _) => !self.blink_object_hidden(self.portal_shots[shot].entity),
+            RopeParent::Arrow(arrow, _) => !self.blink_object_hidden(self.arrows[arrow].entity),
+        }
     }
 
     /// A platform RopeAttachment's UpdateSim on rope `index`'s end held by
@@ -1623,7 +1635,7 @@ impl RolloutWorld {
                 parent,
                 self.ropes[index].attach[0].offset,
             )
-            .filter(|_| self.parent_platform_active(parent)) else {
+            .filter(|_| self.rope_parent_active(parent)) else {
                 self.deattach_rope(index, true);
                 self.ropes[index].attach[0].parent = None;
                 return;
