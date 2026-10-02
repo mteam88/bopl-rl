@@ -189,8 +189,10 @@ pub(super) enum HookTarget {
 /// object in a reused slot reads as the parent destroyed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RopeParent {
-    /// A Rock-form player: it has no PlayerBody for the rope to join.
-    Rock(usize),
+    /// A Rock-form player and its Rock's form row: it has no PlayerBody for
+    /// the rope to join. Each ability slot has its own Rock GameObject, so a
+    /// Rock entered from another slot is not the hooked one.
+    Rock(usize, usize),
     Item(usize, u32),
     Shot(usize, u32),
     /// A SpikeAttack: its box is on LethalTerrain.
@@ -241,7 +243,7 @@ fn parent_pose(
     parent: RopeParent,
 ) -> ParentPose {
     match parent {
-        RopeParent::Rock(player) => {
+        RopeParent::Rock(player, _) => {
             let slot = &players[player];
             ParentPose {
                 position: slot.base.position,
@@ -276,7 +278,10 @@ fn parent_position(
 ) -> Option<Vec2> {
     let (spikes, nodes, arrows, engines) = attachables;
     let live = match parent {
-        RopeParent::Rock(player) => players[player].active == ActiveAbility::Rock && players[player].base.alive,
+        RopeParent::Rock(player, rock) => {
+            let slot = &players[player];
+            slot.active == ActiveAbility::Rock && slot.base.alive && slot.rock_entity == rock
+        }
         RopeParent::Item(item, base) => items[item].active && items[item].hierarchy_base == base,
         RopeParent::Shot(shot, base) => shots[shot].active && shots[shot].hierarchy_base == base,
         RopeParent::Spike(index, base) => spikes[index].active && spikes[index].hierarchy_base == base,
@@ -1519,7 +1524,7 @@ impl RolloutWorld {
                 let engine = &self.engines[engine];
                 self.attached_live(engine.platform_index, engine.entity)
             }
-            RopeParent::Rock(player) => !self.blink_object_hidden(Some(self.players[player].rock_entity)),
+            RopeParent::Rock(_, rock) => !self.blink_object_hidden(Some(rock)),
             RopeParent::Item(item, _) => !self.blink_object_hidden(self.thrown_items[item].entity),
             RopeParent::Shot(shot, _) => !self.blink_object_hidden(self.portal_shots[shot].entity),
             RopeParent::Arrow(arrow, _) => !self.blink_object_hidden(self.arrows[arrow].entity),
@@ -1693,7 +1698,7 @@ impl RolloutWorld {
                 .position;
                 let arm = (self.ropes[index].attach[0].anchor - centre).normalized_safe();
                 let body = match parent {
-                    RopeParent::Rock(player) => Some(&mut self.players[player].rock.body),
+                    RopeParent::Rock(player, _) => Some(&mut self.players[player].rock.body),
                     RopeParent::Item(item, _) => Some(&mut self.thrown_items[item].body),
                     RopeParent::Shot(shot, _) => Some(&mut self.portal_shots[shot].body),
                     RopeParent::Spike(spike, _) => Some(
@@ -2013,7 +2018,7 @@ impl RolloutWorld {
             }
             // A BounceBall has no PlayerBody, so the hook attaches to it as to
             // any other body.
-            HookTarget::Player(player) => RopeParent::Rock(player),
+            HookTarget::Player(player) => RopeParent::Rock(player, self.players[player].rock_entity),
             HookTarget::Item(index) => RopeParent::Item(index, self.thrown_items[index].hierarchy_base),
             HookTarget::Shot(index) => RopeParent::Shot(index, self.portal_shots[index].hierarchy_base),
             HookTarget::Arrow(index) => RopeParent::Arrow(index, self.arrows[index].hierarchy_base),
