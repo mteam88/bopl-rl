@@ -2219,12 +2219,9 @@ pub struct EatingState {
     pub phase: EatingPhase,
     /// SpriteAnimator passes until the current animation's callback.
     pub frames: u32,
-    pub victim: usize,
-    /// The victim's deaths at the bite: Chew only kills the body it bit, not
-    /// a stock clone that replaced it.
-    pub victim_deaths: u32,
-    /// The hurtbox row of a bitten abilityless clone of `victim`.
-    pub victim_clone: Option<usize>,
+    /// The bitten slime and its `slime_instance`: Chew only kills the
+    /// SlimeController it bit, not a later one in its slot.
+    pub victim: Option<(Slime, u32)>,
     pub swallowing: bool,
 }
 
@@ -9789,8 +9786,7 @@ impl RolloutWorld {
                 let prey_scale =
                     if slot.active == ActiveAbility::None { slot.base.scale } else { slot.player_scale };
                 let eating = EatingState {
-                    victim,
-                    victim_deaths: slot.deaths,
+                    victim: Some((prey, self.slime_instance(prey))),
                     ..EatingState::default()
                 };
                 (prey_scale, slot.team, slot.invulnerable != 0, eating)
@@ -9798,8 +9794,7 @@ impl RolloutWorld {
             Slime::Clone(clone_index) => {
                 let clone = &self.abilityless_clones[clone_index];
                 let eating = EatingState {
-                    victim: clone.owner,
-                    victim_clone: clone.entity,
+                    victim: Some((prey, self.slime_instance(prey))),
                     ..EatingState::default()
                 };
                 let team = self.players[clone.owner].team;
@@ -9822,17 +9817,24 @@ impl RolloutWorld {
     /// Chew kills the bitten body through its active PlayerCollision, without
     /// a death effect.
     fn chew(&mut self, killer: u32, eating: EatingState) {
-        if let Some(entity) = eating.victim_clone {
-            if let Some(clone) = (self.abilityless_clones.iter())
-                .position(|clone| clone.active && clone.entity == Some(entity))
-                && self.abilityless_clones[clone].invulnerable == 0
-            {
-                self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false);
+        let Some((victim, instance)) = eating.victim else {
+            return;
+        };
+        if self.slime_instance(victim) != instance {
+            return;
+        }
+        match victim {
+            Slime::Clone(clone) => {
+                let clone_state = &self.abilityless_clones[clone];
+                if clone_state.active && clone_state.invulnerable == 0 {
+                    self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false);
+                }
             }
-        } else if self.players[eating.victim].deaths == eating.victim_deaths
-            && self.hittable(eating.victim)
-        {
-            self.kill(eating.victim, killer, CAUSE_EATEN, false, false);
+            Slime::Player(player) => {
+                if self.hittable(player) {
+                    self.kill(player, killer, CAUSE_EATEN, false, false);
+                }
+            }
         }
     }
 
