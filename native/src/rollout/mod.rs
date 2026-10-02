@@ -15075,7 +15075,7 @@ impl RolloutWorld {
             .expect("authored SpikeAttack curve")
             .time;
         let attack = &mut self.spike_attacks[index];
-        if !attack.active || attack.macho_carried || attack.placed_tick >= self.tick {
+        if !attack.active || attack.macho_carried || attack.appended > self.tick {
             attack.pushed_this_frame = false;
             return;
         }
