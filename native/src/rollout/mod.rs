@@ -4232,7 +4232,12 @@ impl PlayerSlot {
         let ratio = (Fix::ONE / self.body_collider_scale) * scale;
         inverse_extents[self.body_entity] = inverse_extents[self.body_entity] / ratio;
         self.body_collider_scale = scale;
-        self.base.scale = scale;
+        // The hurtbox's FixTransform is the slime's, in a form or not.
+        if self.active == ActiveAbility::None {
+            self.base.scale = scale;
+        } else {
+            self.slime.scale = scale;
+        }
     }
 
     fn begin_land(&mut self) {
@@ -13623,6 +13628,7 @@ impl RolloutWorld {
         let tick = self.tick;
         self.form_returns_slime(index);
         let slot = &mut self.players[index];
+        slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
         slot.facing_right = info.facing_right;
         slot.base.grounded = info.grounded;
         slot.restore_slime_radius();
@@ -13711,7 +13717,6 @@ impl RolloutWorld {
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
         slot.leave_form(&mut self.entities);
-        slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
     }
 
     /// SuperStarEffect.UpdateSim for player `index`'s effect in
@@ -36709,11 +36714,15 @@ impl RolloutWorld {
         // (PlayerCollision.cs:121-132, SlimeController.cs:193-219), which
         // restarts the ability clock, ends a lapsed invisibility and assigns
         // Player.Scale to the hurtbox before the slime's own killPlayer. The
-        // Scale setter multiplies the box's right and up by `(One / old) * new`
-        // (DPhysicsBox.cs:204-218), and no later sync rebuilds a dead box.
+        // Scale setter multiplies DetPhysics' right and up by
+        // `(One / old) * new` where the box last synced (DPhysicsBox.cs:204-218),
+        // and nothing syncs it again before that killPlayer. A slime that
+        // left its form earlier in the pass had its onExitAbility then.
         if self.players[index].ability_entered {
             self.players[index].ability_entered = false;
             self.exit_ability_callback(index, data::get());
+        }
+        if self.players[index].active != ActiveAbility::None {
             let slot = &mut self.players[index];
             let old = slot.body_collider_scale;
             slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
@@ -36724,6 +36733,10 @@ impl RolloutWorld {
                 row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
                 row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
             }
+            let synced = &mut slot.slime.synced;
+            synced.right = synced.right * ratio;
+            synced.up = synced.up * ratio;
+            synced.inverse_extents = self.entity_inverse_extents[slot.body_entity];
         }
         // ThrowItem2.ExitAbility tosses a payload still held. It goes ahead
         // of the rest of the form's exit so a callback's kill registers the
@@ -36779,7 +36792,9 @@ impl RolloutWorld {
             // onExitAbility puts the slime at the packet's position and, its
             // killPlayer refused, clears isInAbility and returns
             // (SlimeController.cs:215-221): no SyncPhysicsTo, so the slime
-            // is on the PlayerPhysics it froze with.
+            // is on the PlayerPhysics it froze with, and no
+            // hurtBox.UpdatePhysicsPositions, so DetPhysics keeps its box
+            // where it last synced.
             self.form_returns_slime(index);
             let slot = &mut self.players[index];
             // The slime's own PlayerBody and PlayerPhysics, enabled again as
@@ -36788,7 +36803,6 @@ impl RolloutWorld {
             slot.base.ground = slot.base.ground.filter(|_| slot.base.grounded);
             slot.base.grounded = slot.base.ground.is_some();
             slot.base.position = drop_position;
-            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             return true;
         }
         // Player.RespawnPositions: the marker of every Revive on the player's
@@ -36854,13 +36868,11 @@ impl RolloutWorld {
             self.players[index].reported_tick = self.tick;
         }
         let slot = &mut self.players[index];
-        // onExitAbility gives the slime's hurtbox Player.Scale and puts the
-        // slime at the dead packet's position before its own killPlayer
-        // (SlimeController.cs:206, 213-216).
+        // onExitAbility puts the slime at the dead packet's position before
+        // its own killPlayer (SlimeController.cs:213-216).
         let in_form = slot.active != ActiveAbility::None;
         slot.leave_form(&mut self.entities);
         if in_form {
-            slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
             slot.base.position = drop_position;
         }
         slot.base.dash.active = false;
