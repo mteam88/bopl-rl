@@ -175,22 +175,21 @@ pub(super) enum HookTarget {
     Engine(usize),
 }
 
+/// A pooled parent is named by its slot and its hierarchy, so a later
+/// object in a reused slot reads as the parent destroyed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RopeParent {
     /// A Rock-form player: it has no PlayerBody for the rope to join.
     Rock(usize),
-    /// A thrown item by slot and id, so a reused slot reads as destroyed.
     Item(usize, u32),
-    /// A Portal Gun shot by slot and birth tick.
     Shot(usize, u32),
-    /// A SpikeAttack by slot and birth tick: its box is on LethalTerrain.
+    /// A SpikeAttack: its box is on LethalTerrain.
     Spike(usize, u32),
-    /// A placed Tesla spark node by slot and birth tick: its circle is on
-    /// NonLethalTerrain.
+    /// A placed Tesla spark node: its circle is on NonLethalTerrain.
     Node(usize, u32),
-    /// A Bow arrow by slot and id: its circle is on Projectile.
+    /// A Bow arrow: its circle is on Projectile.
     Arrow(usize, u32),
-    /// A RocketEngine by slot and birth tick: its box is on NonLethalTerrain.
+    /// A RocketEngine: its box is on NonLethalTerrain.
     Engine(usize, u32),
 }
 
@@ -217,23 +216,23 @@ fn parent_position(
         RopeParent::Rock(player) => (players[player].active == ActiveAbility::Rock
             && players[player].base.alive)
             .then_some(players[player].base.position),
-        RopeParent::Item(item, id) => {
-            (items[item].active && items[item].id == id).then_some(items[item].position)
+        RopeParent::Item(item, base) => {
+            (items[item].active && items[item].hierarchy_base == base).then_some(items[item].position)
         }
-        RopeParent::Shot(shot, born) => (shots[shot].active && shots[shot].appended == born)
+        RopeParent::Shot(shot, base) => (shots[shot].active && shots[shot].hierarchy_base == base)
             .then_some(shots[shot].position),
-        RopeParent::Spike(index, born) => {
+        RopeParent::Spike(index, base) => {
             let spike = &spikes[index];
-            if !spike.active || spike.placed_tick != born {
+            if !spike.active || spike.hierarchy_base != base {
                 return None;
             }
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
             let (root, right) = spike_transform(spike);
             Some(root + right.perp() * offset.y * spike.scale + right * offset.x * spike.scale)
         }
-        RopeParent::Node(index, born) => {
+        RopeParent::Node(index, base) => {
             let node = &nodes[index];
-            if !node.active || node.placed_tick != born {
+            if !node.active || node.hierarchy_base != base {
                 return None;
             }
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
@@ -241,13 +240,13 @@ fn parent_position(
             let root = node.transform_position;
             Some(root + right.perp() * offset.y * node.scale + right * offset.x * node.scale)
         }
-        RopeParent::Arrow(index, id) => {
-            (arrows[index].active && arrows[index].id == id).then_some(arrows[index].position)
+        RopeParent::Arrow(index, base) => {
+            (arrows[index].active && arrows[index].hierarchy_base == base).then_some(arrows[index].position)
         }
-        RopeParent::Engine(index, born) => {
+        RopeParent::Engine(index, base) => {
             let engine = &engines[index];
             // MachoThrow2 hides a carried engine's GameObject.
-            if !engine.active || engine.macho_carried || engine.appended != born {
+            if !engine.active || engine.macho_carried || engine.hierarchy_base != base {
                 return None;
             }
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
@@ -2013,11 +2012,11 @@ impl RolloutWorld {
             // A BounceBall has no PlayerBody, so the hook attaches to it as to
             // any other body.
             HookTarget::Player(player) => RopeParent::Rock(player),
-            HookTarget::Item(index) => RopeParent::Item(index, self.thrown_items[index].id),
-            HookTarget::Shot(index) => RopeParent::Shot(index, self.portal_shots[index].appended),
+            HookTarget::Item(index) => RopeParent::Item(index, self.thrown_items[index].hierarchy_base),
+            HookTarget::Shot(index) => RopeParent::Shot(index, self.portal_shots[index].hierarchy_base),
             // A Bow arrow's circle is on Projectile, which RopeHook attaches
             // to with no offset (RopeHook.cs:160-172).
-            HookTarget::Arrow(index) => RopeParent::Arrow(index, self.arrows[index].id),
+            HookTarget::Arrow(index) => RopeParent::Arrow(index, self.arrows[index].hierarchy_base),
             HookTarget::Node(index) => {
                 // A spark node's circle sits on NonLethalTerrain, which the
                 // hook takes only when its centre is inside it.
@@ -2028,7 +2027,7 @@ impl RolloutWorld {
                 let root = node.collider_center
                     - node.collider_offset.complex_mul(Vec2::angle(node.collider_rotation));
                 offset = (position - root).complex_mul(Vec2::angle(-node.collider_rotation)) / node.scale;
-                RopeParent::Node(index, node.placed_tick)
+                RopeParent::Node(index, node.hierarchy_base)
             }
             HookTarget::Spike(index) => {
                 // A SpikeAttack box sits on LethalTerrain, which the hook takes
@@ -2042,7 +2041,7 @@ impl RolloutWorld {
                 let rotation =
                     self.platform_dynamics[spike.platform_index].body.orientation + spike.relative_rotation;
                 offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
-                RopeParent::Spike(index, spike.placed_tick)
+                RopeParent::Spike(index, spike.hierarchy_base)
             }
             HookTarget::Engine(index) => {
                 // A RocketEngine box sits on NonLethalTerrain, which the hook
@@ -2055,7 +2054,7 @@ impl RolloutWorld {
                 offset = (position - engine.transform_position)
                     .complex_mul(Vec2::angle(-engine.transform_rotation))
                     / engine.scale;
-                RopeParent::Engine(index, engine.appended)
+                RopeParent::Engine(index, engine.hierarchy_base)
             }
         };
         let scale = match parent {
@@ -2267,14 +2266,14 @@ impl RolloutWorld {
             // pass yet (RopeAttachment.cs:170-178).
             let position = match rope.attach[0].parent {
                 _ if rope.appended > self.tick => None,
-                Some(RopeParent::Shot(shot, born)) if shots[shot].appended == born => {
+                Some(RopeParent::Shot(shot, base)) if shots[shot].hierarchy_base == base => {
                     Some(shots[shot].position)
                 }
                 // An item a DetPhysics callback destroyed after this pass's
                 // UpdateSim (DPhysicsCircle.OnCollide) still holds the end
                 // where it died; the attachment's UpdateSim saw it alive.
-                Some(RopeParent::Item(item, id))
-                    if items[item].id == id
+                Some(RopeParent::Item(item, base))
+                    if items[item].hierarchy_base == base
                         && items[item]
                             .entity
                             .is_some_and(|entity| self.entities[entity].flags & E_DESTROYED != 0) =>
@@ -2283,7 +2282,7 @@ impl RolloutWorld {
                 }
                 // Likewise an arrow that stuck in Simulate (Arrow.OnCollide
                 // DestroyFixes its FixTransform, RopeAttachment.cs:174).
-                Some(RopeParent::Arrow(arrow, id)) if spikes.2[arrow].id == id => {
+                Some(RopeParent::Arrow(arrow, base)) if spikes.2[arrow].hierarchy_base == base => {
                     Some(spikes.2[arrow].position)
                 }
                 parent => parent.and_then(|parent| {
@@ -2308,11 +2307,11 @@ impl RolloutWorld {
             if !rope.physics.enabled || rope.appended > self.tick || rope.hook_active {
                 continue;
             }
-            let Some(RopeParent::Item(item, id)) = rope.attach[0].parent else {
+            let Some(RopeParent::Item(item, base)) = rope.attach[0].parent else {
                 continue;
             };
             let mine = &self.thrown_items[item];
-            if mine.id != id || mine.ability != ABILITY_MINE || mine.hierarchy_base >= rope.hierarchy {
+            if mine.hierarchy_base != base || mine.ability != ABILITY_MINE || mine.hierarchy_base >= rope.hierarchy {
                 continue;
             }
             rope.attach[0].anchor = mine.position;
