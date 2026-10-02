@@ -14761,7 +14761,9 @@ impl RolloutWorld {
             }
         }
         dynamics.attached_children = count;
-        dynamics.composite_position = self.platforms[platform_index].surface.center;
+        // CreateMultiComposite takes the rounded rect collider's Pos(), not
+        // its FixTransform (DetPhysics.cs:1428).
+        dynamics.composite_position = self.platforms[platform_index].collider.inner.center;
         dynamics.basis = None;
         if count == 0 {
             return;
