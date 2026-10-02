@@ -2197,6 +2197,14 @@ pub struct MagnetState {
 }
 
 impl MagnetState {
+    /// MagnetGun.enterPull: pulling, on a fresh idle animation
+    /// (MagnetGun.cs:335-342).
+    fn enter_pull(&mut self) {
+        self.phase = 2;
+        self.animation = 2;
+        self.animation_ticks = 0;
+    }
+
     /// MagnetGun.enterPause: paused, holding nothing, on a fresh idle
     /// animation, which has no callback to leave the pause (MagnetGun.cs:344-354).
     fn enter_pause(&mut self) {
@@ -23742,8 +23750,8 @@ impl RolloutWorld {
             self.magnet_pull(index, data);
             self.magnet_try_pickup_item(index, data);
         }
-        if self.players[index].magnet.phase == 3 {
-            self.magnet_update_held_item(index, data);
+        if self.players[index].magnet.phase == 3 && !self.magnet_update_held_item(index, data) {
+            return;
         }
 
         let button = 2u8 << self.players[index].active_slot;
@@ -24210,8 +24218,7 @@ impl RolloutWorld {
         let firepoint = self.magnet_firepoint(index, data);
 
         if self.players[index].magnet.phase == 1 {
-            self.players[index].magnet.animation = 2;
-            self.players[index].magnet.animation_ticks = 0;
+            self.players[index].magnet.enter_pull();
         }
         let mut extra = Vec2::RIGHT * Fix::from_f32(1.5) * (scale.max(Fix::ONE) - Fix::ONE);
         if matches!(held, MagnetHeld::Rock(_)) {
@@ -24635,14 +24642,16 @@ impl RolloutWorld {
         (boulder.active && boulder.hierarchy_base == magnet.held_base).then_some(boulder.platform_index)
     }
 
-    fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
+    /// UpdateSim's locked branch (MagnetGun.cs:1070-1141); false where it
+    /// returns from UpdateSim.
+    fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) -> bool {
         // UpdateSim's locked branch pauses a gun nullItemTypeIfDropped left
         // holding nothing (MagnetGun.cs:1070-1078).
         self.magnet_null_item_if_dropped(index);
         let held = self.players[index].magnet.held;
         if held == MagnetHeld::Nothing {
             self.players[index].magnet.enter_pause();
-            return;
+            return true;
         }
         let gun = self.magnet_gun(index);
 
@@ -24671,11 +24680,24 @@ impl RolloutWorld {
         ) {
             firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
         }
-        if (firepoint - object_position).length_squared() > data.magnet.max_lock_distance_squared {
+        // The spell and item branches let a body past maxLockDist go and
+        // return from UpdateSim; the player and blackhole ones never measure
+        // (MagnetGun.cs:1079-1104).
+        if !matches!(held, MagnetHeld::Player(_) | MagnetHeld::BlackHole(_))
+            && (firepoint - object_position).length_squared() > data.magnet.max_lock_distance_squared
+        {
             let state = &mut self.players[index].magnet;
             state.held = MagnetHeld::Nothing;
             state.phase = 2;
-            return;
+            return false;
+        }
+        // A BlackHole whose mass fell to zero or below is let go where it is
+        // (MagnetGun.cs:1130-1142).
+        if let MagnetHeld::BlackHole(i) = held
+            && self.black_holes[i].mass <= Fix::ZERO
+        {
+            self.players[index].magnet.enter_pull();
+            return true;
         }
 
         let position = self.magnet_interpolate_held_position(
@@ -24849,6 +24871,7 @@ impl RolloutWorld {
             }
             MagnetHeld::Nothing => {}
         }
+        true
     }
 
     fn magnet_fire_held_item(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
