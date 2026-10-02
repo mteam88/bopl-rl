@@ -2272,10 +2272,11 @@ impl SlimeMut<'_> {
     }
 
     /// SlimeController.EnterFall (SlimeController.cs:263-272): AlignTransformAir,
-    /// State.fall, and VelocityBasedRaycasts (attachToGroundIfHit), which may
-    /// land the slime at once.
+    /// an unrotated body, State.fall, and VelocityBasedRaycasts
+    /// (attachToGroundIfHit), which may land the slime at once.
     fn enter_fall(&mut self, walls: &mut impl Walls) {
         self.align_transform_air();
+        self.base.set_rotation(Fix::ZERO);
         *self.obs_state = STATE_FALL;
         *self.state_ticks = 0;
         // The rays' attachToGround callback enters State.land at once and
@@ -4361,7 +4362,6 @@ fn ragdoll_pass(
     *magnet_holder = None;
     base.external_velocity += base.velocity;
     base.velocity = Vec2::ZERO;
-    base.set_rotation(Fix::ZERO);
     RagdollPass::FellOut
 }
 
