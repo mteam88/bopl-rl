@@ -1245,6 +1245,7 @@ struct RawAbility {
     form_jump_strength: Option<i64>,
     effect_prefab: Option<String>,
     sync_rotation_to_platform: Option<bool>,
+    body_simulated: Option<bool>,
 }
 
 /// A platform component whose UpdateSim the rollout runs, as the exporter
@@ -2349,6 +2350,9 @@ pub struct AbilityData {
     /// The form prefab's PlayerPhysics.SyncRotationToPlatform, when it has a
     /// PlayerPhysics.
     pub sync_rotation_to_platform: Option<bool>,
+    /// The form prefab's authored PlayerBody.simulated, when it has a
+    /// PlayerBody.
+    pub body_simulated: Option<bool>,
 }
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
@@ -3795,6 +3799,7 @@ pub fn get() -> &'static RolloutData {
                         registrations,
                         effect_registrations,
                         sync_rotation_to_platform: ability.sync_rotation_to_platform,
+                        body_simulated: ability.body_simulated,
                     }
                 })
                 .collect(),

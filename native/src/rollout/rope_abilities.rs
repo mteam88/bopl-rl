@@ -2154,7 +2154,7 @@ impl RolloutWorld {
             // An unsimulated PlayerBody (Push.prefab's, a spawning slime's)
             // skips its late update (stretch check, end force); the
             // PlayerPhysics above still pins a grounded end.
-            if !self.player_body_simulated(player) {
+            if !self.players[player].base.simulated {
                 continue;
             }
             if overstretched(&self.ropes[rope_index]) {

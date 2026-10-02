@@ -103,6 +103,12 @@ pub struct Player {
     /// once the tick's state machine has seen it.
     #[serde(default)]
     pub(crate) jumped_this_frame: bool,
+    /// The slime's PlayerBody.simulated: Awake and BeforeSpawnInit clear it,
+    /// Spawn sets it, PrepareToRevive clears it again
+    /// (SlimeController.cs:499-591, 625). PlayerBody.IsEnabled reads it, so
+    /// an unsimulated body takes no UpdateSim or LateUpdateSim turn.
+    #[serde(default = "default_true")]
+    pub(crate) simulated: bool,
     /// SlimeController.OldUpdate returns as soon as it has entered an ability
     /// (SlimeController.cs:824-831), so neither the jump block at 867-871 nor
     /// the `prevInput` store at 889 runs on a cast pass. Set for the instant

@@ -2185,6 +2185,11 @@ def main():
         # 143, 221, 268). None for a form with no PlayerPhysics.
         sync_rotation_to_platform = (component(prefab, "PlayerPhysics")["SyncRotationToPlatform"]
                                      if "PlayerPhysics" in types else None)
+        # PlayerBody.simulated as the prefab authors it: Push.prefab's is off,
+        # so its PlayerBody never takes a turn (PlayerBody.cs:107-112). None
+        # for a form with no PlayerBody.
+        body_simulated = (component(prefab, "PlayerBody")["simulated"]
+                          if "PlayerBody" in types else None)
         if item["name"] == "Gold mushroom":
             star = next(c for c in components if c["type"] == "SuperStar")
             effect = ASSETS[guid_of(star["properties"]["effectPrefab"])]
@@ -2218,6 +2223,7 @@ def main():
             "form_jump_speed": form_jump_speed,
             "form_jump_strength": form_jump_strength,
             "sync_rotation_to_platform": sync_rotation_to_platform,
+            "body_simulated": body_simulated,
             "effect_updatable_count": effect_updatable_count,
             "effect_prefab": effect["path"] if item["name"] == "Gold mushroom" else None,
         })

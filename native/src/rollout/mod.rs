@@ -1928,6 +1928,14 @@ fn scale_box(scale: &mut Fix, value: Fix, inverse_extents: &mut Vec2) {
 }
 
 impl FormBody {
+    /// The form object of `ability` before its first entry. Its PlayerBody's
+    /// simulated is the prefab's: Push.prefab's is off, so that body never
+    /// takes a turn (PlayerBody.cs:107-112), and nothing writes it after Awake.
+    fn unentered(ability: u32) -> FormBody {
+        let simulated = data::get().abilities[ability as usize].body_simulated.unwrap_or(true);
+        FormBody { body: Player { simulated, ..Player::default() }, ..FormBody::default() }
+    }
+
     /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135).
     fn set_scale(&mut self, value: Fix, radius: Fix, inverse_extents: &mut Vec2) {
         if self.scale == Fix::ZERO {
@@ -5992,6 +6000,8 @@ impl RolloutWorld {
                     pre_move_grounded: false,
                     attach_upside_down: None,
                     jumped_this_frame: false,
+                    // Awake turns it off until Spawn.
+                    simulated: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
                     dash: DashState::default(),
@@ -6032,7 +6042,7 @@ impl RolloutWorld {
                 abilities,
                 ability_generation: [0; 3],
                 ability_instantiated: [true; 3],
-                forms: Default::default(),
+                forms: abilities.map(FormBody::unentered),
                 pending_ability_hierarchy: [u32::MAX; 3],
                 timers: [timer0; 3],
                 cooldowns,
@@ -6267,6 +6277,7 @@ impl RolloutWorld {
                 spawn_anim -= 1;
                 if spawn_anim == 0 {
                     for slot in &mut self.players {
+                        slot.base.simulated = true;
                         slot.base.velocity =
                             Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
                     }
@@ -6767,7 +6778,7 @@ impl RolloutWorld {
         // The new Beam component has no orbEffect yet (Beam.cs:261).
         slot.beam_orb_slots[ability_slot] = None;
         slot.rope_prev[ability_slot + 1] = (Vec2::ZERO, Vec2::ZERO);
-        slot.forms[ability_slot] = FormBody::default();
+        slot.forms[ability_slot] = FormBody::unentered(ability);
         slot.drill_hitbox_entities[ability_slot] = [usize::MAX; 3];
         slot.drill_hitbox_scales[ability_slot] = [Fix::ZERO; 3];
         slot.black_hole_castable[ability_slot] = true;
@@ -9810,21 +9821,6 @@ impl RolloutWorld {
         self.hittable(index) && self.players[index].respawn_spawn_ticks == 0
     }
 
-    /// PlayerBody.IsEnabled's `body.simulated`: Push.prefab authors it off,
-    /// and a slime clears it from BeforeSpawnInit until Spawn sets it again
-    /// (SlimeController.cs:499-591), so neither body's UpdateSim nor
-    /// LateUpdateSim runs.
-    fn player_body_simulated(&self, index: usize) -> bool {
-        let slot = &self.players[index];
-        match slot.active {
-            ActiveAbility::Push => false,
-            ActiveAbility::None => {
-                slot.respawn_ticks == 0 && slot.respawn_spawn_ticks == 0 && slot.revival_effect_ticks == 0
-            }
-            _ => true,
-        }
-    }
-
     /// GameTime.IsTimeStopped: some Time Stop holds the global scale down.
     fn is_time_stopped(&self) -> bool {
         self.player_time_scale < Fix::from_f32(0.01)
@@ -10561,12 +10557,14 @@ impl RolloutWorld {
                         // Ability.EnterAbility: the form's own PlayerPhysics
                         // and PlayerBody become the live body.
                         let form = std::mem::take(&mut slot.forms[s].body);
+                        let simulated = form.simulated;
                         let slime = std::mem::replace(&mut slot.base, form);
                         // leak: the form's body is replaced whole by the slime's
                         // as it was before this pass's Move; only
                         // SyncPhysicsTo(PlayerInfo) and EnterAbility's writes
                         // should cross (PlayerPhysics.cs:525-552, Ability.cs:89-112).
                         slot.base = slime;
+                        slot.base.simulated = simulated;
                     }
                     slot.select_form(s);
                     // Ability.EnterAbility scales the enabled form collider
@@ -11010,7 +11008,8 @@ impl RolloutWorld {
                             self.players[index].base.position
                         };
                         if self.players[index].form_entities[s] == usize::MAX {
-                            self.players[index].forms[s] = FormBody::default();
+                            self.players[index].forms[s] =
+                                FormBody::unentered(self.players[index].abilities[s]);
                             let id = self.next_id();
                             let entity = self.entities.len();
                             self.push_entity(CEntity {
@@ -21111,7 +21110,7 @@ impl RolloutWorld {
         slot.ability_instantiated = [true; 3];
         slot.beam_orb_slots = [None; 3];
         slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
-        slot.forms = Default::default();
+        slot.forms = slot.abilities.map(FormBody::unentered);
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.base.position = position;
         slot.base.external_velocity = Vec2::ZERO;
@@ -21619,7 +21618,7 @@ impl RolloutWorld {
         slot.ability_instantiated = [true; 3];
         slot.beam_orb_slots = [None; 3];
         slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
-        slot.forms = Default::default();
+        slot.forms = slot.abilities.map(FormBody::unentered);
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.base.radius = data.player.radius;
         // The empty player prefab's PlayerPhysics (PlayerCollision.cs:249),
@@ -26574,6 +26573,8 @@ impl RolloutWorld {
             pre_move_grounded: false,
             attach_upside_down: None,
             jumped_this_frame: false,
+            // ShootDuplicator's ReSpawn then Spawn leave the clone simulated.
+            simulated: true,
             constants: data.player.constants.clone(),
             cooldown: Fix::ZERO,
             dash: DashState::default(),
@@ -37085,6 +37086,8 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
+            // The revival clone's PrepareToRevive (SlimeController.cs:625).
+            slot.base.simulated = false;
             // SpawnClone for the first marker.
             self.players[owner].bodies_alive += 1;
             self.players[owner].extra_life = REVIVE_BEING;
@@ -37256,6 +37259,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.stocks -= 1;
         slot.stock_clone_pending = true;
+        // The replacement slime's Awake and BeforeSpawnInit.
+        slot.base.simulated = false;
         let owner = slot.owner;
         self.players[owner].bodies_alive += 1;
         self.players[owner].extra_life = REVIVE_BEING;
@@ -37471,6 +37476,7 @@ impl RolloutWorld {
                 let owner = slot.owner;
                 self.players[owner].extra_life = REVIVE_NONE;
                 let slot = &mut self.players[index];
+                slot.base.simulated = true;
                 slot.base.velocity =
                     Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
                 slot.base.grounded = false;
@@ -39472,7 +39478,7 @@ impl RolloutWorld {
                 || slot.revival_effect_ticks > 0;
             let mut flags = S_ACTIVE;
             if (slot.teleport_effect_active || slot.blink_tunnel_active) && !in_ability {
-                flags = S_SPAWNED | S_SIMULATED;
+                flags = S_SPAWNED;
                 // The inactive slime's RewindRecorder is skipped by the
                 // Updater, so a rewind in progress keeps suppressInput set
                 // (RewindRecorder.cs:150, 342-352).
@@ -39486,11 +39492,12 @@ impl RolloutWorld {
             } else if in_ability {
                 // onEnterAbility disables the original slime GameObject but
                 // its spawned/simulated state remains visible to observation.
-                flags = S_SPAWNED | S_IN_ABILITY | S_SIMULATED;
+                flags = S_SPAWNED | S_IN_ABILITY;
             } else {
                 flags |= S_SPAWNED;
             }
-            if !in_ability && !respawning {
+            let slime = if in_ability { &slot.slime } else { &slot.base };
+            if slime.simulated {
                 flags |= S_SIMULATED;
             }
             if slot.abilityless {
