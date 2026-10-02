@@ -31736,44 +31736,14 @@ impl RolloutWorld {
                 self.sync_guided_missile_entity(index);
                 continue;
             }
-            let position = self.guided_missiles[index].position;
-            let mut boundary_explosion = None;
-            let map = &data::get().maps[self.map];
-            if position.y < map.lower_boundary() {
-                // Spark's DownEffect is the Player's water splash; in space
-                // the floor exit spawns its UpEffect explosion instead.
-                if map.is_space() {
-                    boundary_explosion = Some(Vec2::new(position.x, map.lower_boundary()));
-                } else {
-                    self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
-                    self.destroy_guided_missile(index, false);
-                    continue;
-                }
-            } else if position.y > Fix::from_f64(72.5) {
-                boundary_explosion = Some(Vec2::new(position.x, Fix::from_f64(72.5)));
-            } else if position.x < Fix::from_f64(-131.25) {
-                boundary_explosion = Some(Vec2::new(Fix::from_f64(-131.25), position.y));
-            } else if position.x > Fix::from_f64(131.25) {
-                boundary_explosion = Some(Vec2::new(Fix::from_f64(131.25), position.y));
-            }
-            if let Some(explosion_position) = boundary_explosion {
-                let missile = self.guided_missiles[index];
-                self.spawn_missile_explosion(
-                    explosion_position,
-                    missile.owner,
-                    false,
-                    Fix::ONE,
-                    data,
-                );
-                self.destroy_guided_missile(index, false);
-                continue;
-            }
-
             // A Spark the walk never reached takes its turn here; one it
             // passed, run or skipped, does not.
             let missile = &self.guided_missiles[index];
             if !self.updater_passed(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base)) {
                 self.guided_missile_turn(index, physics_dt, data);
+                if !self.guided_missiles[index].active {
+                    continue;
+                }
             }
             let missile = &mut self.guided_missiles[index];
             missile.sync_body_to_transform();
@@ -31787,12 +31757,47 @@ impl RolloutWorld {
         }
     }
 
-    /// A Spark's turn in Updater's walk: Missile.UpdateSim, then its
-    /// BoplBody's hold countdown (Spark.prefab hierarchy 4 and 6).
+    /// A Spark's turn in Updater's walk (Spark.prefab): its
+    /// DestroyIfOutsideSceneBounds (hierarchy 3), Missile.UpdateSim (4), then
+    /// its BoplBody's hold countdown (6).
     fn guided_missile_turn(&mut self, index: usize, physics_dt: Fix, data: &data::RolloutData) {
+        if self.guided_missile_leaves_scene(index, data) {
+            return;
+        }
         let being_held = self.guided_missiles[index].hold.held();
         self.guided_missile_update_sim(index, physics_dt, being_held, data);
         self.guided_missiles[index].hold.update_sim();
+    }
+
+    /// DestroyIfOutsideSceneBounds.UpdateSim on a Spark
+    /// (DestroyIfOutsideSceneBounds.cs:53-127): past a bound it spawns the
+    /// exit's effect and DestroyFixes the Spark, a Projectile. Returns
+    /// whether it did.
+    fn guided_missile_leaves_scene(&mut self, index: usize, data: &data::RolloutData) -> bool {
+        let position = self.guided_missiles[index].position;
+        let map = &data::get().maps[self.map];
+        let explosion_position = if position.y < map.lower_boundary() {
+            // Spark's DownEffect is the Player's water splash; in space
+            // the floor exit spawns its UpEffect explosion instead.
+            if !map.is_space() {
+                self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
+                self.destroy_guided_missile(index, false);
+                return true;
+            }
+            Vec2::new(position.x, map.lower_boundary())
+        } else if position.y > Fix::from_f64(72.5) {
+            Vec2::new(position.x, Fix::from_f64(72.5))
+        } else if position.x < Fix::from_f64(-131.25) {
+            Vec2::new(Fix::from_f64(-131.25), position.y)
+        } else if position.x > Fix::from_f64(131.25) {
+            Vec2::new(Fix::from_f64(131.25), position.y)
+        } else {
+            return false;
+        };
+        let owner = self.guided_missiles[index].owner;
+        self.spawn_missile_explosion(explosion_position, owner, false, Fix::ONE, data);
+        self.destroy_guided_missile(index, false);
+        true
     }
 
     /// Missile.UpdateSim (Missile.cs:106-126): the thrust reads the velocity
