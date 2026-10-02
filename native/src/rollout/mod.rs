@@ -10333,11 +10333,12 @@ impl RolloutWorld {
         // ThrowItem2 finds it inside its own Move, after the grounded-throw
         // exit test, so it leaves the form one pass later. MachoThrow2 finds
         // it in MachoMove, after the rest of its UpdateSim. The animators of
-        // ThrowItem and PlantObjectOnPlatform exit them before their
-        // UpdateSim's Move(zero) finds it.
+        // ThrowItem, PlantObjectOnPlatform and Spike exit them before their
+        // UpdateSim's Move(zero) finds it (Spike.cs:161-166).
         let finds_it_later = matches!(
             self.players[index].active,
-            ActiveAbility::Mine
+            ActiveAbility::Spike
+                | ActiveAbility::Mine
                 | ActiveAbility::Engine
                 | ActiveAbility::Tesla
                 | ActiveAbility::Grenade
@@ -10397,20 +10398,15 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             // A form that finds it in its UpdateSim's Move takes Move's
             // UnGround(), which nulls the rotation (PlayerPhysics.cs:216-219;
-            // Spike.cs:165, PlantObjectOnPlatform.cs:195, GunTransform.cs:147,
-            // ControlPlatform.cs:137, ThrowItem.cs:417).
+            // GunTransform.cs:147, ControlPlatform.cs:137).
             let null_rotation = matches!(
                 slot.active,
-                ActiveAbility::Spike
-                    | ActiveAbility::Engine
-                    | ActiveAbility::Tesla
-                    | ActiveAbility::Freeze
+                ActiveAbility::Freeze
                     | ActiveAbility::Blink
                     | ActiveAbility::GrowthRay
                     | ActiveAbility::ShrinkRay
                     | ActiveAbility::Duplicator
                     | ActiveAbility::Platform
-                    | ActiveAbility::Mine
             );
             slot.ground_destroyed = lost;
             UngroundBody::Form(slot).unground(&self.platforms, tick, null_rotation);
@@ -14155,7 +14151,7 @@ impl RolloutWorld {
         if self.form_bounds_kill(index, data) {
             return;
         }
-        if self.players[index].base.grounded {
+        if self.players[index].base.grounded && !self.players[index].move_off_destroyed(self.tick) {
             self.slot_physics(index, |slot, world| slot.base.move_only(Vec2::ZERO, world));
             // Move ends in DropPlatformTest, whose exit disables the form.
             if self.apply_platform_drop(index) {
