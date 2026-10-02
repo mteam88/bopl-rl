@@ -317,12 +317,12 @@ pub struct RopeGrip {
 
 /// The mass and gravity switch PlayerBody gives the rope end of a slime body
 /// (RopePlayerMass01 0.5, ignoreGravityWhenRoped off).
-const SLIME_ROPE_TUNING: (Fix, bool) = (Fix::from_raw(2_147_483_648), false);
+pub(super) const SLIME_ROPE_TUNING: (Fix, bool) = (Fix::from_raw(2_147_483_648), false);
 
 /// PlayerBody.AttachRope's hand-off of the rope it held (PlayerBody.cs:
 /// 253-266): the end falls under gravity unless the body ignores it, and
 /// the rope lets go of that end unless another rope replaces it.
-fn release_rope_end(rope: &mut RolloutRope, top: bool, (mass, ignore_gravity): (Fix, bool), replaced: bool) {
+pub(super) fn release_rope_end(rope: &mut RolloutRope, top: bool, (mass, ignore_gravity): (Fix, bool), replaced: bool) {
     let force = if ignore_gravity { Vec2::ZERO } else { -Vec2::UP * ROPE_GRAVITY };
     if top {
         rope.physics.force_start = force;

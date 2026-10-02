@@ -36231,11 +36231,20 @@ impl RolloutWorld {
         // own ExitAbility hands it back the same way (BounceBall.cs:243). An
         // exit handed straight to the Ability carries no rope, and Rock's
         // Ability has no PlayerBody to take one from (Ability.cs:141-145).
+        // Black Hole's exit goes to the form's Ability, so the slime's own
+        // PlayerBody lets go, with its gravity and mass.
         if (self.players[index].active != ActiveAbility::Rock || form_exit)
             && self.players[index].rope.is_some()
         {
             let top = self.players[index].rope_top;
-            self.attach_player_rope(index, None, top);
+            if form_exit {
+                self.attach_player_rope(index, None, top);
+            } else {
+                let slot = &mut self.players[index];
+                slot.rope_prev[slot.rope_body()] = (slot.base.velocity, slot.base.external_velocity);
+                let rope = slot.rope.take().unwrap();
+                rope_abilities::release_rope_end(&mut self.ropes[rope], top, rope_abilities::SLIME_ROPE_TUNING, false);
+            }
         }
         // Player.Kill itself is a no-op after WinGame, but
         // PlayerCollision.killPlayer still destroys the slime and its ability
