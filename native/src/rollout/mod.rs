@@ -10167,7 +10167,13 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 let scale = slot.player_scale;
                 slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
+                let grounded = slot.base.grounded;
                 self.slot_physics(index, |slot, world| slot.base.move_only(Vec2::ZERO, world));
+                // A body the rewind path grounded still ends that Move in
+                // DropPlatformTest, so a MeteorSmash on its ground drops it.
+                if grounded {
+                    self.apply_platform_drop(index);
+                }
             }
             let slot = &mut self.players[index];
             // The slime's DestroyIfOutsideSceneBounds still runs before
