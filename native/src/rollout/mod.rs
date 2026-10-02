@@ -8133,6 +8133,7 @@ impl RolloutWorld {
         }
         self.beams_late_tick(data);
         self.ropes_late();
+        self.magnets_late(data);
         self.macho_late_tick(data);
         self.mines_late_tick(data);
         self.ropes_late_on_older_mines();
@@ -24876,12 +24877,12 @@ impl RolloutWorld {
         }
     }
 
-    fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
+    /// MagnetGun.nullItemTypeIfDropped: a locked gun lets go of a held object
+    /// destroyed or inactive since; one an Arrow.OnCollide Dropped out of its
+    /// BoplBody hold is held again by the update, and a thief pauses the gun
+    /// through OnItemWasStolen instead (MagnetGun.cs:899-918, BoplBody.cs:285-298).
+    fn magnet_null_item_if_dropped(&mut self, index: usize) {
         let held = self.players[index].magnet.held;
-        // nullItemTypeIfDropped lets go only of an item destroyed or inactive;
-        // one an Arrow.OnCollide Dropped out of its BoplBody hold is held
-        // again below, and a thief pauses the gun through OnItemWasStolen
-        // instead (MagnetGun.cs:899-918, 1070-1090, BoplBody.cs:285-298).
         let valid = match held {
             MagnetHeld::Nothing => false,
             MagnetHeld::ThrownItem(i) => self
@@ -24927,9 +24928,17 @@ impl RolloutWorld {
                 .is_some_and(|v| v.active && v.registered && !self.blink_object_hidden(v.entity)),
         };
         if !valid {
-            let state = &mut self.players[index].magnet;
-            state.held = MagnetHeld::Nothing;
-            state.phase = 4;
+            self.players[index].magnet.held = MagnetHeld::Nothing;
+        }
+    }
+
+    fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
+        // UpdateSim's locked branch pauses a gun nullItemTypeIfDropped left
+        // holding nothing (MagnetGun.cs:1070-1078).
+        self.magnet_null_item_if_dropped(index);
+        let held = self.players[index].magnet.held;
+        if held == MagnetHeld::Nothing {
+            self.players[index].magnet.phase = 4;
             return;
         }
 
@@ -25041,19 +25050,6 @@ impl RolloutWorld {
                 body.base.position = position;
                 body.apply_ragdoll(data.magnet.small_ragdoll_duration, Vec2::ZERO);
                 body.base.skip_next_gravity = true;
-                // MagnetGun.LateUpdateSim pins whichever rope endpoint owns
-                // the held PlayerBody after forcing it off its ground.
-                if let Some(rope_index) = body.rope
-                    && rope_index < self.ropes.len()
-                    && self.ropes[rope_index].physics.enabled
-                {
-                    let endpoint = if body.rope_top {
-                        0
-                    } else {
-                        self.ropes[rope_index].physics.count - 1
-                    };
-                    self.ropes[rope_index].physics.segment[endpoint] = position;
-                }
             }
             MagnetHeld::Rock(i) => {
                 let velocity = self.players[i].rock.body.velocity;
@@ -25300,6 +25296,35 @@ impl RolloutWorld {
                 }
             }
             MagnetHeld::Nothing => {}
+        }
+    }
+
+    /// MagnetGun.LateUpdateSim of a locked gun: it lets go of whatever was
+    /// dropped since, and for a held slime forces a grounded one off its
+    /// ground to the fire point, then pins the held PlayerBody's rope end at
+    /// heldPosition, after DetPhysics has stepped the rope (MagnetGun.cs:867-888).
+    fn magnets_late(&mut self, data: &data::RolloutData) {
+        for index in 0..self.players.len() {
+            if self.players[index].active != ActiveAbility::Magnet || self.players[index].magnet.phase != 3 {
+                continue;
+            }
+            self.magnet_null_item_if_dropped(index);
+            let MagnetHeld::Player(slime) = self.players[index].magnet.held else {
+                continue;
+            };
+            let fire_point = self.magnet_firepoint(index, data);
+            let held_position = self.players[index].magnet.held_position;
+            let mut body = slime.of(&mut self.players, &mut self.abilityless_clones);
+            if body.base.grounded {
+                body.unground(&self.platforms, self.tick, false);
+                body.base.position = fire_point;
+            }
+            if let Some(rope_index) = body.rope
+                && self.ropes[rope_index].physics.enabled
+            {
+                let endpoint = if body.rope_top { 0 } else { self.ropes[rope_index].physics.count - 1 };
+                self.ropes[rope_index].physics.segment[endpoint] = held_position;
+            }
         }
     }
 
