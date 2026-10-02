@@ -35384,7 +35384,9 @@ impl RolloutWorld {
                 else {
                     continue;
                 };
-                if self.kill(roller, killer, cause, true, true) && matches!(part, Some(Part::Arrow(_))) {
+                if self.kill_with(roller, killer, cause, KillRoute::UPDATER_ON_COLLIDE, true, true, false)
+                    && matches!(part, Some(Part::Arrow(_)))
+                {
                     self.count_arrow_hit(killer, roller_id);
                 }
                 break;
