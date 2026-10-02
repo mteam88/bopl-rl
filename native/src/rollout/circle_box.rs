@@ -1305,7 +1305,7 @@ impl RolloutWorld {
         {
             let hierarchy = |part| self.part_entity(part).and_then(|entity| self.entities.get(entity)).map(|row| row.hierarchy);
             let lower = hierarchy(receiver) < hierarchy(other);
-            self.slime_collide(slime, prey, lower);
+            self.slime_collide(slime, prey, collider, lower);
         }
         match receiver {
             Part::Hole(hole) => self.black_hole_on_collide(hole, other, route, data),

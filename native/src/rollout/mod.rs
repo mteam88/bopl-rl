@@ -3375,8 +3375,9 @@ pub struct PlayerSlot {
     /// kill, cleared by the slime's next UpdateSim (PlayerCollision.cs:74-77,
     /// 449-470).
     pub was_killed_tick: Option<u32>,
-    /// Where a stock death left the destroyed slime body, with its pass: the
-    /// slot itself moves to the respawn point at once.
+    /// A stock death's pass and the destroyed slime GameObject's FixTransform
+    /// position, where UnGround left it: `base` is SpawnClone's new slime from
+    /// then on (PlayerCollision.cs:176-191).
     pub stock_death: Option<(u32, Vec2)>,
     /// PokeBall mutates a victim after RlObservation has sampled the slime's
     /// controller fields. Preserve that pre-callback row for the current pass.
@@ -3924,6 +3925,21 @@ impl PlayerSlot {
     /// over them (PlayerPhysics.cs:554-585, SlimeController.cs:193-260).
     /// `woken`: a refused kill's onExitAbility returns before SyncPhysicsTo
     /// (SlimeController.cs:215-221), and the slime keeps its own motion.
+    /// The FixTransform of the box a pair found, `collider`: a form's box is
+    /// the form's own body, live or left; the slime's is the slime's, or where
+    /// this pass's stock death left the destroyed slime.
+    fn box_position(&self, collider: Option<usize>, tick: u32) -> Vec2 {
+        let form = self.active != ActiveAbility::None;
+        if collider != Some(self.body_entity) {
+            return if form { self.base.position } else { self.forms[self.active_slot].body.position };
+        }
+        match self.stock_death {
+            Some((died, position)) if died == tick => position,
+            _ if form => self.slime.position,
+            _ => self.base.position,
+        }
+    }
+
     fn leave_form(&mut self, entities: &mut [CEntity], woken: bool) {
         if self.active != ActiveAbility::None {
             self.slime_body_returns(woken);
@@ -33833,7 +33849,8 @@ impl RolloutWorld {
 
     /// SlimeController.OnCollide: bite a small enough enemy body, then push
     /// away from the other collider's FixTransform (SlimeController.cs:1206-1244).
-    fn slime_collide(&mut self, slime: Slime, other: Slime, lower: bool) {
+    /// `collider` is that collider's row when the pair was found.
+    fn slime_collide(&mut self, slime: Slime, other: Slime, collider: Option<usize>, lower: bool) {
         match slime {
             Slime::Player(index) => {
                 // A slime killed by an earlier callback shoves its destroyed
@@ -33854,12 +33871,7 @@ impl RolloutWorld {
             }
         }
         let position = match other {
-            // An earlier callback's stock death leaves the other slime's
-            // destroyed body where it died, and OnCollide still reads it.
-            Slime::Player(index) => match self.players[index].stock_death {
-                Some((tick, position)) if tick == self.tick => position,
-                _ => self.players[index].base.position,
-            },
+            Slime::Player(index) => self.players[index].box_position(collider, self.tick),
             Slime::Clone(index) => self.abilityless_clones[index].base.position,
         };
         match slime {
