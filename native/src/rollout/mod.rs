@@ -4561,21 +4561,26 @@ enum PassPhase {
 }
 
 /// How PlayerCollision.killPlayer is reached: in which phase, and whether
-/// through PlayerCollision.OnCollide. Only OnCollide checks and sets
-/// wasKilledThisFrame (PlayerCollision.cs:305-316, 449-470); any other
-/// caller, BlackHole.OnCollide among them, calls killPlayer directly.
+/// through KillPlayerOnCollision, whose refusals come first and which sets
+/// wasKilledThisFrame, and through the OnCollide that tests it before
+/// calling it (PlayerCollision.cs:305-316, 449-470). Any other caller,
+/// BlackHole.OnCollide among them, calls killPlayer directly.
 /// MeteorSmash.Dash and Roll.CollideExtraHurtBoxes call the target's
-/// OnCollide from their own UpdateSim, so theirs is both.
+/// OnCollide from their own UpdateSim; Dash calls its own
+/// KillPlayerOnCollision there (Dash.cs:180).
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct KillRoute {
     phase: PassPhase,
+    kill_on_collision: bool,
     on_collide: bool,
 }
 
 impl KillRoute {
-    const UPDATER: Self = Self { phase: PassPhase::Updater, on_collide: false };
-    const ON_COLLIDE: Self = Self { phase: PassPhase::Callback, on_collide: true };
-    const UPDATER_ON_COLLIDE: Self = Self { phase: PassPhase::Updater, on_collide: true };
+    const UPDATER: Self = Self { phase: PassPhase::Updater, kill_on_collision: false, on_collide: false };
+    const ON_COLLIDE: Self = Self { phase: PassPhase::Callback, kill_on_collision: true, on_collide: true };
+    const UPDATER_ON_COLLIDE: Self = Self { phase: PassPhase::Updater, kill_on_collision: true, on_collide: true };
+    const UPDATER_KILL_ON_COLLISION: Self =
+        Self { phase: PassPhase::Updater, kill_on_collision: true, on_collide: false };
 
     fn callback(self) -> bool {
         self.phase == PassPhase::Callback
@@ -16522,7 +16527,7 @@ impl RolloutWorld {
     ) {
         // BlackHole.OnCollide calls killPlayer itself, in whatever phase its
         // OnCollide runs.
-        let kill_route = KillRoute { on_collide: false, ..route };
+        let kill_route = KillRoute { phase: route.phase, kill_on_collision: false, on_collide: false };
         let hole = self.black_holes[hole_index];
         if hole.mass < Fix::ZERO {
             return;
@@ -22067,7 +22072,7 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.base.position = near;
                 slot.reported_position = near;
-                if self.kill(index, killer, cause, false, true) {
+                if self.kill_with(index, killer, cause, KillRoute::UPDATER_KILL_ON_COLLISION, true, true, false) {
                     if matches!(part, Some(Part::Arrow(_))) {
                         self.count_arrow_hit(killer, caster_id);
                     }
@@ -35039,9 +35044,9 @@ impl RolloutWorld {
         let invulnerable = self.abilityless_clones[clone_index].invulnerable != 0;
         // KillPlayerOnCollision's guards, all ahead of killPlayer
         // (PlayerCollision.cs:305-316, 449-470).
-        if route.on_collide {
+        if route.kill_on_collision {
             if invulnerable
-                || self.abilityless_clones[clone_index].was_killed_tick == Some(tick)
+                || (route.on_collide && self.abilityless_clones[clone_index].was_killed_tick == Some(tick))
                 || self.players[owner].bodies_alive <= 0
             {
                 return false;
@@ -36138,9 +36143,9 @@ impl RolloutWorld {
         // a spent counter before it sets wasKilledThisFrame, and all of it
         // runs ahead of killPlayer, so none of these refusals touch the rope
         // (PlayerCollision.cs:305-316, OnCollide's wasKilledThisFrame test).
-        if route.on_collide {
+        if route.kill_on_collision {
             if (invulnerable && !in_form)
-                || self.players[index].was_killed_tick == Some(self.tick)
+                || (route.on_collide && self.players[index].was_killed_tick == Some(self.tick))
                 || self.players[owner].bodies_alive <= 0
             {
                 return false;
