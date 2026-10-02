@@ -248,45 +248,65 @@ impl RolloutWorld {
         }
     }
 
-    /// PlayerCollision.KillPlayerOnCollision for a player's own collider and
-    /// an Explosion-layer one, the Tesla lightning's included: the (killer,
-    /// cause) of the kill, or None. The
-    /// caster's PlayerCollisions ignore its MeteorSmear and its Drill's
-    /// HitboxCombo boxes, which Ability copies between the slime's and the
-    /// form's (MeteorSmash.cs:305-306, HitboxCombo.cs:37-45, Ability.cs:97,
-    /// 149); the Beam form's ignores its own beam's BeamObjects
-    /// (Beam.cs:213); the kill spares the owner unless canHurtOwner, and is
-    /// an Accident on the owner (PlayerCollision.cs:315-322, 362-370, 444-451).
-    fn blast_kill(&self, other: Part, victim: Option<usize>, victim_id: u32) -> Option<(u32, u32)> {
-        if let Some(victim) = victim {
-            let slot = &self.players[victim];
-            let ignored = match other {
-                Part::Explosion(Blast::Smear(i)) => self.meteor_smears[i].owner == victim,
-                Part::Explosion(Blast::Drill(p, _)) => p == victim,
-                Part::Explosion(Blast::Beam(i)) => {
-                    slot.active == ActiveAbility::Beam && slot.beam_entity != usize::MAX && {
-                        let own = self.entities[slot.beam_entity].hierarchy.wrapping_sub(100_000_000).wrapping_add(2) as i32;
-                        self.beam_pool[i].hitbox.beam_id.wrapping_abs() == own.wrapping_abs()
-                    }
-                }
-                _ => false,
-            };
-            if ignored {
-                return None;
-            }
-        }
-        let (owner, can_hurt_owner, beam) = self.blast_owner(other);
-        if owner == victim_id && !can_hurt_owner {
+    /// PlayerCollision.KillPlayerOnCollision past its squish test, for the
+    /// victim's PlayerCollision and `other` met through its collider row
+    /// `collider`: the (killer, cause) its killPlayer takes, or None where it
+    /// returns first (PlayerCollision.cs:305-460), as on a collider an
+    /// earlier callback destroyed (PlayerCollision.cs:313). A player's PlayerCollision
+    /// skips its ignored colliders, and the Beam form's its own beam's
+    /// BeamObjects (Beam.cs:213); an abilityless clone's ignores nothing.
+    /// The killer is the Projectile's or Explosion's owner, a Drill box's
+    /// Hitbox id or the holder of an Ability that KillPlayersOnContact; a
+    /// slime's own body kills nobody. The owner survives what cannot hurt it
+    /// and dies of an Accident by what can.
+    pub(super) fn collision_kill(&self, victim: Slime, other: Part, collider: Option<usize>) -> Option<(u32, u32)> {
+        if self.collider_destroyed(collider) {
             return None;
         }
-        let cause = if owner == victim_id {
+        if let Slime::Player(index) = victim {
+            let slot = &self.players[index];
+            let hierarchy = collider.or_else(|| self.part_entity(other)).map_or(0, |entity| self.entities[entity].hierarchy);
+            if hierarchy != 0 && slot.ignored.contains(&hierarchy) {
+                return None;
+            }
+            if let Part::Explosion(Blast::Beam(i)) = other
+                && slot.active == ActiveAbility::Beam
+                && slot.beam_entity != usize::MAX
+            {
+                let own = self.entities[slot.beam_entity].hierarchy.wrapping_sub(100_000_000).wrapping_add(2) as i32;
+                if self.beam_pool[i].hitbox.beam_id.wrapping_abs() == own.wrapping_abs() {
+                    return None;
+                }
+            }
+        }
+        let (killer, can_hurt_owner, beam) = match other {
+            Part::Arrow(i) if self.arrows[i].active => (self.arrows[i].owner, self.arrows[i].can_hurt_owner, false),
+            // The Rock form's BounceBall always KillPlayersOnContact.
+            Part::Rock(i) => (self.players[i].base.id, true, false),
+            Part::Body(i) if collider.is_some_and(|entity| self.players[i].kills_on_contact(entity)) => {
+                (self.players[i].base.id, true, false)
+            }
+            // A SpikeAttack's and a SimpleSparkNode's Explosion keep
+            // PlayerOwnerId's zero default.
+            Part::Spike(_) => (0, true, false),
+            Part::Node(i) if self.tesla_nodes[i].lethal => (0, true, false),
+            // ShootDuplicator gives Rock_noPlayer's Explosion the slime's id.
+            Part::DuplicatedRock(i) => (player_id(&self.players, self.duplicated_rocks[i].owner), true, false),
+            Part::Explosion(_) | Part::Line(_) => self.blast_owner(other),
+            _ => return None,
+        };
+        let victim_id = self.slime_base(victim).id;
+        if killer == victim_id && !can_hurt_owner {
+            return None;
+        }
+        let cause = if killer == victim_id {
             CAUSE_ACCIDENT
         } else if beam {
             CAUSE_BEAMED
         } else {
             CAUSE_OTHER
         };
-        Some((owner, cause))
+        Some((killer, cause))
     }
 
     /// The collider DetPhysics holds for a slime's, form's or clone's row,
@@ -1467,101 +1487,21 @@ impl RolloutWorld {
             Part::Missile(missile) if !matches!(self.part_layer(other, data), LAYER_RIGID_BODY_AFFECTOR | LAYER_ROPE) => {
                 self.run_callback_hit(CallbackHit::MissileBlast { missile }, route, data);
             }
-            // PlayerCollision.OnCollide refuses a collider an earlier callback
-            // destroyed (PlayerCollision.cs:313).
-            Part::Body(_) | Part::Clone(_) if self.collider_destroyed(collider) => {}
-            // PlayerCollision.OnCollide: the Rock form is a
-            // KillPlayersOnContact Ability, and Rock_noPlayer's Explosion
-            // can hurt the slime it was copied from (PlayerCollision.cs:352-458).
+            // PlayerCollision.OnCollide's KillPlayerOnCollision.
             Part::Body(player) => {
-                if let Part::Arrow(arrow) = other {
-                    // An arrow of the victim's own spares it unless it can
-                    // hurt its owner (PlayerCollision.cs:352-372).
-                    let state = self.arrows[arrow];
-                    if self.players[player].base.id == state.owner && !state.can_hurt_owner {
-                        return;
-                    }
+                if let Some((killer, cause)) = self.collision_kill(Slime::Player(player), other, collider) {
                     let slime = self.players[player].active == ActiveAbility::None;
-                    let hit = CallbackHit::ArrowKill { victim: player, owner: state.owner, arrow, slime };
-                    self.run_callback_hit(hit, route, data);
-                    return;
+                    let arrow = matches!(other, Part::Arrow(_));
+                    self.run_callback_hit(CallbackHit::Kill { player, killer, cause, slime, arrow }, route, data);
                 }
-                let (killer, cause) = match other {
-                    // A SimpleSparkNode never assigns its Explosion's
-                    // PlayerOwnerId, so the kill credits its zero default.
-                    Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
-                    // Nor does a SpikeAttack's.
-                    Part::Spike(_) => (0, CAUSE_OTHER),
-                    Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
-                    Part::Body(_) => match self.kills_on_contact(other, collider) {
-                        Some(killer) => (killer, CAUSE_OTHER),
-                        None => return,
-                    },
-                    Part::DuplicatedRock(rock) => {
-                        let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
-                        let cause = if self.players[player].base.id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER };
-                        (killer, cause)
-                    }
-                    Part::Explosion(_) | Part::Line(_) => match self.blast_kill(other, Some(player), self.players[player].base.id) {
-                        Some(kill) => kill,
-                        None => return,
-                    },
-                    _ => return,
-                };
-                let slime = self.players[player].active == ActiveAbility::None;
-                self.run_callback_hit(CallbackHit::Kill { player, killer, cause, slime }, route, data);
             }
-            // The Rock form kills a clone of its own slime too, as an
-            // accident.
             Part::Clone(clone) => {
-                let clone_id = self.abilityless_clones[clone].base.id;
-                let (killer, cause) = match other {
-                    Part::Rock(rock) => {
-                        let killer = self.players[rock].base.id;
-                        (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER })
-                    }
-                    // A Projectile's PlayerCollision kill credits the row's
-                    // owner.
-                    Part::Arrow(arrow) => {
-                        let state = self.arrows[arrow];
-                        if state.owner == clone_id && !state.can_hurt_owner {
-                            return;
-                        }
-                        let entity = state.entity.expect("registered arrow");
-                        (self.entities[entity].owner, CAUSE_OTHER)
-                    }
-                    Part::Spike(_) => (0, CAUSE_OTHER),
-                    Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
-                    Part::Body(_) => match self.kills_on_contact(other, collider) {
-                        Some(killer) => (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER }),
-                        None => return,
-                    },
-                    Part::DuplicatedRock(rock) => {
-                        let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
-                        (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER })
-                    }
-                    // A clone's PlayerCollision ignores no collider and no
-                    // beam id.
-                    Part::Explosion(_) | Part::Line(_) => match self.blast_kill(other, None, clone_id) {
-                        Some(kill) => kill,
-                        None => return,
-                    },
-                    _ => return,
-                };
-                self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, route, data);
+                if let Some((killer, cause)) = self.collision_kill(Slime::Clone(clone), other, collider) {
+                    self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, route, data);
+                }
             }
             _ => {}
         }
-    }
-
-    /// The player whose form's collider a Player-layer collider is, while
-    /// its Ability KillPlayersOnContact (PlayerCollision.cs:410-445).
-    fn kills_on_contact(&self, other: Part, collider: Option<usize>) -> Option<u32> {
-        let Part::Body(player) = other else {
-            return None;
-        };
-        let slot = &self.players[player];
-        collider.is_some_and(|entity| slot.kills_on_contact(entity)).then_some(slot.base.id)
     }
 
     /// The live part whose collider a ray or cast reached, for its
@@ -1574,7 +1514,37 @@ impl RolloutWorld {
                 .chain((0..self.abilityless_clones.len()).map(Part::Clone))
                 .chain((0..self.black_holes.len()).map(Part::Hole))
                 .chain((0..self.smoke_clouds.len()).map(Part::Cloud))
+                .chain((0..self.tesla_nodes.len()).map(Part::Line))
                 .find(|&part| !self.part_destroyed(part) && self.part_entity(part) == Some(entity))
+        })
+        .or_else(|| self.blast_at(entity).map(Part::Explosion))
+    }
+
+    /// The Explosion-layer collider whose row a ray or cast reached, by the
+    /// live slot that holds it.
+    fn blast_at(&self, entity: usize) -> Option<Blast> {
+        let at = |active: bool, row: Option<usize>| active && row == Some(entity);
+        if let Some(i) = self.grenade_explosions.iter().position(|e| at(e.active, e.entity)) {
+            return Some(Blast::Grenade(i));
+        }
+        if let Some(i) = self.missile_explosions.iter().position(|e| at(e.active, e.entity)) {
+            return Some(Blast::Mine(i));
+        }
+        if let Some(i) = self.smoke_explosions.iter().position(|e| at(e.active, e.entity)) {
+            return Some(Blast::Smoke(i));
+        }
+        if let Some(i) = self.meteor_smears.iter().position(|smear| at(smear.active, smear.entity)) {
+            return Some(Blast::Smear(i));
+        }
+        if let Some(i) = self.beam_pool.iter().position(|beam| at(beam.active, beam.entity)) {
+            return Some(Blast::Beam(i));
+        }
+        if let Some(i) = self.beam_orbs.iter().position(|orb| at(orb.active, orb.entity)) {
+            return Some(Blast::Orb(i));
+        }
+        self.players.iter().enumerate().find_map(|(p, slot)| {
+            let k = slot.drill_hitbox_entities[slot.active_slot].iter().position(|&row| row == entity)?;
+            Some(Blast::Drill(p, k))
         })
     }
 
