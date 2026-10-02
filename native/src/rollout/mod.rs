@@ -3967,7 +3967,6 @@ impl PlayerSlot {
         self.base.position = form.position; // leak: position
         if !woken {
             self.base.orientation = form.orientation; // leak: orientation
-            self.base.external_velocity = form.external_velocity; // leak: external_velocity
             self.base.grounded = form.grounded; // leak: grounded
             self.base.ground = form.ground; // leak: ground
             self.base.local = form.local; // leak: local
