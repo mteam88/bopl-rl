@@ -36,6 +36,14 @@ impl Collider {
             Self::RoundedRect(r) => r.inner.center = p,
         }
     }
+    /// IShape.OverlapPoint (PhysTools.cs:1083-1120).
+    pub fn overlaps(self, point: Vec2) -> bool {
+        match self {
+            Self::Circle(c) => c.overlaps(point),
+            Self::Box(b) => b.overlaps(point),
+            Self::RoundedRect(r) => r.overlaps(point),
+        }
+    }
     pub fn translate(&mut self, delta: Vec2) {
         self.set_center(self.center() + delta);
     }

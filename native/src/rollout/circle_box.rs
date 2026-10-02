@@ -5,7 +5,6 @@
 //! queued first side first (DetPhysics.cs:2405-2437).
 use super::*;
 use super::rope_abilities::HookTarget;
-use crate::physics::shape::Collider;
 
 /// A DetPhysics collider, by the collection that owns it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -311,7 +310,7 @@ impl RolloutWorld {
 
     /// The collider DetPhysics holds for a slime's, form's or clone's row,
     /// where it last synced it.
-    fn body_row_collider(&self, entity: usize) -> Collider {
+    pub(super) fn body_row_collider(&self, entity: usize) -> Collider {
         let row = self.entities[entity];
         let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
         if row.kind == 0 {
@@ -999,7 +998,11 @@ impl RolloutWorld {
                 // (RopeHook.cs:86-131).
                 Part::Hook(rope) => {
                     let collider = walls.get(wall).copied().unwrap_or(self.platforms[wall].collider);
-                    CallbackHit::RopeHook { rope, target: HookTarget::Platform(wall, collider) }
+                    CallbackHit::RopeHook {
+                        rope,
+                        target: HookTarget::Platform(wall),
+                        shape: Collider::RoundedRect(collider),
+                    }
                 }
                 // BlackHole.OnCollide eats a wall only when the collider the
                 // manifold copied contains the hole's centre, even though the
@@ -1280,7 +1283,10 @@ impl RolloutWorld {
                     | Part::Cloud(_)
             ) {
                 let collider = self.part_entity(other);
-                self.scratch.callback_hits.push((key, CallbackHit::Collide { receiver, other, collider, contact }));
+                let shape = self.part_collider(other);
+                self.scratch
+                    .callback_hits
+                    .push((key, CallbackHit::Collide { receiver, other, collider, shape, contact }));
             }
         }
     }
@@ -1300,6 +1306,7 @@ impl RolloutWorld {
         receiver: Part,
         other: Part,
         collider: Option<usize>,
+        shape: Collider,
         contact: Contact,
         route: KillRoute,
         data: &data::RolloutData,
@@ -1461,7 +1468,7 @@ impl RolloutWorld {
                     | Part::Explosion(_)
                     | Part::Water => return,
                 };
-                self.rope_hook_collide(rope, target);
+                self.rope_hook_collide(rope, target, shape);
             }
             Part::Spike(spike) => {
                 // SpikeAttack.OnCollide returns only on a destroyed collider

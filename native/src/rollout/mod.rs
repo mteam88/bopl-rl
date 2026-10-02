@@ -11,7 +11,7 @@ use crate::{
     fixed::Fix,
     geometry::{Circle, OrientedBox, RayHit, RoundedRect},
     orientation::Orientation,
-    physics::{Body, Contact, positional_correction, resolve},
+    physics::{Body, Contact, positional_correction, resolve, shape::Collider},
     random::Random,
     surface::Surface,
     vector::Vec2,
@@ -4589,8 +4589,9 @@ impl KillRoute {
 
 #[derive(Clone, Copy)]
 enum CallbackHit {
-    /// RopeHook.OnCollide with the collider the hook met.
-    RopeHook { rope: usize, target: HookTarget },
+    /// RopeHook.OnCollide with the collider the hook met and the copy of it
+    /// its manifold took.
+    RopeHook { rope: usize, target: HookTarget, shape: Collider },
     /// Arrow.OnCollide with a StickTo collider: a wall, or a Circle/Circle
     /// or Circle/Box part with a BoplBody.
     ArrowLand { arrow: usize, wall: Option<usize>, part: Option<Part> },
@@ -4619,8 +4620,9 @@ enum CallbackHit {
     /// collisionCallback.OnCollide with the other collider, dispatched by the
     /// receiver's kind (DetPhysics.cs:2406-2438, 3202-3205).
     /// `collider` is the other collider's row, which the entry holds
-    /// whatever becomes of its owner before it runs.
-    Collide { receiver: Part, other: Part, collider: Option<usize>, contact: Contact },
+    /// whatever becomes of its owner before it runs, and `shape` the copy of
+    /// it PrepareCollisionCallBacks took (CollisionInformation.collider).
+    Collide { receiver: Part, other: Part, collider: Option<usize>, shape: Collider, contact: Contact },
     /// DynamicAbilityPickup.OnCollide with a slime's or an abilityless
     /// clone's box, whose hurtbox row was `body` when the pair was found.
     Pickup { pickup: usize, taker: PickupTaker, body: usize },
@@ -12635,7 +12637,9 @@ impl RolloutWorld {
                     let part = self.hit_part(entity);
                     if let Some(part) = part {
                         let contact = Contact { point: near, normal: Vec2::UP, penetration: Fix::from_f32(0.1) };
-                        self.on_collide(part, Part::Body(index), Some(own), contact, route, data);
+                        let mut shape = self.body_row_collider(own);
+                        shape.set_center(near);
+                        self.on_collide(part, Part::Body(index), Some(own), shape, contact, route, data);
                     }
                     // hitbox.OnCollide: the Meteor's own PlayerCollision, from
                     // its UpdateSim (MeteorSmash.cs:409-426).
@@ -22061,7 +22065,8 @@ impl RolloutWorld {
                 let part = self.hit_part(hit.index);
                 if let Some(part) = part {
                     let contact = Contact { point: near, normal: (near - origin).normalized_safe(), penetration: Fix::ONE };
-                    self.on_collide(part, Part::Body(index), Some(own), contact, KillRoute::UPDATER_ON_COLLIDE, data);
+                    let shape = self.body_row_collider(own);
+                    self.on_collide(part, Part::Body(index), Some(own), shape, contact, KillRoute::UPDATER_ON_COLLIDE, data);
                 }
                 // An ended Dash's PlayerCollision refuses its own kill: its
                 // object is inactive or destroyed (PlayerCollision.cs:111).
@@ -33482,7 +33487,7 @@ impl RolloutWorld {
             CallbackHit::Pickup { pickup, taker, body } => {
                 self.grant_ability_pickup(pickup, taker, body, data);
             }
-            CallbackHit::RopeHook { rope, target } => self.rope_hook_collide(rope, target),
+            CallbackHit::RopeHook { rope, target, shape } => self.rope_hook_collide(rope, target, shape),
             CallbackHit::MissileBlast { missile } => {
                 // Every pair explodes, a destroyed missile included, but
                 // not while a Magnet holds it (Missile.cs:181-192).
@@ -33536,8 +33541,8 @@ impl RolloutWorld {
                     .apply_impulse(direction * strength, wall_arm);
                 self.spike_attack_self_push(spike, point, strength, data);
             }
-            CallbackHit::Collide { receiver, other, collider, contact } => {
-                self.on_collide(receiver, other, collider, contact, route, data);
+            CallbackHit::Collide { receiver, other, collider, shape, contact } => {
+                self.on_collide(receiver, other, collider, shape, contact, route, data);
             }
             CallbackHit::MineIgnite { item } => {
                 let mine = &mut self.thrown_items[item];
@@ -33591,15 +33596,15 @@ impl RolloutWorld {
     /// Whether a circle hitbox overlaps the player's registered Player-layer
     /// shape: the slime's and Dash's own box, or the collider a form's prefab
     /// registered (`hurtbox_collider`).
-    fn player_hit_by_circle(&self, player_index: usize, hitbox: Circle) -> bool {
+    /// The collider a hitbox meets on player `player_index`.
+    fn player_hit_shape(&self, player_index: usize) -> Option<Collider> {
         let player = &self.players[player_index];
         if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
-            return crate::physics::contact::circle_box(hitbox, player.base.collider).is_some();
+            return Some(Collider::Box(player.base.collider));
         }
-        match self.hurtbox_collider(player_index) {
-            Some(DetCollider::Circle(circle)) => crate::physics::contact::circle_circle(hitbox, circle).is_some(),
-            Some(DetCollider::Box(shape)) => crate::physics::contact::circle_box(hitbox, shape).is_some(),
-            None => false,
+        match self.hurtbox_collider(player_index)? {
+            DetCollider::Circle(circle) => Some(Collider::Circle(circle)),
+            DetCollider::Box(shape) => Some(Collider::Box(shape)),
         }
     }
 
@@ -35459,7 +35464,8 @@ impl RolloutWorld {
                 }
                 if let Some(part) = self.hit_part(entity) {
                     let contact = Contact { point: center, normal: Vec2::ZERO, penetration: Fix::ZERO };
-                    self.on_collide(part, Part::Body(roller), Some(roller_entity), contact, KillRoute::UPDATER_ON_COLLIDE, data);
+                    let shape = Collider::Circle(query);
+                    self.on_collide(part, Part::Body(roller), Some(roller_entity), shape, contact, KillRoute::UPDATER_ON_COLLIDE, data);
                 }
             }
 
