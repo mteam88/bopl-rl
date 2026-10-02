@@ -12259,25 +12259,35 @@ impl RolloutWorld {
         let mut visited = [u32::MAX; 5];
         for substep in 0..count {
             self.roll_hop_step(index, step_speed, &mut visited);
-            let position = self.players[index].base.position;
-            let slot = &mut self.players[index];
             // The normal hurtbox covers the final move. Roll records only the
-            // preceding substeps in its thirty extra hurtboxes.
-            if substep + 1 < count && substep < slot.roll.swept.len() {
-                slot.roll.swept[substep] = position;
+            // preceding substeps in its thirty extra hurtboxes, each at the
+            // attached ground's PositionFromLocalPlayerPos (Roll.cs:270-275).
+            if substep + 1 < count && substep < self.players[index].roll.swept.len() {
+                let Some(platform_index) = self.ground_platform(index) else {
+                    continue;
+                };
+                let slot = &mut self.players[index];
+                slot.roll.swept[substep] =
+                    self.platforms[platform_index].surface.position(slot.base.local, slot.base.radius);
                 slot.roll.swept_len = (substep + 1) as u8;
             }
         }
-        if let Some(platform_index) = self.players[index]
+        // AlignToGround: the hops moved only LocalPlatformPos, so the body
+        // reaches the surface here (PlayerPhysics.cs:166-174).
+        if let Some(platform_index) = self.ground_platform(index) {
+            let slot = &mut self.players[index];
+            slot.base.position =
+                self.platforms[platform_index].surface.position(slot.base.local, slot.base.radius);
+            slot.base.align(&self.platforms[platform_index]);
+        }
+        self.apply_platform_drop(index)
+    }
+
+    fn ground_platform(&self, index: usize) -> Option<usize> {
+        self.players[index]
             .base
             .ground
             .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
-        {
-            self.players[index]
-                .base
-                .align(&self.platforms[platform_index]);
-        }
-        self.apply_platform_drop(index)
     }
 
     /// PlayerPhysics.MoveAlongCurrentPlatFormSwapIfBlocked. The source passes
@@ -12285,76 +12295,57 @@ impl RolloutWorld {
     /// platform hop multiplies the remainder by `dt` once more.
     fn roll_hop_step(&mut self, index: usize, mut speed: Fix, visited: &mut [u32; 5]) {
         // playerPhysics.radius (Roll.cs:270).
-        let physics_radius = self.players[index].base.radius;
+        let radius = self.players[index].base.radius;
         // The source recurses until a hop has no blocker. The five entries
         // limit only which prior platforms are excluded, not recursion depth;
         // the residual movement is multiplied by dt on every hop.
         for _ in 0..64 {
-            let Some(platform_index) = self.players[index]
-                .base
-                .ground
-                .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
-            else {
+            let Some(platform_index) = self.ground_platform(index) else {
                 return;
             };
-            let platform_id = self.platforms[platform_index].id;
             if let Some(slot) = visited.iter_mut().find(|id| **id == u32::MAX) {
-                *slot = platform_id;
+                *slot = self.platforms[platform_index].id;
             }
-
+            // StickyRoundedRectangle.PlatformHopMove (StickyRoundedRectangle.cs:
+            // 366-387). Only an attach moves the body, so forwardsDirection
+            // reads the normal at the body's last placed position, while the
+            // ray starts from the current LocalPlatformPos.
             let movement = speed * self.players[index].base.fixed_delta_time;
-            let sign = movement.sign();
-            let origin = self.platforms[platform_index]
-                .surface
-                .position(self.players[index].base.local, physics_radius);
-            let direction =
-                self.platforms[platform_index].surface.forward(origin) * Fix::from_int(sign);
+            let sign = Fix::from_int(movement.sign());
+            let surface = &self.platforms[platform_index].surface;
+            let forward = surface.forward(self.players[index].base.position);
+            let local = self.players[index].base.local;
+            let origin = surface.position(local, radius);
+            // MaxPlatformHoppingMovemementAllowed (StickyRoundedRectangle.cs:414-438).
+            let direction = (movement * forward).normalized_safe();
             let mut nearest = Fix::from_int(1_000_000_000);
             let mut blocking = None;
-            if direction != Vec2::ZERO {
-                for (candidate, platform) in self.platforms.iter().enumerate() {
-                    if !platform.active || visited.contains(&platform.id) {
-                        continue;
-                    }
-                    if let Some(hit) = platform.collider.raycast_within(
-                        origin,
-                        direction,
-                        Fix::from_int(1_000_000_000),
-                    ) && hit.near < nearest
-                    {
-                        nearest = hit.near;
-                        blocking = Some(candidate);
-                    }
+            for (candidate, platform) in self.platforms.iter().enumerate() {
+                if !platform.active || visited.contains(&platform.id) {
+                    continue;
+                }
+                if let Some(hit) =
+                    platform.collider.raycast_within(origin, direction, Fix::from_int(1_000_000_000))
+                    && hit.near < nearest
+                {
+                    nearest = hit.near;
+                    blocking = Some(candidate);
                 }
             }
             if movement.abs() < nearest {
                 blocking = None;
             }
-            let allowed = movement.abs().min(nearest) * Fix::from_int(sign);
-            let next_local = self.platforms[platform_index].surface.move_unblocked(
-                self.players[index].base.local,
-                physics_radius,
-                allowed,
-                Fix::ONE,
-            );
-            let next_position = self.platforms[platform_index]
-                .surface
-                .position(next_local, physics_radius);
+            let allowed = movement.abs().min(nearest);
+            let remaining = (allowed - movement.abs()).abs() * sign;
+            let next_local = surface.move_unblocked(local, radius, allowed * sign, Fix::ONE);
             self.players[index].base.local = next_local;
-            self.players[index].base.position = next_position;
             let Some(blocking) = blocking else {
                 return;
             };
-            let Ok(local) = self.platforms[blocking]
-                .surface
-                .local_position(next_position, physics_radius)
-            else {
-                return;
-            };
-            self.players[index].base.ground = Some(self.platforms[blocking].id);
-            self.players[index].base.local = local;
-            self.players[index].base.align(&self.platforms[blocking]);
-            speed = (movement.abs() - allowed.abs()) * Fix::from_int(sign);
+            // AttachToGround(blockingPlatform, attachedGround.PositionFromLocalPlayerPos(...)).
+            let location = self.platforms[platform_index].surface.position(next_local, radius);
+            self.players[index].base.attach(&self.platforms[blocking], location);
+            speed = remaining;
         }
     }
 
