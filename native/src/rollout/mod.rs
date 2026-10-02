@@ -2269,9 +2269,8 @@ impl SlimeMut<'_> {
         }
     }
 
-    /// SlimeController.attachToGround from a caller after the slime's own
-    /// pass: State.land, the animator's count starting next pass.
-    fn land_after_pass(&mut self) {
+    /// SlimeController.attachToGround from outside the slime's own pass.
+    fn attach_to_ground(&mut self) {
         if self.base.attach_upside_down == Some(true) {
             *self.facing_right = !*self.facing_right;
         }
@@ -25318,20 +25317,19 @@ impl RolloutWorld {
                     }
                 }
                 body.apply_ragdoll(data.magnet.fire_ragdoll_duration, speed);
-                // Shoot then casts the landing rays over a 0.0001 s step.
-                // attachToGround puts the slime straight into State.land,
-                // ending the ragdoll, after its pass. That pass's OldUpdate
-                // returned in State.ragdoll (SlimeController.cs:787-790),
-                // before the state switch and AlignTransformAir, and its
-                // animator already ran. A slime updating after its holder
-                // lands in its own pass.
+                // Shoot then casts the landing rays over a 0.0001 s step on
+                // the slime's own PlayerPhysics, enabled or not, and its
+                // OnAttachedToGround puts the slime straight into State.land,
+                // ending the ragdoll. A slime that already had its pass
+                // returned in State.ragdoll (SlimeController.cs:787-790); one
+                // updating after its holder runs `case State.land`.
                 let dt = Fix::from_f64(0.0001);
                 let attached = match slime {
                     Slime::Player(i) => self.slot_physics(i, |slot, world| slot.base.collision_rays_over(world, dt)),
                     Slime::Clone(i) => self.clone_physics(i, |clone, walls| clone.base.collision_rays_over(walls, dt)),
                 };
-                if attached && self.slime_passed(slime) {
-                    slime.of(&mut self.players, &mut self.abilityless_clones).land_after_pass();
+                if attached {
+                    slime.of(&mut self.players, &mut self.abilityless_clones).attach_to_ground();
                 }
             }
             MagnetHeld::Rock(i) => {
