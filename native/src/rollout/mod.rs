@@ -4493,6 +4493,8 @@ struct PlatformScratch {
     callback_tick: Option<u32>,
     /// The sweep axis DetPhysics.Simulate chose with those colliders.
     callback_sweep_x: bool,
+    /// sweepX_roundedRectanglesOnly, chosen with it.
+    callback_rounded_sweep_x: bool,
     contacts: Vec<(usize, usize, Contact)>,
     /// Every collider's bounding box in this pass's SortAndSweep.
     sweep: sweep::SweepBounds,
@@ -6627,16 +6629,23 @@ impl RolloutWorld {
     /// each broadphase pair lists the lower-minimum collider first. Beams are
     /// DetPhysics' own list and stay out of both (DetPhysics.cs:2827-2900).
     fn sweep_x(&self) -> bool {
-        // Simulate picks the axis once, from the colliders as integrated;
-        // the corrections that follow do not change it for the pass.
+        self.sweep_axes().0
+    }
+
+    /// The sweep axis, and the one SortAndSweep*_ropes sweeps: the rounded
+    /// rectangles' share of the same variance, every RoundedRect's
+    /// collider counted, active or not (sweepX_roundedRectanglesOnly).
+    fn sweep_axes(&self) -> (bool, bool) {
+        // Simulate picks the axes once, from the colliders as integrated;
+        // the corrections that follow do not change them for the pass.
         if self.scratch.callback_tick == Some(self.tick) {
-            return self.scratch.callback_sweep_x;
+            return (self.scratch.callback_sweep_x, self.scratch.callback_rounded_sweep_x);
         }
         let mut mean = Vec2::ZERO;
         let mut active_count = 0usize;
         for platform in &self.platforms {
             if platform.active {
-                mean += platform.surface.center;
+                mean += platform.collider.inner.center;
                 active_count += 1;
             }
         }
@@ -6653,9 +6662,10 @@ impl RolloutWorld {
         }
         let mut variance = Vec2::ZERO;
         for platform in &self.platforms {
-            let delta = mean - platform.surface.center;
+            let delta = mean - platform.collider.inner.center;
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
+        let rounded_sweep_x = variance.x > variance.y;
         for entity in self
             .entities
             .iter()
@@ -6664,7 +6674,7 @@ impl RolloutWorld {
             let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
-        variance.x > variance.y
+        (variance.x > variance.y, rounded_sweep_x)
     }
 
     /// DynamicAbilityPickup.OnCollide: instantiate the ability prefab, hand it
@@ -36267,11 +36277,12 @@ impl RolloutWorld {
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
-        let sweep_x = self.sweep_x();
+        let (sweep_x, rounded_sweep_x) = self.sweep_axes();
         let scratch = &mut self.scratch;
         scratch.callback_colliders.clear();
         scratch.callback_tick = Some(self.tick);
         scratch.callback_sweep_x = sweep_x;
+        scratch.callback_rounded_sweep_x = rounded_sweep_x;
         scratch
             .callback_colliders
             .extend(self.platforms.iter().map(|p| p.collider));
