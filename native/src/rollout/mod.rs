@@ -8291,6 +8291,23 @@ impl RolloutWorld {
     /// `destroy_fix` on a GameObject known by its row: a platform's collider
     /// registered with the row's HierarchyNumber, and the batch entry under
     /// it, if it joined this pass, names the owner.
+    /// killPlayer's DestroyFix of each of the dying slime's ability objects
+    /// (PlayerCollision.cs:159-164, 184-189, 203-209, Updater.cs:89-96). A held
+    /// instance's IsDestroyed is its generation turning over, so a shot or
+    /// item of it finds it destroyed at once (PortalShot.cs:92), even when a
+    /// clone takes the slot this pass. One an OnCollide instantiated this
+    /// pass also leaves the batch.
+    fn destroy_fix_abilities(&mut self, index: usize) {
+        for base in self.players[index].pending_ability_hierarchy {
+            if base != u32::MAX {
+                self.destroy_fix(base, None, None);
+            }
+        }
+        for generation in &mut self.players[index].ability_generation {
+            *generation = generation.wrapping_add(1);
+        }
+    }
+
     fn destroy_fix_row(&mut self, row: usize) {
         let key = self.entities[row].hierarchy;
         let owner = self.updater_batch.iter().find(|entry| key >= 100_000_000 && entry.0 == key).map(|entry| entry.1);
@@ -36877,13 +36894,6 @@ impl RolloutWorld {
             // The body's DPhysicsBox is the Player prefab's sixth updatable.
             let owner = row.hierarchy - 100_000_000 - 6;
             self.destroy_fix(owner, None, Some(self.players[index].body_entity));
-            // Each branch DestroyFixes the slime's abilities with it, one
-            // OnCollide instantiated this pass included (PlayerCollision.cs:159-211).
-            for base in self.players[index].pending_ability_hierarchy {
-                if base != u32::MAX {
-                    self.destroy_fix(base, None, None);
-                }
-            }
         }
         // No death effect while the player is being revived
         // (PlayerCollision.cs:115-120).
@@ -37059,14 +37069,13 @@ impl RolloutWorld {
         slot.portal_blue = [None; 3];
         slot.portal_orange = [None; 3];
         slot.spike_attacks = [None; 3];
-        // A shot or item of a destroyed instance finds it IsDestroyed, which
-        // DestroyFix sets at once (Updater.cs:89-96, PortalShot.cs:92), even
-        // when a clone takes the slot this pass.
-        for generation in &mut slot.ability_generation {
-            *generation = generation.wrapping_add(1);
+        // A slime a callback already destroyed has no abilities left.
+        if !destroyed {
+            self.destroy_fix_abilities(index);
         }
-        // So does PlatformTransform's srrBuffer: the platform stays, but a
-        // replacement slime's fresh ability starts with an empty buffer.
+        // PlatformTransform's srrBuffer goes with the instance: the platform
+        // stays, but a replacement slime's fresh ability starts with an empty
+        // buffer.
         for spawn in &mut self.spawned {
             if spawn.buffer.is_some_and(|(owner, _)| owner == index) {
                 spawn.buffer = None;
