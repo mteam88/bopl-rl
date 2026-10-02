@@ -2112,7 +2112,6 @@ pub struct RollState {
     pub grounded_speed: Fix,
     pub swept: [Vec2; 30],
     pub swept_len: u8,
-    pub lethal: bool,
     pub trail_spawned: bool,
 }
 
@@ -3504,6 +3503,9 @@ pub struct PlayerSlot {
     pub bow: BowState,
     pub rock: RockState,
     pub roll: RollState,
+    /// Each Roll's own Ability.KillPlayersOnContact: EnterAbility clears it,
+    /// ReleaseDash sets it, and the Roll in another slot keeps its own.
+    pub roll_lethal: [bool; 3],
     pub meteor: MeteorState,
     pub push: PushState,
     pub gun: GunState,
@@ -3838,8 +3840,13 @@ impl PlayerSlot {
     /// MeteorSmash.cs:121, 202, 227, 327). The Rock form's, always set, is
     /// its own part's.
     fn kills_on_contact(&self, entity: usize) -> bool {
-        (entity == self.roll_entity && self.roll.lethal)
+        (0..3).any(|s| self.abilities[s] == ABILITY_ROLL && self.form_entities[s] == entity && self.roll_lethal[s])
             || (entity == self.meteor_entity && self.active == ActiveAbility::Meteor && self.meteor.phase == 3)
+    }
+
+    /// The active Roll's KillPlayersOnContact.
+    fn rolling_lethal(&self) -> bool {
+        self.active == ActiveAbility::Roll && self.roll_lethal[self.active_slot]
     }
 
     /// The active form's PlayerPhysics.Jump, which sets its own body's
@@ -6261,6 +6268,7 @@ impl RolloutWorld {
                 bow: BowState::default(),
                 rock: RockState::default(),
                 roll: RollState::default(),
+                roll_lethal: [false; 3],
                 meteor: MeteorState::default(),
                 push: PushState::default(),
                 gun: GunState::default(),
@@ -6983,6 +6991,7 @@ impl RolloutWorld {
         slot.abilities[ability_slot] = ability;
         slot.cooldowns[ability_slot] = data.abilities[ability as usize].cooldown;
         slot.timers[ability_slot] = timer;
+        slot.roll_lethal[ability_slot] = false;
         slot.ability_instantiated[ability_slot] = false;
         slot.form_entities[ability_slot] = usize::MAX;
         // The new Beam component has no orbEffect yet (Beam.cs:261).
@@ -10978,6 +10987,7 @@ impl RolloutWorld {
                             charging: true,
                             ..RollState::default()
                         };
+                        slot.roll_lethal[s] = false;
                         let (radius, offset) =
                             slot.form_circle(slot.roll_entity, data.roll.radius, Vec2::ZERO);
                         self.form_enter_circle(index, radius, offset);
@@ -12167,10 +12177,10 @@ impl RolloutWorld {
             let hurtbox = self.entities[self.players[index].roll_entity].hierarchy;
             let slot = &mut self.players[index];
             slot.ignored[IGNORE_ROLL] = hurtbox;
+            slot.roll_lethal[slot.active_slot] = true;
             let st = &mut slot.roll;
             st.waiting_to_release = false;
             st.charging = false;
-            st.lethal = true;
             st.top_speed = data.roll.max_speed;
         }
         // A dropped Roll is disabled, so UpdateSim's IsEnabled check
@@ -20841,6 +20851,7 @@ impl RolloutWorld {
         slot.web_swing = [rope_abilities::WebSwingState::default(); 3];
         slot.grapple = [rope_abilities::GrappleState::default(); 3];
         slot.roll = RollState::default();
+        slot.roll_lethal = [false; 3];
         slot.meteor = MeteorState::default();
         slot.push = PushState::default();
         slot.gun = GunState::default();
@@ -21338,6 +21349,7 @@ impl RolloutWorld {
         slot.web_swing = [rope_abilities::WebSwingState::default(); 3];
         slot.grapple = [rope_abilities::GrappleState::default(); 3];
         slot.roll = RollState::default();
+        slot.roll_lethal = [false; 3];
         slot.meteor = MeteorState::default();
         slot.push = PushState::default();
         slot.gun = GunState::default();
@@ -35449,9 +35461,7 @@ impl RolloutWorld {
     /// PlayerCollision accepts only the first kill in a frame; a fixed victim
     /// bitset has that result.
     fn roll_contacts_for(&mut self, roller: usize, data: &data::RolloutData) {
-        if self.players[roller].active != ActiveAbility::Roll
-            || !self.players[roller].roll.lethal
-            || !self.hittable(roller)
+        if !self.players[roller].rolling_lethal() || !self.hittable(roller)
         {
             return;
         }
@@ -35540,7 +35550,7 @@ impl RolloutWorld {
                 let slot = &self.players[index];
                 (
                     slot.ignores(self.entities[self.platform_entities[wall]].hierarchy),
-                    slot.active != ActiveAbility::Roll || !slot.roll.lethal,
+                    !slot.rolling_lethal(),
                     slot.ground_destroyed.is_some(),
                 )
             }
@@ -37510,7 +37520,7 @@ impl RolloutWorld {
                     row.flags |= ability_collider_flags(ABILITY_ROCK);
                 }
             }
-            for entity in [slot.roll_entity, slot.meteor_entity] {
+            for entity in slot.form_entities.into_iter().chain([slot.meteor_entity]) {
                 if entity != usize::MAX
                     && slot.kills_on_contact(entity)
                     && self.entities[entity].flags & E_DESTROYED == 0
