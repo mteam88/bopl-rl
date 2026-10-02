@@ -9574,18 +9574,9 @@ impl RolloutWorld {
                 continue;
             }
             let endpoint = self.portals[endpoint_index];
-            // FindObjectsOfType<SlimeController> (the shim's InstanceID
-            // order, newest runtime object first) covers the players' slimes
-            // and the ability-less Duplicator clones alike. A clone shares
-            // its owner's player-id hysteresis bit, as the source's fixed
-            // `playerWasInside[8]` array does.
-            let row = |entity: Option<usize>| entity.and_then(|e| self.entities.get(e)).map_or(0, |row| row.hierarchy);
-            let mut slimes: Vec<(u32, Slime)> = (0..self.players.len())
-                .map(|index| (row(Some(self.players[index].body_entity)), Slime::Player(index)))
-                .chain(self.abilityless_clones.iter().enumerate().map(|(index, clone)| (row(clone.entity), Slime::Clone(index))))
-                .collect();
-            slimes.sort_by_key(|&(hierarchy, _)| std::cmp::Reverse(hierarchy));
-            for (_, slime) in slimes {
+            // A clone shares its owner's player-id hysteresis bit, as the
+            // source's fixed `playerWasInside[8]` array does.
+            for slime in self.slime_controllers() {
                 if !self.portal_finds(slime) {
                     continue;
                 }
@@ -9641,6 +9632,19 @@ impl RolloutWorld {
             Vec2::angle(up.perp_cw().normalized_angle()),
             self.entity_inverse_extents[slot.macho_throw_entity],
         )
+    }
+
+    /// FindObjectsOfType<SlimeController>: the shim's InstanceID order,
+    /// newest runtime object first, over the players' slimes and the
+    /// ability-less Duplicator clones alike.
+    fn slime_controllers(&self) -> Vec<Slime> {
+        let row = |entity: Option<usize>| entity.and_then(|e| self.entities.get(e)).map_or(0, |row| row.hierarchy);
+        let mut slimes: Vec<(u32, Slime)> = (0..self.players.len())
+            .map(|index| (row(Some(self.players[index].body_entity)), Slime::Player(index)))
+            .chain(self.abilityless_clones.iter().enumerate().map(|(index, clone)| (row(clone.entity), Slime::Clone(index))))
+            .collect();
+        slimes.sort_by_key(|&(hierarchy, _)| std::cmp::Reverse(hierarchy));
+        slimes.into_iter().map(|(_, slime)| slime).collect()
     }
 
     fn slime_base(&self, slime: Slime) -> &Player {
@@ -32315,20 +32319,29 @@ impl RolloutWorld {
         let tack_radius =
             self.thrown_items[item_index].collider_radius * self.thrown_items[item_index].scale;
         let mut victim = None;
-        let mut victim_is_clone = false;
-        for player_index in 0..self.players.len() {
-            let player = &self.players[player_index];
-            if !self.playable_slot(player)
-                || player.active != ActiveAbility::None
-                || player.base.dash.active
-                || player.invulnerable != 0
-            {
-                continue;
-            }
-            let radius = tack_radius + Fix::from_f32(0.75) * player.player_scale;
-            let in_range = (self.players[player_index].base.position - position)
-                .length_squared()
-                < radius * radius;
+        for slime in self.slime_controllers() {
+            let player_index = match slime {
+                Slime::Player(index) => {
+                    let player = &self.players[index];
+                    if !self.playable_slot(player)
+                        || player.active != ActiveAbility::None
+                        || player.base.dash.active
+                        || player.invulnerable != 0
+                    {
+                        continue;
+                    }
+                    index
+                }
+                Slime::Clone(index) => {
+                    let clone = &self.abilityless_clones[index];
+                    if !clone.active || !clone.base.alive || clone.invulnerable != 0 {
+                        continue;
+                    }
+                    clone.owner
+                }
+            };
+            let radius = tack_radius + Fix::from_f32(0.75) * self.players[player_index].player_scale;
+            let in_range = (self.slime_base(slime).position - position).length_squared() < radius * radius;
             if player_index == owner && !self.thrown_items[item_index].owner_clear {
                 if !in_range {
                     self.thrown_items[item_index].owner_clear = true;
@@ -32336,32 +32349,8 @@ impl RolloutWorld {
                 continue;
             }
             if in_range {
-                victim = Some(player_index);
+                victim = Some(slime);
                 break;
-            }
-        }
-        if victim.is_none() {
-            for clone_index in 0..self.abilityless_clones.len() {
-                let clone = &self.abilityless_clones[clone_index];
-                if !clone.active || !clone.base.alive || clone.invulnerable != 0 {
-                    continue;
-                }
-                let player_index = clone.owner;
-                let radius =
-                    tack_radius + Fix::from_f32(0.75) * self.players[player_index].player_scale;
-                let in_range =
-                    (clone.base.position - position).length_squared() < radius * radius;
-                if player_index == owner && !self.thrown_items[item_index].owner_clear {
-                    if !in_range {
-                        self.thrown_items[item_index].owner_clear = true;
-                    }
-                    continue;
-                }
-                if in_range {
-                    victim = Some(clone_index);
-                    victim_is_clone = true;
-                    break;
-                }
             }
         }
         if let Some(victim) = victim {
@@ -32371,10 +32360,13 @@ impl RolloutWorld {
             // included: it creates the normal death effect, while
             // DetPhysics removes all killed colliders before contacts.
             self.register_prefab(data::get().prefab("deathEffect"));
-            if victim_is_clone {
-                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER, KillRoute::UPDATER, false, false);
-            } else {
-                self.kill(victim, killer, CAUSE_OTHER, false, false);
+            match victim {
+                Slime::Clone(index) => {
+                    self.kill_abilityless_clone(index, killer, CAUSE_OTHER, KillRoute::UPDATER, false, false);
+                }
+                Slime::Player(index) => {
+                    self.kill(index, killer, CAUSE_OTHER, false, false);
+                }
             }
             self.remove_thrown_item(item_index, false);
         }
