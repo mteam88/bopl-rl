@@ -38441,13 +38441,15 @@ impl RolloutWorld {
                 }
                 if sync_form_row(circle, flags, transforming, entered == circle_e, slot.base.id) {
                     // DetPhysics copies the ability body's FixTransform rotation
-                    // (body.up = Slerp(...), PlatformTransform.cs:281; zero again
-                    // in ExitAbility, PlatformTransform.cs:462, at the ejected
-                    // position the exit pass published).
+                    // (body.up = Slerp(...), PlatformTransform.cs:281), then the
+                    // one the exit left at the ejected position the exit pass
+                    // published: zero from ExitAbility (PlatformTransform.cs:462),
+                    // kept when FreezeRayGun calls Ability.ExitAbility directly
+                    // (FreezeRayGun.cs:128).
                     let (center, rotation) = if transforming {
                         (slot.base.position, slot.base.rotation())
                     } else {
-                        (exit_position, Fix::ZERO)
+                        (exit_position, slot.forms[slot.entity_slot(circle_e)].pose.orientation.rotation())
                     };
                     circle.x = center.x.raw();
                     circle.y = center.y.raw();
@@ -38469,7 +38471,7 @@ impl RolloutWorld {
                     let (position, rotation) = if gusting {
                         (slot.base.position, slot.base.rotation())
                     } else {
-                        (exit_position, Fix::ZERO)
+                        (exit_position, slot.forms[slot.entity_slot(gust_e)].pose.orientation.rotation())
                     };
                     let (radius, offset) = slot.form_circle(
                         slot.gust_entity,
@@ -38491,7 +38493,7 @@ impl RolloutWorld {
                     let (position, rotation) = if reviving {
                         (slot.base.position, slot.base.rotation())
                     } else {
-                        (exit_position, Fix::ZERO)
+                        (exit_position, slot.forms[slot.entity_slot(revival_e)].pose.orientation.rotation())
                     };
                     let (radius, offset) = slot.form_circle(
                         slot.revival_entity,
@@ -38511,14 +38513,10 @@ impl RolloutWorld {
                 let publish = sync_form_row(box_row, flags, spiking, entered == spike_e, slot.base.id);
                 if publish {
                     // The form's FixTransform, casting or hidden.
-                    let (position, rotation, center_basis, collider_basis) = if spiking
-                        || frozen_pose(spike_e).is_some()
-                    {
-                        let pose = slot.forms[slot.entity_slot(spike_e)].pose;
-                        (pose.position, pose.orientation.rotation(), pose.orientation.up().perp_cw(), Vec2::angle(pose.orientation.rotation()))
-                    } else {
-                        (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
-                    };
+                    let pose = slot.forms[slot.entity_slot(spike_e)].pose;
+                    let position = if spiking || frozen_pose(spike_e).is_some() { pose.position } else { exit_position };
+                    let rotation = pose.orientation.rotation();
+                    let (center_basis, collider_basis) = (pose.orientation.up().perp_cw(), Vec2::angle(rotation));
                     let form = &slot.forms[slot.active_slot];
                     let offset = if form.scale == Fix::ZERO {
                         data.spike.collider_offset
@@ -38546,14 +38544,10 @@ impl RolloutWorld {
                 let publish = sync_form_row(box_row, flags, planting_engine, entered == engine_e, slot.base.id);
                 if publish {
                     // The form's FixTransform, casting or hidden.
-                    let (position, rotation, center_basis, collider_basis) = if planting_engine
-                        || frozen_pose(engine_e).is_some()
-                    {
-                        let pose = slot.forms[slot.entity_slot(engine_e)].pose;
-                        (pose.position, pose.orientation.rotation(), pose.orientation.up().perp_cw(), Vec2::angle(pose.orientation.rotation()))
-                    } else {
-                        (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
-                    };
+                    let pose = slot.forms[slot.entity_slot(engine_e)].pose;
+                    let position = if planting_engine || frozen_pose(engine_e).is_some() { pose.position } else { exit_position };
+                    let rotation = pose.orientation.rotation();
+                    let (center_basis, collider_basis) = (pose.orientation.up().perp_cw(), Vec2::angle(rotation));
                     let form = &slot.forms[slot.entity_slot(engine_e)];
                     let offset = if form.scale == Fix::ZERO {
                         data.engine.collider_offset
@@ -38581,14 +38575,10 @@ impl RolloutWorld {
                 let publish = sync_form_row(box_row, flags, planting_tesla, entered == tesla_e, slot.base.id);
                 if publish {
                     // The form's FixTransform, casting or hidden.
-                    let (position, rotation, center_basis, collider_basis) = if planting_tesla
-                        || frozen_pose(tesla_e).is_some()
-                    {
-                        let pose = slot.forms[slot.entity_slot(tesla_e)].pose;
-                        (pose.position, pose.orientation.rotation(), pose.orientation.up().perp_cw(), Vec2::angle(pose.orientation.rotation()))
-                    } else {
-                        (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
-                    };
+                    let pose = slot.forms[slot.entity_slot(tesla_e)].pose;
+                    let position = if planting_tesla || frozen_pose(tesla_e).is_some() { pose.position } else { exit_position };
+                    let rotation = pose.orientation.rotation();
+                    let (center_basis, collider_basis) = (pose.orientation.up().perp_cw(), Vec2::angle(rotation));
                     let form = &slot.forms[slot.entity_slot(tesla_e)];
                     let offset = if form.scale == Fix::ZERO {
                         data.tesla.collider_offset
