@@ -3952,7 +3952,6 @@ impl PlayerSlot {
         // nothing over it. ability_exit writes the pose, velocities, ground,
         // grounded, grounded_speed, scale, radius, constants and box again;
         // the refused kill keeps grounded_speed and scale, a kill all of it.
-        self.base.position = form.position; // leak: position
         self.base.scale = form.scale; // leak: scale
         self.base.collider = form.collider; // leak: collider
         self.base.synced = form.synced; // leak: synced
@@ -36831,7 +36830,13 @@ impl RolloutWorld {
             self.players[index].reported_tick = self.tick;
         }
         let slot = &mut self.players[index];
+        // onExitAbility puts the slime at the dead packet's position before
+        // its own killPlayer (SlimeController.cs:213-216).
+        let in_form = slot.active != ActiveAbility::None;
         slot.leave_form(&mut self.entities);
+        if in_form {
+            slot.base.position = drop_position;
+        }
         slot.base.dash.active = false;
         // Teleport's marker reference belongs to the destroyed ability
         // instance. The independent indicator survives, but a replacement
