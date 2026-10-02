@@ -2271,7 +2271,7 @@ impl SlimeMut<'_> {
 
     /// SlimeController.attachToGround from outside the slime's own pass.
     fn attach_to_ground(&mut self) {
-        if self.base.attach_upside_down == Some(true) {
+        if self.base.landed_upside_down == Some(true) {
             *self.facing_right = !*self.facing_right;
         }
         begin_land(self.obs_state, self.state_ticks);
@@ -3424,9 +3424,6 @@ pub struct PlayerSlot {
     /// pass's Player.UpdatePlayer publication. Keep that earlier publication
     /// while the restored SlimeController finishes its same-pass movement.
     pub freeze_form_exit_tick: u32,
-    /// EnterFall after a grounded ragdoll timeout has no new landing callback,
-    /// so its visible state stays Fall until the body detaches.
-    pub ragdoll_grounded_fall: bool,
     /// One live Poke Ball pinning this victim. More than one physics callback
     /// can capture the same slime from a prebuilt manifold set; this points to
     /// a remaining captor when another one pops.
@@ -4276,29 +4273,23 @@ impl PlayerSlot {
         self.base.was_upside_down = false;
     }
 
-    /// SlimeController.EnterFall ends in VelocityBasedRaycasts
-    /// (attachToGroundIfHit), which may land an airborne slime at once
-    /// (SlimeController.cs:263-272).
+    /// SlimeController.EnterFall (SlimeController.cs:263-272): AlignTransformAir,
+    /// State.fall, and VelocityBasedRaycasts (attachToGroundIfHit), which may
+    /// land the slime at once.
     fn enter_fall(&mut self, walls: &mut impl Walls) {
-        self.fall_state();
+        self.align_transform_air();
+        self.obs_state = STATE_FALL;
+        self.state_ticks = 0;
         // The rays' attachToGround callback enters State.land at once and
         // turns a slime set down on a ceiling (SlimeController.cs:270,
-        // 1126-1134), even on a pass whose state switch already ran.
-        if !self.base.grounded && self.base.collision_rays(walls) {
-            if self.base.attach_upside_down == Some(true) {
+        // 1126-1134), even on a pass whose state switch already ran, and even
+        // a slime still attached that the rays meet its ground again.
+        if self.base.collision_rays(walls) {
+            if self.base.landed_upside_down == Some(true) {
                 self.facing_right = !self.facing_right;
             }
             self.begin_land();
         }
-    }
-
-    /// An airborne exit's EnterFall first runs AlignTransformAir.
-    fn fall_state(&mut self) {
-        if !self.base.grounded {
-            self.align_transform_air();
-        }
-        self.obs_state = STATE_FALL;
-        self.state_ticks = 0;
     }
 
     /// EnterFall's AlignTransformAir, against the slime's stale inputVector
@@ -6048,7 +6039,7 @@ impl RolloutWorld {
                     was_upside_down: false,
                     pre_move_up: Vec2::UP,
                     pre_move_grounded: false,
-                    attach_upside_down: None,
+                    landed_upside_down: None,
                     jumped_this_frame: false,
                     // Awake turns it off until Spawn.
                     simulated: false,
@@ -6147,7 +6138,6 @@ impl RolloutWorld {
                 frozen_solid_count: 0,
                 pinned_from: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
-                ragdoll_grounded_fall: false,
                 captured_by_ball: None,
                 poke_invulnerable: false,
                 was_killed_tick: None,
@@ -7311,15 +7301,6 @@ impl RolloutWorld {
         // ground when the stick points into it.
         let pressed = dir;
         let dir = if suppressed { Vec2::ZERO } else { dir };
-        // A timed ragdoll that expired on the ground leaves State.fall on an
-        // attached slime until something attaches it again: a Move that hops
-        // onto another surface fires attachToGround and lands it.
-        if slot.ragdoll_grounded_fall {
-            if slot.base.grounded && slot.base.attach_upside_down.is_none() {
-                return;
-            }
-            slot.ragdoll_grounded_fall = false;
-        }
         if !slot.base.alive
             || slot.respawn_ticks > 0
             || slot.revival_clone_pending
@@ -7481,14 +7462,15 @@ impl RolloutWorld {
             // attachToGround and the land animation are PlayerPhysics/animator
             // callbacks, so they still land and chain on a held tick; only
             // `switch (currentState)` below is what OldUpdate returns before.
-            STATE_FALL => {
+            // State.fall has no case: a slime falls until a landing ray's
+            // OnAttachedToGround this pass runs attachToGround. One attached
+            // without it (a ragdoll that ran out on the ground, a tunnel's
+            // release) stays in State.fall.
+            STATE_FALL => if let Some(upside_down) = base.landed_upside_down {
                 // attachToGround: land animation, then idle.
                 // Landing on a ceiling flips the sprite
-                // (SlimeController.cs:1131-1134). The test is the normal at
-                // the instant the raycast attached, recorded by
-                // `Player::attach`; the end-of-tick `up` has already rotated
-                // away from it on a moving or steeply curved surface.
-                if base.attach_upside_down == Some(true) {
+                // (SlimeController.cs:1131-1134).
+                if upside_down {
                     *facing_right = !*facing_right;
                 }
                 // A landing in PlayerPhysics.UpdateSim precedes OldUpdate, so
@@ -7504,7 +7486,7 @@ impl RolloutWorld {
                 begin_land(obs_state, state_ticks);
                 // This switch is the pass's count off the land.
                 *state_ticks -= 1;
-            }
+            },
             STATE_LAND => {
                 // `case State.land: if (Fix.Abs(fix) >= GROUNDALIGNMENTDEADZONE
                 // || fix2 < 0) flipTrans.alignTransform(fix >= 0)`
@@ -10557,13 +10539,11 @@ impl RolloutWorld {
                     // the sprite in the same callback, so the ability aims
                     // from the flipped facing. The held slime_tail
                     // counts this pass, which the land animation also does.
-                    // A timed ragdoll that expired on the ground left
-                    // State.fall on a slime that stays attached
-                    // (SlimeController.cs:268, 1054-1060), and no attachToGround
-                    // fires to land it.
-                    let resting_fall = slot.ragdoll_grounded_fall && slot.base.grounded;
-                    if slot.base.grounded && slot.obs_state == STATE_FALL && !resting_fall {
-                        if slot.base.attach_upside_down == Some(true) {
+                    if slot.base.grounded
+                        && slot.obs_state == STATE_FALL
+                        && let Some(upside_down) = slot.base.landed_upside_down
+                    {
+                        if upside_down {
                             slot.facing_right = !slot.facing_right;
                         }
                         slot.begin_land();
@@ -10589,12 +10569,12 @@ impl RolloutWorld {
                     if slot.base.grounded && !frozen.grounded {
                         slot.obs_state = STATE_FALL;
                         slot.state_ticks = 0;
-                    } else if slot.obs_state == STATE_FALL && frozen.grounded && !resting_fall {
+                    } else if slot.obs_state == STATE_FALL && frozen.grounded && frozen.landed_upside_down.is_some() {
                         // Move runs after OldUpdate's EnterAbility built
                         // PlayerInfo (SlimeController.cs:672, 1068, 1084), so
                         // its attachToGround flips the slime's sprite after
                         // the cast read the facing (:1131-1134).
-                        landing_flip = frozen.attach_upside_down == Some(true);
+                        landing_flip = frozen.landed_upside_down == Some(true);
                         slot.begin_land();
                     }
                     // EnterAbilityClearRope leaves the slime's PlayerBody
@@ -10603,10 +10583,6 @@ impl RolloutWorld {
                         slot.invisible_at_form_entry = owner_invisible;
                         slot.ability_entered = true;
                         slot.rope_prev[0] = (slot.base.velocity, slot.base.external_velocity);
-                        // onExitAbility always sets a fresh state
-                        // (SlimeController.cs:227-250), so the ragdoll's
-                        // grounded fall ends with the form.
-                        slot.ragdoll_grounded_fall = false;
                     }
                     // SlimeController still writes Player.Scale to its hurtbox
                     // after OldUpdate on the pass it enters an ability. An
@@ -12287,7 +12263,7 @@ impl RolloutWorld {
             // restored slime's air Move reaches the Bow's former surface, and
             // turns a slime set down on a ceiling (SlimeController.cs:1126-1134).
             let slot = &mut self.players[index];
-            if slot.base.attach_upside_down == Some(true) {
+            if slot.base.landed_upside_down == Some(true) {
                 slot.facing_right = !slot.facing_right;
             }
             slot.begin_land();
@@ -13883,7 +13859,6 @@ impl RolloutWorld {
                 // (SlimeController.cs:956) over any ragdoll taken during the
                 // playback.
                 UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, false);
-                slot.ragdoll_grounded_fall = false;
                 // FinishRewind overwrites the cooldowns outright and adds
                 // nothing (RewindRecorder.cs:325-333). SlimeController already
                 // advanced them earlier in this same pass: on Player.prefab
@@ -21082,7 +21057,6 @@ impl RolloutWorld {
         slot.magnet_holder = None;
         slot.frozen_solid_count = 0;
         slot.freeze_form_exit_tick = u32::MAX;
-        slot.ragdoll_grounded_fall = false;
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
         slot.captured_by_ball = None;
@@ -21580,7 +21554,6 @@ impl RolloutWorld {
         slot.magnet_holder = None;
         slot.frozen_solid_count = 0;
         slot.freeze_form_exit_tick = u32::MAX;
-        slot.ragdoll_grounded_fall = false;
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
         slot.captured_by_ball = None;
@@ -26460,7 +26433,7 @@ impl RolloutWorld {
             was_upside_down: false,
             pre_move_up: Vec2::UP,
             pre_move_grounded: false,
-            attach_upside_down: None,
+            landed_upside_down: None,
             jumped_this_frame: false,
             // ShootDuplicator's ReSpawn then Spawn leave the clone simulated.
             simulated: true,
@@ -29388,13 +29361,7 @@ impl RolloutWorld {
             RagdollPass::Ragdolled => {}
             RagdollPass::Landed => return false,
             RagdollPass::FellOut => {
-                if slot.base.grounded {
-                    // This EnterFall re-aims even on the ground.
-                    slot.align_transform_air();
-                }
-                let grounded = slot.base.grounded;
                 self.slot_physics(index, |slot, world| slot.enter_fall(world));
-                self.players[index].ragdoll_grounded_fall = grounded;
                 return false;
             }
         }
@@ -33267,8 +33234,6 @@ impl RolloutWorld {
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
         let speed = Vec2::new(item.body.velocity.x / Fix::from_int(3), data.poke_ball.pop_up_speed);
         clone.slime_mut().apply_ragdoll(Fix::from_f32(0.45), speed);
-        clone.base.grounded = false;
-        clone.base.ground = None;
         clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         self.players[owner].invisible = false;
         // The eject writes the transform's position and ApplyRagDoll its
@@ -35280,12 +35245,11 @@ impl RolloutWorld {
                 RagdollPass::Ragdolled => ragdolled = true,
                 RagdollPass::Landed => {}
                 RagdollPass::FellOut => {
-                    // EnterFall (SlimeController.cs:263-272).
+                    // EnterFall (SlimeController.cs:263-272). Its rays'
+                    // landing is the state switch's to take.
                     clone.obs_state = STATE_FALL;
                     clone.state_ticks = 0;
-                    if !clone.base.grounded {
-                        self.clone_physics(clone_index, |clone, walls| clone.base.collision_rays(walls));
-                    }
+                    self.clone_physics(clone_index, |clone, walls| clone.base.collision_rays(walls));
                 }
             }
         }

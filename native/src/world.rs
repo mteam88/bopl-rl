@@ -145,12 +145,14 @@ pub struct Player {
     pub(crate) pre_move_up: Vec2,
     #[serde(default)]
     pub(crate) pre_move_grounded: bool,
-    /// `attachToGround` flips the sprite from the normal at the instant of
-    /// attachment (SlimeController.cs:1126-1134). That normal is not the
-    /// end-of-tick `up`: on a steep or rotating surface the two differ by a
-    /// whole tick of surface rotation. `None` when nothing attached this pass.
+    /// PlayerPhysics.OnAttachedToGround since this body's pass began: a
+    /// landing ray's CollideWithGround (PlayerPhysics.cs:471-478), which a
+    /// direct AttachToGround does not raise. `attachToGround` flips the
+    /// sprite from the normal at that instant (SlimeController.cs:1126-1134),
+    /// not the end-of-tick `up`: on a steep or rotating surface the two
+    /// differ by a whole tick of surface rotation.
     #[serde(default)]
-    pub(crate) attach_upside_down: Option<bool>,
+    pub(crate) landed_upside_down: Option<bool>,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -771,14 +773,6 @@ impl Player {
             .attach(platform.id, &platform.surface, position)
             .expect("valid attachment");
         self.apply_ground_state(motion);
-        // SlimeController subscribes attachToGround to OnAttachedToGround
-        // (SlimeController.cs:472) and reads `attachedGround.currentNormal(body)`
-        // inside that callback (SlimeController.cs:1131). PlayerPhysics has
-        // already snapped the body onto the surface by then
-        // (player_physics.rs attaches before it notifies), so the normal it
-        // sees is the post-attach one - exactly the `up` just stored, and not
-        // the normal at the raw raycast point nor the end-of-tick one.
-        self.attach_upside_down = Some(self.up().y < Fix::ZERO);
     }
     /// VelocityBasedRaycasts over FixedDeltaTime. Returns whether a ray hit
     /// and attached the body.
@@ -802,6 +796,12 @@ impl Player {
             },
         ) {
             self.attach(&walls.platforms()[index], position);
+            // CollideWithGround raises OnAttachedToGround after
+            // AttachToGround, so attachToGround reads
+            // `attachedGround.currentNormal(body)` (SlimeController.cs:1131)
+            // at the post-attach pose: the `up` just stored, not the normal
+            // at the raw ray point nor the end-of-tick one.
+            self.landed_upside_down = Some(self.up().y < Fix::ZERO);
             return true;
         }
         false
@@ -995,10 +995,10 @@ impl Player {
         self.move_unintegrated(action, input, walls, dash_inverse_extents)
     }
     /// Start of this body's updater pass, before PlayerPhysics.UpdateSim.
-    /// `attach_upside_down` records whichever of this pass's two raycast
+    /// `landed_upside_down` records whichever of this pass's two raycast
     /// phases fires attachToGround, so it has to be cleared ahead of both.
     pub(crate) fn begin_pass(&mut self) {
-        self.attach_upside_down = None;
+        self.landed_upside_down = None;
     }
     /// The boundary between PlayerPhysics.UpdateSim and SlimeController's
     /// OldUpdate. Everything OldUpdate reads about the ground is sampled here,
