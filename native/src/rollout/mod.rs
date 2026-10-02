@@ -3973,7 +3973,6 @@ impl PlayerSlot {
             self.base.ground = form.ground; // leak: ground
             self.base.local = form.local; // leak: local
         }
-        self.base.radius = form.radius; // leak: radius
         self.base.scale = form.scale; // leak: scale
         self.base.grounded_speed = form.grounded_speed; // leak: grounded_speed
         self.base.collider = form.collider; // leak: collider
@@ -13699,10 +13698,7 @@ impl RolloutWorld {
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
-        // The slime's own radius, which the form's would leak over.
-        let radius = slot.slime.radius;
         slot.leave_form(&mut self.entities, woken);
-        slot.base.radius = radius;
     }
 
     /// SuperStarEffect.UpdateSim for player `index`'s effect in
