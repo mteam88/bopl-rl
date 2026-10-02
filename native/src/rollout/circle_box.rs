@@ -1308,7 +1308,7 @@ impl RolloutWorld {
             self.slime_collide(slime, prey, lower);
         }
         match receiver {
-            Part::Hole(hole) => self.black_hole_on_collide(hole, other, data),
+            Part::Hole(hole) => self.black_hole_on_collide(hole, other, route, data),
             Part::Item(item) => {
                 let layer = self.part_layer(other, data);
                 let state = self.thrown_items[item];
@@ -1600,7 +1600,7 @@ impl RolloutWorld {
     /// the collider's inverse mass when it runs, a composite child's being
     /// its CompositeBody's, and a Rock form's its BounceBall body's
     /// (BlackHole.cs:445-458).
-    pub(super) fn black_hole_on_collide(&mut self, hole: usize, other: Part, data: &data::RolloutData) {
+    pub(super) fn black_hole_on_collide(&mut self, hole: usize, other: Part, route: KillRoute, data: &data::RolloutData) {
         let (target, inverse_mass) = match other {
             Part::Arrow(i) => (HoleTarget::Arrow(i), self.arrows[i].inverse_mass),
             Part::Pickup(i) => (HoleTarget::Pickup(i), self.ability_pickups[i].body.inverse_mass),
@@ -1631,6 +1631,6 @@ impl RolloutWorld {
             Part::Cloud(i) => (HoleTarget::Cloud(i), self.smoke_clouds[i].body.inverse_mass),
             Part::Hook(_) | Part::Line(_) | Part::Explosion(_) | Part::Water => return,
         };
-        self.black_hole_collide(hole, target, inverse_mass, data);
+        self.black_hole_collide(hole, target, inverse_mass, route, data);
     }
 }

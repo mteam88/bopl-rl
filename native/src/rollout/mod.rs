@@ -4396,7 +4396,6 @@ struct KillRoute {
 
 impl KillRoute {
     const UPDATER: Self = Self { phase: PassPhase::Updater, on_collide: false };
-    const CALLBACK: Self = Self { phase: PassPhase::Callback, on_collide: false };
     const ON_COLLIDE: Self = Self { phase: PassPhase::Callback, on_collide: true };
     const UPDATER_ON_COLLIDE: Self = Self { phase: PassPhase::Updater, on_collide: true };
 
@@ -16826,8 +16825,12 @@ impl RolloutWorld {
         hole_index: usize,
         target: HoleTarget,
         inverse_mass: Fix,
+        route: KillRoute,
         data: &data::RolloutData,
     ) {
+        // BlackHole.OnCollide calls killPlayer itself, in whatever phase its
+        // OnCollide runs.
+        let kill_route = KillRoute { on_collide: false, ..route };
         let hole = self.black_holes[hole_index];
         if hole.mass < Fix::ZERO {
             return;
@@ -16865,17 +16868,17 @@ impl RolloutWorld {
                 // wasKilledThisFrame, so a slime an earlier callback destroyed
                 // this pass dies again (BlackHole.cs:497).
                 if self.player_collision_active(index, slime) {
-                    self.kill_with(index, killer, CAUSE_OTHER, KillRoute::CALLBACK, false, false, true);
+                    self.kill_with(index, killer, CAUSE_OTHER, kill_route, false, false, true);
                 }
             }
             HoleTarget::Clone(index) => {
                 grow(self, Fix::ZERO);
                 let clone = &self.abilityless_clones[index];
                 let (entity, alive) = (clone.entity, clone.active);
-                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, KillRoute::CALLBACK, false);
+                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, kill_route, false);
                 // A callback casualty stays visible as destroyed until the
                 // next pass's DetPhysics.Simulate drops it.
-                if let Some(entity) = entity.filter(|_| alive) {
+                if let Some(entity) = entity.filter(|_| alive && route.callback()) {
                     let row = &mut self.entities[entity];
                     row.flags = E_DESTROYED | E_TRIGGER | (row.flags & E_FIX_DESTROYED);
                     row.owner = 0;
@@ -22201,6 +22204,7 @@ impl RolloutWorld {
                 | (1 << 26);
             let data = data::get();
             let own = Self::hurtbox_entity(&self.players[index]);
+            let dasher_form = self.players[index].active;
             self.raycast_all(origin, direction, Fix::from_int(13), DASH_MASK, own, data);
 
             // The first wall ends performDash's walk; every hit before it
@@ -22208,110 +22212,55 @@ impl RolloutWorld {
             for hit_index in 0..self.scratch.ray_hits.len() {
                 let hit = self.scratch.ray_hits[hit_index];
                 let row = self.entities[hit.index];
-                let player = (row.layer == LAYER_PLAYER)
-                    .then(|| self.players.iter().position(|slot| Self::hurtbox_entity(slot) == hit.index));
-                match player {
-                    _ if row.layer == LAYER_WALL => break,
-                    Some(None) => continue,
-                    Some(Some(target)) => {
-                        let player = &self.players[target].base;
-                        if !player.alive
-                            || player.dash.active
-                            || (self.players[target].active == ActiveAbility::Platform
-                                && self.players[target].platform.phase != PLATFORM_ANTICIPATION)
+                if row.layer == LAYER_WALL {
+                    break;
+                }
+                let target = if row.layer == LAYER_PLAYER {
+                    self.players.iter().position(|slot| Self::hurtbox_entity(slot) == hit.index)
+                } else {
+                    None
+                };
+                if let Some(target) = target {
+                    let player = &self.players[target].base;
+                    if !player.alive
+                        || player.dash.active
+                        || (self.players[target].active == ActiveAbility::Platform
+                            && self.players[target].platform.phase != PLATFORM_ANTICIPATION)
+                        || !self.hittable(target)
+                    {
+                        continue;
+                    }
+                }
+                // The hit's collisionCallback.OnCollide with the Dash hitbox
+                // at nearPos, before the body moves (Dash.cs:150-163). A
+                // positive BlackHole hands the Dash its dead exit where the
+                // dash began, and the walk has nothing left to move.
+                let near = origin + direction * hit.distance;
+                if let Some(part) = self.hit_part(hit.index) {
+                    let contact = Contact { point: near, normal: (near - origin).normalized_safe(), penetration: Fix::ONE };
+                    self.on_collide(part, Part::Body(index), Some(own), contact, KillRoute::UPDATER_ON_COLLIDE, data);
+                    if self.players[index].active != dasher_form || !self.players[index].base.alive {
+                        return;
+                    }
+                }
+                // The Dash's own KillPlayerOnCollision, from nearPos
+                // (Dash.cs:164-178): a Player-layer collider kills only as a
+                // KillPlayersOnContact Ability, and a RigidBodyAffector never.
+                match target {
+                    Some(target) => {
+                        if self.players[target].active == ActiveAbility::Rock
+                            || self.players[target].kills_on_contact(hit.index)
                         {
-                            continue;
-                        }
-                        if !self.hittable(target) {
-                            continue;
-                        }
-                        if self.players[target].active == ActiveAbility::Rock {
-                            // PhysicsParent callback precedes the caster's
-                            // PlayerCollision callback. Its normal is
-                            // NormalizedSafe(nearPos - body.position), with
-                            // nearPos = origin + nearDist * dir.
-                            let normal = (direction * hit.distance).normalized_safe();
-                            let layer = self.entities[Self::hurtbox_entity(&self.players[index])].layer;
-                            self.rock_on_collide(target, normal, layer);
                             let slot = &mut self.players[index];
-                            slot.base.position = origin + direction * hit.distance;
-                            slot.reported_position = slot.base.position;
-                            self.kill(
-                                index,
-                                self.players[target].base.id,
-                                CAUSE_OTHER,
-                                false,
-                                true,
-                            );
+                            slot.base.position = near;
+                            slot.reported_position = near;
+                            self.kill(index, self.players[target].base.id, CAUSE_OTHER, false, true);
                             return;
-                        }
-                        if self.players[target].active == ActiveAbility::Roll
-                            && self.players[target].roll.lethal
-                        {
-                            let slot = &mut self.players[index];
-                            slot.base.position = origin + direction * hit.distance;
-                            slot.reported_position = slot.base.position;
-                            self.kill(
-                                index,
-                                self.players[target].base.id,
-                                CAUSE_OTHER,
-                                false,
-                                true,
-                            );
-                            return;
-                        }
-                        if self.players[target].active == ActiveAbility::None {
-                            self.players[target].base.push_from(origin, target < index);
                         }
                     }
+                    None if matches!(row.layer, LAYER_PLAYER | LAYER_RIGID_BODY_AFFECTOR) => {}
                     None => {
                         let entity = hit.index;
-
-                        // RigidBodyAffector is not itself lethal in
-                        // PlayerCollision. Positive BlackHole consumes the
-                        // swept Dash body in its own callback and grows from
-                        // the ability body's infinite-mass sentinel.
-                        if row.layer == 23 {
-                            if let Some(hole_index) = self.black_holes.iter().position(|hole| {
-                                hole.active && hole.entity == Some(entity) && hole.mass >= Fix::ZERO
-                            }) {
-                                let killer = self.black_holes[hole_index].killer(&self.players);
-                                Self::black_hole_grow(
-                                    &mut self.black_holes[hole_index],
-                                    -Fix::ONE,
-                                    Fix::ZERO,
-                                    data,
-                                );
-                                // performDash calls the hole's OnCollide before it
-                                // moves the body to the hit (Dash.cs), so the hole
-                                // exits the form where the dash began.
-                                let slot = &mut self.players[index];
-                                slot.base.position = origin;
-                                slot.reported_position = origin;
-                                self.kill(index, killer, CAUSE_OTHER, false, false);
-                                return;
-                            }
-                            continue;
-                        }
-
-                        // The hit's own OnCollide with the Dash hitbox comes
-                        // before KillPlayerOnCollision (Dash.cs:157-178): a
-                        // young SpikeAttack knocks the box and pushes itself
-                        // back (SpikeAttack.cs:116-141).
-                        if let Some(spike) = self
-                            .spike_attacks
-                            .iter()
-                            .position(|spike| spike.active && spike.entity == Some(entity))
-                            && self.spike_attacks[spike].time < data.spike.push_time
-                            && self.player_time_scale >= Fix::from_f32(0.01)
-                        {
-                            let knock = CallbackHit::SpikeShove {
-                                spike,
-                                target: Part::Body(index),
-                                point: origin + direction * hit.distance,
-                            };
-                            self.run_callback_hit(knock, KillRoute::UPDATER_ON_COLLIDE, data);
-                        }
                         let mut killer = row.owner;
                         let mut can_hurt_owner = matches!(row.layer, 16 | 18);
                         let mut cause = CAUSE_OTHER;
@@ -34035,7 +33984,7 @@ impl RolloutWorld {
             }
             CallbackHit::Squish { slime, wall, collider } => self.squish(slime, wall, collider),
             CallbackHit::BlackHole { hole, target, inverse_mass } => {
-                self.black_hole_collide(hole, target, inverse_mass, data);
+                self.black_hole_collide(hole, target, inverse_mass, route, data);
             }
             CallbackHit::SpikeWallKnock { spike, wall, point, wall_layer } => {
                 if self.player_time_scale < Fix::from_f32(0.01)
