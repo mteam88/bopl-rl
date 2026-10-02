@@ -4534,6 +4534,9 @@ struct PlatformScratch {
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
+    /// The rectangles one rope's sweep lists, before its 32 slots take the
+    /// first of them in sweep order.
+    rope_rects: Vec<usize>,
     duplicate_shake_order: Vec<(u32, u8, usize)>,
     duplicate_shake_offsets: Vec<(u8, usize, Vec2)>,
     /// Objects awaiting their Init: (hierarchy base, kind, index into its
@@ -4575,6 +4578,7 @@ impl PlatformScratch {
             wave_order: Vec::with_capacity(16),
             callback_hits: Vec::with_capacity(16),
             ray_hits: Vec::with_capacity(192),
+            rope_rects: Vec::with_capacity(64),
             duplicate_shake_order: Vec::with_capacity(64),
             duplicate_shake_offsets: Vec::with_capacity(64),
             ..PlatformScratch::default()

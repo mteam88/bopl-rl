@@ -1704,11 +1704,12 @@ impl RolloutWorld {
         // rectangles alone spread widest, so a rope lists its rectangles by
         // bounding-box minimum on that axis, then by index.
         let sweep_x = self.sweep_axes().1;
+        let mut listed = std::mem::take(&mut self.scratch.rope_rects);
         for rope in &mut self.ropes {
             if !rope.physics.enabled {
                 continue;
             }
-            rope.physics.collision_count = 0;
+            listed.clear();
             let bounds = rope.physics.bounds();
             for (platform, rectangle) in self.rope_rectangles.iter().enumerate() {
                 if !self.platforms[platform].active {
@@ -1729,21 +1730,19 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                if rope.physics.collision_count == MAX_CONTACTS {
-                    break;
-                }
-                let at = rope.physics.collision_count;
-                rope.physics.colliding_rects[at] = platform;
-                rope.physics.collision_count += 1;
+                listed.push(platform);
             }
+            // The sweep lists them in its sorted order and the rope's 32
+            // slots keep the first (DetPhysics.cs:2329, 2340).
             let rectangles = &self.rope_rectangles;
             let minimum = |index: usize| {
                 let rb = rectangles[index].bounds();
                 if sweep_x { rb.min.x } else { rb.min.y }
             };
-            rope.physics.colliding_rects[..rope.physics.collision_count].sort_unstable_by(|&a, &b| {
-                minimum(a).partial_cmp(&minimum(b)).unwrap().then(a.cmp(&b))
-            });
+            listed.sort_unstable_by(|&a, &b| minimum(a).partial_cmp(&minimum(b)).unwrap().then(a.cmp(&b)));
+            listed.truncate(MAX_CONTACTS);
+            rope.physics.collision_count = listed.len();
+            rope.physics.colliding_rects[..listed.len()].copy_from_slice(&listed);
             rope.physics.step(
                 RopeConfig {
                     dt: physics_dt,
@@ -1755,6 +1754,7 @@ impl RolloutWorld {
                 &self.rope_rectangles,
             );
         }
+        self.scratch.rope_rects = listed;
     }
 
     /// RopeHook.OnCollide's AttachToPlatform, on the platform pose DetPhysics
