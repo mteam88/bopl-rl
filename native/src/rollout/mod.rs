@@ -29981,10 +29981,9 @@ impl RolloutWorld {
         }
         dynamics.composite_position = position;
         dynamics.home_position = position;
-        // Instantiate leaves the private `initialized` false, so the copy's
-        // Init runs Initialize, which clears isBeingControlled
-        // (AnimateVelocity.cs:74-93).
-        dynamics.being_controlled = false;
+        // Instantiate copies the public isBeingControlled and leaves the
+        // private `initialized` false, so the copy is controlled like its
+        // source until its Init clears it next pass (AnimateVelocity.cs:74-93).
         // DuplicatePlatformEffect writes the source's rotation from when the
         // ray hit into the copy's FixTransform, where AnimateVelocity.Init
         // homes it next pass.
@@ -34522,15 +34521,17 @@ impl RolloutWorld {
 
     /// AnimateVelocity.Init for each platform body Updater appends this pass,
     /// before any UpdateSim can move it: the spring homes on the position the
-    /// spawn pass left and clears inSuddenDeath, so an in-progress sudden
-    /// death is re-activated with a fresh delay and sinks the new home on
-    /// this pass (AnimateVelocity.cs:74-93, 126-137; Updater.cs:264-287).
+    /// spawn pass left and clears isBeingControlled and inSuddenDeath, so an
+    /// in-progress sudden death is re-activated with a fresh delay and sinks
+    /// the new home on this pass (AnimateVelocity.cs:74-93, 126-137;
+    /// Updater.cs:264-287).
     fn init_appended_springs(&mut self) {
         for i in 0..self.platforms.len() {
             let dynamics = &mut self.platform_dynamics[i];
             if dynamics.init_tick == Some(self.tick) {
                 dynamics.init_tick = None;
                 dynamics.home_position = self.platforms[i].surface.center;
+                dynamics.being_controlled = false;
                 dynamics.sudden_death_delay = None;
             }
         }
