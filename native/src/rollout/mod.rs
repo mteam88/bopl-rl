@@ -9574,14 +9574,18 @@ impl RolloutWorld {
                 continue;
             }
             let endpoint = self.portals[endpoint_index];
-            // FindObjectsOfType<SlimeController>: the players' slimes, then
-            // the ability-less Duplicator clones. A clone shares its owner's
-            // player-id hysteresis bit, as the source's fixed
+            // FindObjectsOfType<SlimeController> (the shim's InstanceID
+            // order, newest runtime object first) covers the players' slimes
+            // and the ability-less Duplicator clones alike. A clone shares
+            // its owner's player-id hysteresis bit, as the source's fixed
             // `playerWasInside[8]` array does.
-            let slimes = (0..self.players.len())
-                .map(Slime::Player)
-                .chain((0..self.abilityless_clones.len()).map(Slime::Clone));
-            for slime in slimes {
+            let row = |entity: Option<usize>| entity.and_then(|e| self.entities.get(e)).map_or(0, |row| row.hierarchy);
+            let mut slimes: Vec<(u32, Slime)> = (0..self.players.len())
+                .map(|index| (row(Some(self.players[index].body_entity)), Slime::Player(index)))
+                .chain(self.abilityless_clones.iter().enumerate().map(|(index, clone)| (row(clone.entity), Slime::Clone(index))))
+                .collect();
+            slimes.sort_by_key(|&(hierarchy, _)| std::cmp::Reverse(hierarchy));
+            for (_, slime) in slimes {
                 if !self.portal_finds(slime) {
                     continue;
                 }
