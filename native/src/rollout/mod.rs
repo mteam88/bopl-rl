@@ -4350,7 +4350,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 40)
+    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 40 | 41)
 }
 
 /// The place just after `key`.
@@ -7907,10 +7907,9 @@ impl RolloutWorld {
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
         self.macho_boulders_remove_drowned();
         self.shockwaves_update(data, 0..deferred_to);
-        self.revival_marker_bodies_tick();
         self.revival_effects_tick(data);
         self.teleport_effects_tick(data, updater_dt);
-        self.teleport_pending_tick(data, updater_dt, u32::MAX);
+        self.teleport_pending_tick(data, updater_dt);
         self.blink_tunnels_tick(data, updater_dt);
         self.blink_platform_tunnels_tick(data, updater_dt, None);
         self.blink_object_tunnels_tick(data, updater_dt, None);
@@ -7949,7 +7948,7 @@ impl RolloutWorld {
         self.thrown_items_integrate(data, updater_dt, physics_dt);
         self.portal_shots_integrate(physics_dt);
         self.smoke_clouds_integrate(physics_dt);
-        self.revival_markers_integrate(physics_dt, data.maps[self.map].is_space());
+        self.revival_markers_integrate(physics_dt);
         self.teleport_markers_integrate(physics_dt);
         self.rocks_integrate(physics_dt);
         self.duplicated_rocks_integrate(physics_dt, data);
@@ -8527,9 +8526,9 @@ impl RolloutWorld {
                 push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 11, i);
             }
         }
-        for (owner, slot) in self.players.iter().enumerate() {
-            if let Some(marker) = slot.teleport_pending_marker {
-                push(self.updater_key(self.teleport_marker_pool[marker].appended, 100_000_000 + self.teleport_marker_pool[marker].hierarchy_base), 12, owner);
+        for (i, marker) in self.teleport_marker_pool.iter().enumerate() {
+            if marker.active && marker.registered {
+                push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 12, i);
             }
         }
         for (i, state) in self.platform_dynamics.iter().enumerate() {
@@ -8602,6 +8601,11 @@ impl RolloutWorld {
                 push(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base), 19, i);
             }
         }
+        for (i, marker) in self.revival_marker_pool.iter().enumerate() {
+            if marker.active && marker.registered {
+                push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 41, i);
+            }
+        }
         queue.sort_unstable();
         for &(key, kind, index) in &queue {
             // A turn an earlier updatable's own walk already passed is not
@@ -8632,7 +8636,7 @@ impl RolloutWorld {
                     updater_dt,
                     Some(hierarchy - 99_999_999),
                 ),
-                12 => self.teleport_pending_tick(data, updater_dt, hierarchy - 99_999_999),
+                12 => self.teleport_marker_turn(index, data, updater_dt),
                 13 => self.blink_platform_tunnels_tick(
                     data,
                     updater_dt,
@@ -8654,10 +8658,8 @@ impl RolloutWorld {
                 31 => self.arrow_turn(index, data, updater_dt),
                 32 => self.frozen_solid_step(index, updater_dt),
                 40 => self.portal_shot_step(index, data, updater_dt),
-                19 => {
-                    let being_held = self.guided_missiles[index].hold.held();
-                    self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
-                }
+                19 => self.guided_missile_turn(index, DT * self.player_time_scale, data),
+                41 => self.revival_marker_turn(index, data.maps[self.map].is_space()),
                 _ => unreachable!(),
             }
             // Updater never returns to a turn it has passed: one skipped here,
@@ -8807,41 +8809,37 @@ impl RolloutWorld {
         }
     }
 
-    fn revival_markers_integrate(&mut self, physics_dt: Fix, space: bool) {
+    fn revival_markers_integrate(&mut self, physics_dt: Fix) {
         for marker in &mut self.revival_marker_pool {
             if !marker.active || !marker.registered {
                 continue;
             }
-            // RevivePositionIndicator.UpdateSim keeps the marker inside the
-            // camera bounds and, off a space level, above SceneBounds.WaterHeight.
-            marker.position = clamp_revival_position(marker.position);
-            if !space {
-                marker.position.y = marker.position.y.max(Fix::from_f32(-11.3));
-            }
-            marker.hold.update_sim();
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
     }
 
-    /// BoplBody.UpdateSim on a Revival marker: once a ray has rescaled the
-    /// transform, the mass and inertia follow by prevScale / Scale
-    /// (BoplBody.cs:332-344).
-    fn revival_marker_bodies_tick(&mut self) {
-        for marker in &mut self.revival_marker_pool {
-            if !marker.active
-                || !marker.registered
-                || marker.body_prev_scale == Fix::ZERO
-                || marker.body_prev_scale == marker.scale
-            {
-                continue;
-            }
-            let ratio = marker.body_prev_scale / marker.scale;
-            marker.body.inverse_mass = marker.body.inverse_mass * ratio;
-            marker.body.inverse_inertia = marker.body.inverse_inertia * ratio;
-            marker.body_prev_scale = marker.scale;
-            if let Some(entity) = marker.entity {
-                self.entities[entity].inverse_mass = marker.body.inverse_mass.raw();
-            }
+    /// A Revival marker's turn in Updater's walk (RevivePositionIndicator.prefab
+    /// hierarchy 1-2): RevivePositionIndicator.UpdateSim keeps it inside the
+    /// camera bounds and, off a space level, above SceneBounds.WaterHeight
+    /// (RevivePositionIndicator.cs:55-65); then its BoplBody counts the hold
+    /// down and, once a ray has rescaled the transform, has the mass and
+    /// inertia follow by prevScale / Scale (BoplBody.cs:325-344).
+    fn revival_marker_turn(&mut self, index: usize, space: bool) {
+        let marker = &mut self.revival_marker_pool[index];
+        marker.position = clamp_revival_position(marker.position);
+        if !space {
+            marker.position.y = marker.position.y.max(Fix::from_f32(-11.3));
+        }
+        marker.hold.update_sim();
+        if marker.body_prev_scale == Fix::ZERO || marker.body_prev_scale == marker.scale {
+            return;
+        }
+        let ratio = marker.body_prev_scale / marker.scale;
+        marker.body.inverse_mass = marker.body.inverse_mass * ratio;
+        marker.body.inverse_inertia = marker.body.inverse_inertia * ratio;
+        marker.body_prev_scale = marker.scale;
+        if let Some(entity) = marker.entity {
+            self.entities[entity].inverse_mass = marker.body.inverse_mass.raw();
         }
     }
 
@@ -8850,7 +8848,6 @@ impl RolloutWorld {
             if !marker.active || !marker.registered {
                 continue;
             }
-            marker.hold.update_sim();
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
     }
@@ -20520,101 +20517,110 @@ impl RolloutWorld {
         self.begin_teleport_object_effect(entity, marker_hierarchy, data);
     }
 
-    /// Fires the pending TeleportIndicators registered below `older_than`.
-    fn teleport_pending_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        older_than: u32,
-    ) {
+    /// Fires every pending TeleportIndicator, each after the updatables
+    /// listed before it.
+    fn teleport_pending_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for owner in 0..self.players.len() {
             let Some(marker_index) = self.players[owner].teleport_pending_marker else {
                 continue;
             };
-            if self.teleport_marker_pool[marker_index].hierarchy_base >= older_than {
-                continue;
-            }
-            self.players[owner].teleport_pending_marker = None;
             let marker = self.teleport_marker_pool[marker_index];
             if !marker.active {
+                self.players[owner].teleport_pending_marker = None;
                 continue;
             }
             // The older updatables have taken their turns: a burning smoke
             // cloud has detonated, and instantiated its explosion, first.
             let key = self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base);
             self.run_spawned_before(data, updater_dt, key);
-            let from = self.players[owner].teleport_pending_position;
-            let diff = marker.position - from;
-            let player_query = Circle {
-                center: from,
-                radius: data.teleport.player_radius * self.players[owner].player_scale,
-            };
-            let marker_query = Circle {
-                center: marker.position,
-                radius: data.teleport.marker_teleport_radius * marker.scale,
-            };
-            let mut player_hits = [usize::MAX; 100];
-            let mut marker_hits = [usize::MAX; 100];
-            let player_count = self.circle_cast_all(
-                player_query,
-                data.teleport.teleportable_mask,
-                |_, _| false,
-                &mut player_hits,
-            );
-            let marker_count = self.circle_cast_all(
-                marker_query,
-                data.teleport.teleportable_mask,
-                |_, _| false,
-                &mut marker_hits,
-            );
-            // TeleportIndicator.UpdateSim teleports at the marker's place in
-            // the hierarchy: an older item has already had its updaters this
-            // pass (a settled Tack's pin, Mjolnir's recall), and the teleport
-            // then hides it.
-            for (hit, &entity) in
-                player_hits[..player_count].iter().chain(&marker_hits[..marker_count]).enumerate()
-            {
-                if hit >= player_count && player_hits[..player_count].contains(&entity) {
-                    continue;
-                }
-                if let Some(item_index) = self.thrown_items.iter().position(|item| {
-                    item.active
-                        && item.entity == Some(entity)
-                        && item.hierarchy_base < marker.hierarchy_base
-                }) && self.entities[entity].flags & E_ACTIVE != 0
-                    && !self.teleport_skips_entity(entity)
-                    && !self.blink_object_hidden(Some(entity))
-                {
-                    if self.take_updater_turn(item_index, data, updater_dt) {
-                        self.thrown_item_turn(item_index, data, updater_dt);
-                    }
-                    let item = &mut self.thrown_items[item_index];
-                    if item.active && item.pending_gust_impulse != Vec2::ZERO {
-                        item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
-                        item.pending_gust_impulse = Vec2::ZERO;
-                    }
-                }
-            }
-            for &entity in &player_hits[..player_count] {
-                self.teleport_entity(entity, diff, marker.hierarchy_base, data);
-            }
-            for &entity in &marker_hits[..marker_count] {
-                if !player_hits[..player_count].contains(&entity) {
-                    self.teleport_entity(entity, -diff, marker.hierarchy_base, data);
-                }
-            }
-            // DestroyFix on the indicator, its body, its hurtbox and its
-            // FixTransform: all of INDICATOR_portal's updatables
-            // (TeleportIndicator.cs:176-182).
-            let marker = &mut self.teleport_marker_pool[marker_index];
-            marker.active = false;
-            marker.registered = false;
-            if let Some(entity) = marker.entity {
-                self.entities[entity].flags = E_REMOVED;
-            }
-            let (owner, entity) = (marker.hierarchy_base, marker.entity);
-            self.destroy_fix(owner, None, entity);
+            self.teleport_marker_turn(marker_index, data, updater_dt);
         }
+    }
+
+    /// INDICATOR_portal's turn in Updater's walk. TeleportIndicator.UpdateSim
+    /// teleports when its owner cast it this pass and DestroyFixes the whole
+    /// prefab, so its BoplBody takes no turn (TeleportIndicator.cs:173-187).
+    /// Otherwise the BoplBody, hierarchy 2, counts the hold down; a ray only
+    /// calls AddScale, so its Scale and mass never change (BoplBody.cs:325-344).
+    fn teleport_marker_turn(&mut self, marker_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        let marker = self.teleport_marker_pool[marker_index];
+        let owner = marker.owner;
+        if self.players[owner].teleport_pending_marker != Some(marker_index) {
+            self.teleport_marker_pool[marker_index].hold.update_sim();
+            return;
+        }
+        self.players[owner].teleport_pending_marker = None;
+        let from = self.players[owner].teleport_pending_position;
+        let diff = marker.position - from;
+        let player_query = Circle {
+            center: from,
+            radius: data.teleport.player_radius * self.players[owner].player_scale,
+        };
+        let marker_query = Circle {
+            center: marker.position,
+            radius: data.teleport.marker_teleport_radius * marker.scale,
+        };
+        let mut player_hits = [usize::MAX; 100];
+        let mut marker_hits = [usize::MAX; 100];
+        let player_count = self.circle_cast_all(
+            player_query,
+            data.teleport.teleportable_mask,
+            |_, _| false,
+            &mut player_hits,
+        );
+        let marker_count = self.circle_cast_all(
+            marker_query,
+            data.teleport.teleportable_mask,
+            |_, _| false,
+            &mut marker_hits,
+        );
+        // TeleportIndicator.UpdateSim teleports at the marker's place in
+        // the hierarchy: an older item has already had its updaters this
+        // pass (a settled Tack's pin, Mjolnir's recall), and the teleport
+        // then hides it.
+        for (hit, &entity) in
+            player_hits[..player_count].iter().chain(&marker_hits[..marker_count]).enumerate()
+        {
+            if hit >= player_count && player_hits[..player_count].contains(&entity) {
+                continue;
+            }
+            if let Some(item_index) = self.thrown_items.iter().position(|item| {
+                item.active
+                    && item.entity == Some(entity)
+                    && item.hierarchy_base < marker.hierarchy_base
+            }) && self.entities[entity].flags & E_ACTIVE != 0
+                && !self.teleport_skips_entity(entity)
+                && !self.blink_object_hidden(Some(entity))
+            {
+                if self.take_updater_turn(item_index, data, updater_dt) {
+                    self.thrown_item_turn(item_index, data, updater_dt);
+                }
+                let item = &mut self.thrown_items[item_index];
+                if item.active && item.pending_gust_impulse != Vec2::ZERO {
+                    item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+                    item.pending_gust_impulse = Vec2::ZERO;
+                }
+            }
+        }
+        for &entity in &player_hits[..player_count] {
+            self.teleport_entity(entity, diff, marker.hierarchy_base, data);
+        }
+        for &entity in &marker_hits[..marker_count] {
+            if !player_hits[..player_count].contains(&entity) {
+                self.teleport_entity(entity, -diff, marker.hierarchy_base, data);
+            }
+        }
+        // DestroyFix on the indicator, its body, its hurtbox and its
+        // FixTransform: all of INDICATOR_portal's updatables
+        // (TeleportIndicator.cs:179-182).
+        let marker = &mut self.teleport_marker_pool[marker_index];
+        marker.active = false;
+        marker.registered = false;
+        if let Some(entity) = marker.entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+        let (owner, entity) = (marker.hierarchy_base, marker.entity);
+        self.destroy_fix(owner, None, entity);
     }
 
     fn register_revival_clone_circles(&mut self, index: usize, data: &data::RolloutData) -> RevivalCircles {
@@ -31730,8 +31736,6 @@ impl RolloutWorld {
                 self.sync_guided_missile_entity(index);
                 continue;
             }
-            let being_held = self.guided_missiles[index].hold.held();
-            self.guided_missiles[index].hold.update_sim();
             let position = self.guided_missiles[index].position;
             let mut boundary_explosion = None;
             let map = &data::get().maps[self.map];
@@ -31765,11 +31769,11 @@ impl RolloutWorld {
                 continue;
             }
 
-            // A Spark the walk never reached takes its Missile.UpdateSim
-            // turn here; one it passed, run or skipped, does not.
+            // A Spark the walk never reached takes its turn here; one it
+            // passed, run or skipped, does not.
             let missile = &self.guided_missiles[index];
             if !self.updater_passed(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base)) {
-                self.guided_missile_update_sim(index, physics_dt, being_held, data);
+                self.guided_missile_turn(index, physics_dt, data);
             }
             let missile = &mut self.guided_missiles[index];
             missile.sync_body_to_transform();
@@ -31781,6 +31785,14 @@ impl RolloutWorld {
             let missile = &mut self.guided_missiles[index];
             missile.transform.set_rotation(missile.body.orientation);
         }
+    }
+
+    /// A Spark's turn in Updater's walk: Missile.UpdateSim, then its
+    /// BoplBody's hold countdown (Spark.prefab hierarchy 4 and 6).
+    fn guided_missile_turn(&mut self, index: usize, physics_dt: Fix, data: &data::RolloutData) {
+        let being_held = self.guided_missiles[index].hold.held();
+        self.guided_missile_update_sim(index, physics_dt, being_held, data);
+        self.guided_missiles[index].hold.update_sim();
     }
 
     /// Missile.UpdateSim (Missile.cs:106-126): the thrust reads the velocity
