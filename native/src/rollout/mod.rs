@@ -36826,6 +36826,10 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.invulnerable &= !INVULNERABLE_REVIVE;
             slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
+            // ReSpawn zeroes the velocities a Portal may have given the parked
+            // slime (SlimeController.cs:588-595).
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.external_velocity = Vec2::ZERO;
             slot.base.position = position;
             // ReSpawn simulates the body again (SlimeController.cs:591), so
             // the hurtbox is exported at the chosen point this pass.
@@ -36888,8 +36892,14 @@ impl RolloutWorld {
         }
 
         if slot.respawn_ticks > 0 {
-            // The replacement slime's OldUpdate returns early while its
-            // StockRespawnChooser waits (`stock_chooser_step`).
+            // The replacement slime's OldUpdate returns early at State.nothing
+            // while its StockRespawnChooser waits (`stock_chooser_step`,
+            // SlimeController.cs:713). A Portal that teleports the parked
+            // slime UnGrounds it into State.fall (Portal.cs:247,
+            // SlimeController.cs:956-958), and from then on its cooldowns run.
+            if slot.obs_state != STATE_NOTHING {
+                self.advance_slime_cooldowns(index);
+            }
             return;
         }
         if slot.chooser_finished_tick == Some(self.tick) {
