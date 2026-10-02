@@ -959,6 +959,8 @@ pub struct SmokeCloud {
     /// a fresh ring even when it occupies the same ability slot.
     pub source_group: u32,
     pub age_ticks: u32,
+    /// The radius its DPhysicsCircle registers with at Init.
+    pub spawn_radius: Fix,
     /// The collider radius FlammableSmoke.UpdateSim replaced on
     /// `radius_tick`, still current for updaters that run before it.
     pub radius_before: i64,
@@ -19612,7 +19614,7 @@ impl RolloutWorld {
             y: cloud.position.y.raw(),
             vx: cloud.body.velocity.x.raw(),
             vy: cloud.body.velocity.y.raw(),
-            radius: (data.smoke.cloud_radii[0] * cloud.scale).raw(),
+            radius: cloud.spawn_radius.raw(),
             rotation: cloud.rotation.raw(),
             inverse_mass: data.smoke.cloud_body.inverse_mass.raw(),
             ..CEntity::default()
@@ -26720,6 +26722,11 @@ impl RolloutWorld {
 
     fn duplicate_smoke_cloud(&mut self, source_index: usize, data: &data::RolloutData) {
         let source = self.smoke_clouds[source_index];
+        // duplicateBoplBody copies the original's live radius over the one
+        // FlammableSmoke.Awake set, then sets Scale (ShootDuplicator.cs:683-694).
+        // The copy keeps it until its own first UpdateSim.
+        let radius = source.entity.map_or(Fix::ZERO, |entity| Fix::from_raw(self.entities[entity].radius));
+        let spawn_radius = radius / source.scale * (Fix::ONE / source.scale * source.scale);
         for _ in 0..data.smoke.cloud_clone_count {
             let direction = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU));
             let hierarchy_base = self.register_prefab(data::get().prefab("SmokeCircle"));
@@ -26734,6 +26741,7 @@ impl RolloutWorld {
                 rotation: Vec2::angle(source.rotation).normalized_angle(),
                 body: source.body,
                 scale: source.scale,
+                spawn_radius,
                 owner: source.owner,
                 ability_slot: source.ability_slot,
                 source_group: 0,
@@ -32999,6 +33007,9 @@ impl RolloutWorld {
                 rotation,
                 body: data.smoke.cloud_body,
                 scale: item.scale,
+                // FlammableSmoke.Awake sets the prefab's first radius, then
+                // Detonate's Scale set rescales it (SmokeGrenadeExplode2.cs:40).
+                spawn_radius: data.smoke.cloud_radii[0] * item.scale,
                 owner: item.owner,
                 ability_slot,
                 ability_generation,
