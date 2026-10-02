@@ -35450,10 +35450,17 @@ impl RolloutWorld {
                 else {
                     continue;
                 };
-                if self.kill_with(roller, killer, cause, KillRoute::UPDATER_ON_COLLIDE, true, true, false)
-                    && matches!(part, Some(Part::Arrow(_)))
-                {
-                    self.count_arrow_hit(killer, roller_id);
+                // The walk puts the Roll's FixTransform at the substep for the
+                // callback and back after it, so a kill exits the form there
+                // (Roll.cs:337-357, PlayerCollision.cs:121-131).
+                let position = self.players[roller].base.position;
+                self.players[roller].base.position = center;
+                if self.kill_with(roller, killer, cause, KillRoute::UPDATER_ON_COLLIDE, true, true, false) {
+                    if matches!(part, Some(Part::Arrow(_))) {
+                        self.count_arrow_hit(killer, roller_id);
+                    }
+                } else {
+                    self.players[roller].base.position = position;
                 }
                 break;
             }
