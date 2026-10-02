@@ -10844,6 +10844,11 @@ impl RolloutWorld {
                         } else {
                             info.position
                         };
+                        // BounceBall.OnEnterAbility's ManualInit registers a
+                        // new circle before it moves the body, so the circle
+                        // sits where the prefab was instantiated, Vec2.zero
+                        // (SlimeController.cs:378, BounceBall.cs:102-105),
+                        // until DetPhysics syncs it.
                         if self.players[index].form_entities[s] == usize::MAX {
                             self.players[index].forms[s] =
                                 FormBody::unentered(self.players[index].abilities[s]);
@@ -10856,8 +10861,6 @@ impl RolloutWorld {
                                 owner: self.players[index].base.id,
                                 flags: E_ACTIVE | E_ENABLED,
                                 hierarchy: self.players[index].rock_hierarchy[s],
-                                x: form_position.x.raw(),
-                                y: form_position.y.raw(),
                                 radius: data.rock.radius.raw(),
                                 inverse_mass: data.rock.body.inverse_mass.raw(),
                                 ..CEntity::default()
