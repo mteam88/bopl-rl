@@ -4684,6 +4684,9 @@ struct PlatformScratch {
 #[derive(Clone, Copy)]
 enum PendingObject {
     ShakablePlatform,
+    GustWave,
+    MeteorWave,
+    DuplicatedItem,
     Arrow,
     DuplicatedPickup,
     AbilitylessClone,
@@ -7694,21 +7697,15 @@ impl RolloutWorld {
         }
         self.scratch.updater_cursor = (self.tick, (0, 0, 0));
         self.append_updater_batch();
-        self.register_pending_objects(data);
-        // A Duplicator copy's item collider registers at its Init, ahead of
-        // the walk in which its Grenade.UpdateSim lets the copy go
-        // (Updater.cs:271-279).
-        self.register_pending_duplicated_items(data);
-        self.init_pending_grenade_fuses(data);
-        self.register_pending_time_stops();
         // Updater initializes every prefab queued during the prior pass
         // before DetPhysics.UpdateDuplicatedObjects and before it invokes any
         // existing MonoUpdatable (Updater.cs:264-287). A newly spawned Gust
         // wave therefore applies its first time-zero impulse before a
         // Duplicator copy advances and before map home springs, while its
         // same-tick UpdateSim impulse runs after them.
-        self.shockwaves_init(false, data);
-        self.shockwaves_init(true, data);
+        self.register_pending_objects(data);
+        self.init_pending_grenade_fuses(data);
+        self.register_pending_time_stops();
         self.duplicated_objects_tick();
         self.remove_destroyed_updatables();
         // Updatables earlier than a TimeStop effect observe the scale from
@@ -19580,6 +19577,27 @@ impl RolloutWorld {
                 pending.push((offset, PendingObject::ShakablePlatform, index));
             }
         }
+        for (index, wave) in self.gust_waves.iter().enumerate() {
+            if pending_since(wave.active, wave.registered, wave.appended) {
+                pending.push((spawned(wave.hierarchy_base), PendingObject::GustWave, index));
+            }
+        }
+        for (index, wave) in self.meteor_waves.iter().enumerate() {
+            if pending_since(wave.active, wave.registered, wave.appended) {
+                pending.push((spawned(wave.hierarchy_base), PendingObject::MeteorWave, index));
+            }
+        }
+        // A Duplicator copy's item collider registers at its Init, ahead of
+        // the walk in which its Grenade.UpdateSim lets the copy go
+        // (Updater.cs:271-279). A copied Mine registers as a Mine.
+        for (index, item) in self.thrown_items.iter().enumerate() {
+            if item.duplicated
+                && item.ability != ABILITY_MINE
+                && pending_since(item.active, item.entity.is_some(), item.appended)
+            {
+                pending.push((spawned(item.hierarchy_base), PendingObject::DuplicatedItem, index));
+            }
+        }
         for (index, arrow) in self.arrows.iter().enumerate() {
             if pending_since(arrow.active, arrow.registered, arrow.appended) {
                 pending.push((spawned(arrow.hierarchy_base), PendingObject::Arrow, index));
@@ -19691,6 +19709,9 @@ impl RolloutWorld {
         for &(_, kind, index) in &pending {
             match kind {
                 PendingObject::ShakablePlatform => self.update_surface_bounds(index),
+                PendingObject::GustWave => self.shockwave_init(false, index, data),
+                PendingObject::MeteorWave => self.shockwave_init(true, index, data),
+                PendingObject::DuplicatedItem => self.register_duplicated_item(index, data),
                 PendingObject::Arrow => self.register_arrow(index),
                 PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
                 PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
@@ -21675,9 +21696,6 @@ impl RolloutWorld {
         }
     }
 
-    /// Updater initializes a prefab registered during the preceding pass
-    /// before any MonoUpdatable runs. Shockwave.Init captures targets and
-    /// performs the curve's first time-zero impulse immediately.
     fn shockwaves(&mut self, meteor: bool) -> &mut [Shockwave] {
         if meteor {
             &mut self.meteor_waves
@@ -21686,226 +21704,198 @@ impl RolloutWorld {
         }
     }
 
-    fn shockwaves_init(&mut self, meteor: bool, data: &data::RolloutData) {
-        for wave_index in 0..self.shockwaves(meteor).len() {
-            let tick = self.tick;
-            let wave = &self.shockwaves(meteor)[wave_index];
-            if !wave.active || wave.registered || wave.appended > tick {
+    /// Shockwave.Init, in Updater's Init walk: it captures its targets and
+    /// performs the curve's first time-zero impulse at once.
+    fn shockwave_init(&mut self, meteor: bool, wave_index: usize, data: &data::RolloutData) {
+        let mut wave = self.shockwaves(meteor)[wave_index];
+        wave.registered = true;
+        let config = wave.config(data);
+        let query = Circle {
+            center: wave.position,
+            radius: config.radius * wave.scale,
+        };
+        // CircleCastAll fills Shockwave's 50-entry buffer (Shockwave.cs:33,82).
+        // Hits that Shockwave later ignores still consume a slot.
+        let mut hit_entities = [usize::MAX; 50];
+        let hit_count = self.circle_cast_all(query, config.mask, |_, _| false, &mut hit_entities);
+        let retained = &hit_entities[..hit_count];
+
+        for (platform_index, (platform, dynamics)) in self
+            .platforms
+            .iter()
+            .zip(&self.platform_dynamics)
+            .enumerate()
+        {
+            if dynamics.body.inverse_mass >= Fix::ZERO
+                && retained.contains(&self.platform_entities[platform_index])
+                && Some(platform.id) != wave.ignored_platform
+            {
+                wave.platform_ids[wave.target_count] = platform.id;
+                wave.target_count += 1;
+            }
+        }
+        // CircleCastAll captures non-player rigid bodies once in Init and
+        // UpdateHitObjects keeps applying the curve to that fixed set.
+        // Thrown items are pooled, so retain stable pool indices rather
+        // than allocating a per-wave object set.
+        for (item_index, item) in self.thrown_items.iter().enumerate() {
+            if !item.active || item.entity.is_none_or(|entity| !retained.contains(&entity)) {
                 continue;
             }
-            let mut wave = *wave;
-            wave.registered = true;
-            let config = wave.config(data);
-            let query = Circle {
-                center: wave.position,
-                radius: config.radius * wave.scale,
-            };
-            // DPhysicsCircle joins DetPhysics in its own Init, so a cloud, an
-            // arrow or a clapped hole appended in the wave's batch, after it,
-            // is not there yet when the wave's Init casts.
-            let wave_appended = wave.appended;
-            let wave_hierarchy = wave.hierarchy_base;
-            let unregistered = |world: &Self, entity: usize| {
-                world.smoke_clouds.iter().any(|cloud| {
-                    cloud.active
-                        && cloud.entity == Some(entity)
-                        && cloud.appended == wave_appended
-                        && cloud.hierarchy_base > wave_hierarchy
-                }) || world.arrows.iter().any(|arrow| {
-                    arrow.active
-                        && arrow.entity == Some(entity)
-                        && arrow.appended == wave_appended
-                        && arrow.hierarchy_base > wave_hierarchy
-                }) || world.black_holes.iter().any(|hole| {
-                    hole.active
-                        && hole.entity == Some(entity)
-                        && hole.appended == wave_appended
-                        && hole.hierarchy_base > wave_hierarchy
-                })
-            };
-            // CircleCastAll fills Shockwave's 50-entry buffer (Shockwave.cs:33,82).
-            // Hits that Shockwave later ignores still consume a slot.
-            let mut hit_entities = [usize::MAX; 50];
-            let hit_count = self.circle_cast_all(query, config.mask, unregistered, &mut hit_entities);
-            let retained = &hit_entities[..hit_count];
-
-            for (platform_index, (platform, dynamics)) in self
-                .platforms
-                .iter()
-                .zip(&self.platform_dynamics)
-                .enumerate()
-            {
-                if dynamics.body.inverse_mass >= Fix::ZERO
-                    && retained.contains(&self.platform_entities[platform_index])
-                    && Some(platform.id) != wave.ignored_platform
-                {
-                    wave.platform_ids[wave.target_count] = platform.id;
-                    wave.target_count += 1;
-                }
-            }
-            // CircleCastAll captures non-player rigid bodies once in Init and
-            // UpdateHitObjects keeps applying the curve to that fixed set.
-            // Thrown items are pooled, so retain stable pool indices rather
-            // than allocating a per-wave object set.
-            for (item_index, item) in self.thrown_items.iter().enumerate() {
-                if !item.active || item.entity.is_none_or(|entity| !retained.contains(&entity)) {
-                    continue;
-                }
-                wave.item_hits[wave.item_count] = WaveHit { index: item_index, base: item.hierarchy_base };
-                wave.item_count += 1;
-            }
-            for (arrow_index, arrow) in self.arrows.iter().enumerate() {
-                if !arrow.active
-                    || !arrow.registered
-                    || arrow
-                        .entity
-                        .is_none_or(|entity| !retained.contains(&entity))
-                {
-                    continue;
-                }
-                wave.arrow_hits[wave.arrow_count] = WaveHit { index: arrow_index, base: arrow.hierarchy_base };
-                wave.arrow_count += 1;
-            }
-            for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
-                if !missile.active
-                    || !missile.registered
-                    || missile
-                        .entity
-                        .is_none_or(|entity| !retained.contains(&entity))
-                {
-                    continue;
-                }
-                wave.missile_hits[wave.missile_count] = WaveHit { index: missile_index, base: missile.hierarchy_base };
-                wave.missile_count += 1;
-            }
-            // Layer 10 (`spell`) is in AirWave_Shockwave's serialized mask.
-            // PortalShot is the only live rigid spell collider in the source
-            // catalog; retain its pooled index exactly as for other bodies.
-            for (shot_index, shot) in self.portal_shots.iter().enumerate() {
-                if !shot.active
-                    || !shot.registered
-                    || shot.entity.is_none_or(|entity| !retained.contains(&entity))
-                {
-                    continue;
-                }
-                wave.portal_shot_hits[wave.portal_shot_count] = WaveHit { index: shot_index, base: shot.hierarchy_base };
-                wave.portal_shot_count += 1;
-            }
-            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if !cloud.active
-                    || !cloud.registered
-                    || cloud
-                        .entity
-                        .is_none_or(|entity| !retained.contains(&entity))
-                {
-                    continue;
-                }
-                // The cast already tested the cloud's live, animated radius.
-                wave.smoke_hits[wave.smoke_count] = WaveHit { index: cloud_index, base: cloud.hierarchy_base };
-                wave.smoke_count += 1;
-            }
-            // RigidBodyAffector bypasses IPhysicsCollider and calls
-            // BlackHole.AddForce during every curve sample.
-            for (hole_index, hole) in self.black_holes.iter().enumerate() {
-                if !hole.active || hole.entity.is_none_or(|entity| !retained.contains(&entity)) {
-                    continue;
-                }
-                wave.black_hole_hits[wave.black_hole_count] = WaveHit { index: hole_index, base: hole.hierarchy_base };
-                wave.black_hole_count += 1;
-            }
-            // Non-attachable LethalTerrain bodies are activation-only hits:
-            // Shockwave applies the BoplBody fallback force immediately and
-            // does not add them to its persistent HashSet.
-            for rock in &mut self.duplicated_rocks {
-                if !rock.active || rock.entity.is_none_or(|entity| !retained.contains(&entity)) {
-                    continue;
-                }
-                let delta = rock.position - wave.position;
-                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
-                let force = scale_force * config.default_force / distance;
-                rock.body.force += delta * force * Fix::from_int(9000);
-            }
-            // Player-layer colliders are processed during activation and are
-            // deliberately excluded from the persistent target set. A slime in
-            // its spawn animation has its hurtbox enabled, and AddForce feeds
-            // the disabled PlayerPhysics' externalVelocity all the same. The
-            // caster is not exempt: a Meteor or Gust form is unpushable, but
-            // a slime that already left the form by activation is pushed.
-            for player_index in 0..self.players.len() {
-                if !self.hittable(player_index) {
-                    continue;
-                }
-                if matches!(
-                    self.players[player_index].active,
-                    ActiveAbility::Dash
-                        | ActiveAbility::Gust
-                        | ActiveAbility::Meteor
-                        | ActiveAbility::Platform
-                        | ActiveAbility::Push
-                        | ActiveAbility::Revival
-                ) {
-                    // These prefabs serialize Ability.isPushable=false.
-                    // Shockwave returns before examining their body type.
-                    continue;
-                }
-
-                // Read the collider synchronized by the source-equivalent
-                // ability updater. This covers every circle/box form without
-                // rebuilding its offset, aim basis or scale a second time.
-                let player = &self.players[player_index];
-                let entity = Self::hurtbox_entity(player);
-                if !self.collides(entity) {
-                    continue;
-                }
-                if !retained.contains(&entity) {
-                    continue;
-                }
-
-                let target = &mut self.players[player_index];
-                let delta = target.base.position - wave.position;
-                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
-                let force = scale_force * config.default_force / distance;
-                if target.active == ActiveAbility::Rock {
-                    // Rock has BoplBody but neither PlayerPhysics nor
-                    // PlayerBody, selecting Shockwave's 9000-force fallback.
-                    target.rock.body.force += delta * force * Fix::from_int(9000);
-                    continue;
-                }
-                let force = if target.base.grounded && target.active != ActiveAbility::Drill {
-                    config.grounded_multiplier * delta * force
-                } else {
-                    delta * force
-                };
-                target.base.external_velocity += force * Fix::from_int(35);
-            }
-            for clone_index in 0..self.abilityless_clones.len() {
-                let clone = &self.abilityless_clones[clone_index];
-                let Some(entity) = clone
-                    .entity
-                    .filter(|entity| clone.active && retained.contains(entity))
-                else {
-                    continue;
-                };
-                if !self.collides(entity) {
-                    continue;
-                }
-                let clone = &mut self.abilityless_clones[clone_index];
-                let delta = clone.base.position - wave.position;
-                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
-                let force = scale_force * config.default_force / distance;
-                let force = if clone.base.grounded {
-                    config.grounded_multiplier * delta * force
-                } else {
-                    delta * force
-                };
-                clone.base.external_velocity += force * Fix::from_int(35);
-            }
-            self.shockwaves(meteor)[wave_index] = wave;
-            self.shockwave_apply(meteor, wave_index, Fix::ZERO, false, data);
+            wave.item_hits[wave.item_count] = WaveHit { index: item_index, base: item.hierarchy_base };
+            wave.item_count += 1;
         }
+        for (arrow_index, arrow) in self.arrows.iter().enumerate() {
+            if !arrow.active
+                || !arrow.registered
+                || arrow
+                    .entity
+                    .is_none_or(|entity| !retained.contains(&entity))
+            {
+                continue;
+            }
+            wave.arrow_hits[wave.arrow_count] = WaveHit { index: arrow_index, base: arrow.hierarchy_base };
+            wave.arrow_count += 1;
+        }
+        for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
+            if !missile.active
+                || !missile.registered
+                || missile
+                    .entity
+                    .is_none_or(|entity| !retained.contains(&entity))
+            {
+                continue;
+            }
+            wave.missile_hits[wave.missile_count] = WaveHit { index: missile_index, base: missile.hierarchy_base };
+            wave.missile_count += 1;
+        }
+        // Layer 10 (`spell`) is in AirWave_Shockwave's serialized mask.
+        // PortalShot is the only live rigid spell collider in the source
+        // catalog; retain its pooled index exactly as for other bodies.
+        for (shot_index, shot) in self.portal_shots.iter().enumerate() {
+            if !shot.active
+                || !shot.registered
+                || shot.entity.is_none_or(|entity| !retained.contains(&entity))
+            {
+                continue;
+            }
+            wave.portal_shot_hits[wave.portal_shot_count] = WaveHit { index: shot_index, base: shot.hierarchy_base };
+            wave.portal_shot_count += 1;
+        }
+        for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
+            if !cloud.active
+                || !cloud.registered
+                || cloud
+                    .entity
+                    .is_none_or(|entity| !retained.contains(&entity))
+            {
+                continue;
+            }
+            // The cast already tested the cloud's live, animated radius.
+            wave.smoke_hits[wave.smoke_count] = WaveHit { index: cloud_index, base: cloud.hierarchy_base };
+            wave.smoke_count += 1;
+        }
+        // RigidBodyAffector bypasses IPhysicsCollider and calls
+        // BlackHole.AddForce during every curve sample.
+        for (hole_index, hole) in self.black_holes.iter().enumerate() {
+            if !hole.active || hole.entity.is_none_or(|entity| !retained.contains(&entity)) {
+                continue;
+            }
+            wave.black_hole_hits[wave.black_hole_count] = WaveHit { index: hole_index, base: hole.hierarchy_base };
+            wave.black_hole_count += 1;
+        }
+        // Non-attachable LethalTerrain bodies are activation-only hits:
+        // Shockwave applies the BoplBody fallback force immediately and
+        // does not add them to its persistent HashSet.
+        for rock in &mut self.duplicated_rocks {
+            if !rock.active || rock.entity.is_none_or(|entity| !retained.contains(&entity)) {
+                continue;
+            }
+            let delta = rock.position - wave.position;
+            let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+            let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
+            let force = scale_force * config.default_force / distance;
+            rock.body.force += delta * force * Fix::from_int(9000);
+        }
+        // Player-layer colliders are processed during activation and are
+        // deliberately excluded from the persistent target set. A slime in
+        // its spawn animation has its hurtbox enabled, and AddForce feeds
+        // the disabled PlayerPhysics' externalVelocity all the same. The
+        // caster is not exempt: a Meteor or Gust form is unpushable, but
+        // a slime that already left the form by activation is pushed.
+        for player_index in 0..self.players.len() {
+            if !self.hittable(player_index) {
+                continue;
+            }
+            if matches!(
+                self.players[player_index].active,
+                ActiveAbility::Dash
+                    | ActiveAbility::Gust
+                    | ActiveAbility::Meteor
+                    | ActiveAbility::Platform
+                    | ActiveAbility::Push
+                    | ActiveAbility::Revival
+            ) {
+                // These prefabs serialize Ability.isPushable=false.
+                // Shockwave returns before examining their body type.
+                continue;
+            }
+
+            // Read the collider synchronized by the source-equivalent
+            // ability updater. This covers every circle/box form without
+            // rebuilding its offset, aim basis or scale a second time.
+            let player = &self.players[player_index];
+            let entity = Self::hurtbox_entity(player);
+            if !self.collides(entity) {
+                continue;
+            }
+            if !retained.contains(&entity) {
+                continue;
+            }
+
+            let target = &mut self.players[player_index];
+            let delta = target.base.position - wave.position;
+            let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+            let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
+            let force = scale_force * config.default_force / distance;
+            if target.active == ActiveAbility::Rock {
+                // Rock has BoplBody but neither PlayerPhysics nor
+                // PlayerBody, selecting Shockwave's 9000-force fallback.
+                target.rock.body.force += delta * force * Fix::from_int(9000);
+                continue;
+            }
+            let force = if target.base.grounded && target.active != ActiveAbility::Drill {
+                config.grounded_multiplier * delta * force
+            } else {
+                delta * force
+            };
+            target.base.external_velocity += force * Fix::from_int(35);
+        }
+        for clone_index in 0..self.abilityless_clones.len() {
+            let clone = &self.abilityless_clones[clone_index];
+            let Some(entity) = clone
+                .entity
+                .filter(|entity| clone.active && retained.contains(entity))
+            else {
+                continue;
+            };
+            if !self.collides(entity) {
+                continue;
+            }
+            let clone = &mut self.abilityless_clones[clone_index];
+            let delta = clone.base.position - wave.position;
+            let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+            let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
+            let force = scale_force * config.default_force / distance;
+            let force = if clone.base.grounded {
+                config.grounded_multiplier * delta * force
+            } else {
+                delta * force
+            };
+            clone.base.external_velocity += force * Fix::from_int(35);
+        }
+        self.shockwaves(meteor)[wave_index] = wave;
+        self.shockwave_apply(meteor, wave_index, Fix::ZERO, false, data);
     }
 
     /// Shockwave.UpdateSim for the Gust and Meteor waves with hierarchy in
@@ -27503,68 +27493,44 @@ impl RolloutWorld {
         pickup.body.force += Vec2::UP * data.pickup.launch_force * Fix::from_int(60);
     }
 
-    fn register_pending_duplicated_items(&mut self, data: &data::RolloutData) {
-        for index in 0..self.thrown_items.len() {
-            let item = self.thrown_items[index];
-            if !item.active
-                || !item.duplicated
-                || item.entity.is_some()
-                || item.appended > self.tick
-            {
-                continue;
-            }
-            let (layer, mut collider_hierarchy, radius) = if item.ability == ABILITY_MINE {
-                (
-                    data.mine.item_layer,
-                    data.mine.item_collider_hierarchy,
-                    data.mine.item_radius,
-                )
-            } else {
-                let config = throw_config(data, item.ability);
-                (
-                    config.item_layer,
-                    config.item_collider_hierarchy,
-                    config.item_radius,
-                )
-            };
-            if item.duplicated
-                && matches!(
-                    item.ability,
-                    ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL
-                )
-            {
-                // DuplicateObject temporarily renumbers MonoUpdatables from
-                // one before Instantiate. These three six-updater prefabs put
-                // their circle third in that local order, one slot later than
-                // the collider hierarchy used by a normally spawned item.
-                collider_hierarchy += 1;
-            }
-            let id = self.next_id();
-            self.push_entity(CEntity {
-                id,
-                kind: 0,
-                layer,
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000 + item.hierarchy_base + collider_hierarchy,
-                x: item.position.x.raw(),
-                y: item.position.y.raw(),
-                vx: item.body.velocity.x.raw(),
-                vy: item.body.velocity.y.raw(),
-                radius: (radius * item.scale).raw(),
-                rotation: item.body.orientation.raw(),
-                angular_velocity: item.body.angular_velocity.raw(),
-                inverse_mass: item.body.inverse_mass.raw(),
-                ..CEntity::default()
-            }, Vec2::ZERO);
-            let item = &mut self.thrown_items[index];
-            item.id = id;
-            item.entity = Some(self.entities.len() - 1);
-            if item.ability == ABILITY_GRENADE {
-                // Grenade.UpdateSim sees the cloned thrower as inactive,
-                // marks the copy thrown and replaces the explicit zero delay.
-                item.launched = true;
-                item.hurt_owner_delay = Fix::ONE;
-            }
+    /// A Duplicator copy's thrown item: its Init registers its circle.
+    fn register_duplicated_item(&mut self, index: usize, data: &data::RolloutData) {
+        let item = self.thrown_items[index];
+        let config = throw_config(data, item.ability);
+        let (layer, mut collider_hierarchy, radius) =
+            (config.item_layer, config.item_collider_hierarchy, config.item_radius);
+        if matches!(item.ability, ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL) {
+            // DuplicateObject temporarily renumbers MonoUpdatables from
+            // one before Instantiate. These three six-updater prefabs put
+            // their circle third in that local order, one slot later than
+            // the collider hierarchy used by a normally spawned item.
+            collider_hierarchy += 1;
+        }
+        let id = self.next_id();
+        self.push_entity(CEntity {
+            id,
+            kind: 0,
+            layer,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + item.hierarchy_base + collider_hierarchy,
+            x: item.position.x.raw(),
+            y: item.position.y.raw(),
+            vx: item.body.velocity.x.raw(),
+            vy: item.body.velocity.y.raw(),
+            radius: (radius * item.scale).raw(),
+            rotation: item.body.orientation.raw(),
+            angular_velocity: item.body.angular_velocity.raw(),
+            inverse_mass: item.body.inverse_mass.raw(),
+            ..CEntity::default()
+        }, Vec2::ZERO);
+        let item = &mut self.thrown_items[index];
+        item.id = id;
+        item.entity = Some(self.entities.len() - 1);
+        if item.ability == ABILITY_GRENADE {
+            // Grenade.UpdateSim sees the cloned thrower as inactive,
+            // marks the copy thrown and replaces the explicit zero delay.
+            item.launched = true;
+            item.hurt_owner_delay = Fix::ONE;
         }
     }
 
@@ -41302,7 +41268,7 @@ mod tests {
         world.entities[entity].x = world.players[1].base.position.x.raw();
         world.entities[entity].y = world.players[1].base.position.y.raw();
 
-        world.shockwaves_init(false, data::get());
+        world.shockwave_init(false, 0, data::get());
 
         assert_ne!(world.players[1].base.external_velocity, Vec2::ZERO);
     }
@@ -41407,7 +41373,7 @@ mod tests {
             ..Shockwave::default()
         };
 
-        world.shockwaves_init(false, data::get());
+        world.shockwave_init(false, 0, data::get());
 
         assert_eq!(world.gust_waves[0].smoke_count, 1);
         assert!(world.smoke_clouds[0].body.velocity.x > Fix::ZERO);
@@ -41447,7 +41413,7 @@ mod tests {
             ..Shockwave::default()
         };
 
-        world.shockwaves_init(false, data::get());
+        world.shockwave_init(false, 0, data::get());
 
         assert!(world.duplicated_rocks[0].body.force.x > Fix::ZERO);
     }
@@ -41477,7 +41443,7 @@ mod tests {
             ..Shockwave::default()
         };
 
-        world.shockwaves_init(false, data::get());
+        world.shockwave_init(false, 0, data::get());
 
         assert_eq!(world.gust_waves[0].target_count, 0);
     }
@@ -41497,7 +41463,7 @@ mod tests {
             ..Shockwave::default()
         };
 
-        world.shockwaves_init(false, data::get());
+        world.shockwave_init(false, 0, data::get());
 
         assert!(
             world.gust_waves[0].platform_ids[..world.gust_waves[0].target_count]
