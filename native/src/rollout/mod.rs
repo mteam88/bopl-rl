@@ -13035,6 +13035,9 @@ impl RolloutWorld {
                 let input = self.players[index].base.dash.input;
                 self.dash_rope_exit(index, input, leave_speed);
                 let slot = &mut self.players[index];
+                // Whoever calls it (a MagnetGun's pickup included), the
+                // deactivated Dash FixTransform keeps its rotation.
+                slot.base.dash.exit_rotation = slot.base.rotation();
                 info.take_body(&slot.base);
                 info.grounded_speed = Fix::ZERO;
                 info.facing_right = input.x <= Fix::ZERO;
@@ -28917,6 +28920,9 @@ impl RolloutWorld {
         let was_bow = self.players[victim].active == ActiveAbility::Bow;
         let deferred = was_bow && self.players[victim].base.grounded;
         let slot = &mut self.players[victim];
+        if slot.base.dash.active {
+            slot.base.dash.exit_rotation = slot.base.rotation();
+        }
         slot.base.dash.active = false;
         let position = slot.base.position;
         self.ability_exit(victim, ExitInfo { position, facing_right: true, ..ExitInfo::default() });
@@ -36454,6 +36460,9 @@ impl RolloutWorld {
         // onExitAbility puts the slime at the dead packet's position before
         // its own killPlayer (SlimeController.cs:213-216).
         let in_form = slot.active != ActiveAbility::None;
+        if slot.base.dash.active {
+            slot.base.dash.exit_rotation = slot.base.rotation();
+        }
         slot.leave_form(&mut self.entities);
         if in_form {
             slot.base.position = drop_position;
