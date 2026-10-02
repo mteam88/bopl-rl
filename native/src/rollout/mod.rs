@@ -36367,6 +36367,16 @@ impl RolloutWorld {
         if self.players[index].active != ActiveAbility::None {
             self.players[index].keep_form_rotation();
         }
+        // The dead Rock's row publishes its PhysicsBody (RlObservation.cs:119),
+        // which a callback's DetPhysics.Simulate has already moved past the
+        // pass's sync.
+        if self.players[index].active == ActiveAbility::Rock {
+            let slot = &self.players[index];
+            let row = &mut self.entities[slot.rock_entity];
+            row.vx = slot.rock.body.velocity.x.raw();
+            row.vy = slot.rock.body.velocity.y.raw();
+            row.angular_velocity = slot.rock.body.angular_velocity.raw();
+        }
         // BlackHole hands the form's Ability its exit, skipping
         // Drill.ExitAbility, so nothing turns the hitboxes off this pass.
         if !form_exit
