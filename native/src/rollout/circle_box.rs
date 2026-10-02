@@ -1375,26 +1375,9 @@ impl RolloutWorld {
                     _ => {}
                 }
             }
-            // The form's circle calls BounceBall's OnCollide and its
-            // PlayerCollision's (DPhysicsCircle.cs:330-346), and a spike or a
-            // lethal Tesla node kills it as it does a slime.
-            Part::Rock(rock) => {
-                self.rock_on_collide(rock, contact.normal, self.part_layer(other, data));
-                if self.collider_destroyed(collider) {
-                    return;
-                }
-                let kill = match other {
-                    Part::Body(_) => self.kills_on_contact(other, collider).map(|killer| (killer, CAUSE_OTHER)),
-                    Part::Spike(_) => Some((0, CAUSE_OTHER)),
-                    Part::Node(node) if self.tesla_nodes[node].lethal => Some((0, CAUSE_OTHER)),
-                    Part::Explosion(_) | Part::Line(_) => self.blast_kill(other, Some(rock), self.players[rock].base.id),
-                    _ => None,
-                };
-                if let Some((killer, cause)) = kill {
-                    let hit = CallbackHit::Kill { player: rock, killer, cause, slime: false };
-                    self.run_callback_hit(hit, route, data);
-                }
-            }
+            // The form's circle calls BounceBall's OnCollide only: Rock.prefab
+            // has no PlayerCollision (DPhysicsCircle.cs:330-346, BounceBall.cs:310-323).
+            Part::Rock(rock) => self.rock_on_collide(rock, contact.normal, self.part_layer(other, data)),
             // DynamicAbilityPickup.OnCollide hands its ability to the
             // SlimeController on the collider's FixTransform, a slime's own
             // box or an abilityless clone's, and to nothing else, whatever an
