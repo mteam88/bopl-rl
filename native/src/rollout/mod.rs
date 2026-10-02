@@ -9017,17 +9017,6 @@ impl RolloutWorld {
         }
     }
 
-    /// BoplBody.position, the FixTransform DetPhysics wrote back after its
-    /// last Simulate: a lone rounded rect's centre, with the RR corrections
-    /// that CompositeBody.position alone misses.
-    fn platform_body_position(&self, platform_index: usize) -> Vec2 {
-        if self.platform_dynamics[platform_index].attached_children == 0 {
-            self.platforms[platform_index].surface.center
-        } else {
-            self.platform_dynamics[platform_index].composite_position
-        }
-    }
-
     fn portal_inside(endpoint: PortalEndpoint, position: Vec2, data: &data::RolloutData) -> bool {
         let relative = position - endpoint.position;
         relative.dot(endpoint.tangent).abs() < data.portal_gun.half_width
@@ -9289,7 +9278,7 @@ impl RolloutWorld {
             if !held
                 && self.platform_dynamics[platform_index].body.inverse_mass > Fix::ZERO
                 && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, self.platform_body_position(platform_index), data)
+                && Self::portal_inside(endpoint, self.platforms[platform_index].surface.center, data)
             {
                 Self::mark_portal_body_bit(
                     &mut self.portal_body_inside,
@@ -9636,7 +9625,11 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let old_position = self.platform_body_position(platform_index);
+            // BoplBody.position is the rounded root's FixTransform, which
+            // DetPhysics wrote back after its last Simulate; a composite's
+            // own position keeps the corrections that never reach it
+            // (BoplBody.cs:51-61, DetPhysics.cs:2962-3126).
+            let old_position = self.platforms[platform_index].surface.center;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, old_position, data)
             {
