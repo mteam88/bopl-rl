@@ -3976,7 +3976,6 @@ impl PlayerSlot {
         self.base.radius = form.radius; // leak: radius
         self.base.scale = form.scale; // leak: scale
         self.base.grounded_speed = form.grounded_speed; // leak: grounded_speed
-        self.base.skip_next_gravity = form.skip_next_gravity; // leak: skip_next_gravity
         self.base.was_upside_down = form.was_upside_down; // leak: was_upside_down
         self.base.pre_move_up = form.pre_move_up; // leak: pre_move_up
         self.base.pre_move_grounded = form.pre_move_grounded; // leak: pre_move_grounded
