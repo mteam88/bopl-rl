@@ -2410,10 +2410,6 @@ pub struct GustState {
     /// Zero while playing castAir, one while playing exit.
     pub phase: u32,
     pub ticks: u32,
-    /// PlayerPhysics.UnGround deliberately leaves attachedGround populated.
-    /// QuickSpell calls it again on exit and receives a second separation
-    /// along the platform's then-current normal.
-    pub attached_ground: Option<u32>,
 }
 
 /// Revival uses the same QuickSpell animation/body handoff as Gust.
@@ -2421,7 +2417,6 @@ pub struct GustState {
 pub struct RevivalState {
     pub phase: u32,
     pub ticks: u32,
-    pub attached_ground: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -11656,10 +11651,7 @@ impl RolloutWorld {
                         slot.set_active_form(&mut self.entities, ActiveAbility::Gust);
                         slot.active_slot = s;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.gust = GustState {
-                            attached_ground,
-                            ..GustState::default()
-                        };
+                        slot.gust = GustState::default();
                         slot.scale_form_circle(data.gust.hurtbox_radius, data.gust.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.gust_entity, data.gust.hurtbox_radius, data.gust.collider_offset);
@@ -11674,11 +11666,11 @@ impl RolloutWorld {
                         // QuickSpell synchronizes the copied PlayerInfo,
                         // ungrounds by the standard 0.05-unit separation and
                         // then clears both velocity channels.
+                        slot.base.ground = attached_ground;
                         let surface = attached_ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                             .map(|platform| &platform.surface);
                         slot.base.unground(surface, true);
-                        slot.base.ground = None;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         // The Gust body's own boundary component is enabled by
@@ -11704,10 +11696,7 @@ impl RolloutWorld {
                         slot.set_active_form(&mut self.entities, ActiveAbility::Revival);
                         slot.active_slot = s;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.revival = RevivalState {
-                            attached_ground,
-                            ..RevivalState::default()
-                        };
+                        slot.revival = RevivalState::default();
                         slot.scale_form_circle(data.revival.hurtbox_radius, data.revival.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.revival_entity, data.revival.hurtbox_radius, data.revival.collider_offset);
@@ -11719,11 +11708,11 @@ impl RolloutWorld {
                         self.form_enter_circle(index, physics, radius, offset);
                         let slot = &mut self.players[index];
                         slot.base.position = position;
+                        slot.base.ground = attached_ground;
                         let surface = attached_ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                             .map(|platform| &platform.surface);
                         slot.base.unground(surface, true);
-                        slot.base.ground = None;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         // Revival.prefab places its boundary component at the
@@ -13572,16 +13561,8 @@ impl RolloutWorld {
                 // PlayerPhysics kept the attachedGround the cast left, so a
                 // moving platform supplies a fresh normal for this nudge.
                 let slot = &mut self.players[index];
-                let ground = if active == ActiveAbility::Gust {
-                    slot.gust.attached_ground
-                } else {
-                    slot.revival.attached_ground
-                };
-                let surface = ground.and_then(|id| {
-                    self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
-                });
                 slot.base.set_rotation(Fix::ZERO);
-                slot.base.unground(surface, true);
+                UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 info.take_body(&slot.base);
             }
             ActiveAbility::Push => {
