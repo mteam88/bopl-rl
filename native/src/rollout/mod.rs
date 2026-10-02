@@ -38283,19 +38283,21 @@ impl RolloutWorld {
                     circle.angular_velocity = slot.rock.body.angular_velocity.raw();
                     circle.inverse_mass = slot.rock.body.inverse_mass.raw();
                 } else {
-                    circle.rotation = 0;
+                    // DetPhysics keeps syncing the deactivated FixTransform:
+                    // BounceBall.ExitAbility zeroed its rotation, a
+                    // FreezeRayGun calling Ability.ExitAbility directly kept it
+                    // (FreezeRayGun.cs:128).
+                    circle.rotation = slot.forms[slot.entity_slot(rock_e)].pose.orientation.rotation().raw();
                 }
             }
-            // The Rock in another slot, left the pass before: BounceBall.
-            // ExitAbility zeroed its body rotation, and DetPhysics keeps
-            // syncing the deactivated transform.
-            for (&e, &ability) in slot.form_entities.iter().zip(&slot.abilities) {
+            // The Rock in another slot, left the pass before, likewise.
+            for (s, (&e, &ability)) in slot.form_entities.iter().zip(&slot.abilities).enumerate() {
                 if ability == ABILITY_ROCK
                     && e != usize::MAX
                     && e != rock_e
                     && self.entities[e].flags & E_ACTIVE == 0
                 {
-                    self.entities[e].rotation = 0;
+                    self.entities[e].rotation = slot.forms[s].pose.orientation.rotation().raw();
                 }
             }
             if roll_e != usize::MAX {
