@@ -23,7 +23,6 @@ const PLATFORM_MASS: Fix = Fix::from_raw(3_865_470_464);
 const PLATFORM_HEAVINESS: Fix = Fix::from_raw(42_949_672);
 const PLATFORM_PULL: Fix = Fix::from_raw(-42_949_672_960);
 const BOULDER_PULL: Fix = Fix::from_raw(-21_474_836_480);
-const PLATFORM_BREAK_STRETCH: Fix = Fix::from_raw(429_496_729_600);
 /// RopeAttachment.pullStr, the pull on a non-platform parent's body.
 const ATTACHMENT_PULL: Fix = Fix::from_raw(-12_884_901_888);
 
@@ -538,7 +537,6 @@ pub(super) fn rope_pool() -> Vec<RolloutRope> {
     assert_eq!(source.platform_heaviness, PLATFORM_HEAVINESS);
     assert_eq!(source.platform_pull, PLATFORM_PULL);
     assert_eq!(source.boulder_pull, BOULDER_PULL);
-    assert_eq!(source.platform_break_stretch, PLATFORM_BREAK_STRETCH);
     assert_eq!(source.non_platform_mass, Fix::from_f64(0.5));
     assert_eq!(source.web_max_length, WEB_MAX_LENGTH);
     assert_eq!(source.web_shorten, WEB_SHORTEN);
@@ -1103,14 +1101,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let physics = &self.ropes[index].physics;
-            if self.ropes[index].hook_active
-                && (0..physics.count - 2).any(|segment| {
-                    (physics.segment[segment] - physics.segment[segment + 1]).length_squared()
-                        > PLATFORM_BREAK_STRETCH
-                })
-            {
-                self.deattach_rope(index, true);
+            if self.ropes[index].hook_active && self.rope_attachment_breaks(index, true, false) {
                 self.ropes[index].hook_active = false;
                 if let Some(entity) = self.ropes[index].hook_entity {
                     self.entities[entity].flags = E_REMOVED;
@@ -1376,6 +1367,22 @@ impl RolloutWorld {
         self.destroy_fix(rope.hook_hierarchy, None, rope.hook_entity);
     }
 
+    /// The tail of every RopeAttachment.UpdateSim: a segment stretched past
+    /// the attachment's break length, the platform one when it is a platform
+    /// attachment, lets go of its end (RopeAttachment.cs:143-151). Whether it
+    /// did; the caller drops the attachment, which Deattach destroys.
+    fn rope_attachment_breaks(&mut self, index: usize, top: bool, platform: bool) -> bool {
+        let source = &data::get().ropes;
+        let limit = if platform { source.platform_break_stretch } else { source.break_stretch };
+        let physics = &self.ropes[index].physics;
+        let stretched = (0..physics.count.saturating_sub(2))
+            .any(|segment| (physics.segment[segment] - physics.segment[segment + 1]).length_squared() > limit);
+        if stretched {
+            self.deattach_rope(index, top);
+        }
+        stretched
+    }
+
     /// Rope.UpdateSim's timer and its offscreen drop, after the reel.
     fn rope_step(&mut self, rope: usize) {
         let water = data::get().maps[self.map].scene_water_height();
@@ -1413,7 +1420,6 @@ impl RolloutWorld {
                 if hole_index >= self.black_holes.len()
                     || !self.black_holes[hole_index].active
                     || self.blink_object_hidden(self.black_holes[hole_index].entity)
-                    || self.black_holes[hole_index].mass <= Fix::ZERO
                 {
                     self.deattach_rope(index, true);
                     self.ropes[index].attach[0].black_hole = None;
@@ -1424,28 +1430,28 @@ impl RolloutWorld {
                     && !self.ropes[index].physics.detached
                     && !stopped
                 {
-                    self.ropes[index].attach[0].reel_frames += 1;
-                    let frame = self.ropes[index].attach[0].reel_frames;
-                    if ((frame > 60 && frame.is_multiple_of(3))
-                        || (frame <= 60 && frame.is_multiple_of(8))
-                        || self.ropes[index].physics.count < 8)
-                        && !self.ropes[index].physics.reel(3, false)
-                    {
-                        let far = self.ropes[index].physics.count - 1;
-                        self.ropes[index].physics.segment[far] = hole.position;
+                    if hole.mass > Fix::ZERO {
+                        self.ropes[index].attach[0].reel_frames += 1;
+                        let frame = self.ropes[index].attach[0].reel_frames;
+                        if ((frame > 60 && frame.is_multiple_of(3))
+                            || (frame <= 60 && frame.is_multiple_of(8))
+                            || self.ropes[index].physics.count < 8)
+                            && !self.ropes[index].physics.reel(3, false)
+                        {
+                            let far = self.ropes[index].physics.count - 1;
+                            self.ropes[index].physics.segment[far] = hole.position;
+                        }
+                    } else {
+                        // A hole with no mass left is let go of, and the
+                        // stretch check below still runs (RopeAttachment.cs:121-125).
+                        self.ropes[index].attach[0].black_hole = None;
+                        self.deattach_rope(index, true);
                     }
                 }
                 // The attached end stays where the last LateUpdateSim put it
                 // (RopeAttachment.cs:166-178): DetPhysics simulates the rope
                 // from there, not from where the older hole moved this pass.
-                // A rope stretched past its break length lets go of the hole
-                // (RopeAttachment.cs:143-150).
-                let physics = &self.ropes[index].physics;
-                if (0..physics.count.saturating_sub(2)).any(|segment| {
-                    (physics.segment[segment] - physics.segment[segment + 1]).length_squared()
-                        > PLATFORM_BREAK_STRETCH
-                }) {
-                    self.deattach_rope(index, true);
+                if self.rope_attachment_breaks(index, true, false) {
                     self.ropes[index].attach[0].black_hole = None;
                 }
                 continue;
@@ -1564,16 +1570,8 @@ impl RolloutWorld {
         }
         self.ropes[index].physics.segment[endpoint] = anchor;
         self.ropes[index].attach[slot].anchor = anchor;
-        for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
-            if (self.ropes[index].physics.segment[segment]
-                - self.ropes[index].physics.segment[segment + 1])
-                .length_squared()
-                > PLATFORM_BREAK_STRETCH
-            {
-                self.deattach_rope(index, top);
-                self.ropes[index].attach[slot].platform = None;
-                break;
-            }
+        if self.rope_attachment_breaks(index, top, true) {
+            self.ropes[index].attach[slot].platform = None;
         }
         moved
     }
@@ -1683,16 +1681,8 @@ impl RolloutWorld {
                 }
             }
             self.ropes[index].attach[0].anchor = position;
-            for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
-                if (self.ropes[index].physics.segment[segment]
-                    - self.ropes[index].physics.segment[segment + 1])
-                    .length_squared()
-                    > PLATFORM_BREAK_STRETCH
-                {
-                    self.deattach_rope(index, true);
-                    self.ropes[index].attach[0].parent = None;
-                    break;
-                }
+            if self.rope_attachment_breaks(index, true, false) {
+                self.ropes[index].attach[0].parent = None;
             }
         }
     }

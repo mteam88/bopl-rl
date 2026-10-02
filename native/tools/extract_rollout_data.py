@@ -2101,6 +2101,7 @@ def main():
         "platform_heaviness": fix(attachment, "platformHeavinessScaling"),
         "platform_pull": fix(attachment, "platformPullStr"),
         "boulder_pull": fix(attachment, "boulderPullStr"),
+        "break_stretch": fix(attachment, "stretchBeforeBreak"),
         "platform_break_stretch": fix(attachment, "stretchBeforeBreak_platform"),
         "non_platform_mass": fix(attachment, "nonPlatformMass"),
         "extra_swing_force": fix(slime_ctl, "extraSwingForce"),

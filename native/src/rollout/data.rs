@@ -318,6 +318,7 @@ struct RawRopes {
     platform_heaviness: i64,
     platform_pull: i64,
     boulder_pull: i64,
+    break_stretch: i64,
     platform_break_stretch: i64,
     non_platform_mass: i64,
     extra_swing_force: i64,
@@ -1654,6 +1655,9 @@ pub struct RopeData {
     pub platform_heaviness: Fix,
     pub platform_pull: Fix,
     pub boulder_pull: Fix,
+    /// RopeAttachment.stretchBeforeBreak and stretchBeforeBreak_platform:
+    /// the squared segment length past which an attachment lets go.
+    pub break_stretch: Fix,
     pub platform_break_stretch: Fix,
     pub non_platform_mass: Fix,
     pub extra_swing_force: Fix,
@@ -3017,6 +3021,7 @@ pub fn get() -> &'static RolloutData {
                     platform_heaviness: Fix::from_raw(ropes.platform_heaviness),
                     platform_pull: Fix::from_raw(ropes.platform_pull),
                     boulder_pull: Fix::from_raw(ropes.boulder_pull),
+                    break_stretch: Fix::from_raw(ropes.break_stretch),
                     platform_break_stretch: Fix::from_raw(ropes.platform_break_stretch),
                     non_platform_mass: Fix::from_raw(ropes.non_platform_mass),
                     extra_swing_force: Fix::from_raw(ropes.extra_swing_force),
