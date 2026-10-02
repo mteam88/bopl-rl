@@ -25101,57 +25101,6 @@ impl RolloutWorld {
         }
     }
 
-    fn magnet_release_handle(&mut self, index: usize, held: MagnetHeld) {
-        match held {
-            MagnetHeld::ThrownItem(i) => {
-                if let Some(item) = self.thrown_items.get_mut(i)
-                    && item.hold.holder == Some(index)
-                {
-                    item.hold.release();
-                }
-            }
-            MagnetHeld::Missile(i) => {
-                if let Some(missile) = self.guided_missiles.get_mut(i)
-                    && missile.hold.holder == Some(index)
-                {
-                    missile.hold.release();
-                }
-            }
-            MagnetHeld::Arrow(i) => {
-                if let Some(arrow) = self.arrows.get_mut(i)
-                    && arrow.hold.holder == Some(index)
-                {
-                    arrow.hold.release();
-                }
-            }
-            MagnetHeld::Boulder(i) => {
-                if let Some(boulder) = self.macho_boulders.get_mut(i) {
-                    boulder.held = false;
-                }
-            }
-            MagnetHeld::RevivalMarker(i) => {
-                if let Some(marker) = self.revival_marker_pool.get_mut(i)
-                    && marker.hold.holder == Some(index)
-                {
-                    marker.hold.release();
-                }
-            }
-            MagnetHeld::TeleportMarker(i) => {
-                if let Some(marker) = self.teleport_marker_pool.get_mut(i)
-                    && marker.hold.holder == Some(index)
-                {
-                    marker.hold.release();
-                }
-            }
-            MagnetHeld::Nothing
-            | MagnetHeld::Player(_)
-            | MagnetHeld::Rock(_)
-            | MagnetHeld::BlackHole(_)
-            | MagnetHeld::AbilityPickup(_)
-            | MagnetHeld::PortalShot(_) => {}
-        }
-    }
-
     fn magnet_fire_held_item(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
         let held = core::mem::take(&mut self.players[index].magnet.held);
         match held {
@@ -25277,9 +25226,15 @@ impl RolloutWorld {
         }
     }
 
+    /// A MagnetGun that exits, dies or is tunneled only forgets what it
+    /// held: the held BoplBody's Hold lapses with its own countdown
+    /// (MagnetGun.cs:356-373, BoplBody.cs:325-331).
     fn drop_magnet_held_item(&mut self, index: usize) {
-        let held = core::mem::take(&mut self.players[index].magnet.held);
-        self.magnet_release_handle(index, held);
+        if let MagnetHeld::Boulder(i) = core::mem::take(&mut self.players[index].magnet.held)
+            && let Some(boulder) = self.macho_boulders.get_mut(i)
+        {
+            boulder.held = false;
+        }
     }
 
     fn fire_magnet(&mut self, index: usize, data: &data::RolloutData) {
