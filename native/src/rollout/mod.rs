@@ -1094,18 +1094,16 @@ pub struct SpawnedEngine {
     pub relative_rotation: Fix,
     pub collider_center: Vec2,
     pub collider_rotation: Fix,
-    /// The pose SyncGameObject last copied from the collider into this
-    /// child's FixTransform (DetPhysics.cs:1653-1656, 3172-3192). A
-    /// composite's UpdatePhysicsPositions re-places the collider without it
+    /// The FixTransform pose SyncGameObject last wrote from the collider
+    /// (DetPhysics.cs:1653-1656, 3172-3192). A composite's
+    /// UpdatePhysicsPositions re-places the collider without it
     /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
-    pub transform_center: Vec2,
+    pub transform_position: Vec2,
     pub transform_rotation: Fix,
     pub surface_offset: Fix,
     pub scale: Fix,
     /// FixTransform.offset, compounded like SpawnedSpike::collider_offset.
     pub collider_offset: Vec2,
-    /// The FixTransform offset that sync placed it with, as SpawnedTeslaNode's.
-    pub transform_offset: Vec2,
     /// RocketEngine.prevScale: component offsets adopt a DPhysics scale write
     /// on the following RocketEngine updater pass.
     pub offset_scale: Fix,
@@ -1123,10 +1121,10 @@ pub struct SpawnedEngine {
 }
 
 impl SpawnedEngine {
-    /// FixTransform.position as SyncGameObject last set it: the box less its
-    /// offset, turned by its right.
-    fn transform_position(&self) -> Vec2 {
-        self.transform_center - self.transform_offset.complex_mul(Vec2::angle(self.transform_rotation))
+    /// SyncGameObject: the FixTransform takes the box's pose.
+    fn sync_transform(&mut self) {
+        self.transform_position = transform_root(self.collider_center, self.collider_offset, self.collider_rotation);
+        self.transform_rotation = self.collider_rotation;
     }
 
     /// The box collider's inverseExtents, as in SpawnedSpike.
@@ -1181,16 +1179,14 @@ pub struct SpawnedTeslaNode {
     pub relative_rotation: Fix,
     pub collider_center: Vec2,
     pub collider_rotation: Fix,
-    /// The pose SyncGameObject last copied from the collider into this
-    /// child's FixTransform (DetPhysics.cs:1653-1656, 3172-3192). A
-    /// composite's UpdatePhysicsPositions re-places the collider without it
+    /// The FixTransform pose SyncGameObject last wrote from the collider
+    /// (DetPhysics.cs:1653-1656, 3172-3192). A composite's
+    /// UpdatePhysicsPositions re-places the collider without it
     /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
-    pub transform_center: Vec2,
+    /// SetScale_DPhysicsOnly scales the live offset (`collider_offset`) at
+    /// once, but the position waits for the next sync (FixTransform.cs:99-103).
+    pub transform_position: Vec2,
     pub transform_rotation: Fix,
-    /// The FixTransform offset that sync placed it with. SetScale_DPhysicsOnly
-    /// scales the live offset (`collider_offset`) at once, but the position
-    /// waits for the next SyncGameObject (FixTransform.cs:99-103).
-    pub transform_offset: Vec2,
     pub surface_offset: Fix,
     /// SimpleSparkNode._hitBoxOffsetY, compounded on each rescale like
     /// `surface_offset`, so it drifts from the prefab offset times the scale.
@@ -1251,18 +1247,18 @@ pub struct SpawnedTeslaNode {
     pub duplicate_shake_offset: Vec2,
 }
 
-/// FixTransform.position under a collider at `center` sitting `offset` along
-/// `rotation` (DetPhysics.cs:1652-1656).
-fn transform_root(center: Vec2, offset: Vec2, rotation: Fix) -> Vec2 {
-    center - offset.complex_mul(Vec2::angle(rotation))
+impl SpawnedTeslaNode {
+    /// SyncGameObject: the FixTransform takes the circle's pose.
+    fn sync_transform(&mut self) {
+        self.transform_position = transform_root(self.collider_center, self.collider_offset, self.collider_rotation);
+        self.transform_rotation = self.collider_rotation;
+    }
 }
 
-impl SpawnedTeslaNode {
-    /// FixTransform.position as SyncGameObject last set it: the circle less
-    /// the offset it synced with, turned by its right (DetPhysics.cs:1652-1656).
-    fn transform_position(&self) -> Vec2 {
-        self.transform_center - self.transform_offset.complex_mul(Vec2::angle(self.transform_rotation))
-    }
+/// FixTransform.position under a collider centred at `center`, which sits
+/// `offset` along the transform's turn `rotation` (DetPhysics.cs:1652-1656).
+fn transform_root(center: Vec2, offset: Vec2, rotation: Fix) -> Vec2 {
+    center - offset.complex_mul(Vec2::angle(rotation))
 }
 
 /// The collider DetPhysics.MoveObjectOutOfWalls moves, as its opening
@@ -8046,14 +8042,10 @@ impl RolloutWorld {
             }
         }
         for engine in &mut self.engines {
-            engine.transform_center = engine.collider_center;
-            engine.transform_rotation = engine.collider_rotation;
-            engine.transform_offset = engine.collider_offset;
+            engine.sync_transform();
         }
         for node in &mut self.tesla_nodes {
-            node.transform_center = node.collider_center;
-            node.transform_rotation = node.collider_rotation;
-            node.transform_offset = node.collider_offset;
+            node.sync_transform();
         }
         self.run_callback_hits(data);
         self.grapple_hook_callbacks();
@@ -9234,7 +9226,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let position = engine.transform_position();
+            let position = engine.transform_position;
             let combined = self.platform_dynamics[engine.platform_index].body;
             if let Some(entity) = engine.entity.filter(|_| {
                 engine.active && !engine.macho_carried && combined.inverse_mass > Fix::ZERO
@@ -9257,7 +9249,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let position = node.transform_position();
+            let position = node.transform_position;
             let combined = self.platform_dynamics[node.platform_index].body;
             if let Some(entity) = node
                 .entity
@@ -9572,14 +9564,13 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(engine.transform_rotation);
             let offset = engine.collider_offset.complex_mul(right);
-            let root = engine.transform_position();
+            let root = engine.transform_position;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
                 let center = position + offset;
                 self.engines[index].collider_center = center;
-                self.engines[index].transform_center = center;
-                self.engines[index].transform_offset = engine.collider_offset;
+                self.engines[index].transform_position = position;
                 self.platform_dynamics[engine.platform_index].body.velocity =
                     Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
@@ -9604,14 +9595,13 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(node.transform_rotation);
             let offset = node.collider_offset.complex_mul(right);
-            let root = node.transform_position();
+            let root = node.transform_position;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
                 let center = position + offset;
                 self.tesla_nodes[index].collider_center = center;
-                self.tesla_nodes[index].transform_center = center;
-                self.tesla_nodes[index].transform_offset = node.collider_offset;
+                self.tesla_nodes[index].transform_position = position;
                 self.platform_dynamics[node.platform_index].body.velocity =
                     Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
@@ -14656,7 +14646,7 @@ impl RolloutWorld {
             relative_rotation,
             collider_center: center,
             collider_rotation: node_rotation,
-            transform_center: center,
+            transform_position: transform_root(center, collider_offset, node_rotation),
             transform_rotation: node_rotation,
             surface_offset,
             hitbox_offset: data.tesla.hitbox_offset_y * scale,
@@ -14664,7 +14654,6 @@ impl RolloutWorld {
             scale: collider_scale,
             radius: data.tesla.node_radius * collider_scale,
             collider_offset,
-            transform_offset: collider_offset,
             offset_scale: scale,
             body: data.tesla.node_body,
             child,
@@ -15023,12 +15012,11 @@ impl RolloutWorld {
             relative_rotation,
             collider_center,
             collider_rotation: rocket_rotation,
-            transform_center: collider_center,
+            transform_position: transform_root(collider_center, collider_offset, rocket_rotation),
             transform_rotation: rocket_rotation,
             surface_offset,
             scale,
             collider_offset,
-            transform_offset: collider_offset,
             offset_scale: scale,
             time: Fix::ZERO,
             phase: 0,
@@ -15726,7 +15714,7 @@ impl RolloutWorld {
                         .position(engine.local, Fix::ZERO);
                     let normal = self.platforms[platform].surface.normal(surface_position);
                     let rocket_right = Vec2::angle(engine.transform_rotation);
-                    let root = engine.transform_position();
+                    let root = engine.transform_position;
                     // RocketEngine.BlowUpSmokeTouchingTheFire (RocketEngine.cs:70)
                     // is `position + up * (offset.y * Scale) + right * (offset.x
                     // * Scale)`, and FixTransform.up is MulByI(right) = (-r.y,
@@ -16087,8 +16075,8 @@ impl RolloutWorld {
         // that operation order matters for negative Q32 products by one raw
         // unit; `right.perp() * offset.y` is algebraically equivalent but not
         // bit-identical.
-        let node_root = node.transform_position();
-        let child_root = child_node.transform_position();
+        let node_root = node.transform_position;
+        let child_root = child_node.transform_position;
         let from = node_root + node_right.perp() * node.hitbox_offset;
         let to = child_root + child_right.perp() * child_node.hitbox_offset;
         let delta = to - from;
@@ -18755,7 +18743,7 @@ impl RolloutWorld {
             };
         let desired_right = Vec2::angle(desired_rotation);
         let desired_up = desired_right.perp();
-        let old_root = source.transform_position();
+        let old_root = source.transform_position;
         let probe = old_root + desired_up * Fix::from_int(1000);
         let Ok(closest) = self.platforms[platform_index].surface.closest_point(probe) else {
             return;
@@ -18789,9 +18777,7 @@ impl RolloutWorld {
         engine.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         engine.collider_rotation = desired_rotation;
-        engine.transform_center = engine.collider_center;
-        engine.transform_rotation = desired_rotation;
-        engine.transform_offset = engine.collider_offset;
+        engine.sync_transform();
         engine.offset_scale = engine.scale;
         // RocketEngineInit's two `hitbox.Scale = scale` writes each divide the
         // inverse extents by `(1 / scale) * scale`; the offset keeps `s / s`.
@@ -18866,9 +18852,7 @@ impl RolloutWorld {
         node.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         node.collider_rotation = desired_rotation;
-        node.transform_center = node.collider_center;
-        node.transform_rotation = desired_rotation;
-        node.transform_offset = node.collider_offset;
+        node.sync_transform();
         node.hitbox_offset = data.tesla.hitbox_offset_y * node.scale;
         node.offset_scale = node.scale;
         // `hitbox.Scale = startScale` multiplies the radius by `(1 / s) * s`.
@@ -26836,7 +26820,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         // LocalPlayerPosFromPos reads the hit child's FixTransform, which
         // SyncGameObject placed at the collider less its rotated offset.
-        let source_position = source.transform_position();
+        let source_position = source.transform_position;
         let local = self.duplicate_attached_local(
             platform_index,
             source_position,
@@ -26907,12 +26891,11 @@ impl RolloutWorld {
             relative_rotation: rotation - parent_rotation,
             collider_center,
             collider_rotation: rotation,
-            transform_center: collider_center,
+            transform_position: transform_root(collider_center, source.collider_offset, rotation),
             transform_rotation: rotation,
             surface_offset,
             scale: source.scale,
             collider_offset: source.collider_offset,
-            transform_offset: source.collider_offset,
             offset_scale: source.scale,
             time: Fix::ZERO,
             phase: 0,
@@ -26945,7 +26928,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         // LocalPlayerPosFromPos reads the hit child's FixTransform, which
         // SyncGameObject placed at the collider less its rotated offset.
-        let source_position = source.transform_position();
+        let source_position = source.transform_position;
         let local = self.duplicate_attached_local(
             platform_index,
             source_position,
@@ -27004,7 +26987,7 @@ impl RolloutWorld {
             relative_rotation: rotation - parent_rotation,
             collider_center: center,
             collider_rotation: rotation,
-            transform_center: center,
+            transform_position: transform_root(center, source.collider_offset, rotation),
             transform_rotation: rotation,
             surface_offset,
             hitbox_offset: data.tesla.hitbox_offset_y * source.scale,
@@ -27013,7 +26996,6 @@ impl RolloutWorld {
             // The copy takes the source's FixTransform.offset
             // (ShootDuplicator.cs:471).
             collider_offset: source.collider_offset,
-            transform_offset: source.collider_offset,
             offset_scale: source.scale,
             body: data.tesla.node_body,
             // Instantiate copies the GameObject's layer: a copy of a lit node
@@ -28115,7 +28097,7 @@ impl RolloutWorld {
             let old = node.scale;
             let new = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
             let collider_offset = node.collider_offset * (new / old);
-            let center = node.transform_position()
+            let center = node.transform_position
                 + collider_offset.complex_mul(Vec2::angle(node.transform_rotation));
             let node = &mut self.tesla_nodes[index];
             node.collider_offset = collider_offset;
@@ -41151,7 +41133,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         assert!(world.spawn_engine(0, data::get()));
         let source = world.engines[0];
-        let source_position = source.transform_position();
+        let source_position = source.transform_position;
         let local = world.duplicate_attached_local(
             source.platform_index,
             source_position,
@@ -41527,7 +41509,6 @@ mod tests {
             phase: 1,
             scale: Fix::ONE,
             collider_offset: data.engine.rocket_collider_offset,
-            transform_offset: data.engine.rocket_collider_offset,
             offset_scale: Fix::ONE,
             platform_index: 0,
             ..SpawnedEngine::default()

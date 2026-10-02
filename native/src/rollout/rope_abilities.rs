@@ -209,7 +209,7 @@ fn parent_position(
             }
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
             let right = Vec2::angle(node.transform_rotation);
-            let root = node.transform_position();
+            let root = node.transform_position;
             Some(root + right.perp() * offset.y * node.scale + right * offset.x * node.scale)
         }
         RopeParent::Arrow(index, id) => {
@@ -223,7 +223,7 @@ fn parent_position(
             }
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
             let right = Vec2::angle(engine.transform_rotation);
-            let root = engine.transform_position();
+            let root = engine.transform_position;
             Some(root + right.perp() * offset.y * engine.scale + right * offset.x * engine.scale)
         }
     }
@@ -1597,8 +1597,8 @@ impl RolloutWorld {
                     RopeParent::Spike(spike, _) => {
                         spike_transform(&self.spike_attacks[spike]).0
                     }
-                    RopeParent::Node(node, _) => self.tesla_nodes[node].transform_position(),
-                    RopeParent::Engine(engine, _) => self.engines[engine].transform_position(),
+                    RopeParent::Node(node, _) => self.tesla_nodes[node].transform_position,
+                    RopeParent::Engine(engine, _) => self.engines[engine].transform_position,
                     _ => position,
                 };
                 let arm = (self.ropes[index].platform_anchor - centre).normalized_safe();
@@ -2020,7 +2020,7 @@ impl RolloutWorld {
                 if !engine.rocket_box(&self.entity_inverse_extents).overlaps(position) {
                     return;
                 }
-                offset = (position - engine.transform_position())
+                offset = (position - engine.transform_position)
                     .complex_mul(Vec2::angle(-engine.transform_rotation))
                     / engine.scale;
                 RopeParent::Engine(index, engine.appended)
