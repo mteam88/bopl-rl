@@ -8061,13 +8061,11 @@ impl RolloutWorld {
         }
         self.run_callback_hits(data);
         self.grapple_hook_callbacks();
-        // The live form's PlayerPhysics.LateUpdateSim ends clearing its
-        // jumpedThisFrame (PlayerPhysics.cs:163); one that jumped out is
-        // inactive by now and keeps it.
+        // The live PlayerPhysics.LateUpdateSim, the form's or the slime's,
+        // ends clearing its jumpedThisFrame (PlayerPhysics.cs:163); a form
+        // that jumped out is inactive by now and keeps it.
         for slot in &mut self.players {
-            if slot.active != ActiveAbility::None {
-                slot.base.jumped_this_frame = false;
-            }
+            slot.base.jumped_this_frame = false;
         }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
