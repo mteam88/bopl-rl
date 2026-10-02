@@ -13840,7 +13840,8 @@ impl RolloutWorld {
                 },
             })
         {
-            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, false, true);
+            // CastSpell.cs:238.
+            self.kill_with(index, ENVIRONMENT, CAUSE_SQUISHED, KillRoute::UPDATER, true, true, true);
             return true;
         }
         let body = &mut self.players[index].base;
@@ -30462,12 +30463,12 @@ impl RolloutWorld {
     /// and pauses the form until the same object is restored.
     fn platform_ability_platform_live(&mut self, owner: usize, platform_index: usize) -> bool {
         if platform_index == usize::MAX || platform_index >= self.platforms.len() {
-            self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT, false, true);
+            self.kill_with(owner, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, true, true, true);
             return false;
         }
         let entity = self.platform_entities[platform_index];
         if self.entities[entity].flags & (E_REMOVED | E_DESTROYED) != 0 {
-            self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT, false, true);
+            self.kill_with(owner, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, true, true, true);
             return false;
         }
         self.platforms[platform_index].active && self.entities[entity].flags & E_ACTIVE != 0
@@ -35873,7 +35874,8 @@ impl RolloutWorld {
     }
 
     /// `by_callback`: the death came from a DetPhysics collision callback
-    /// (after this pass's contacts) rather than an updatable.
+    /// (after this pass's contacts) rather than an updatable. A killPlayer
+    /// that ignores invulnerability calls kill_with itself.
     pub fn kill(
         &mut self,
         index: usize,
@@ -35888,11 +35890,8 @@ impl RolloutWorld {
         if by_callback && self.players[index].active == ActiveAbility::Rock {
             return false;
         }
-        // Scene-boundary deaths pass ignoreInvulnerability=true; ordinary
-        // collision callbacks do not.
-        let ignore_invulnerability = killer == ENVIRONMENT && cause == CAUSE_ACCIDENT;
         let route = if by_callback { KillRoute::ON_COLLIDE } else { KillRoute::UPDATER };
-        self.kill_with(index, killer, cause, route, spawn_effect, true, ignore_invulnerability)
+        self.kill_with(index, killer, cause, route, spawn_effect, true, false)
     }
 
     /// Player.SetPosition from an extra body's SlimeController: with the
