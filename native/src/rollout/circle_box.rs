@@ -266,7 +266,7 @@ impl RolloutWorld {
         if let Slime::Player(index) = victim {
             let slot = &self.players[index];
             let hierarchy = collider.or_else(|| self.part_entity(other)).map_or(0, |entity| self.entities[entity].hierarchy);
-            if hierarchy != 0 && slot.ignored.contains(&hierarchy) {
+            if slot.ignores(hierarchy) {
                 return None;
             }
             if let Part::Explosion(Blast::Beam(i)) = other

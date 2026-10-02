@@ -484,6 +484,7 @@ const CAUSE_BEAMED: u32 = 4;
 const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// PlayerCollision.IgnoreColliderInd (PlayerCollision.cs:8-16).
 const IGNORE_METEOR: usize = 0;
+const IGNORE_MAGNET: usize = 1;
 const IGNORE_ROLL: usize = 2;
 const IGNORE_COMBO: usize = 3;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
@@ -3822,6 +3823,12 @@ impl PlayerSlot {
             self.base.physics_scale = scale;
         }
         self.base.radius
+    }
+
+    /// PlayerCollision.KillPlayerOnCollision's ignoredCollider test on the
+    /// row hierarchy of the collider met (PlayerCollision.cs:319-325).
+    fn ignores(&self, hierarchy: u32) -> bool {
+        hierarchy != 0 && self.ignored.contains(&hierarchy)
     }
 
     /// Ability.KillPlayersOnContact of the form whose collider `entity` is:
@@ -13062,7 +13069,9 @@ impl RolloutWorld {
                 // MagnetGun.ExitAbility (MagnetGun.cs:356-373) keeps what it
                 // held: the held BoplBody's Hold lapses with its own countdown,
                 // and a Boulder's own UpdateSim drops it once nobody Holds it.
+                // Its PlayerCollision stops ignoring what it held.
                 let slot = &mut self.players[index];
+                slot.ignored[IGNORE_MAGNET] = 0;
                 slot.base.set_rotation(Fix::ZERO);
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 info.take_body(&slot.base);
@@ -13278,7 +13287,10 @@ impl RolloutWorld {
         slot.base.set_rotation(Fix::ZERO);
         let aim = match slot.active {
             ActiveAbility::Bow => slot.bow.aim,
-            ActiveAbility::Magnet => slot.magnet.aim,
+            ActiveAbility::Magnet => {
+                slot.ignored[IGNORE_MAGNET] = 0;
+                slot.magnet.aim
+            }
             _ => slot.gun.aim,
         };
         let mut info = ExitInfo { just_landed: true, facing_right: aim.x >= Fix::ZERO, ..ExitInfo::default() };
@@ -23753,6 +23765,10 @@ impl RolloutWorld {
         if self.players[index].magnet.phase == 3 && !self.magnet_update_held_item(index, data) {
             return;
         }
+        // Only a locked gun ignores what it took (MagnetGun.cs:1143-1146).
+        if self.players[index].magnet.phase != 3 {
+            self.players[index].ignored[IGNORE_MAGNET] = 0;
+        }
 
         let button = 2u8 << self.players[index].active_slot;
         if !frozen && action.buttons & button == 0 && !self.players[index].magnet.has_fired {
@@ -24071,7 +24087,7 @@ impl RolloutWorld {
         // The nearest hit FixTransform, the first of equals, past a wall that
         // is not a boulder and a slime that hasn't spawned (MagnetGun.cs:597-616).
         let mut nearest = Fix::MAX;
-        let mut selected = MagnetHeld::Nothing;
+        let mut selected = None;
         for &entity in &hits[..count] {
             let Some((held, position)) = self.magnet_pickup_target(entity) else {
                 continue;
@@ -24079,11 +24095,16 @@ impl RolloutWorld {
             let distance = (position - firepoint).length_squared();
             if distance < nearest {
                 nearest = distance;
-                selected = held;
+                selected = Some((held, entity));
             }
         }
-        if selected != MagnetHeld::Nothing {
-            self.magnet_take_target(index, selected, data);
+        if let Some((held, entity)) = selected {
+            // The gun's PlayerCollision ignores the collider it takes, but a
+            // BlackHole's (MagnetGun.cs:629-632).
+            if !matches!(held, MagnetHeld::BlackHole(_)) {
+                self.players[index].ignored[IGNORE_MAGNET] = self.entities[entity].hierarchy;
+            }
+            self.magnet_take_target(index, held, data);
         }
     }
 
@@ -24273,6 +24294,8 @@ impl RolloutWorld {
                 if let Slime::Player(i) = slime
                     && self.players[i].active != ActiveAbility::None
                 {
+                    // Stealing a form drops the ignore again (MagnetGun.cs:677).
+                    self.players[index].ignored[IGNORE_MAGNET] = 0;
                     let entity = Self::hurtbox_entity(&self.players[i]);
                     let frozen = Some(FrozenForm { tick: self.tick, entity, posed: true });
                     let handed =
@@ -35420,19 +35443,9 @@ impl RolloutWorld {
         }
     }
 
-    /// The boulder a locked Magnet holds: MagnetGun has its PlayerCollision
-    /// ignore the grabbed collider until the lock ends.
-    fn magnet_locked_platform(&self, slot: &PlayerSlot) -> Option<usize> {
-        if slot.active == ActiveAbility::Magnet && slot.magnet.phase == 3 {
-            self.magnet_held_boulder(&slot.magnet)
-        } else {
-            None
-        }
-    }
-
     /// PlayerCollision.OnCollide with a wall-layer rounded rect
     /// (PlayerCollision.cs:320-347), from the callback queue: past the
-    /// ignored colliders (a locked Magnet's boulder), a squishable slime
+    /// ignored colliders (a Magnet's held boulder), a squishable slime
     /// grounded on a live wall other than this one dies when the collider the
     /// manifold copied contains its squish point, the body centre on the
     /// stock prefab. Roll enables isSquishable on entry, then ReleaseDash
@@ -35445,7 +35458,7 @@ impl RolloutWorld {
             Slime::Player(index) => {
                 let slot = &self.players[index];
                 (
-                    self.magnet_locked_platform(slot) == Some(wall),
+                    slot.ignores(self.entities[self.platform_entities[wall]].hierarchy),
                     slot.active != ActiveAbility::Roll || !slot.roll.lethal,
                     slot.ground_destroyed.is_some(),
                 )
