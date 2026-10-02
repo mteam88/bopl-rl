@@ -36105,6 +36105,24 @@ impl RolloutWorld {
         form_exit: bool,
         ignore_invulnerability: bool,
     ) -> bool {
+        // Poke Ball sets the slime's PlayerCollision mask 16 while a victim
+        // is inside; a form's own PlayerCollision has no such mask.
+        let in_form = self.players[index].ability_entered;
+        let invulnerable = self.players[index].invulnerable != 0;
+        let owner = self.players[index].owner;
+        // KillPlayerOnCollision returns on an invulnerable PlayerCollision or
+        // a spent counter before it sets wasKilledThisFrame, and all of it
+        // runs ahead of killPlayer, so none of these refusals touch the rope
+        // (PlayerCollision.cs:305-316, OnCollide's wasKilledThisFrame test).
+        if route.on_collide {
+            if (invulnerable && !in_form)
+                || self.players[index].was_killed_tick == Some(self.tick)
+                || self.players[owner].bodies_alive <= 0
+            {
+                return false;
+            }
+            self.players[index].was_killed_tick = Some(self.tick);
+        }
         // PlayerCollision.killPlayer detaches the slime's rope as its very
         // first action, ahead of the invulnerability early-return, so even a
         // kill that returns false marks the rope detached
@@ -36131,28 +36149,15 @@ impl RolloutWorld {
         // PlayerCollision.killPlayer still destroys the slime and its ability
         // objects around that call (DropAbilities returns once the game ended).
         let already_won = self.players[index].won;
-        // Poke Ball sets the slime's PlayerCollision mask 16 while a victim
-        // is inside. A form's death reaches the slime only through the
+        // A form's death reaches the slime only through the
         // killPlayer(ignoreInvulnerability: false) at the end of its dead
-        // exit, which that mask refuses: the form exits and the slime lives
-        // on (SlimeController.cs:215-221). The steps of the slime's killPlayer
-        // taken ahead of the form's exit below wait on that answer.
-        let in_form = self.players[index].ability_entered;
-        let invulnerable = self.players[index].invulnerable != 0;
+        // exit, which the Poke Ball mask refuses: the form exits and the
+        // slime lives on (SlimeController.cs:215-221). The steps of the
+        // slime's killPlayer taken ahead of the form's exit below wait on
+        // that answer.
         let slime_kill_refused = in_form && invulnerable;
         if invulnerable && !in_form && !ignore_invulnerability {
             return false;
-        }
-        let owner = self.players[index].owner;
-        // KillPlayerOnCollision also returns once the player's counter is
-        // spent, before it sets wasKilledThisFrame (PlayerCollision.cs:305-316).
-        if route.on_collide {
-            if self.players[index].was_killed_tick == Some(self.tick)
-                || self.players[owner].bodies_alive <= 0
-            {
-                return false;
-            }
-            self.players[index].was_killed_tick = Some(self.tick);
         }
         let callback = route.callback();
         // A killPlayer on a slime a callback already destroyed this pass finds
