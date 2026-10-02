@@ -24150,8 +24150,7 @@ impl RolloutWorld {
             return Some((MagnetHeld::PortalShot(index), self.portal_shots[index].position));
         }
         if let Some(index) = self.black_holes.iter().position(|hole| matches(hole.active, hole.entity)) {
-            let hole = &self.black_holes[index];
-            return (hole.mass > Fix::ZERO).then_some((MagnetHeld::BlackHole(index), hole.position));
+            return Some((MagnetHeld::BlackHole(index), self.black_holes[index].position));
         }
         if let Some(index) = self.guided_missiles.iter().position(|missile| matches(missile.active, missile.entity)) {
             return Some((MagnetHeld::Missile(index), self.guided_missiles[index].position));
@@ -24242,26 +24241,36 @@ impl RolloutWorld {
             }
             MagnetHeld::Nothing => return,
         };
-        // MagnetGun exits an ability form with an ungrounded packet placed at
-        // its CurrentFirePoint.
-        let firepoint = self.magnet_firepoint(index, data);
-
-        if self.players[index].magnet.phase == 1 {
-            self.players[index].magnet.enter_pull();
-        }
+        // The nearest hit sets extraOffset and starts the pull before anything
+        // can fail (MagnetGun.cs:621-627, 638, 715).
         let mut extra = Vec2::RIGHT * Fix::from_f32(1.5) * (scale.max(Fix::ONE) - Fix::ONE);
         if matches!(held, MagnetHeld::Rock(_)) {
             extra += data.magnet.player_rock_extra_offset;
         } else if matches!(held, MagnetHeld::Boulder(_)) {
             extra = data.magnet.boulder_extra_offset;
         }
+        let slot = &mut self.players[index];
+        slot.magnet_extra_offsets[slot.active_slot] = extra;
+        if slot.magnet.phase == 1 {
+            slot.magnet.enter_pull();
+        }
+        // A Black Hole with no mass left is no pickup: heldItemState nothing,
+        // and the gun stays unlocked (MagnetGun.cs:693-698).
+        if let MagnetHeld::BlackHole(i) = held
+            && self.black_holes[i].mass <= Fix::ZERO
+        {
+            self.players[index].magnet.held = MagnetHeld::Nothing;
+            return;
+        }
+        // MagnetGun exits an ability form with an ungrounded packet placed at
+        // its CurrentFirePoint, past the new extraOffset.
+        let firepoint = self.magnet_firepoint(index, data);
         {
             let base = self.magnet_held_base(held);
             let slot = &mut self.players[index];
             slot.magnet.held = held;
             slot.magnet.held_base = base;
             slot.magnet.held_position = position;
-            slot.magnet_extra_offsets[slot.active_slot] = extra;
             let divisor = if boulder_recoil {
                 Fix::from_int(35)
             } else {
