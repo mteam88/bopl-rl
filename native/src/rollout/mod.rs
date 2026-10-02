@@ -9898,10 +9898,10 @@ impl RolloutWorld {
 
     /// The rest of a biting slime's pass. OldUpdate returns before input,
     /// casting and the state switch, and UpdateSim's own part follows
-    /// (`biting_slime_update`). PlayerBody still integrates, then the slime's
-    /// SpriteAnimator, a child after SlimeController, steps the eating
-    /// animations.
-    fn biting_tick(&mut self, index: usize, action: Action) {
+    /// (`biting_slime_update`). PlayerBody still steps, a hooked body's rope
+    /// included, then the slime's SpriteAnimator, a child after
+    /// SlimeController, steps the eating animations.
+    fn biting_tick(&mut self, index: usize, action: Action, jump_pressed: bool) {
         self.players[index].base.previous_jump = action.buttons & 1 != 0;
         self.biting_slime_update(index);
         let slot = &mut self.players[index];
@@ -9910,7 +9910,7 @@ impl RolloutWorld {
             slot.base.out_of_bounds = true;
             return;
         }
-        slot.base.integrate();
+        self.form_body_move(index, jump_pressed);
         self.eating_animation_step(index);
     }
 
@@ -10310,7 +10310,7 @@ impl RolloutWorld {
         }
         if !in_ability && self.players[index].obs_state == STATE_BITING {
             self.players[index].slime_updated = true;
-            self.biting_tick(index, action);
+            self.biting_tick(index, action, jump_pressed);
             return;
         }
         // Ability entry (held button, ready, castable, not already in one).
