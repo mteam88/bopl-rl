@@ -121,12 +121,12 @@ pub struct Player {
     #[serde(default = "default_true")]
     pub(crate) physics_enabled: bool,
     /// SlimeController.OldUpdate returns as soon as it has entered an ability
-    /// (SlimeController.cs:824-831), so neither the jump block at 867-871 nor
-    /// the `prevInput` store at 889 runs on a cast pass. Set for the instant
+    /// (SlimeController.cs:824-831), so neither the state switch, the jump
+    /// block at 867-871 nor the `prevInput` store at 889 runs on a cast pass. Set for the instant
     /// abilities, which keep the ordinary slime body; the form abilities are
     /// already held out of both by `PlayerSlot::active`. Scoped to one pass:
     /// `player_tick` clears it, the cast sets it, and the movement below plus
-    /// `RolloutWorld::update_obs_state` read it without consuming it.
+    /// `RolloutWorld::slime_tail` read it without consuming it.
     #[serde(default)]
     pub(crate) instant_cast_this_pass: bool,
     /// `SlimeController.wasUpsideDown`: `Jump()` records the sign of the

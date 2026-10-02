@@ -2192,10 +2192,6 @@ struct SlimeMut<'a> {
     /// PlayerBody.ropeBody and topAttachment.
     rope: Option<usize>,
     rope_top: bool,
-    /// A player's slime publishes its state switch after the pass
-    /// (`update_obs_state`), which this skips; a clone switches in its own
-    /// update.
-    switch_skipped: Option<&'a mut bool>,
 }
 
 impl SlimeMut<'_> {
@@ -2228,10 +2224,7 @@ impl SlimeMut<'_> {
         if self.base.attach_upside_down == Some(true) {
             *self.facing_right = !*self.facing_right;
         }
-        begin_land(self.obs_state, self.state_ticks, false);
-        if let Some(skipped) = self.switch_skipped.as_deref_mut() {
-            *skipped = true;
-        }
+        begin_land(self.obs_state, self.state_ticks);
     }
 }
 
@@ -3137,7 +3130,6 @@ impl AbilitylessClone {
             ground_destroyed: &mut self.ground_destroyed,
             rope: self.grip.rope,
             rope_top: self.grip.top,
-            switch_skipped: None,
         }
     }
 
@@ -3374,20 +3366,6 @@ pub struct PlayerSlot {
     /// EnterFall after a grounded ragdoll timeout has no new landing callback,
     /// so its visible state stays Fall until the body detaches.
     pub ragdoll_grounded_fall: bool,
-    /// Skips this tick's SlimeController state switch. Two callers need it:
-    /// `SlimeController.OldUpdate` returns straight after `EnterAbility`, so
-    /// the switch never runs on the tick a cast starts (instant abilities
-    /// included, which leave no `active` form behind to freeze it), and
-    /// PlantObjectOnPlatform's recover callback runs after SlimeController's
-    /// own pass, so the grounded EnterStop/EnterIdle it installs survives the
-    /// exit tick untouched and the state machine resumes on the next one.
-    pub obs_state_held_this_tick: bool,
-    /// OldUpdate did not reach the state switch this pass: the slime
-    /// GameObject was disabled when its updater slot came round, or it was
-    /// still biting then and the eating animation finished after it.
-    pub obs_state_disabled_this_tick: bool,
-    /// A rewind suppressed the slime's input when its updater slot came round.
-    pub obs_input_suppressed_this_tick: bool,
     /// One live Poke Ball pinning this victim. More than one physics callback
     /// can capture the same slime from a prebuilt manifold set; this points to
     /// a remaining captor when another one pops.
@@ -3787,7 +3765,6 @@ impl PlayerSlot {
             ground_destroyed: &mut self.ground_destroyed,
             rope: self.rope,
             rope_top: self.rope_top,
-            switch_skipped: Some(&mut self.obs_state_disabled_this_tick),
         }
     }
 
@@ -4183,8 +4160,8 @@ impl PlayerSlot {
         self.base.scale = scale;
     }
 
-    fn begin_land(&mut self, animator_ran: bool) {
-        begin_land(&mut self.obs_state, &mut self.state_ticks, animator_ran);
+    fn begin_land(&mut self) {
+        begin_land(&mut self.obs_state, &mut self.state_ticks);
     }
 
     /// The empty player prefab SpawnClone instantiates (PlayerCollision.cs:
@@ -4198,10 +4175,7 @@ impl PlayerSlot {
 
     /// SlimeController.EnterFall ends in VelocityBasedRaycasts
     /// (attachToGroundIfHit), which may land an airborne slime at once
-    /// (SlimeController.cs:263-272). A landing on an exit pass begins the land
-    /// animation after the slime's SpriteAnimator (hierarchy 100000007, before
-    /// every ability component) has already run; `fall_state` marks that for
-    /// `begin_land`.
+    /// (SlimeController.cs:263-272).
     fn enter_fall(&mut self, walls: &mut impl Walls) {
         self.fall_state();
         // The rays' attachToGround callback enters State.land at once and
@@ -4211,7 +4185,7 @@ impl PlayerSlot {
             if self.base.attach_upside_down == Some(true) {
                 self.facing_right = !self.facing_right;
             }
-            self.begin_land(false);
+            self.begin_land();
         }
     }
 
@@ -4220,13 +4194,8 @@ impl PlayerSlot {
         if !self.base.grounded {
             self.align_transform_air();
         }
-        // The disabled slime's OldUpdate already passed this updater pass, so
-        // its closing AlignTransformAir waits for the next one. State.fall's
-        // state_ticks 1 tells `begin_land` the animator already ran; the state
-        // switch clears it on any pass that ends airborne.
-        self.obs_state_held_this_tick = true;
         self.obs_state = STATE_FALL;
-        self.state_ticks = 1;
+        self.state_ticks = 0;
     }
 
     /// EnterFall's AlignTransformAir, against the slime's stale inputVector
@@ -4245,18 +4214,14 @@ impl PlayerSlot {
 
 /// SlimeController.attachToGround: State.land, and the land animation whose
 /// setStateToIdle callback comes on the animator's LAND_TICKS + 1th update
-/// (SlimeController.cs:1126-1129). Every landing comes before this pass's
-/// `update_obs_state`, which counts the pass off it. A slime whose
-/// SpriteAnimator (hierarchy 100000007, right after SlimeController and before
-/// every ability component) does not count this pass starts the animation's
-/// count on the next one: an ability exit, Roll or a Magnet holder landed it
-/// after the animator ran, or a non-instant ability disabled the slime with
-/// its animator (SlimeController.cs:190, 687-690). An exit's EnterFall marks
-/// State.fall for this (`PlayerSlot::fall_state`).
-fn begin_land(obs_state: &mut u32, state_ticks: &mut u32, animator_ran: bool) {
-    let after_exit = *obs_state == STATE_FALL && *state_ticks == 1;
+/// (SlimeController.cs:1126-1129). The slime's SpriteAnimator (hierarchy
+/// 100000007, right after SlimeController and before every ability
+/// component) counts its updates in `slime_tail`, so a landing ahead of it in
+/// the slime's turn is counted that pass, and one after it (an ability exit,
+/// Roll, a Magnet holder) from the next.
+fn begin_land(obs_state: &mut u32, state_ticks: &mut u32) {
     *obs_state = STATE_LAND;
-    *state_ticks = LAND_TICKS + 1 + u32::from(animator_ran || after_exit);
+    *state_ticks = LAND_TICKS + 1;
 }
 
 /// What a ragdolled SlimeController's pass did with its ragdoll.
@@ -4569,8 +4534,6 @@ struct PlatformScratch {
     /// Bodies whose form entry recorded the Player's form flags before the
     /// turns ahead of the form's own.
     form_flags_taken: u16,
-    /// Bodies whose turn this pass took the frozen-player branch.
-    frozen_turns: u16,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -6071,9 +6034,6 @@ impl RolloutWorld {
                 pinned_from: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
                 ragdoll_grounded_fall: false,
-                obs_state_held_this_tick: false,
-                obs_state_disabled_this_tick: false,
-                obs_input_suppressed_this_tick: false,
                 captured_by_ball: None,
                 poke_invulnerable: false,
                 was_killed_tick: None,
@@ -7206,33 +7166,32 @@ impl RolloutWorld {
             }
         }
         for (index, action) in actions.iter().enumerate() {
-            self.update_obs_state(index, action.direction());
+            self.slime_tail(index, action.direction(), false);
         }
     }
 
-    /// SlimeController's observable state machine, evaluated once per tick
-    /// after physics. Frozen while an ability (dash included) runs, because
-    /// EnterAbility returns before the state switch and nothing ever assigns
+    /// The tail of SlimeController.OldUpdate in the slime's own turn - the
+    /// state switch, `prevInput` and the closing AlignTransformAir, read
+    /// against the Move that follows it - and then the slime's SpriteAnimator,
+    /// which updates right after SlimeController (hierarchy 100000007).
+    /// Frozen while an ability (dash included) runs, because EnterAbility
+    /// returns before the state switch and nothing ever assigns
     /// State.ability. `land`/`stop`/`turn` last exactly their animation and
     /// then chain like the .NET callbacks (land->idle, stop->idle,
-    /// turn->run); reversals while running pass through `stop`.
-    fn update_obs_state(&mut self, index: usize, dir: Vec2) {
+    /// turn->run); reversals while running pass through `stop`. A pass whose
+    /// OldUpdate returned before the switch (ragdoll or biting at
+    /// SlimeController.cs:787, a disabled slime) never gets here.
+    fn slime_tail(&mut self, index: usize, dir: Vec2, suppressed: bool) {
         // The slime's SpriteAnimator holds while time is stopped for it
         // (SpriteAnimator.cs:85-102), and with it the animation callbacks.
         let stopped_for = self.is_time_stopped_for(index);
         let slot = &mut self.players[index];
-        let held = std::mem::take(&mut slot.obs_state_held_this_tick);
-        let disabled = std::mem::take(&mut slot.obs_state_disabled_this_tick);
         // SlimeController.suppressInput zeroes inputVector, fix and flag5
         // (SlimeController.cs:806-814), but `fix2` was already taken from the
         // stick, so a slime held still by a rewind still faces right on the
         // ground when the stick points into it.
         let pressed = dir;
-        let dir = if std::mem::take(&mut slot.obs_input_suppressed_this_tick) {
-            Vec2::ZERO
-        } else {
-            dir
-        };
+        let dir = if suppressed { Vec2::ZERO } else { dir };
         // A timed ragdoll that expired on the ground leaves State.fall on an
         // attached slime until something attaches it again: a Move that hops
         // onto another surface fires attachToGround and lands it.
@@ -7250,9 +7209,6 @@ impl RolloutWorld {
             || slot.obs_state == STATE_BITING
             || slot.active != ActiveAbility::None
             || slot.base.dash.active
-            // A Teleport or Blink tunnel that disabled the slime before its
-            // updater slot stops both SlimeController and its SpriteAnimator.
-            || disabled
         {
             return;
         }
@@ -7265,12 +7221,11 @@ impl RolloutWorld {
             &mut slot.prev_input_align,
             dir,
             pressed,
-            held,
             animates,
         );
     }
 
-    /// The part of `update_obs_state` an ability-less clone's SlimeController
+    /// The part of `slime_tail` an ability-less clone's SlimeController
     /// runs as well: the grounded/airborne test, AlignTransformAir and
     /// `switch (currentState)`.
     fn slime_state_switch(
@@ -7281,9 +7236,11 @@ impl RolloutWorld {
         prev_align: &mut Fix,
         dir: Vec2,
         pressed: Vec2,
-        held: bool,
         animates: bool,
     ) {
+        // OldUpdate returned at EnterAbility (SlimeController.cs:828-830)
+        // after an instant cast, which leaves the slime and its animator live.
+        let held = base.instant_cast_this_pass;
         // SlimeController stores this pass's ground alignment in `prevInput`
         // at the end of OldUpdate (SlimeController.cs:889), on every pass that
         // reaches the state switch - airborne included.
@@ -7336,11 +7293,8 @@ impl RolloutWorld {
         };
         // OldUpdate returns at EnterAbility before reaching the `prevInput =
         // fix` store at SlimeController.cs:889, so a cast pass leaves the
-        // previous pass's alignment in place. `obs_state_held_this_tick` is
-        // not the test here: PlantObjectOnPlatform's exit holds the state
-        // switch from a callback that runs *after* OldUpdate has already
-        // stored `prevInput`.
-        let previous_align = if base.instant_cast_this_pass {
+        // previous pass's alignment in place.
+        let previous_align = if held {
             *prev_align
         } else {
             std::mem::replace(prev_align, ground_align)
@@ -7428,7 +7382,7 @@ impl RolloutWorld {
                 {
                     *facing_right = align >= Fix::ZERO;
                 }
-                begin_land(obs_state, state_ticks, false);
+                begin_land(obs_state, state_ticks);
                 // This switch is the pass's count off the land.
                 *state_ticks -= 1;
             }
@@ -7640,7 +7594,6 @@ impl RolloutWorld {
         // the start of the pass. DetPhysics observes any scale written by the
         // effect later in this same pass.
         let updater_dt = DT * self.player_time_scale;
-        let time_stop_protected_at_pass_start = self.time_stop_protected;
         // GameSessionHandler (hierarchy 100) runs before every instantiated
         // player/ability prefab (100,000,000+). A death produced by a player
         // component or DetPhysics is therefore visible to the match result
@@ -7733,7 +7686,6 @@ impl RolloutWorld {
         // parked for a stock choice (Updater.cs:248-257): a clone whose turn
         // comes ahead of its owner's already reads this pass's jump edge, and
         // the edge after a Time Stop compares with the last pass's buttons.
-        self.scratch.frozen_turns = 0;
         self.scratch.clone_jump_pressed = [false; MAX_BODIES];
         for &index in &player_order[..player_count] {
             if index >= self.player_count && !self.players[index].base.alive {
@@ -7905,23 +7857,6 @@ impl RolloutWorld {
             {
                 self.entities[entity].x = orb.position.x.raw();
                 self.entities[entity].y = orb.position.y.raw();
-            }
-        }
-        // DetPhysics.Simulate syncs every collider from the body position the
-        // updater pass left (Updater.cs:303-323); a grounded slime's body only
-        // moves to its new surface local in PlayerPhysics.LateUpdateSim
-        // (PlayerPhysics.cs:138-146), after the contacts below.
-        for index in 0..self.players.len().min(player_count) {
-            let action = self.scratch.clone_actions[self.players[index].owner];
-            // The TimeStop effect can restore the global scale later in this
-            // updater pass. DetPhysics still observes the zero delta that was
-            // captured at the pass start and retains frozen colliders once
-            // more; they resume synchronization on the following pass.
-            let frozen =
-                updater_dt < DT * Fix::from_f32(0.01) && !time_stop_protected_at_pass_start[index];
-            if !frozen || self.scratch.frozen_turns & (1 << index) == 0 {
-                let input = action.input_direction(self.players[index].keyboard);
-                self.update_obs_state(index, input);
             }
         }
         self.abilityless_clones_tick(data, updater_dt);
@@ -10061,7 +9996,6 @@ impl RolloutWorld {
                 // OldUpdate that returned while biting (SlimeController.cs:787).
                 slot.obs_state = STATE_IDLE;
                 slot.state_ticks = 0;
-                slot.obs_state_disabled_this_tick = true;
             }
             Some(EatingPhase::Chew) | None => {}
         }
@@ -10171,11 +10105,11 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) {
         // Scoped to this pass: only a cast below sets it, and the movement at
-        // the end of this function and `update_obs_state` only read it.
+        // the end of this function and `slime_tail` only read it.
         self.players[index].base.instant_cast_this_pass = false;
         // Also scoped to this pass: PlayerPhysics' landing raycasts (in the
         // gravity step below) and Move's raycasts both fire attachToGround,
-        // and `update_obs_state` consumes whichever one landed the body.
+        // and `slime_tail` consumes whichever one landed the body.
         self.players[index].base.begin_pass();
         self.players[index].pass_start = (self.tick, self.players[index].base.position);
         self.players[index].rewind.in_form_at_pass =
@@ -10202,7 +10136,6 @@ impl RolloutWorld {
         if !self.hittable(index) || !self.players[index].has_spawned {
             if self.players[index].teleport_effect_active || self.players[index].blink_tunnel_active
             {
-                self.players[index].obs_state_disabled_this_tick = true;
                 return;
             }
             self.respawn_tick(index, data);
@@ -10260,7 +10193,6 @@ impl RolloutWorld {
             slot.reported_position = slot.base.position;
             slot.reported_tick = tick;
             slot.base.capture_pre_move(&self.platforms);
-            slot.obs_input_suppressed_this_tick = true;
             self.advance_slime_cooldowns(index);
             // The same loop runs the rope abilities' UpdateCooldowns, which
             // see the rope BeginRewind let go (SlimeController.cs:737-752).
@@ -10305,6 +10237,8 @@ impl RolloutWorld {
             self.form_body_move(index, jump_pressed);
             if biting {
                 self.eating_animation_step(index);
+            } else {
+                self.slime_tail(index, movement_input, true);
             }
             return;
         }
@@ -10427,9 +10361,9 @@ impl RolloutWorld {
             // Everything above is PlayerPhysics.UpdateSim; everything below is
             // SlimeController.UpdateSim, which runs OldUpdate in full before
             // it ever calls PlayerPhysics.Move (SlimeController.cs:1067 vs
-            // 1084). `update_obs_state` is the tail of OldUpdate but runs at
-            // the end of the tick, so the ground frame OldUpdate actually read
-            // has to be carried across to it.
+            // 1084). `slime_tail` reads OldUpdate's switch against that Move
+            // at the end of this turn, so the ground frame OldUpdate actually
+            // read is kept for it.
             slot.base.capture_pre_move(&self.platforms);
             // Player.UpdatePlayer published before SlimeController discovers
             // that an attached Blink wall was disabled. Preserve that value
@@ -10511,7 +10445,7 @@ impl RolloutWorld {
                     // (SlimeController.cs:1126-1128) before EnterAbility
                     // freezes the state machine. A ceiling landing flipped
                     // the sprite in the same callback, so the ability aims
-                    // from the flipped facing. The held update_obs_state
+                    // from the flipped facing. The held slime_tail
                     // counts this pass, which the land animation also does.
                     // A timed ragdoll that expired on the ground left
                     // State.fall on a slime that stays attached
@@ -10522,7 +10456,7 @@ impl RolloutWorld {
                         if slot.base.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
-                        slot.begin_land(false);
+                        slot.begin_land();
                     }
                     // The first pass after a tunnel: OldUpdate's publish of the
                     // pre-entry body wins the tie against EnterAbility's and
@@ -10551,7 +10485,7 @@ impl RolloutWorld {
                         // its attachToGround flips the slime's sprite after
                         // the cast read the facing (:1131-1134).
                         landing_flip = frozen.attach_upside_down == Some(true);
-                        slot.begin_land(!data.abilities[ability as usize].instant);
+                        slot.begin_land();
                     }
                     // EnterAbilityClearRope leaves the slime's PlayerBody
                     // this post-gravity history for the form's exit.
@@ -10592,13 +10526,6 @@ impl RolloutWorld {
                     // Ability.EnterAbility scales the enabled form collider
                     // from Player.Scale before invoking its components.
                     slot.base.scale = slot.player_scale;
-                    // SlimeController.OldUpdate returns immediately after
-                    // EnterAbility (SlimeController.cs:828-830), so this tick's
-                    // state switch never runs. A form ability is also caught by
-                    // the `active` guard in update_obs_state, but an instant
-                    // ability leaves nothing behind, and without this its aim
-                    // direction would be read as a run/stop input.
-                    slot.obs_state_held_this_tick = true;
                 }
                 match ability {
                     ABILITY_GRAPPLING_HOOK => {
@@ -12250,12 +12177,13 @@ impl RolloutWorld {
             if slot.base.attach_upside_down == Some(true) {
                 slot.facing_right = !slot.facing_right;
             }
-            slot.begin_land(false);
+            slot.begin_land();
         }
         // SlimeController writes Player.Scale to its hurtbox after OldUpdate;
         // PlayerPhysics observes this FixTransform scale on the next pass.
         let scale = self.players[index].player_scale;
         self.players[index].set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
+        self.slime_tail(index, movement_input, false);
     }
 
     /// Roll.UpdateSim/OldUpdate. Ground travel is split exactly like the
@@ -13649,12 +13577,13 @@ impl RolloutWorld {
         if slot.base.grounded {
             // EnterStop or EnterIdle; attachToGround starts the land and turns
             // a slime set down on a ceiling, whatever became of the packet's
-            // ground (SlimeController.cs:1126-1134).
-            slot.obs_state_held_this_tick = true;
+            // ground (SlimeController.cs:1126-1134). The slime's SpriteAnimator
+            // passed before the form's turn, so it counts them from the next
+            // pass.
             (slot.obs_state, slot.state_ticks) =
-                if info.enter_turn { (STATE_STOP, STOP_TICKS + 2) } else { (STATE_IDLE, 0) };
+                if info.enter_turn { (STATE_STOP, STOP_TICKS + 1) } else { (STATE_IDLE, 0) };
             if info.just_landed && (info.ground.is_some() || lost_up.is_some()) {
-                slot.begin_land(true);
+                slot.begin_land();
                 let position = slot.base.position;
                 let up = ground.map(|platform| platform.surface.normal(position)).or(lost_up);
                 if up.is_some_and(|up| up.y < Fix::ZERO) {
@@ -13662,7 +13591,11 @@ impl RolloutWorld {
                 }
             }
             if info.enter_jump {
+                // Jump's UnGround raises OnNoLongerGrounded (SlimeController.cs:
+                // 956-958).
                 slot.base.jump(&self.platforms);
+                slot.obs_state = STATE_FALL;
+                slot.state_ticks = 0;
             }
         } else {
             self.slot_physics(index, |slot, world| slot.enter_fall(world));
@@ -34514,9 +34447,6 @@ impl RolloutWorld {
                     | ActiveAbility::Roll
             );
         let stopped = self.is_time_stopped_for(index) && !runs_frozen;
-        if stopped {
-            self.scratch.frozen_turns |= 1 << index;
-        }
         // A slime that is not hittable (parked for a stock choice) or
         // spawn animation, waiting to revive) has PlayerPhysics disabled
         // (SlimeController.cs:518, 624), so Time Stop changes nothing for it
@@ -35434,7 +35364,6 @@ impl RolloutWorld {
                     &mut clone.prev_input_align,
                     movement,
                     movement,
-                    false,
                     !stopped,
                 );
             }
@@ -41693,7 +41622,7 @@ mod tests {
         world.exit_form(0);
 
         assert_eq!(world.players[0].obs_state, STATE_STOP);
-        assert_eq!(world.players[0].state_ticks, STOP_TICKS + 2);
+        assert_eq!(world.players[0].state_ticks, STOP_TICKS + 1);
 
         world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Tesla);
         world.players[0].last_movement_input = Vec2::RIGHT;
@@ -41727,14 +41656,13 @@ mod tests {
         // SlimeController.OldUpdate returned right after EnterAbility, and an
         // instant ability leaves no form behind to freeze the switch later.
         assert!(world.players[0].active == ActiveAbility::None);
-        assert!(world.players[0].obs_state_held_this_tick);
-
-        world.update_obs_state(0, Vec2::RIGHT);
+        assert!(world.players[0].base.instant_cast_this_pass);
+        world.slime_tail(0, Vec2::RIGHT, false);
         assert_eq!(world.players[0].obs_state, STATE_IDLE);
-        assert!(!world.players[0].obs_state_held_this_tick);
 
         // The next tick is an ordinary one again.
-        world.update_obs_state(0, Vec2::RIGHT);
+        world.players[0].base.instant_cast_this_pass = false;
+        world.slime_tail(0, Vec2::RIGHT, false);
         assert_eq!(world.players[0].obs_state, STATE_RUN);
     }
 
