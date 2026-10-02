@@ -10673,6 +10673,10 @@ impl RolloutWorld {
                                 return;
                             }
                             slot.base.integrate();
+                            // OldUpdate returned at EnterAbility; the Move's
+                            // landing and the SpriteAnimator still come.
+                            slot.base.instant_cast_this_pass = true;
+                            self.slime_tail(index, movement_input, false);
                             return;
                         }
                         // Rewind sets InstantAbility.ignoreNextCooldown when
