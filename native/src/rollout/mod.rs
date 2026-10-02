@@ -3998,6 +3998,13 @@ impl PlayerSlot {
         if self.active == ActiveAbility::None { &mut self.forms[self.active_slot].body } else { &mut self.base }
     }
 
+    /// The live form's hurtbox DPhysicsCollider.enabled. Of the forms only
+    /// PlatformTransform turns it, and at once: on in OnEnterAbility, off in
+    /// CreatePlatform (PlatformTransform.cs:130, 141).
+    fn form_hurtbox_enabled(&self) -> bool {
+        self.active != ActiveAbility::Platform || !self.platform_hurtbox_disabled[self.active_slot]
+    }
+
     /// PlayerBody.rotation and up are the form FixTransform's own
     /// (PlayerBody.cs:54-76): once Ability.ExitAbility disables the form, its
     /// transform keeps the rotation the body last had.
@@ -22235,8 +22242,6 @@ impl RolloutWorld {
                     let player = &self.players[target].base;
                     if !player.alive
                         || player.dash.active
-                        || (self.players[target].active == ActiveAbility::Platform
-                            && self.players[target].platform.phase != PLATFORM_ANTICIPATION)
                         || !self.hittable(target)
                     {
                         continue;
@@ -25990,10 +25995,8 @@ impl RolloutWorld {
             .enumerate()
             .rfind(|&(entity, row)| {
                 row.kind == 2
-                    && self.collides(entity)
                     && excluded != Some(entity)
-                    && Self::entity_rounded_rect(&self.entity_inverse_extents, entity, *row)
-                        .is_some_and(|shape| shape.overlaps(origin))
+                    && self.rounded_rect_collider(entity).is_some_and(|shape| shape.overlaps(origin))
             })
             .map(|(entity, _)| entity)
     }
@@ -26059,10 +26062,9 @@ impl RolloutWorld {
                 // DetPhysics.IsActive also asks the collider to be enabled, so
                 // the ray passes through an ignited FlammableSmoke (FlammableSmoke.cs:86-88).
                 let distance = match kind {
-                    2 if self.collides(entity) => Self::entity_rounded_rect(&self.entity_inverse_extents, entity, row)
+                    2 => self.rounded_rect_collider(entity)
                         .and_then(|shape| shape.raycast(origin, direction))
                         .map(|hit| hit.near),
-                    2 => None,
                     _ => self.ray_row_hit(entity, row, origin, direction),
                 };
                 if let Some(distance) = distance
@@ -28373,10 +28375,10 @@ impl RolloutWorld {
                 radius: slot.rock_circle().circle_radius,
             }));
         }
-        let row = *self.entities.get(entity)?;
-        if row.flags & E_ENABLED == 0 {
+        if !slot.form_hurtbox_enabled() {
             return None;
         }
+        let row = *self.entities.get(entity)?;
         match row.kind {
             0 => Some(DetCollider::Circle(Circle {
                 center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
@@ -38217,8 +38219,6 @@ impl RolloutWorld {
             let drilling = slot.active == ActiveAbility::Drill;
             let beaming = slot.active == ActiveAbility::Beam;
             let in_ability = slot.active != ActiveAbility::None;
-            let anticipating = slot.active == ActiveAbility::Platform
-                && slot.platform.phase == PLATFORM_ANTICIPATION;
             let push_form = &slot.forms[slot.active_slot];
             // Ability.ExitAbility deactivates the ability body where it
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
@@ -38650,27 +38650,23 @@ impl RolloutWorld {
                     row.rotation = rotation.raw();
                 }
             }
-            // The Platform ability's hurtbox circle is live during
-            // anticipation only (hurtBox.enabled until CreatePlatform).
+            // The Platform ability's hurtbox circle is enabled from
+            // OnEnterAbility until CreatePlatform.
             if circle_e != usize::MAX {
                 let circle = &mut self.entities[circle_e];
                 let transforming = alive && slot.active == ActiveAbility::Platform;
-                let flags = if alive && anticipating {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else if transforming {
-                    E_ACTIVE | E_TRIGGER
-                } else {
-                    let disabled = (0..3).any(|s| {
-                        slot.form_entities[s] == circle_e
-                            && slot.abilities[s] == ABILITY_PLATFORM
-                            && slot.platform_hurtbox_disabled[s]
-                    });
-                    if disabled {
-                        E_TRIGGER
-                    } else {
-                        E_ENABLED | E_TRIGGER
-                    }
-                };
+                let disabled = (0..3).any(|s| {
+                    slot.form_entities[s] == circle_e
+                        && slot.abilities[s] == ABILITY_PLATFORM
+                        && slot.platform_hurtbox_disabled[s]
+                });
+                let mut flags = E_TRIGGER;
+                if transforming {
+                    flags |= E_ACTIVE;
+                }
+                if !disabled {
+                    flags |= E_ENABLED;
+                }
                 if sync_form_row(circle, flags, transforming, entered == circle_e, slot.base.id) {
                     // DetPhysics copies the ability body's FixTransform rotation
                     // (body.up = Slerp(...), PlatformTransform.cs:281; zero again
