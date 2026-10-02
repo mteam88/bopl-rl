@@ -33158,8 +33158,9 @@ impl RolloutWorld {
         }
         // ReleaseVictim never ungrounds: a victim that landed during the
         // capture stays attached, and its LateUpdateSim puts it back on the
-        // platform.
-        slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+        // platform. The eject writes the transform only, as the pin does;
+        // DetPhysics keeps the box where it last synced it until its sync.
+        slot.base.move_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
     }
 
     fn release_poke_clone(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
@@ -33186,7 +33187,7 @@ impl RolloutWorld {
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
         let speed = Vec2::new(item.body.velocity.x / Fix::from_int(3), data.poke_ball.pop_up_speed);
         clone.slime_mut().apply_ragdoll(Fix::from_f32(0.45), speed);
-        clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
+        clone.base.move_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         self.players[owner].invisible = false;
         // The eject writes the transform's position and ApplyRagDoll its
         // right (PokeBall.cs:227-228, SlimeController.cs:1031-1035), so the
