@@ -22172,8 +22172,11 @@ impl RolloutWorld {
                     }
                 }
                 // The Dash's own KillPlayerOnCollision, from nearPos
-                // (Dash.cs:164-178): a Player-layer collider kills only as a
+                // (Dash.cs:164-182): a Player-layer collider kills only as a
                 // KillPlayersOnContact Ability, and a RigidBodyAffector never.
+                // A kill ends the walk; a refused one puts the body back and
+                // the walk goes on to the next hit.
+                let saved = (self.players[index].base.position, self.players[index].reported_position);
                 match target {
                     Some(target) => {
                         if self.players[target].active == ActiveAbility::Rock
@@ -22182,8 +22185,11 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             slot.base.position = near;
                             slot.reported_position = near;
-                            self.kill(index, self.players[target].base.id, CAUSE_OTHER, false, true);
-                            return;
+                            if self.kill(index, self.players[target].base.id, CAUSE_OTHER, false, true) {
+                                return;
+                            }
+                            let slot = &mut self.players[index];
+                            (slot.base.position, slot.reported_position) = saved;
                         }
                     }
                     None if matches!(row.layer, LAYER_PLAYER | LAYER_RIGID_BODY_AFFECTOR) => {}
@@ -22276,15 +22282,17 @@ impl RolloutWorld {
                         // (PlayerCollision.cs:457).
                         // PlayerCollision counts an arrow hit only when
                         // killPlayer took (PlayerCollision.cs:458).
-                        let killed = self.kill(index, killer, cause, false, true);
-                        if killed
-                            && let Some(owner) = arrow_owner
-                            && owner != caster_id
-                            && owner >= 1
-                        {
-                            self.players[owner as usize - 1].telemetry.arrow_hits += 1;
+                        if self.kill(index, killer, cause, false, true) {
+                            if let Some(owner) = arrow_owner
+                                && owner != caster_id
+                                && owner >= 1
+                            {
+                                self.players[owner as usize - 1].telemetry.arrow_hits += 1;
+                            }
+                            return;
                         }
-                        return;
+                        let slot = &mut self.players[index];
+                        (slot.base.position, slot.reported_position) = saved;
                     }
                 }
             }
