@@ -3952,7 +3952,6 @@ impl PlayerSlot {
         // nothing over it. ability_exit writes the pose, velocities, ground,
         // grounded, grounded_speed, scale, radius, constants and box again;
         // the refused kill keeps grounded_speed and scale, a kill all of it.
-        self.base.scale = form.scale; // leak: scale
         self.base.collider = form.collider; // leak: collider
         self.base.synced = form.synced; // leak: synced
         self.base.collider_rotation = form.collider_rotation; // leak: collider_rotation
@@ -13559,7 +13558,6 @@ impl RolloutWorld {
         let tick = self.tick;
         self.form_returns_slime(index);
         let slot = &mut self.players[index];
-        slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
         slot.facing_right = info.facing_right;
         slot.base.grounded = info.grounded;
         slot.restore_slime_radius();
@@ -13631,9 +13629,9 @@ impl RolloutWorld {
     }
 
     /// Ability.ExitAbility's own part (Ability.cs:139-152) and the head of the
-    /// slime's onExitAbility (SlimeController.cs:198): the form publishes its
-    /// position and goes inactive, and the body is the slime's again, on its
-    /// own PlayerPhysics and radius.
+    /// slime's onExitAbility (SlimeController.cs:198, 206): the form publishes
+    /// its position and goes inactive, the body is the slime's again, on its
+    /// own PlayerPhysics and radius, and its hurtbox takes Player.Scale.
     fn form_returns_slime(&mut self, index: usize) {
         let slot = &mut self.players[index];
         if slot.active != ActiveAbility::None {
@@ -13648,6 +13646,7 @@ impl RolloutWorld {
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
         slot.leave_form(&mut self.entities);
+        slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
     }
 
     /// SuperStarEffect.UpdateSim for player `index`'s effect in
@@ -36830,11 +36829,13 @@ impl RolloutWorld {
             self.players[index].reported_tick = self.tick;
         }
         let slot = &mut self.players[index];
-        // onExitAbility puts the slime at the dead packet's position before
-        // its own killPlayer (SlimeController.cs:213-216).
+        // onExitAbility gives the slime's hurtbox Player.Scale and puts the
+        // slime at the dead packet's position before its own killPlayer
+        // (SlimeController.cs:206, 213-216).
         let in_form = slot.active != ActiveAbility::None;
         slot.leave_form(&mut self.entities);
         if in_form {
+            slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
             slot.base.position = drop_position;
         }
         slot.base.dash.active = false;
