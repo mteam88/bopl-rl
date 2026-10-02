@@ -19,6 +19,16 @@ const MAX_STRETCH: Fix = Fix::from_raw(429_496_729_600);
 const GROUNDED_ROPE_STRENGTH: Fix = Fix::from_raw(42_949_672_960);
 const ROPE_SEGMENT_RADIUS: Fix = Fix::from_raw(429_496_736);
 
+/// One bb_rope_rr entry: a rounded rectangle's or a rope's bounding box and
+/// its id, a platform or a rope index.
+#[derive(Clone, Copy)]
+pub(super) struct RopeSweepBox {
+    min: Vec2,
+    max: Vec2,
+    rope: bool,
+    id: usize,
+}
+
 const PLATFORM_MASS: Fix = Fix::from_raw(3_865_470_464);
 const PLATFORM_HEAVINESS: Fix = Fix::from_raw(42_949_672);
 const PLATFORM_PULL: Fix = Fix::from_raw(-42_949_672_960);
@@ -1729,49 +1739,68 @@ impl RolloutWorld {
         if !self.ropes.iter().any(|rope| rope.physics.enabled) {
             return;
         }
-        // SortAndSweep*_ropes sweeps the axis along which the rounded
-        // rectangles alone spread widest, so a rope lists its rectangles by
-        // bounding-box minimum on that axis, then by index.
+        // DetPhysics.Simulate lists the active rounded rectangles' boxes, then
+        // every enabled rope's, in bb_rope_rr, and SortAndSweep*_ropes sweeps
+        // them along the axis the rounded rectangles alone spread widest.
         let sweep_x = self.sweep_axes().1;
-        let mut listed = std::mem::take(&mut self.scratch.rope_rects);
+        let mut boxes = std::mem::take(&mut self.scratch.rope_boxes);
+        let mut active = std::mem::take(&mut self.scratch.rope_active);
+        boxes.clear();
+        for (platform, rectangle) in self.rope_rectangles.iter().enumerate() {
+            if self.platforms[platform].active {
+                let bounds = rectangle.bounds();
+                boxes.push(RopeSweepBox { min: bounds.min, max: bounds.max, rope: false, id: platform });
+            }
+        }
+        for (index, rope) in self.ropes.iter().enumerate() {
+            if rope.physics.enabled {
+                let [min, max] = rope.physics.bounds();
+                boxes.push(RopeSweepBox { min, max, rope: true, id: index });
+            }
+        }
+        let (along, across): (fn(Vec2) -> Fix, fn(Vec2) -> Fix) =
+            if sweep_x { (|v| v.x, |v| v.y) } else { (|v| v.y, |v| v.x) };
+        // AABBXComparer/AABBYComparer: the minimum, then `a.shape - b.shape`,
+        // which Shape's byte wraps positive both ways, so a rounded rectangle
+        // and a rope on one minimum each compare greater and Array.Sort's
+        // introsort alone decides their order; then the id.
+        dotnet_sort::introspective_sort(&mut boxes, |a, b| {
+            along(a.min).partial_cmp(&along(b.min)).unwrap().then_with(|| {
+                if a.rope != b.rope { std::cmp::Ordering::Greater } else { a.id.cmp(&b.id) }
+            })
+        });
+        active.clear();
+        active.push(0);
+        for i in 1..boxes.len() {
+            let current = boxes[i];
+            let mut num = 0;
+            while num < active.len() {
+                let other = boxes[active[num]];
+                if along(other.max) <= along(current.min) {
+                    active.remove(num);
+                    continue;
+                }
+                if across(other.max) > across(current.min)
+                    && across(other.min) < across(current.max)
+                    && other.rope != current.rope
+                {
+                    let (rope, rectangle) = if other.rope { (other.id, current.id) } else { (current.id, other.id) };
+                    let physics = &mut self.ropes[rope].physics;
+                    if physics.collision_count < physics.colliding_rects.len() {
+                        physics.colliding_rects[physics.collision_count] = rectangle;
+                        physics.collision_count += 1;
+                    }
+                }
+                num += 1;
+            }
+            active.push(i);
+        }
+        self.scratch.rope_boxes = boxes;
+        self.scratch.rope_active = active;
         for rope in &mut self.ropes {
             if !rope.physics.enabled {
                 continue;
             }
-            listed.clear();
-            let bounds = rope.physics.bounds();
-            for (platform, rectangle) in self.rope_rectangles.iter().enumerate() {
-                if !self.platforms[platform].active {
-                    continue;
-                }
-                let rb = rectangle.bounds();
-                // Along the swept axis the box sorted first (a rounded
-                // rectangle before a rope on a tied minimum) must reach past
-                // the other's minimum; across it they overlap strictly.
-                let (swept, across) = if sweep_x { (0, 1) } else { (1, 0) };
-                let along = |v: Vec2, axis: usize| if axis == 0 { v.x } else { v.y };
-                let (rope_min, rope_max) = (along(bounds[0], swept), along(bounds[1], swept));
-                let (rect_min, rect_max) = (along(rb.min, swept), along(rb.max, swept));
-                let reaches = if rect_min <= rope_min { rect_max > rope_min } else { rope_max > rect_min };
-                if !reaches
-                    || along(bounds[1], across) <= along(rb.min, across)
-                    || along(bounds[0], across) >= along(rb.max, across)
-                {
-                    continue;
-                }
-                listed.push(platform);
-            }
-            // The sweep lists them in its sorted order and the rope's 32
-            // slots keep the first (DetPhysics.cs:2329, 2340).
-            let rectangles = &self.rope_rectangles;
-            let minimum = |index: usize| {
-                let rb = rectangles[index].bounds();
-                if sweep_x { rb.min.x } else { rb.min.y }
-            };
-            listed.sort_unstable_by(|&a, &b| minimum(a).partial_cmp(&minimum(b)).unwrap().then(a.cmp(&b)));
-            listed.truncate(MAX_CONTACTS);
-            rope.physics.collision_count = listed.len();
-            rope.physics.colliding_rects[..listed.len()].copy_from_slice(&listed);
             rope.physics.step(
                 RopeConfig {
                     dt: physics_dt,
@@ -1783,7 +1812,6 @@ impl RolloutWorld {
                 &self.rope_rectangles,
             );
         }
-        self.scratch.rope_rects = listed;
     }
 
     /// RopeHook.OnCollide's AttachToPlatform, on the platform pose DetPhysics
