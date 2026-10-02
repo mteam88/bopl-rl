@@ -8766,9 +8766,7 @@ impl RolloutWorld {
             if !space {
                 marker.position.y = marker.position.y.max(Fix::from_f32(-11.3));
             }
-            if physics_dt > Fix::ZERO {
-                marker.hold.update_sim();
-            }
+            marker.hold.update_sim();
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
     }
@@ -8800,9 +8798,7 @@ impl RolloutWorld {
             if !marker.active || !marker.registered {
                 continue;
             }
-            if physics_dt > Fix::ZERO {
-                marker.hold.update_sim();
-            }
+            marker.hold.update_sim();
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
     }
@@ -31650,9 +31646,7 @@ impl RolloutWorld {
                 continue;
             }
             let being_held = self.guided_missiles[index].hold.held();
-            if physics_dt > Fix::ZERO {
-                self.guided_missiles[index].hold.update_sim();
-            }
+            self.guided_missiles[index].hold.update_sim();
             let position = self.guided_missiles[index].position;
             let mut boundary_explosion = None;
             let map = &data::get().maps[self.map];
@@ -32341,10 +32335,10 @@ impl RolloutWorld {
         match self.thrown_items[item_index].ability {
             ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE => {
                 self.thrown_item_update(item_index, data, updater_dt);
-                self.thrown_item_body_step(item_index, updater_dt);
+                self.thrown_item_body_step(item_index);
             }
             ability => {
-                self.thrown_item_body_step(item_index, updater_dt);
+                self.thrown_item_body_step(item_index);
                 match ability {
                     ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
                     ABILITY_TACK => {
@@ -32659,14 +32653,12 @@ impl RolloutWorld {
     /// The item's BoplBody.UpdateSim at its turn: the Hold countdown lets go
     /// of a holder that stopped refreshing it, then the mass follows the
     /// scale its collider had when this turn came (BoplBody.cs:325-345).
-    fn thrown_item_body_step(&mut self, item_index: usize, updater_dt: Fix) {
+    fn thrown_item_body_step(&mut self, item_index: usize) {
         if !self.thrown_items[item_index].active {
             return;
         }
         let item = &mut self.thrown_items[item_index];
-        if updater_dt > Fix::ZERO {
-            item.hold.update_sim();
-        }
+        item.hold.update_sim();
         // A held payload's collider has not run ManualInit, so BoplBody skips
         // the rescale and keeps prevScale (BoplBody.cs:332).
         if item.entity.is_some() {
