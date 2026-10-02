@@ -3608,10 +3608,6 @@ pub struct PlayerSlot {
     pub blink_tunnel_hierarchy: u32,
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
-    /// The pass the tunnel reenabled the victim. Nothing publishes
-    /// Player.Position on it, so Player.SetPosition's tie rule lets only the
-    /// first write of the next pass through.
-    pub blink_tunnel_end_tick: Option<u32>,
     /// Player.Position when that tie kept an earlier write of this pass over
     /// the one in `reported_position`, with the pass it belongs to.
     pub tie_position: Option<(u32, Vec2)>,
@@ -6222,7 +6218,6 @@ impl RolloutWorld {
                 blink_tunnel_hierarchy: 0,
                 blink_tunnel_age: Fix::ZERO,
                 blink_tunnel_released: false,
-                blink_tunnel_end_tick: None,
                 tie_position: None,
                 position_setter_last: u32::MAX,
                 position_override: None,
@@ -6312,8 +6307,10 @@ impl RolloutWorld {
         // came to rest 2.5e-3 u away from the game's spawn position.
         let no_input = vec![Action::default(); players];
         let mut spawn_anim = 0u32;
+        let mut slimes_published = false;
         for i in 0..self.warmup {
             self.tick = i;
+            slimes_published = false;
             self.destroy_marked_objects();
             // Authored map components run throughout the level warmup too.
             // This is observable on VectorFieldPlatform maps whose one- to
@@ -6362,6 +6359,7 @@ impl RolloutWorld {
                 continue;
             }
             self.movement_tick(&no_input, i, data);
+            slimes_published = true;
         }
         // A warmup that ends inside the spawn animation hands the rest of it
         // to the episode (respawn_tick counts it down and launches the same
@@ -6387,6 +6385,16 @@ impl RolloutWorld {
         self.destroy_marked_objects();
         self.started = true;
         self.observe_main();
+        // Each slime's OldUpdate was its Player's setter on the last warmup
+        // pass that ran it, which UpdatePlayer carries into the first game
+        // pass (Player.cs:311-322, 359-366).
+        if slimes_published {
+            for slot in &mut self.players {
+                if slot.base.alive {
+                    slot.position_setter_last = self.entities.get(slot.body_entity).map_or(u32::MAX, |row| row.id);
+                }
+            }
+        }
         self.valid = true;
         Ok(())
     }
@@ -10485,6 +10493,13 @@ impl RolloutWorld {
                 if !data.abilities[ability as usize].instant {
                     self.players[owner].ability_time = Fix::ZERO;
                 }
+                // OldUpdate's Player.SetPosition (SlimeController.cs:712)
+                // already took this pass, so Ability.EnterAbility's and then
+                // Ability.UpdateSim's from the same controller tie with it and
+                // land only if it was the last pass's setter too (Ability.cs:
+                // 107, 136; Player.cs:311-322).
+                let key = self.entities.get(self.players[index].body_entity).map_or(u32::MAX, |row| row.id);
+                let entry_ties = !data.abilities[ability as usize].instant && self.players[owner].position_setter_last != key;
                 {
                     let slot = &mut self.players[index];
                     // SlimeController.UpdateSim ungrounds a slime whose ground
@@ -10499,10 +10514,7 @@ impl RolloutWorld {
                         slot.obs_state = STATE_FALL;
                         slot.state_ticks = 0;
                     }
-                    // The first pass after a tunnel: OldUpdate's publish of the
-                    // pre-entry body wins the tie against EnterAbility's and
-                    // Ability.UpdateSim's (Player.cs:311-322).
-                    if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == self.tick) {
+                    if entry_ties {
                         slot.tie_position = Some((self.tick, slot.base.position));
                     }
                     // The PlayerInfo package carries the post-gravity state;
@@ -28901,7 +28913,6 @@ impl RolloutWorld {
         if self.players[victim].blink_tunnel_age > data.blink.player_duration {
             let slot = &mut self.players[victim];
             slot.set_blink_tunnel(&mut self.entities, false);
-            slot.blink_tunnel_end_tick = Some(self.tick);
         }
         self.players[victim].blink_tunnel_age += updater_dt;
         if !self.players[victim].blink_tunnel_released
@@ -30396,8 +30407,6 @@ impl RolloutWorld {
             b.fire_ticks_left -= 1;
         }
         // Ability (updater 2) and PlayerPhysics (3) follow the SpriteAnimator.
-        // Ability.UpdateSim publishes the pose before this pass moves it.
-        let ability_publish = self.players[index].base.position;
         let tick = self.tick;
         {
             let slot = &mut self.players[index];
@@ -30591,12 +30600,6 @@ impl RolloutWorld {
         }
         if exit {
             self.landing_exit(index);
-            // The first pass after a tunnel: Ability.UpdateSim's publish wins
-            // the tie against ExitAbility's (Player.cs:311-322).
-            let slot = &mut self.players[index];
-            if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
-                slot.tie_position = Some((tick, ability_publish));
-            }
         }
         // Move ends in DropPlatformTest, whose exit disables the form and its
         // PlayerBody.
