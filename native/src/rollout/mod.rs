@@ -3987,6 +3987,17 @@ impl PlayerSlot {
         }
     }
 
+    /// The active form's own PlayerPhysics and PlayerBody: the live body, or
+    /// the one an ExitAbility earlier in the form's UpdateSim left behind,
+    /// which the rest of that UpdateSim still moves.
+    fn form_body(&self) -> &Player {
+        if self.active == ActiveAbility::None { &self.forms[self.active_slot].body } else { &self.base }
+    }
+
+    fn form_body_mut(&mut self) -> &mut Player {
+        if self.active == ActiveAbility::None { &mut self.forms[self.active_slot].body } else { &mut self.base }
+    }
+
     /// PlayerBody.rotation and up are the form FixTransform's own
     /// (PlayerBody.cs:54-76): once Ability.ExitAbility disables the form, its
     /// transform keeps the rotation the body last had.
@@ -13430,15 +13441,7 @@ impl RolloutWorld {
                 info.external_velocity = slot.base.external_velocity;
                 info.facing_right = (info.velocity + info.external_velocity).x >= Fix::ZERO;
             }
-            ActiveAbility::Beam => {
-                // Beam.ExitAbility (Beam.cs:509-538) pops the body up first.
-                let data = data::get();
-                let slot = &mut self.players[index];
-                slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
-                slot.base.set_rotation(Fix::ZERO);
-                info.take_body(&slot.base);
-                info.facing_right = slot.beam.entry_facing_right;
-            }
+            ActiveAbility::Beam => self.beam_exit_packet(index, &mut info),
             ActiveAbility::Roll => {
                 // Roll.ExitAbility (Roll.cs:202-236), which leaves
                 // KillPlayersOnContact for the next OnEnterAbility to clear.
@@ -13672,7 +13675,7 @@ impl RolloutWorld {
         if !lands && slot.tie_position.is_none_or(|(set, _)| set != tick) {
             slot.tie_position = Some((tick, slot.reported_position));
         }
-        slot.reported_position = slot.base.position;
+        slot.reported_position = slot.form_body().position;
         slot.reported_tick = tick;
         slot.leave_form(&mut self.entities);
     }
@@ -17428,6 +17431,28 @@ impl RolloutWorld {
         self.remove_destroyed_colliders();
     }
 
+    /// Beam.ExitAbility (Beam.cs:509-538) up to its `ability.ExitAbility`:
+    /// it pops the Beam's own body up and packs it, the live form's or the one
+    /// an exit earlier in the same Beam.UpdateSim left.
+    fn beam_exit_packet(&mut self, index: usize, info: &mut ExitInfo) {
+        let exit_up_speed = data::get().beam.exit_up_speed;
+        let slot = &mut self.players[index];
+        let facing_right = slot.beam.entry_facing_right;
+        let body = slot.form_body_mut();
+        body.velocity += Vec2::UP * exit_up_speed;
+        body.set_rotation(Fix::ZERO);
+        info.take_body(body);
+        info.facing_right = facing_right;
+    }
+
+    /// Beam.ExitAbility(info). Beam.UpdateSim runs on after it, so a landing
+    /// exit can be followed by another in the same pass: a second landing, or
+    /// a jump in its exit or loop state.
+    fn beam_exit(&mut self, index: usize, mut info: ExitInfo) {
+        self.beam_exit_packet(index, &mut info);
+        self.ability_exit(index, info);
+    }
+
     fn stop_beam(&mut self, index: usize) {
         if self.players[index].beam.phase == 2 {
             return;
@@ -17587,39 +17612,34 @@ impl RolloutWorld {
                 data.beam.constants.max_speed,
             )
             .expect("valid Beam aerial constants");
-            self.slot_physics(index, |slot, world| slot.base.collision_rays(world));
-            // A ray landing already exits through OnGrounded, whose
-            // Beam.ExitAbility adds the exit up speed (Beam.cs:176-183, 511);
-            // the circle's attach below takes its grounded speed from that.
-            if self.players[index].base.grounded {
-                self.players[index].base.velocity += Vec2::UP * data.beam.exit_up_speed;
+            // A ray landing raises OnAttachedToGround, whose Beam.OnGrounded
+            // exits `justlanded` at once (Beam.cs:176-183).
+            let mut landed = self.slot_physics(index, |slot, world| slot.base.collision_rays(world));
+            if landed {
+                self.beam_exit(index, ExitInfo { just_landed: true, ..ExitInfo::default() });
             }
-            // Beam.MovePlayer then lands on the first active wall its circle
-            // overlaps, even after a ray hit (Beam.cs:556-560).
-            let circle = Circle {
-                center: self.players[index].base.position,
-                radius: self.players[index].base.radius,
-            };
+            // Beam.MovePlayer then lands its own body on the first active wall
+            // its circle overlaps, even after a ray hit, and exits `justlanded`
+            // again (Beam.cs:556-575).
+            let body = self.players[index].form_body();
+            let circle = Circle { center: body.position, radius: body.radius };
             let mut hits = [0; 1];
             if self.circle_cast_rounded_rect(circle, &mut hits) > 0 {
-                self.players[index].base.attach(&self.platforms[hits[0]], circle.center);
+                self.players[index].form_body_mut().attach(&self.platforms[hits[0]], circle.center);
+                landed = true;
             }
-            if self.players[index].base.grounded {
-                self.stop_beam(index);
-                // Beam.cs:563-575 exits `justlanded`.
-                self.exit_form_with(index, ExitInfo { just_landed: true, ..ExitInfo::default() });
-                return;
+            if landed {
+                self.players[index].form_body_mut().set_rotation(Fix::ZERO);
+                self.beam_exit(index, ExitInfo { just_landed: true, ..ExitInfo::default() });
             }
         } else if self.players[index].base.grounded {
             self.slot_physics(index, |slot, world| slot.base.move_only(input, world));
             if !self.players[index].base.grounded {
                 self.players[index].beam_on_ungrounded();
             }
-            // gap: after DropPlatformTest's exit, Beam.UpdateSim still runs
-            // its loop state's UpdateBeam and jump exit (Beam.cs:805-829).
-            if self.apply_platform_drop(index) {
-                return;
-            }
+            // Move ends in DropPlatformTest, whose exit Beam.UpdateSim runs on
+            // past (PlayerPhysics.cs:281-301).
+            self.apply_platform_drop(index);
         } else {
             // A ground form off its ground: AddGravityFactor, then Move's air
             // branch, whose raycasts may attach it again (Beam.OnGrounded).
@@ -17662,7 +17682,7 @@ impl RolloutWorld {
                 }
             };
             let beam = &self.players[index].beam;
-            let fire = self.players[index].base.position
+            let fire = self.players[index].form_body().position
                 + beam.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale;
             // A space level registers the beam body wherever the staff
             // is; elsewhere only above the water (Beam.cs:446).
@@ -17686,7 +17706,7 @@ impl RolloutWorld {
             self.players[index].beam.time_since_beam += DT;
             if action.buttons & 1 != 0 && !self.players[index].base.previous_jump {
                 self.stop_beam(index);
-                self.exit_form_with(index, ExitInfo { enter_jump: true, ..ExitInfo::default() });
+                self.beam_exit(index, ExitInfo { enter_jump: true, ..ExitInfo::default() });
                 return;
             }
             let maximum = if self.players[index].beam.in_air {
@@ -17701,7 +17721,7 @@ impl RolloutWorld {
             && action.buttons & 1 != 0
             && !self.players[index].base.previous_jump
         {
-            self.exit_form_with(index, ExitInfo { enter_jump: true, ..ExitInfo::default() });
+            self.beam_exit(index, ExitInfo { enter_jump: true, ..ExitInfo::default() });
             return;
         }
 
