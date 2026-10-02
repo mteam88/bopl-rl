@@ -1261,12 +1261,7 @@ impl RolloutWorld {
         }
         let top = self.players[player].rope_top;
         // The PlayerPhysics beside this PlayerBody: the slime's, or the form's own.
-        let slot = &self.players[player];
-        let jumped = if slot.active == ActiveAbility::None {
-            slot.base.jumped_this_frame
-        } else {
-            slot.forms[slot.active_slot].jumped_this_frame
-        };
+        let jumped = self.players[player].base.jumped_this_frame;
         if jump_pressed
             && self.ropes[rope_index].owner == player
             && !self.players[player].base.grounded

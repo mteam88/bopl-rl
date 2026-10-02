@@ -1874,11 +1874,6 @@ pub struct FormBody {
     /// The FixTransform the form's box took at the last SyncAll: the body's
     /// while the form is live, `pose` once it is out (DetPhysics.cs:2517-2524).
     pub synced: FormPose,
-    /// The form's PlayerPhysics.jumpedThisFrame. Only its own LateUpdateSim
-    /// clears it, so a form that jumps out keeps it until its next entry
-    /// pass, whose PlayerBody then refuses a jump release of the rope
-    /// (PlayerPhysics.cs:163, 332; PlayerBody.cs:167).
-    pub jumped_this_frame: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -3664,10 +3659,14 @@ impl PlayerSlot {
         self.base.radius
     }
 
-    /// The active form's PlayerPhysics.Jump.
+    /// The active form's PlayerPhysics.Jump, which sets its own body's
+    /// jumpedThisFrame (PlayerPhysics.cs:332). Only that PlayerPhysics'
+    /// LateUpdateSim clears it, so a form that jumps out keeps it until its
+    /// next entry pass, whose PlayerBody then refuses a jump release of the
+    /// rope (PlayerPhysics.cs:163; PlayerBody.cs:167).
     fn form_jump(&mut self, platforms: &[Platform], strength: Fix) {
         self.base.jump_with_strength(platforms, strength);
-        self.forms[self.active_slot].jumped_this_frame = true;
+        self.base.jumped_this_frame = true;
     }
 
     /// HitboxCombo.UpdateHitBoxPositionsAndScale: the boxes take the Drill's
@@ -3967,7 +3966,6 @@ impl PlayerSlot {
         self.base.scale = form.scale; // leak: scale
         self.base.grounded_speed = form.grounded_speed; // leak: grounded_speed
         self.base.skip_next_gravity = form.skip_next_gravity; // leak: skip_next_gravity
-        self.base.jumped_this_frame = form.jumped_this_frame; // leak: jumped_this_frame
         self.base.was_upside_down = form.was_upside_down; // leak: was_upside_down
         self.base.pre_move_up = form.pre_move_up; // leak: pre_move_up
         self.base.pre_move_grounded = form.pre_move_grounded; // leak: pre_move_grounded
@@ -8060,7 +8058,7 @@ impl RolloutWorld {
         // inactive by now and keeps it.
         for slot in &mut self.players {
             if slot.active != ActiveAbility::None {
-                slot.forms[slot.active_slot].jumped_this_frame = false;
+                slot.base.jumped_this_frame = false;
             }
         }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
