@@ -36167,11 +36167,17 @@ impl RolloutWorld {
     }
 
     /// A slot for a new extra body: a dead one past the players' own slots,
-    /// or a new one while the body arrays have room.
+    /// or a new one while the body arrays have room. A dead extra body whose
+    /// ReviveEffect or ReviveParticle still runs is not free: those are their
+    /// own objects in C# and outlive the slime (ReviveEffect.cs:50-68,
+    /// ReviveParticle.cs:76-110), and here they live on its slot.
     fn free_extra_body(&mut self) -> Option<usize> {
         if let Some(body) = (self.player_count..self.players.len()).find(|&body| {
             let slot = &self.players[body];
-            !slot.base.alive && !slot.revival_clone_pending && !slot.stock_clone_pending
+            !slot.base.alive
+                && !slot.revival_clone_pending
+                && !slot.stock_clone_pending
+                && slot.revival_effect_ticks == 0
         }) {
             return Some(body);
         }
