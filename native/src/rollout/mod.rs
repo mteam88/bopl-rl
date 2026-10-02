@@ -7415,9 +7415,10 @@ impl RolloutWorld {
                     *facing_right = !*facing_right;
                 }
                 // A landing in PlayerPhysics.UpdateSim precedes OldUpdate, so
-                // this pass's `case State.land` already re-aims (see below).
+                // this pass's `case State.land` already re-aims (see below),
+                // ahead of a Jump() off that landing.
                 if base.pre_move_grounded
-                    && !jumped
+                    && entry_state == STATE_FALL
                     && !held
                     && (align.abs() >= Fix::from_f32(0.2) || into_ground)
                 {
