@@ -19171,9 +19171,10 @@ impl RolloutWorld {
 
     /// The live Throw boulder whose rounded rectangle is platform `i`, once
     /// its prefab has joined the Updater (a boulder spawned this pass waits
-    /// in toBeAddedUpdatables).
+    /// in toBeAddedUpdatables) and while its GameObject is active: one a
+    /// teleport hid skips its Boulder and DestroyIfOutsideSceneBounds turns.
     fn turn_boulder(&self, i: usize) -> Option<usize> {
-        if self.macho_boulders.is_empty() {
+        if self.macho_boulders.is_empty() || !self.platforms[i].active {
             return None;
         }
         self.macho_boulders.iter().position(|boulder| {
