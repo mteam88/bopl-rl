@@ -2850,6 +2850,24 @@ pub struct PortalEndpoint {
     pub player_inside: [bool; 8],
 }
 
+/// A BoplBody a Portal can carry, by its pool and index.
+#[derive(Clone, Copy)]
+enum PortalBody {
+    Arrow(usize),
+    Pickup(usize),
+    Item(usize),
+    Cloud(usize),
+    Missile(usize),
+    RevivalMarker(usize),
+    TeleportMarker(usize),
+    Rock(usize),
+    DuplicatedRock(usize),
+    Spike(usize),
+    Engine(usize),
+    Tesla(usize),
+    Platform(usize),
+}
+
 /// A pooled object a Shockwave's cast hit: its pool slot, and its spawn's
 /// first Updater slot. The wave holds the object itself and skips it once
 /// destroyed (Shockwave.cs:182), so a newer object in the slot is not a hit.
@@ -9148,20 +9166,130 @@ impl RolloutWorld {
             && relative.dot(endpoint.normal).abs() < data.portal_gun.thickness
     }
 
-    fn mark_portal_body_bit(
-        occupancy: &mut [u64],
-        ids: &mut [u32],
-        entities: &[CEntity],
-        entity: usize,
-        bit: u64,
-    ) {
-        if ids[entity] != entities[entity].id {
-            ids[entity] = entities[entity].id;
-            occupancy[entity] = 0;
+    /// Every BoplBody Portal.IsPortalable passes, with the position Inside
+    /// tests (Portal.cs:155): live, active, not held, and with inverse mass.
+    /// Link and UpdateSim both walk this one list.
+    fn portal_bodies(&self) -> Vec<(PortalBody, usize, Vec2)> {
+        let mut bodies = Vec::new();
+        let shown = |entity: usize| self.entities[entity].flags & E_ACTIVE != 0;
+        for (index, arrow) in self.arrows.iter().enumerate() {
+            if let Some(entity) = arrow
+                .entity
+                .filter(|&entity| arrow.active && arrow.registered && !arrow.hold.held() && shown(entity))
+            {
+                bodies.push((PortalBody::Arrow(index), entity, arrow.position));
+            }
         }
-        occupancy[entity] |= bit;
+        // IsPortalable never asks whether the collider is enabled, so a
+        // pickup still in its disabled spell counts.
+        for (index, pickup) in self.ability_pickups.iter().enumerate() {
+            if let Some(entity) = pickup.entity.filter(|&entity| {
+                pickup.active && pickup.body.inverse_mass > Fix::ZERO && !pickup.hold.held() && shown(entity)
+            }) {
+                bodies.push((PortalBody::Pickup(index), entity, pickup.position));
+            }
+        }
+        for (index, item) in self.thrown_items.iter().enumerate() {
+            if let Some(entity) = item.entity.filter(|&entity| {
+                item.active && item.body.inverse_mass > Fix::ZERO && !item.hold.held() && shown(entity)
+            }) {
+                bodies.push((PortalBody::Item(index), entity, item.position));
+            }
+        }
+        // A lit cloud has disabled only its collider; its GameObject stays
+        // active, so the portal still carries it.
+        for (index, cloud) in self.smoke_clouds.iter().enumerate() {
+            if let Some(entity) = cloud.entity.filter(|&entity| {
+                cloud.active && cloud.registered && cloud.body.inverse_mass > Fix::ZERO && shown(entity)
+            }) {
+                bodies.push((PortalBody::Cloud(index), entity, cloud.position));
+            }
+        }
+        for (index, missile) in self.guided_missiles.iter().enumerate() {
+            if let Some(entity) = missile.entity.filter(|&entity| {
+                missile.active
+                    && missile.registered
+                    && missile.body.inverse_mass > Fix::ZERO
+                    && !missile.hold.held()
+                    && shown(entity)
+            }) {
+                bodies.push((PortalBody::Missile(index), entity, missile.position));
+            }
+        }
+        for (index, marker) in self.revival_marker_pool.iter().enumerate() {
+            if let Some(entity) = marker.entity.filter(|_| {
+                marker.active && marker.registered && marker.body.inverse_mass > Fix::ZERO && !marker.hold.held()
+            }) {
+                bodies.push((PortalBody::RevivalMarker(index), entity, marker.position));
+            }
+        }
+        for (index, marker) in self.teleport_marker_pool.iter().enumerate() {
+            if let Some(entity) = marker.entity.filter(|_| {
+                marker.active && marker.registered && marker.body.inverse_mass > Fix::ZERO && !marker.hold.held()
+            }) {
+                bodies.push((PortalBody::TeleportMarker(index), entity, marker.position));
+            }
+        }
+        for (index, slot) in self.players.iter().enumerate() {
+            if slot.active == ActiveAbility::Rock
+                && slot.rock_entity != usize::MAX
+                && !slot.forms[slot.rock_slot()].hold.held()
+            {
+                bodies.push((PortalBody::Rock(index), slot.rock_entity, slot.base.position));
+            }
+        }
+        for (index, rock) in self.duplicated_rocks.iter().enumerate() {
+            if let Some(entity) = rock
+                .entity
+                .filter(|&entity| rock.active && rock.body.inverse_mass > Fix::ZERO && shown(entity))
+            {
+                bodies.push((PortalBody::DuplicatedRock(index), entity, rock.position));
+            }
+        }
+        // A composite member's BoplBody reads and writes the CompositeBody's
+        // combined body: the platform's (DPhysicsBox.cs:103-120).
+        let attached = |active: bool, carried: bool, platform_index: usize| {
+            active
+                && !carried
+                && platform_index < self.platform_dynamics.len()
+                && self.platform_dynamics[platform_index].body.inverse_mass > Fix::ZERO
+        };
+        for (index, spike) in self.spike_attacks.iter().enumerate() {
+            if let Some(entity) = spike.entity.filter(|&entity| {
+                attached(spike.active, spike.macho_carried, spike.platform_index) && shown(entity)
+            }) {
+                bodies.push((PortalBody::Spike(index), entity, spike.transform_position));
+            }
+        }
+        for (index, engine) in self.engines.iter().enumerate() {
+            if let Some(entity) = engine.entity.filter(|&entity| {
+                attached(engine.active, engine.macho_carried, engine.platform_index) && shown(entity)
+            }) {
+                bodies.push((PortalBody::Engine(index), entity, engine.transform_position));
+            }
+        }
+        for (index, node) in self.tesla_nodes.iter().enumerate() {
+            if let Some(entity) = node.entity.filter(|&entity| {
+                attached(node.active, node.macho_carried, node.platform_index) && shown(entity)
+            }) {
+                bodies.push((PortalBody::Tesla(index), entity, node.transform_position));
+            }
+        }
+        // BoplBody.position is the rounded root's FixTransform, which
+        // DetPhysics wrote back after its last Simulate; a composite's own
+        // position keeps the corrections that never reach it
+        // (BoplBody.cs:51-61, DetPhysics.cs:2962-3126).
+        for index in 0..self.platforms.len() {
+            let entity = self.platform_entities[index];
+            if !self.platform_dynamics[index].hold.held()
+                && self.platform_dynamics[index].body.inverse_mass > Fix::ZERO
+                && shown(entity)
+            {
+                bodies.push((PortalBody::Platform(index), entity, self.platforms[index].surface.center));
+            }
+        }
+        bodies
     }
-
     fn mark_portal_occupants(&mut self, endpoint_index: usize, data: &data::RolloutData) {
         let endpoint = self.portals[endpoint_index];
         for player_index in 0..self.players.len() {
@@ -9192,225 +9320,13 @@ impl RolloutWorld {
             self.portal_body_inside.resize(self.entities.len(), 0);
             self.portal_body_ids.resize(self.entities.len(), 0);
         }
-        let bit = 1u64 << endpoint_index;
-        for arrow in &self.arrows {
-            if let Some(entity) = arrow
-                .entity
-                .filter(|_| arrow.active && arrow.registered && !arrow.hold.held())
-                && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, arrow.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        // Portal.IsPortalable (Portal.cs:155) never asks whether the
-        // collider is enabled, so a pickup still in its disabled spell counts.
-        for pickup in &self.ability_pickups {
-            if let Some(entity) = pickup
-                .entity
-                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO && !pickup.hold.held())
-                && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, pickup.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for item in &self.thrown_items {
-            if let Some(entity) = item.entity.filter(|_| {
-                item.active && item.body.inverse_mass > Fix::ZERO && !item.hold.held()
-            }) && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, item.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for missile in &self.guided_missiles {
-            if let Some(entity) = missile.entity.filter(|_| {
-                missile.active
-                    && missile.registered
-                    && missile.body.inverse_mass > Fix::ZERO
-                    && !missile.hold.held()
-            }) && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, missile.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for marker in &self.revival_marker_pool {
-            if let Some(entity) = marker.entity.filter(|_| {
-                marker.active
-                    && marker.registered
-                    && marker.body.inverse_mass > Fix::ZERO
-                    && !marker.hold.held()
-            }) && Self::portal_inside(endpoint, marker.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for marker in &self.teleport_marker_pool {
-            if let Some(entity) = marker.entity.filter(|_| {
-                marker.active
-                    && marker.registered
-                    && marker.body.inverse_mass > Fix::ZERO
-                    && !marker.hold.held()
-            }) && Self::portal_inside(endpoint, marker.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for slot in &self.players {
-            if slot.active == ActiveAbility::Rock
-                && slot.rock_entity != usize::MAX
-                && !slot.forms[slot.rock_slot()].hold.held()
-                && Self::portal_inside(endpoint, slot.base.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    slot.rock_entity,
-                    bit,
-                );
-            }
-        }
-        for rock in &self.duplicated_rocks {
-            if let Some(entity) = rock
-                .entity
-                .filter(|_| rock.active && rock.body.inverse_mass > Fix::ZERO)
-                && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, rock.position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for spike in &self.spike_attacks {
-            if !spike.active
-                || spike.macho_carried
-                || spike.platform_index >= self.platform_dynamics.len()
-            {
-                continue;
-            }
-            let position = spike.transform_position;
-            let combined = self.platform_dynamics[spike.platform_index].body;
-            if let Some(entity) = spike
-                .entity
-                .filter(|_| spike.active && combined.inverse_mass > Fix::ZERO)
-                && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for engine in &self.engines {
-            if !engine.active
-                || engine.macho_carried
-                || engine.platform_index >= self.platform_dynamics.len()
-            {
-                continue;
-            }
-            let position = engine.transform_position;
-            let combined = self.platform_dynamics[engine.platform_index].body;
-            if let Some(entity) = engine.entity.filter(|_| {
-                engine.active && !engine.macho_carried && combined.inverse_mass > Fix::ZERO
-            }) && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for node in &self.tesla_nodes {
-            if !node.active
-                || node.macho_carried
-                || node.platform_index >= self.platform_dynamics.len()
-            {
-                continue;
-            }
-            let position = node.transform_position;
-            let combined = self.platform_dynamics[node.platform_index].body;
-            if let Some(entity) = node
-                .entity
-                .filter(|_| node.active && combined.inverse_mass > Fix::ZERO)
-                && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, position, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
-            }
-        }
-        for platform_index in 0..self.platforms.len() {
-            let held = self.platform_dynamics[platform_index].hold.held();
-            let entity = self.platform_entities[platform_index];
-            if !held
-                && self.platform_dynamics[platform_index].body.inverse_mass > Fix::ZERO
-                && self.entities[entity].flags & E_ACTIVE != 0
-                && Self::portal_inside(endpoint, self.platforms[platform_index].surface.center, data)
-            {
-                Self::mark_portal_body_bit(
-                    &mut self.portal_body_inside,
-                    &mut self.portal_body_ids,
-                    &self.entities,
-                    entity,
-                    bit,
-                );
+        for (_, entity, position) in self.portal_bodies() {
+            if Self::portal_inside(endpoint, position, data) {
+                if self.portal_body_ids[entity] != self.entities[entity].id {
+                    self.portal_body_ids[entity] = self.entities[entity].id;
+                    self.portal_body_inside[entity] = 0;
+                }
+                self.portal_body_inside[entity] |= 1u64 << endpoint_index;
             }
         }
     }
@@ -9460,313 +9376,110 @@ impl RolloutWorld {
 
     fn portal_objects_tick(&mut self, endpoint_index: usize, data: &data::RolloutData) {
         let entry = self.portals[endpoint_index];
-        for index in 0..self.arrows.len() {
-            let arrow = self.arrows[index];
-            let Some(entity) = arrow
-                .entity
-                .filter(|_| arrow.active && arrow.registered && !arrow.hold.held())
-            else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, arrow.position, data)
-            {
-                self.arrows[index].position = position;
-                self.arrows[index].velocity = Self::portal_velocity(entry, exit, arrow.velocity);
-            }
-        }
-        for index in 0..self.ability_pickups.len() {
-            let pickup = self.ability_pickups[index];
-            // Portal.IsPortalable (Portal.cs:155) ignores the disabled
-            // hitbox of a freshly dropped pickup.
-            let Some(entity) = pickup
-                .entity
-                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO && !pickup.hold.held())
-            else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, pickup.position, data)
-            {
-                self.ability_pickups[index].position = position;
-                self.ability_pickups[index].body.velocity =
-                    Self::portal_velocity(entry, exit, pickup.body.velocity);
-            }
-        }
-        for index in 0..self.thrown_items.len() {
-            let item = self.thrown_items[index];
-            let Some(entity) = item.entity.filter(|_| {
-                item.active && item.body.inverse_mass > Fix::ZERO && !item.hold.held()
-            }) else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, item.position, data)
-            {
-                self.thrown_items[index].position = position;
-                self.thrown_items[index].body.velocity =
-                    Self::portal_velocity(entry, exit, item.body.velocity);
-            }
-        }
-        for index in 0..self.smoke_clouds.len() {
-            let cloud = self.smoke_clouds[index];
-            // A lit cloud has disabled only its collider; its GameObject stays
-            // active, so the portal still carries it (Portal.cs:155).
-            let Some(entity) = cloud.entity.filter(|_| {
-                cloud.active && cloud.registered && cloud.body.inverse_mass > Fix::ZERO
-            }) else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, cloud.position, data)
-            {
-                self.smoke_clouds[index].position = position;
-                self.smoke_clouds[index].body.velocity =
-                    Self::portal_velocity(entry, exit, cloud.body.velocity);
-            }
-        }
-        for index in 0..self.guided_missiles.len() {
-            let missile = self.guided_missiles[index];
-            let Some(entity) = missile.entity.filter(|_| {
-                missile.active
-                    && missile.registered
-                    && missile.body.inverse_mass > Fix::ZERO
-                    && !missile.hold.held()
-            }) else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, missile.position, data)
-            {
-                // Portal.TeleportBody leaves the rotation, so Missile.UpdateSim
-                // later this pass still thrusts along the old up.
-                let velocity = Self::portal_velocity(entry, exit, missile.body.velocity);
-                self.guided_missiles[index].position = position;
-                self.guided_missiles[index].body.velocity = velocity;
-            }
-        }
-        for index in 0..self.revival_marker_pool.len() {
-            let marker = self.revival_marker_pool[index];
-            let Some(entity) = marker.entity.filter(|_| {
-                marker.active
-                    && marker.registered
-                    && marker.body.inverse_mass > Fix::ZERO
-                    && !marker.hold.held()
-            }) else {
-                continue;
-            };
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, marker.position, data)
-            {
-                self.revival_marker_pool[index].position = position;
-                self.revival_marker_pool[index].body.velocity =
-                    Self::portal_velocity(entry, exit, marker.body.velocity);
-            }
-        }
-        for index in 0..self.teleport_marker_pool.len() {
-            let marker = self.teleport_marker_pool[index];
-            let Some(entity) = marker.entity.filter(|_| {
-                marker.active
-                    && marker.registered
-                    && marker.body.inverse_mass > Fix::ZERO
-                    && !marker.hold.held()
-            }) else {
-                continue;
-            };
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, marker.position, data)
-            {
-                self.teleport_marker_pool[index].position = position;
-                self.teleport_marker_pool[index].body.velocity =
-                    Self::portal_velocity(entry, exit, marker.body.velocity);
-            }
-        }
-        for index in 0..self.players.len() {
-            let slot = &self.players[index];
-            if slot.active != ActiveAbility::Rock
-                || slot.rock_entity == usize::MAX
-                || slot.forms[slot.rock_slot()].hold.held()
-            {
-                continue;
-            }
-            let entity = self.players[index].rock_entity;
-            let position = self.players[index].base.position;
-            if let Some((exit, destination)) =
-                self.portal_body_exit(endpoint_index, entity, position, data)
-            {
-                let velocity = self.players[index].rock.body.velocity;
-                self.players[index].base.position = destination;
-                self.players[index].rock.body.velocity =
-                    Self::portal_velocity(entry, exit, velocity);
-                self.players[index].base.velocity = self.players[index].rock.body.velocity;
-            }
-        }
-        for index in 0..self.duplicated_rocks.len() {
-            let rock = self.duplicated_rocks[index];
-            let Some(entity) = rock
-                .entity
-                .filter(|_| rock.active && rock.body.inverse_mass > Fix::ZERO)
-            else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, rock.position, data)
-            {
-                self.duplicated_rocks[index].position = position;
-                self.duplicated_rocks[index].body.velocity =
-                    Self::portal_velocity(entry, exit, rock.body.velocity);
-                let row = &mut self.entities[entity];
-                row.x = position.x.raw();
-                row.y = position.y.raw();
-                row.vx = self.duplicated_rocks[index].body.velocity.x.raw();
-                row.vy = self.duplicated_rocks[index].body.velocity.y.raw();
-            }
-        }
-        for index in 0..self.spike_attacks.len() {
-            let spike = self.spike_attacks[index];
-            if spike.macho_carried || spike.platform_index >= self.platform_dynamics.len() {
-                continue;
-            }
-            // A composite member's BoplBody reads and writes the CompositeBody's
-            // combined body: the platform's (DPhysicsBox.cs:103-120).
-            let combined = self.platform_dynamics[spike.platform_index].body;
-            let Some(entity) = spike
-                .entity
-                .filter(|_| spike.active && combined.inverse_mass > Fix::ZERO)
-            else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            let right = Vec2::angle(
-                self.platform_dynamics[spike.platform_index]
-                    .body
-                    .orientation
-                    + spike.relative_rotation,
-            );
-            let offset = spike.collider_offset.complex_mul(right);
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, spike.transform_position, data)
-            {
-                let center = position + offset;
-                self.spike_attacks[index].collider_center = center;
-                self.spike_attacks[index].transform_position = position;
-                self.platform_dynamics[spike.platform_index].body.velocity =
-                    Self::portal_velocity(entry, exit, combined.velocity);
-                let row = &mut self.entities[entity];
-                row.x = center.x.raw();
-                row.y = center.y.raw();
-            }
-        }
-        for index in 0..self.engines.len() {
-            let engine = self.engines[index];
-            if engine.platform_index >= self.platform_dynamics.len() {
-                continue;
-            }
-            let combined = self.platform_dynamics[engine.platform_index].body;
-            let Some(entity) = engine
-                .entity
-                .filter(|_| engine.active && combined.inverse_mass > Fix::ZERO)
-            else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            let right = Vec2::angle(engine.transform_rotation);
-            let offset = engine.collider_offset.complex_mul(right);
-            let root = engine.transform_position;
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, root, data)
-            {
-                let center = position + offset;
-                self.engines[index].collider_center = center;
-                self.engines[index].transform_position = position;
-                self.platform_dynamics[engine.platform_index].body.velocity =
-                    Self::portal_velocity(entry, exit, combined.velocity);
-                let row = &mut self.entities[entity];
-                row.x = center.x.raw();
-                row.y = center.y.raw();
-            }
-        }
-        for index in 0..self.tesla_nodes.len() {
-            let node = self.tesla_nodes[index];
-            if node.macho_carried || node.platform_index >= self.platform_dynamics.len() {
-                continue;
-            }
-            let combined = self.platform_dynamics[node.platform_index].body;
-            let Some(entity) = node
-                .entity
-                .filter(|_| node.active && combined.inverse_mass > Fix::ZERO)
-            else {
-                continue;
-            };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
-                continue;
-            }
-            let right = Vec2::angle(node.transform_rotation);
-            let offset = node.collider_offset.complex_mul(right);
-            let root = node.transform_position;
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, root, data)
-            {
-                let center = position + offset;
-                self.tesla_nodes[index].collider_center = center;
-                self.tesla_nodes[index].transform_position = position;
-                self.platform_dynamics[node.platform_index].body.velocity =
-                    Self::portal_velocity(entry, exit, combined.velocity);
-                let row = &mut self.entities[entity];
-                row.x = center.x.raw();
-                row.y = center.y.raw();
-            }
-        }
         let mut platforms_changed = false;
-        for platform_index in 0..self.platforms.len() {
-            let held = self.platform_dynamics[platform_index].hold.held();
-            let entity = self.platform_entities[platform_index];
-            if held
-                || self.platform_dynamics[platform_index].body.inverse_mass <= Fix::ZERO
-                || self.entities[entity].flags & E_ACTIVE == 0
-            {
+        for (body, entity, old_position) in self.portal_bodies() {
+            let Some((exit, position)) = self.portal_body_exit(endpoint_index, entity, old_position, data)
+            else {
                 continue;
-            }
-            // BoplBody.position is the rounded root's FixTransform, which
-            // DetPhysics wrote back after its last Simulate; a composite's
-            // own position keeps the corrections that never reach it
-            // (BoplBody.cs:51-61, DetPhysics.cs:2962-3126).
-            let old_position = self.platforms[platform_index].surface.center;
-            if let Some((exit, position)) =
-                self.portal_body_exit(endpoint_index, entity, old_position, data)
-            {
-                let velocity = self.platform_dynamics[platform_index].body.velocity;
-                let delta = position - old_position;
-                self.platform_dynamics[platform_index].composite_position = position;
-                self.platform_dynamics[platform_index].body.velocity =
-                    Self::portal_velocity(entry, exit, velocity);
-                // Portal.TeleportBody sets body.position, the FixTransform;
-                // the DetPhysics collider a Black Hole reads follows at the
-                // next Simulate.
-                self.platforms[platform_index].surface.center += delta;
-                platforms_changed = true;
+            };
+            let map = |velocity: Vec2| Self::portal_velocity(entry, exit, velocity);
+            match body {
+                PortalBody::Arrow(index) => {
+                    let arrow = &mut self.arrows[index];
+                    arrow.position = position;
+                    arrow.velocity = map(arrow.velocity);
+                }
+                PortalBody::Pickup(index) => {
+                    let pickup = &mut self.ability_pickups[index];
+                    pickup.position = position;
+                    pickup.body.velocity = map(pickup.body.velocity);
+                }
+                PortalBody::Item(index) => {
+                    let item = &mut self.thrown_items[index];
+                    item.position = position;
+                    item.body.velocity = map(item.body.velocity);
+                }
+                PortalBody::Cloud(index) => {
+                    let cloud = &mut self.smoke_clouds[index];
+                    cloud.position = position;
+                    cloud.body.velocity = map(cloud.body.velocity);
+                }
+                PortalBody::Missile(index) => {
+                    // Portal.TeleportBody leaves the rotation, so Missile.UpdateSim
+                    // later this pass still thrusts along the old up.
+                    let missile = &mut self.guided_missiles[index];
+                    missile.position = position;
+                    missile.body.velocity = map(missile.body.velocity);
+                }
+                PortalBody::RevivalMarker(index) => {
+                    let marker = &mut self.revival_marker_pool[index];
+                    marker.position = position;
+                    marker.body.velocity = map(marker.body.velocity);
+                }
+                PortalBody::TeleportMarker(index) => {
+                    let marker = &mut self.teleport_marker_pool[index];
+                    marker.position = position;
+                    marker.body.velocity = map(marker.body.velocity);
+                }
+                PortalBody::Rock(index) => {
+                    let slot = &mut self.players[index];
+                    slot.base.position = position;
+                    slot.rock.body.velocity = map(slot.rock.body.velocity);
+                    slot.base.velocity = slot.rock.body.velocity;
+                }
+                PortalBody::DuplicatedRock(index) => {
+                    let rock = &mut self.duplicated_rocks[index];
+                    rock.position = position;
+                    rock.body.velocity = map(rock.body.velocity);
+                    let row = &mut self.entities[entity];
+                    row.x = position.x.raw();
+                    row.y = position.y.raw();
+                    row.vx = rock.body.velocity.x.raw();
+                    row.vy = rock.body.velocity.y.raw();
+                }
+                PortalBody::Spike(index) => {
+                    let spike = &mut self.spike_attacks[index];
+                    let combined = &mut self.platform_dynamics[spike.platform_index].body;
+                    let right = Vec2::angle(combined.orientation + spike.relative_rotation);
+                    let center = position + spike.collider_offset.complex_mul(right);
+                    spike.collider_center = center;
+                    spike.transform_position = position;
+                    combined.velocity = map(combined.velocity);
+                    self.entities[entity].x = center.x.raw();
+                    self.entities[entity].y = center.y.raw();
+                }
+                PortalBody::Engine(index) => {
+                    let engine = &mut self.engines[index];
+                    let combined = &mut self.platform_dynamics[engine.platform_index].body;
+                    let right = Vec2::angle(engine.transform_rotation);
+                    let center = position + engine.collider_offset.complex_mul(right);
+                    engine.collider_center = center;
+                    engine.transform_position = position;
+                    combined.velocity = map(combined.velocity);
+                    self.entities[entity].x = center.x.raw();
+                    self.entities[entity].y = center.y.raw();
+                }
+                PortalBody::Tesla(index) => {
+                    let node = &mut self.tesla_nodes[index];
+                    let combined = &mut self.platform_dynamics[node.platform_index].body;
+                    let right = Vec2::angle(node.transform_rotation);
+                    let center = position + node.collider_offset.complex_mul(right);
+                    node.collider_center = center;
+                    node.transform_position = position;
+                    combined.velocity = map(combined.velocity);
+                    self.entities[entity].x = center.x.raw();
+                    self.entities[entity].y = center.y.raw();
+                }
+                PortalBody::Platform(index) => {
+                    let dynamics = &mut self.platform_dynamics[index];
+                    dynamics.composite_position = position;
+                    dynamics.body.velocity = map(dynamics.body.velocity);
+                    // Portal.TeleportBody sets body.position, the FixTransform;
+                    // the DetPhysics collider a Black Hole reads follows at the
+                    // next Simulate.
+                    self.platforms[index].surface.center += position - old_position;
+                    platforms_changed = true;
+                }
             }
         }
         if platforms_changed {
