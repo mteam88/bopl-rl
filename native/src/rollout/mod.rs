@@ -33927,13 +33927,12 @@ impl RolloutWorld {
                     self.capture_poke_victim(item, victim, data, false);
                 }
             }
-            // PlayerCollision.OnCollide's killPlayer, which Rock.prefab, with
-            // no PlayerCollision, never reaches. Only a scene-boundary death
-            // ignores invulnerability.
+            // PlayerCollision.KillPlayerOnCollision's killPlayer, which never
+            // ignores invulnerability and which Rock.prefab, with no
+            // PlayerCollision, never reaches (PlayerCollision.cs:457).
             CallbackHit::Kill { player, killer, cause, slime } => {
                 if self.player_collision_active(player, slime) && self.players[player].active != ActiveAbility::Rock {
-                    let ignore_invulnerability = killer == ENVIRONMENT && cause == CAUSE_ACCIDENT;
-                    self.kill_with(player, killer, cause, route, true, true, ignore_invulnerability);
+                    self.kill_with(player, killer, cause, route, true, true, false);
                 }
             }
             CallbackHit::Pickup { pickup, taker, body } => {
