@@ -109,6 +109,12 @@ pub struct Player {
     /// an unsimulated body takes no UpdateSim or LateUpdateSim turn.
     #[serde(default = "default_true")]
     pub(crate) simulated: bool,
+    /// The slime's PlayerPhysics.enabled: BeforeSpawnInit and PrepareToRevive
+    /// clear it, Spawn sets it (SlimeController.cs:518, 569, 624), and a
+    /// RewindRecorder clears it for its playback and then restores it
+    /// (RewindRecorder.cs:149-151, 355).
+    #[serde(default = "default_true")]
+    pub(crate) physics_enabled: bool,
     /// SlimeController.OldUpdate returns as soon as it has entered an ability
     /// (SlimeController.cs:824-831), so neither the jump block at 867-871 nor
     /// the `prevInput` store at 889 runs on a cast pass. Set for the instant

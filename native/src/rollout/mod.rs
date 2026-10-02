@@ -1582,6 +1582,9 @@ pub struct RewindState {
     pub playback_ticks: u32,
     pub playback_tick: u32,
     pub ability_slot: usize,
+    /// wasPhysicsEnabled: PlayerPhysics.enabled as BeginRewind found it,
+    /// restored by ReleaseControl (RewindRecorder.cs:149, 355).
+    pub was_physics_enabled: bool,
     pub finish_next_tick: bool,
     /// The slime started this pass inside a form. Its GameObject was still
     /// inactive when RewindRecorder ran, so a form exiting later in the pass
@@ -1606,6 +1609,7 @@ impl Default for RewindState {
             playback_ticks: 0,
             playback_tick: 0,
             ability_slot: 0,
+            was_physics_enabled: false,
             finish_next_tick: false,
             in_form_at_pass: false,
             destination: RewindSample::default(),
@@ -1929,7 +1933,7 @@ impl FormBody {
     /// takes a turn (PlayerBody.cs:107-112), and nothing writes it after Awake.
     fn unentered(ability: u32) -> FormBody {
         let simulated = data::get().abilities[ability as usize].body_simulated.unwrap_or(true);
-        FormBody { body: Player { simulated, ..Player::default() }, ..FormBody::default() }
+        FormBody { body: Player { simulated, physics_enabled: true, ..Player::default() }, ..FormBody::default() }
     }
 
     /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135).
@@ -3574,6 +3578,11 @@ pub struct PlayerSlot {
     /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
     /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
     pub unspawned: u32,
+    /// SlimeController.hasSpawned: off on a new slime, on from Spawn, off again
+    /// from PrepareToRevive (SlimeController.cs:575, 623). UpdateSim returns
+    /// before Move while it is off (1079), and a Magnet passes over the slime
+    /// (MagnetGun.cs:609).
+    pub has_spawned: bool,
     /// Respawn countdown while holding a consumed stock (StockRespawn).
     pub respawn_ticks: u32,
     /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
@@ -5999,6 +6008,7 @@ impl RolloutWorld {
                     jumped_this_frame: false,
                     // Awake turns it off until Spawn.
                     simulated: false,
+                    physics_enabled: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
                     dash: DashState::default(),
@@ -6162,6 +6172,7 @@ impl RolloutWorld {
                 facing_right: true,
                 prev_input_align: Fix::ZERO,
                 unspawned: 0,
+                has_spawned: false,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
                 respawn_selected: 1,
@@ -6275,6 +6286,8 @@ impl RolloutWorld {
                 if spawn_anim == 0 {
                     for slot in &mut self.players {
                         slot.base.simulated = true;
+                        slot.has_spawned = true;
+                        slot.base.physics_enabled = true;
                         slot.base.velocity =
                             Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
                     }
@@ -6840,6 +6853,8 @@ impl RolloutWorld {
         slot.clone_player_hierarchy = clone.hierarchy_base;
         slot.base = clone.base;
         slot.base.alive = true;
+        // ShootDuplicator spawned the clone (ShootDuplicator.cs ReSpawn, Spawn).
+        slot.has_spawned = true;
         slot.obs_state = clone.obs_state;
         slot.ragdoll = clone.ragdoll;
         slot.state_ticks = clone.state_ticks;
@@ -9808,7 +9823,7 @@ impl RolloutWorld {
     /// there and active (MagnetGun.cs:918-925).
     fn magnet_holdable(&self, slime: Slime) -> bool {
         match slime {
-            Slime::Player(index) => self.playable(index),
+            Slime::Player(index) => self.hittable(index),
             Slime::Clone(index) => self.clone_box_registered(index),
         }
     }
@@ -9830,10 +9845,6 @@ impl RolloutWorld {
             }
         };
         found && self.players[owner].bodies_alive > 0
-    }
-
-    fn playable(&self, index: usize) -> bool {
-        self.hittable(index) && self.players[index].respawn_spawn_ticks == 0
     }
 
     /// GameTime.IsTimeStopped: some Time Stop holds the global scale down.
@@ -9913,7 +9924,7 @@ impl RolloutWorld {
     /// touches starts eating it, unless that body is invulnerable.
     fn try_bite(&mut self, eater: usize, prey: Slime) {
         let slot = &self.players[eater];
-        if !self.playable(eater)
+        if !self.hittable(eater)
             || slot.obs_state == STATE_BITING
             || !slot.base.grounded
             || (self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[eater])
@@ -10000,7 +10011,7 @@ impl RolloutWorld {
                 self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false);
             }
         } else if self.players[eating.victim].deaths == eating.victim_deaths
-            && self.playable(eating.victim)
+            && self.hittable(eating.victim)
         {
             self.kill(eating.victim, killer, CAUSE_EATEN, false, false);
         }
@@ -10187,7 +10198,9 @@ impl RolloutWorld {
             let slot = &self.players[index];
             slot.active != ActiveAbility::None || slot.base.dash.active
         };
-        if !self.playable(index) {
+        // SlimeController.UpdateSim returns before Move until Spawn
+        // (SlimeController.cs:1079).
+        if !self.hittable(index) || !self.players[index].has_spawned {
             if self.players[index].teleport_effect_active || self.players[index].blink_tunnel_active
             {
                 self.players[index].obs_state_disabled_this_tick = true;
@@ -10708,6 +10721,8 @@ impl RolloutWorld {
                             let top = slot.rope_top;
                             self.attach_player_rope(index, None, top);
                             let slot = &mut self.players[index];
+                            slot.rewind.was_physics_enabled = slot.base.physics_enabled;
+                            slot.base.physics_enabled = false;
                             // UnGround raises OnNoLongerGrounded, which sets
                             // State.fall (PlayerPhysics.cs:377-380,
                             // SlimeController.cs:956), so a landing in the
@@ -12326,12 +12341,12 @@ impl RolloutWorld {
         let grounded = self.players[index].base.grounded;
         if self.players[index].rope.is_some() {
             self.rope_player_move(index, masked, movement_input, jump_pressed);
-            if grounded && self.playable(index) {
+            if grounded && self.hittable(index) {
                 self.apply_platform_drop(index);
             }
         } else {
             let integrate = self.slot_physics(index, |slot, world| slot.base.move_unintegrated(masked, movement_input, world, None));
-            if grounded && self.playable(index) {
+            if grounded && self.hittable(index) {
                 self.apply_platform_drop(index);
             }
             if integrate {
@@ -12931,7 +12946,7 @@ impl RolloutWorld {
                     // Meteor as a lethal form.
                     let route = KillRoute { phase: PassPhase::Updater, on_collide: true };
                     if let Some(target) = target {
-                        if self.playable(target)
+                        if self.hittable(target)
                             && (self.players[target].active == ActiveAbility::Rock
                                 || (self.players[target].active == ActiveAbility::Roll
                                     && self.players[target].roll.lethal))
@@ -12952,7 +12967,7 @@ impl RolloutWorld {
                             }
                         }
                     }
-                    if !self.playable(index) || self.players[index].active != ActiveAbility::Meteor
+                    if !self.hittable(index) || self.players[index].active != ActiveAbility::Meteor
                     {
                         self.spawn_meteor_smear(start, near, index, data);
                         return;
@@ -13985,7 +14000,7 @@ impl RolloutWorld {
 
     fn rewind_recorders_tick(&mut self, players: &[usize]) {
         for &index in players {
-            if !self.playable(index) {
+            if !self.hittable(index) {
                 continue;
             }
             if !self.players[index].rewind.rewinding {
@@ -14037,6 +14052,7 @@ impl RolloutWorld {
                 // Rewind one.
                 slot.timers = destination.cooldowns;
                 slot.timers[slot.rewind.ability_slot] = preserved;
+                slot.base.physics_enabled = slot.rewind.was_physics_enabled;
                 slot.rewind.rewinding = false;
                 slot.rewind.finish_next_tick = false;
                 continue;
@@ -22385,7 +22401,7 @@ impl RolloutWorld {
                         {
                             continue;
                         }
-                        if !self.playable(target) {
+                        if !self.hittable(target) {
                             continue;
                         }
                         if self.players[target].active == ActiveAbility::Rock {
@@ -24698,7 +24714,7 @@ impl RolloutWorld {
     /// or doesn't hold.
     fn magnet_pickup_target(&self, entity: usize) -> Option<(MagnetHeld, Vec2)> {
         if let Some(player_index) = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity) {
-            if !self.playable(player_index) {
+            if !self.hittable(player_index) || !self.players[player_index].has_spawned {
                 return None;
             }
             let player = &self.players[player_index];
@@ -25125,7 +25141,7 @@ impl RolloutWorld {
             MagnetHeld::Player(slime) => self.magnet_holdable(slime),
             MagnetHeld::Rock(i) => {
                 i < self.players.len()
-                    && self.playable(i)
+                    && self.hittable(i)
                     && self.players[i].active == ActiveAbility::Rock
             }
             MagnetHeld::BlackHole(i) => self.black_holes.get(i).is_some_and(|v| {
@@ -26597,6 +26613,7 @@ impl RolloutWorld {
             jumped_this_frame: false,
             // ShootDuplicator's ReSpawn then Spawn leave the clone simulated.
             simulated: true,
+            physics_enabled: true,
             constants: data.player.constants.clone(),
             cooldown: Fix::ZERO,
             dash: DashState::default(),
@@ -29610,7 +29627,7 @@ impl RolloutWorld {
             if !effect.active || self.tick < effect.appended {
                 continue;
             }
-            if !self.playable(effect.victim) {
+            if !self.hittable(effect.victim) {
                 self.frozen_solids[effect_index].active = false;
                 released.push(effect.hierarchy_base);
                 let slot = &mut self.players[effect.victim];
@@ -33118,7 +33135,8 @@ impl RolloutWorld {
                 }
                 MjolnirVictim::Clone(clone_index) => {
                     let clone = &self.abilityless_clones[clone_index];
-                    if !self.playable(clone.owner) {
+                    // Player.IsAlive (Mjolnir.cs:206).
+                    if self.players[clone.owner].bodies_alive <= 0 {
                         continue;
                     }
                     (clone.owner, clone.base.position)
@@ -33151,7 +33169,7 @@ impl RolloutWorld {
         for &(_, body) in &forms[..form_count] {
             let player_index = self.players[body].owner;
             if player_index == thrower
-                || !self.playable(body)
+                || !self.hittable(body)
                 || self.players[body].poke_invulnerable
                 || (item.killed_players | victims) & (1 << player_index) != 0
             {
@@ -34647,7 +34665,7 @@ impl RolloutWorld {
         self.players[index].base.fixed_delta_time = self.fixed_delta_time(index, DT);
         // SlimeController and these forms run as ever: only their FixedDeltaTime
         // steps are zero and their SpriteAnimators hold.
-        let runs_frozen = self.playable(index)
+        let runs_frozen = self.hittable(index)
             && matches!(
                 self.players[index].active,
                 ActiveAbility::None
@@ -34677,11 +34695,11 @@ impl RolloutWorld {
         if stopped {
             self.scratch.frozen_turns |= 1 << index;
         }
-        // A slime that is not playable (parked for a stock choice, in its
+        // A slime that is not hittable (parked for a stock choice) or
         // spawn animation, waiting to revive) has PlayerPhysics disabled
         // (SlimeController.cs:518, 624), so Time Stop changes nothing for it
         // but its FixedDeltaTime and SpriteAnimator: it takes its usual turn.
-        if stopped && self.playable(index) {
+        if stopped && self.hittable(index) && self.players[index].base.physics_enabled {
             if self.players[index].active == ActiveAbility::Beam {
                 // Beam.UpdateSim holds its orb before its time-stop return
                 // (Beam.cs:719-731).
@@ -36079,7 +36097,7 @@ impl RolloutWorld {
     fn roll_contacts_for(&mut self, roller: usize, data: &data::RolloutData) {
         if self.players[roller].active != ActiveAbility::Roll
             || !self.players[roller].roll.lethal
-            || !self.playable(roller)
+            || !self.hittable(roller)
         {
             return;
         }
@@ -36109,7 +36127,7 @@ impl RolloutWorld {
             }
 
             for &entity in &hits[..hit_count] {
-                if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
+                if !self.hittable(roller) || self.players[roller].active != ActiveAbility::Roll {
                     break;
                 }
                 if entity == roller_entity {
@@ -36149,7 +36167,7 @@ impl RolloutWorld {
                     break;
                 }
             }
-            if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
+            if !self.hittable(roller) || self.players[roller].active != ActiveAbility::Roll {
                 break;
             }
         }
@@ -37116,8 +37134,10 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
-            // The revival clone's PrepareToRevive (SlimeController.cs:625).
+            // The revival clone's PrepareToRevive (SlimeController.cs:623-625).
             slot.base.simulated = false;
+            slot.has_spawned = false;
+            slot.base.physics_enabled = false;
             // SpawnClone for the first marker.
             self.players[owner].bodies_alive += 1;
             self.players[owner].extra_life = REVIVE_BEING;
@@ -37291,6 +37311,8 @@ impl RolloutWorld {
         slot.stock_clone_pending = true;
         // The replacement slime's Awake and BeforeSpawnInit.
         slot.base.simulated = false;
+        slot.has_spawned = false;
+        slot.base.physics_enabled = false;
         let owner = slot.owner;
         self.players[owner].bodies_alive += 1;
         self.players[owner].extra_life = REVIVE_BEING;
@@ -37507,6 +37529,8 @@ impl RolloutWorld {
                 self.players[owner].extra_life = REVIVE_NONE;
                 let slot = &mut self.players[index];
                 slot.base.simulated = true;
+                slot.has_spawned = true;
+                slot.base.physics_enabled = true;
                 slot.base.velocity =
                     Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
                 slot.base.grounded = false;
@@ -39506,25 +39530,22 @@ impl RolloutWorld {
             let respawning = slot.respawn_ticks > 0
                 || slot.respawn_spawn_ticks > 0
                 || slot.revival_effect_ticks > 0;
-            let mut flags = S_ACTIVE;
+            let mut flags = if slot.has_spawned { S_SPAWNED } else { 0 };
             if (slot.teleport_effect_active || slot.blink_tunnel_active) && !in_ability {
-                flags = S_SPAWNED;
                 // The inactive slime's RewindRecorder is skipped by the
                 // Updater, so a rewind in progress keeps suppressInput set
                 // (RewindRecorder.cs:150, 342-352).
                 if slot.rewind.rewinding {
                     flags |= S_SUPPRESS_INPUT;
                 }
-            } else if respawning {
-                flags |= S_SUPPRESS_INPUT;
-            } else if slot.rewind.rewinding {
-                flags |= S_SPAWNED | S_SUPPRESS_INPUT;
+            } else if respawning || slot.rewind.rewinding {
+                flags |= S_ACTIVE | S_SUPPRESS_INPUT;
             } else if in_ability {
                 // onEnterAbility disables the original slime GameObject but
                 // its spawned/simulated state remains visible to observation.
-                flags = S_SPAWNED | S_IN_ABILITY;
+                flags |= S_IN_ABILITY;
             } else {
-                flags |= S_SPAWNED;
+                flags |= S_ACTIVE;
             }
             let slime = if in_ability { &slot.slime } else { &slot.base };
             if slime.simulated {

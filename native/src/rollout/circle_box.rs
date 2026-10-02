@@ -176,7 +176,7 @@ impl RolloutWorld {
             Blast::Smear(i) => self.meteor_smears[i].active,
             Blast::Drill(p, k) => {
                 let slot = &self.players[p];
-                self.playable(p)
+                self.hittable(p)
                     && slot.active == ActiveAbility::Drill
                     && slot.drill.phase != 0
                     && slot.drill_hitbox_entities[slot.active_slot][k] != usize::MAX
@@ -774,7 +774,7 @@ impl RolloutWorld {
             }
         }
         for i in 0..self.players.len() {
-            if self.players[i].active == ActiveAbility::Rock && self.playable(i) {
+            if self.players[i].active == ActiveAbility::Rock && self.hittable(i) {
                 parts.push(Part::Rock(i));
             }
         }
@@ -1086,7 +1086,7 @@ impl RolloutWorld {
             }
         }
         for i in 0..self.players.len() {
-            if self.players[i].active == ActiveAbility::Rock && self.playable(i) {
+            if self.players[i].active == ActiveAbility::Rock && self.hittable(i) {
                 parts.push(Part::Rock(i));
             }
         }
