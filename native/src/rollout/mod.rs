@@ -4683,6 +4683,7 @@ struct PlatformScratch {
 
 #[derive(Clone, Copy)]
 enum PendingObject {
+    ShakablePlatform,
     Arrow,
     DuplicatedPickup,
     AbilitylessClone,
@@ -7706,17 +7707,6 @@ impl RolloutWorld {
         // wave therefore applies its first time-zero impulse before a
         // Duplicator copy advances and before map home springs, while its
         // same-tick UpdateSim impulse runs after them.
-        // ShakablePlatform.Init reruns the UpdateBounds a new platform's
-        // StickyRoundedRectangle.Awake ran over the prefab or copied shape
-        // (ShakablePlatform.cs:104-111), in Updater's Init walk.
-        for i in 0..self.platforms.len() {
-            if self.platforms[i].active
-                && self.platform_dynamics[i].appended == self.tick
-                && self.platform_updater_order(data, i).contains(&data::PlatformUpdater::ShakablePlatform)
-            {
-                self.update_surface_bounds(i);
-            }
-        }
         self.shockwaves_init(false, data);
         self.shockwaves_init(true, data);
         self.duplicated_objects_tick();
@@ -19571,39 +19561,56 @@ impl RolloutWorld {
         let pending_since = |active: bool, registered: bool, appended: u32| {
             active && !registered && appended <= tick
         };
+        // Each entry is keyed by its prefab's offset: an updatable's
+        // HierarchyNumber less its local number. A spawned prefab's offset is
+        // 100,000,000 past its base.
+        let spawned = |base: u32| base.saturating_add(100_000_000);
         let mut pending = std::mem::take(&mut self.scratch.pending_objects);
         pending.clear();
+        // ShakablePlatform.Init reruns the UpdateBounds a new platform's
+        // StickyRoundedRectangle.Awake ran over the prefab or copied shape
+        // (ShakablePlatform.cs:104-111). Its prefab's numbers are offset from
+        // its collider row's by the collider's own.
+        for (index, dynamics) in self.platform_dynamics.iter().enumerate() {
+            if self.platforms[index].active
+                && dynamics.appended == tick
+                && self.platform_updater_order(data, index).contains(&data::PlatformUpdater::ShakablePlatform)
+            {
+                let offset = self.entities[self.platform_entities[index]].hierarchy - dynamics.registered.2;
+                pending.push((offset, PendingObject::ShakablePlatform, index));
+            }
+        }
         for (index, arrow) in self.arrows.iter().enumerate() {
             if pending_since(arrow.active, arrow.registered, arrow.appended) {
-                pending.push((arrow.hierarchy_base, PendingObject::Arrow, index));
+                pending.push((spawned(arrow.hierarchy_base), PendingObject::Arrow, index));
             }
         }
         for (index, pickup) in self.ability_pickups.iter().enumerate() {
             if pickup.duplicated
                 && pending_since(pickup.active, pickup.entity.is_some(), pickup.appended)
             {
-                pending.push((pickup.hierarchy_base, PendingObject::DuplicatedPickup, index));
+                pending.push((spawned(pickup.hierarchy_base), PendingObject::DuplicatedPickup, index));
             }
         }
         for (index, clone) in self.abilityless_clones.iter().enumerate() {
             if pending_since(clone.active, clone.entity.is_some(), clone.appended) {
-                pending.push((clone.hierarchy_base, PendingObject::AbilitylessClone, index));
+                pending.push((spawned(clone.hierarchy_base), PendingObject::AbilitylessClone, index));
             }
         }
         for (index, hole) in self.pending_black_holes.iter().enumerate() {
-            pending.push((hole.hierarchy_base, PendingObject::BlackHole, index));
+            pending.push((spawned(hole.hierarchy_base), PendingObject::BlackHole, index));
         }
         for (index, rock) in self.pending_duplicated_rocks.iter().enumerate() {
-            pending.push((rock.hierarchy_base, PendingObject::DuplicatedRock, index));
+            pending.push((spawned(rock.hierarchy_base), PendingObject::DuplicatedRock, index));
         }
         for (index, &(hierarchy_base, _)) in self.pending_orphan_abilities.iter().enumerate() {
-            pending.push((hierarchy_base, PendingObject::OrphanAbility, index));
+            pending.push((spawned(hierarchy_base), PendingObject::OrphanAbility, index));
         }
         // A clapped hole's Init registers its circle with the other objects
         // queued in the prior pass, ahead of every player's updaters.
         for (index, player) in self.players.iter().enumerate() {
             if let Some((_, hierarchy)) = player.pending_black_hole {
-                pending.push((hierarchy, PendingObject::ClappedBlackHole, index));
+                pending.push((spawned(hierarchy), PendingObject::ClappedBlackHole, index));
             }
         }
         if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
@@ -19611,7 +19618,7 @@ impl RolloutWorld {
                 for slot in 0..3 {
                     if !player.ability_instantiated[slot] {
                         pending.push((
-                            player.pending_ability_hierarchy[slot],
+                            spawned(player.pending_ability_hierarchy[slot]),
                             PendingObject::PickedAbility,
                             3 * index + slot,
                         ));
@@ -19623,27 +19630,27 @@ impl RolloutWorld {
             if item.ability == ABILITY_MINE
                 && pending_since(item.active, item.entity.is_some(), item.appended)
             {
-                pending.push((item.hierarchy_base, PendingObject::Mine, index));
+                pending.push((spawned(item.hierarchy_base), PendingObject::Mine, index));
             }
         }
         for (index, missile) in self.guided_missiles.iter().enumerate() {
             if pending_since(missile.active, missile.registered, missile.appended) {
-                pending.push((missile.hierarchy_base, PendingObject::GuidedMissile, index));
+                pending.push((spawned(missile.hierarchy_base), PendingObject::GuidedMissile, index));
             }
         }
         for (index, explosion) in self.missile_explosions.iter().enumerate() {
             if pending_since(explosion.active, explosion.registered, explosion.appended) {
-                pending.push((explosion.hierarchy_base, PendingObject::MissileExplosion, index));
+                pending.push((spawned(explosion.hierarchy_base), PendingObject::MissileExplosion, index));
             }
         }
         for (index, marker) in self.revival_marker_pool.iter().enumerate() {
             if pending_since(marker.active, marker.registered, marker.appended) {
-                pending.push((marker.hierarchy_base, PendingObject::RevivalMarker, index));
+                pending.push((spawned(marker.hierarchy_base), PendingObject::RevivalMarker, index));
             }
         }
         for (index, marker) in self.teleport_marker_pool.iter().enumerate() {
             if pending_since(marker.active, marker.registered, marker.appended) {
-                pending.push((marker.hierarchy_base, PendingObject::TeleportMarker, index));
+                pending.push((spawned(marker.hierarchy_base), PendingObject::TeleportMarker, index));
             }
         }
         for (index, node) in self.tesla_nodes.iter().enumerate() {
@@ -19652,37 +19659,38 @@ impl RolloutWorld {
                 && node.child.is_some()
                 && pending_since(node.active, node.line_entity.is_some(), node.line_appended)
             {
-                pending.push((node.line_hierarchy_base, PendingObject::TeslaLine, index));
+                pending.push((spawned(node.line_hierarchy_base), PendingObject::TeslaLine, index));
             }
         }
         for (index, explosion) in self.grenade_explosions.iter().enumerate() {
             if pending_since(explosion.active, explosion.registered, explosion.appended) {
-                pending.push((explosion.hierarchy_base, PendingObject::GrenadeExplosion, index));
+                pending.push((spawned(explosion.hierarchy_base), PendingObject::GrenadeExplosion, index));
             }
         }
         for (index, cloud) in self.smoke_clouds.iter().enumerate() {
             if pending_since(cloud.active, cloud.registered, cloud.appended) {
-                pending.push((cloud.hierarchy_base, PendingObject::SmokeCloud, index));
+                pending.push((spawned(cloud.hierarchy_base), PendingObject::SmokeCloud, index));
             }
         }
         for (index, explosion) in self.smoke_explosions.iter().enumerate() {
             if pending_since(explosion.active, explosion.registered, explosion.appended) {
-                pending.push((explosion.hierarchy_base, PendingObject::SmokeExplosion, index));
+                pending.push((spawned(explosion.hierarchy_base), PendingObject::SmokeExplosion, index));
             }
         }
         // A clone's SpawnClone, and a stock chooser's indicators after it,
         // queue with everything else instantiated since the last pass.
         for (index, player) in self.players.iter().enumerate() {
             if player.revival_clone_pending {
-                pending.push((player.clone_player_hierarchy, PendingObject::RevivalClone, index));
+                pending.push((spawned(player.clone_player_hierarchy), PendingObject::RevivalClone, index));
             }
             if player.stock_clone_pending {
-                pending.push((player.clone_player_hierarchy, PendingObject::StockClone, index));
+                pending.push((spawned(player.clone_player_hierarchy), PendingObject::StockClone, index));
             }
         }
         pending.sort_unstable_by_key(|&(hierarchy_base, _, index)| (hierarchy_base, index));
         for &(_, kind, index) in &pending {
             match kind {
+                PendingObject::ShakablePlatform => self.update_surface_bounds(index),
                 PendingObject::Arrow => self.register_arrow(index),
                 PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
                 PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
