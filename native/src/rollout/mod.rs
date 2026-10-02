@@ -1252,6 +1252,8 @@ pub struct SpawnedTeslaNode {
     /// animator still runs it out and its callback makes the node lethal
     /// until the next UpdateSim finds it unconnected.
     pub orb_enter_left: u32,
+    /// The pass its orb SpriteAnimator last ran.
+    pub orb_pass: u32,
     /// DetPhysics.UpdateDuplicatedObjects took it before the updatables ran,
     /// so the pass-opening loop has run its OnDestroyUpdatable already, while
     /// its GameObject and its partners' references to it last until the
@@ -14286,7 +14288,11 @@ impl RolloutWorld {
             && !self.tesla_nodes[child].lethal
             && elapsed <= enter + 1
         {
-            self.tesla_nodes[child].orb_enter_left = enter + 2 - elapsed;
+            // `elapsed` counts the pass's end, after the child's animator. A
+            // mid-pass Deactivate after that animator ran (a younger
+            // QuantumTunnel hiding the child's wall) finds it one further.
+            let ran = !deferred && self.tesla_nodes[child].orb_pass == self.tick;
+            self.tesla_nodes[child].orb_enter_left = enter + 2 - elapsed - u32::from(ran);
         }
         self.tesla_nodes[node_index].connected = false;
         self.tesla_node_unlit(node_index);
@@ -15636,7 +15642,9 @@ impl RolloutWorld {
         if self.player_time_scale < Fix::from_f32(0.01) || !self.tesla_node_shown(node_index) {
             return;
         }
+        let tick = self.tick;
         let node = &mut self.tesla_nodes[node_index];
+        node.orb_pass = tick;
         if node.connected && node.child.is_some() {
             node.orb_ticks += 1;
         }
