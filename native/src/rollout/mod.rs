@@ -24191,12 +24191,13 @@ impl RolloutWorld {
                 return None;
             }
             let player = &self.players[player_index];
-            return Some(match player.active {
-                ActiveAbility::Rock => (MagnetHeld::Rock(player_index), player.base.position),
-                ActiveAbility::None => (MagnetHeld::Player(Slime::Player(player_index)), player.base.position),
-                // An ability form's FixTransform is its collider's.
-                _ => (MagnetHeld::Player(Slime::Player(player_index)), self.hurtbox_collider(player_index)?.center()),
-            });
+            // A form's FixTransform is its body's, wherever its collider sits
+            // (a Drill's box is well ahead of it).
+            let held = match player.active {
+                ActiveAbility::Rock => MagnetHeld::Rock(player_index),
+                _ => MagnetHeld::Player(Slime::Player(player_index)),
+            };
+            return Some((held, player.base.position));
         }
         let matches = |active: bool, candidate: Option<usize>| active && candidate == Some(entity);
         // An ability-less clone is a plain SlimeController (MagnetGun.cs:680-684).
