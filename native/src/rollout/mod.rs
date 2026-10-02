@@ -3966,7 +3966,6 @@ impl PlayerSlot {
         // the refused kill keeps grounded_speed and scale, a kill all of it.
         self.base.position = form.position; // leak: position
         if !woken {
-            self.base.grounded = form.grounded; // leak: grounded
             self.base.ground = form.ground; // leak: ground
             self.base.local = form.local; // leak: local
         }
