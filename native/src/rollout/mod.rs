@@ -11119,15 +11119,6 @@ impl RolloutWorld {
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         self.form_entry_turn(data, index);
-                        // The form's DestroyIfOutsideSceneBounds runs on
-                        // the entry pass too: OldUpdate enters the ability
-                        // before PlayerPhysics.Move (SlimeController.cs:1067,
-                        // 1084), so the live body this pass is the form's and
-                        // its own bounds component is what observes it, before
-                        // the form moves.
-                        if self.ability_boundary_kill(index) {
-                            return;
-                        }
                         self.time_stop_cast_tick(index, action, jump_pressed, data);
                         return;
                     }
@@ -13804,6 +13795,11 @@ impl RolloutWorld {
         // at it (PlayerPhysics.cs:106-114, 123, 142).
         let slot = &mut self.players[index];
         slot.update_form_scale(slot.active_slot);
+        // DestroyIfOutsideSceneBounds follows PlayerPhysics, on the entry pass
+        // too, and precedes PlayerBody.
+        if self.ability_boundary_kill(index) {
+            return;
+        }
         // PlayerBody follows CastSpell in the prefab. It carries the rope
         // Ability.EnterAbility handed it, grounded or not, so a jump pressed
         // while hanging lets go with the rope end's velocity
