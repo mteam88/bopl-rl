@@ -3919,12 +3919,6 @@ impl PlayerSlot {
         self.sync_slime_row(entities);
     }
 
-    /// Leaving a form, by its exit or its death: the form keeps its own
-    /// PlayerPhysics and PlayerBody, and the slime's are the live body again.
-    /// onExitAbility's SyncPhysicsTo(AbilityExitInfo) then writes the packet
-    /// over them (PlayerPhysics.cs:554-585, SlimeController.cs:193-260).
-    /// `woken`: a refused kill's onExitAbility returns before SyncPhysicsTo
-    /// (SlimeController.cs:215-221), and the slime keeps its own motion.
     /// The FixTransform of the box a pair found, `collider`: a form's box is
     /// the form's own body, live or left; the slime's is the slime's, or where
     /// this pass's stock death left the destroyed slime.
@@ -3940,14 +3934,18 @@ impl PlayerSlot {
         }
     }
 
-    fn leave_form(&mut self, entities: &mut [CEntity], woken: bool) {
+    /// Leaving a form, by its exit or its death: the form keeps its own
+    /// PlayerPhysics and PlayerBody, and the slime's are the live body again.
+    /// onExitAbility's SyncPhysicsTo(AbilityExitInfo) then writes the packet
+    /// over them (PlayerPhysics.cs:554-585, SlimeController.cs:193-260).
+    fn leave_form(&mut self, entities: &mut [CEntity]) {
         if self.active != ActiveAbility::None {
-            self.slime_body_returns(woken);
+            self.slime_body_returns();
         }
         self.set_active_form(entities, ActiveAbility::None);
     }
 
-    fn slime_body_returns(&mut self, woken: bool) {
+    fn slime_body_returns(&mut self) {
         let form = std::mem::replace(&mut self.base, std::mem::take(&mut self.slime));
         carry_player_object(&mut self.base, &form);
         // The slime goes on from the form's body wherever the exit writes
@@ -3955,9 +3953,6 @@ impl PlayerSlot {
         // grounded, grounded_speed, scale, radius, constants and box again;
         // the refused kill keeps grounded_speed and scale, a kill all of it.
         self.base.position = form.position; // leak: position
-        if !woken {
-            self.base.local = form.local; // leak: local
-        }
         self.base.scale = form.scale; // leak: scale
         self.base.collider = form.collider; // leak: collider
         self.base.synced = form.synced; // leak: synced
@@ -13563,7 +13558,7 @@ impl RolloutWorld {
     /// for the next one.
     fn ability_exit(&mut self, index: usize, info: ExitInfo) {
         let tick = self.tick;
-        self.form_returns_slime(index, false);
+        self.form_returns_slime(index);
         let slot = &mut self.players[index];
         slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
         slot.facing_right = info.facing_right;
@@ -13640,7 +13635,7 @@ impl RolloutWorld {
     /// slime's onExitAbility (SlimeController.cs:198): the form publishes its
     /// position and goes inactive, and the body is the slime's again, on its
     /// own PlayerPhysics and radius.
-    fn form_returns_slime(&mut self, index: usize, woken: bool) {
+    fn form_returns_slime(&mut self, index: usize) {
         let slot = &mut self.players[index];
         if slot.active != ActiveAbility::None {
             slot.keep_form_rotation();
@@ -13653,7 +13648,7 @@ impl RolloutWorld {
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
-        slot.leave_form(&mut self.entities, woken);
+        slot.leave_form(&mut self.entities);
     }
 
     /// SuperStarEffect.UpdateSim for player `index`'s effect in
@@ -20947,7 +20942,7 @@ impl RolloutWorld {
         slot.obs_state = STATE_NOTHING;
         slot.empty_prefab_facing();
         slot.timers.fill(Fix::from_f32(-1.5));
-        slot.leave_form(&mut self.entities, false);
+        slot.leave_form(&mut self.entities);
         slot.base.physics_scale = Fix::ONE;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
@@ -21445,7 +21440,7 @@ impl RolloutWorld {
         slot.base.scale = Fix::ONE;
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.empty_prefab_facing();
-        slot.leave_form(&mut self.entities, false);
+        slot.leave_form(&mut self.entities);
         slot.base.physics_scale = Fix::ONE;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
@@ -36581,7 +36576,7 @@ impl RolloutWorld {
         slot.base.alive = false;
         // Nothing of it is left in the scene.
         slot.slime_gone = true;
-        slot.leave_form(&mut self.entities, false);
+        slot.leave_form(&mut self.entities);
         slot.revival_clone_pending = false;
         slot.stock_clone_pending = false;
         slot.revival_target_marker = None;
@@ -36762,7 +36757,7 @@ impl RolloutWorld {
             // killPlayer refused, clears isInAbility and returns
             // (SlimeController.cs:215-221): no SyncPhysicsTo, so the slime
             // is on the PlayerPhysics it froze with.
-            self.form_returns_slime(index, true);
+            self.form_returns_slime(index);
             let slot = &mut self.players[index];
             // The slime's own PlayerBody and PlayerPhysics, enabled again as
             // they froze.
@@ -36836,7 +36831,7 @@ impl RolloutWorld {
             self.players[index].reported_tick = self.tick;
         }
         let slot = &mut self.players[index];
-        slot.leave_form(&mut self.entities, false);
+        slot.leave_form(&mut self.entities);
         slot.base.dash.active = false;
         // Teleport's marker reference belongs to the destroyed ability
         // instance. The independent indicator survives, but a replacement
