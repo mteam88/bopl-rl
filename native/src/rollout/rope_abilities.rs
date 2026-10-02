@@ -129,8 +129,9 @@ pub(crate) struct RopeAttachment {
     /// platform; an older RopeAttachment still saw it alive that pass.
     pub destroyed_at: (u32, u32),
     /// RopeHook.OnCollide takes the hit collider's centre, so a rope that
-    /// meets a black hole hangs off the hole's centre.
-    pub black_hole: Option<usize>,
+    /// meets a black hole hangs off the hole's centre. The hole by slot and
+    /// hierarchy, so a later hole in a reused slot reads as this one destroyed.
+    pub black_hole: Option<(usize, u32)>,
     pub reel_frames: usize,
     /// A body the hook stuck to through AttachToNonPlatform: the rope hangs
     /// off its collider centre and pulls on it.
@@ -1412,9 +1413,10 @@ impl RolloutWorld {
                 continue;
             }
             let hierarchy = self.ropes[index].hierarchy;
-            if let Some(hole_index) = self.ropes[index].attach[0].black_hole {
+            if let Some((hole_index, base)) = self.ropes[index].attach[0].black_hole {
                 if hole_index >= self.black_holes.len()
                     || !self.black_holes[hole_index].active
+                    || self.black_holes[hole_index].hierarchy_base != base
                     || self.blink_object_hidden(self.black_holes[hole_index].entity)
                 {
                     self.deattach_rope(index, true);
@@ -1947,7 +1949,7 @@ impl RolloutWorld {
                 rope.physics.set_mass(source.non_platform_mass, true, Fix::ONE);
                 rope.time_air_start = Fix::ONE;
                 rope.attach[0].platform = None;
-                rope.attach[0].black_hole = Some(hole_index);
+                rope.attach[0].black_hole = Some((hole_index, self.black_holes[hole_index].hierarchy_base));
                 rope.attach[0].reel_frames = 0;
                 rope.reel_in = true;
                 rope.hook_arrived = true;
@@ -2252,9 +2254,10 @@ impl RolloutWorld {
                 }
             }
             if rope.appended <= self.tick
-                && let Some(hole_index) = rope.attach[0].black_hole
+                && let Some((hole_index, base)) = rope.attach[0].black_hole
                 && hole_index < self.black_holes.len()
                 && self.black_holes[hole_index].active
+                && self.black_holes[hole_index].hierarchy_base == base
             {
                 let hole = self.black_holes[hole_index];
                 rope.physics.segment[0] = hole.position;
