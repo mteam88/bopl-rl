@@ -783,6 +783,8 @@ pub struct ThrownItem {
     /// Poke Ball capture state. `None` is the ordinary flying/fizzle phase.
     pub capture_victim: Option<usize>,
     pub capture_victim_is_clone: bool,
+    /// The captured slime's `slime_instance`.
+    pub capture_victim_instance: u32,
     pub capture_left: Fix,
     /// `DetPhysics.duplicatedObjects`: Duplicator copies count down from 1800
     /// before ordinary updaters run.
@@ -9611,6 +9613,16 @@ impl RolloutWorld {
         match slime {
             Slime::Player(index) => &self.players[index].base,
             Slime::Clone(index) => &self.abilityless_clones[index].base,
+        }
+    }
+
+    /// Which SlimeController a body slot or clone slot holds now, so a
+    /// reference taken earlier tells it from a later slime in the reused
+    /// slot: a body's row, which is never reused, or a clone's hierarchy.
+    fn slime_instance(&self, slime: Slime) -> u32 {
+        match slime {
+            Slime::Player(index) => self.players[index].body_entity as u32,
+            Slime::Clone(index) => self.abilityless_clones[index].hierarchy_base,
         }
     }
 
@@ -22738,6 +22750,7 @@ impl RolloutWorld {
             synced_center: position,
             capture_victim: None,
             capture_victim_is_clone: false,
+            capture_victim_instance: 0,
             capture_left: Fix::ZERO,
             duplicated: false,
             duplicate_lifespan: 0,
@@ -23102,6 +23115,7 @@ impl RolloutWorld {
             synced_center: position,
             capture_victim: None,
             capture_victim_is_clone: false,
+            capture_victim_instance: 0,
             capture_left: Fix::ZERO,
             duplicated: false,
             duplicate_lifespan: 0,
@@ -24774,20 +24788,21 @@ impl RolloutWorld {
     /// The hierarchy of the object `held` names. Pools reuse a destroyed
     /// object's slot, and a later object there is not the one MagnetGun
     /// took: its reference reads IsDestroyed (MagnetGun.cs:908-930). A slime
-    /// is its body slot.
+    /// is the SlimeController its slot holds.
     fn magnet_held_base(&self, held: MagnetHeld) -> u32 {
         match held {
             MagnetHeld::ThrownItem(i) => self.thrown_items[i].hierarchy_base,
             MagnetHeld::Missile(i) => self.guided_missiles[i].hierarchy_base,
             MagnetHeld::Arrow(i) => self.arrows[i].hierarchy_base,
-            MagnetHeld::Player(Slime::Clone(i)) => self.abilityless_clones[i].hierarchy_base,
+            MagnetHeld::Player(slime) => self.slime_instance(slime),
+            MagnetHeld::Rock(i) => self.slime_instance(Slime::Player(i)),
             MagnetHeld::BlackHole(i) => self.black_holes[i].hierarchy_base,
             MagnetHeld::Boulder(i) => self.macho_boulders[i].hierarchy_base,
             MagnetHeld::AbilityPickup(i) => self.ability_pickups[i].hierarchy_base,
             MagnetHeld::PortalShot(i) => self.portal_shots[i].hierarchy_base,
             MagnetHeld::RevivalMarker(i) => self.revival_marker_pool[i].hierarchy_base,
             MagnetHeld::TeleportMarker(i) => self.teleport_marker_pool[i].hierarchy_base,
-            MagnetHeld::Player(Slime::Player(_)) | MagnetHeld::Rock(_) | MagnetHeld::Nothing => 0,
+            MagnetHeld::Nothing => 0,
         }
     }
 
@@ -31891,9 +31906,11 @@ impl RolloutWorld {
         // victimPlayer.isInvisible (PokeBall.cs:190) is the Player's.
         let owner = self.players[victim].owner;
         self.players[owner].invisible = true;
+        let instance = self.slime_instance(Slime::Player(victim));
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(victim);
         item.capture_victim_is_clone = false;
+        item.capture_victim_instance = instance;
         item.capture_left = data.poke_ball.capture_seconds;
         item.body.velocity = Vec2::new(item.body.velocity.x / Fix::from_int(4), Fix::from_int(5));
         if let Some(entity) = item.entity {
@@ -31921,9 +31938,11 @@ impl RolloutWorld {
         clone.base.velocity = Vec2::ZERO;
         clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         self.players[owner].invisible = true;
+        let instance = self.slime_instance(Slime::Clone(clone_index));
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(clone_index);
         item.capture_victim_is_clone = true;
+        item.capture_victim_instance = instance;
         item.capture_left = data.poke_ball.capture_seconds;
         item.body.velocity = Vec2::new(item.body.velocity.x / Fix::from_int(4), Fix::from_int(5));
         if let Some(entity) = item.entity {
@@ -32168,6 +32187,7 @@ impl RolloutWorld {
             // one DetPhysics pass, even after the first callback sets the
             // shared invulnerability mask.
             let victim_is_clone = self.thrown_items[item_index].capture_victim_is_clone;
+            let slime = if victim_is_clone { Slime::Clone(victim) } else { Slime::Player(victim) };
             let valid = if victim_is_clone {
                 victim < self.abilityless_clones.len()
                     && self.abilityless_clones[victim].active
@@ -32179,7 +32199,7 @@ impl RolloutWorld {
                     && self.hittable(victim)
                     && self.players[victim].active == ActiveAbility::None
                     && !self.players[victim].base.dash.active
-            };
+            } && self.slime_instance(slime) == self.thrown_items[item_index].capture_victim_instance;
             if !valid {
                 if victim_is_clone {
                     self.release_poke_clone(item_index, victim, data);
@@ -32875,10 +32895,13 @@ impl RolloutWorld {
     }
 
     fn release_poke_victim(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
-        if victim >= self.players.len() || !self.players[victim].base.alive {
+        let item = self.thrown_items[item_index];
+        if victim >= self.players.len()
+            || !self.players[victim].base.alive
+            || self.slime_instance(Slime::Player(victim)) != item.capture_victim_instance
+        {
             return;
         }
-        let item = self.thrown_items[item_index];
         let remaining_captor = self
             .thrown_items
             .iter()
@@ -32888,6 +32911,7 @@ impl RolloutWorld {
                     && other.active
                     && !other.capture_victim_is_clone
                     && other.capture_victim == Some(victim)
+                    && other.capture_victim_instance == item.capture_victim_instance
             })
             .map(|(index, _)| index);
         let owner = self.players[victim].owner;
@@ -32919,10 +32943,13 @@ impl RolloutWorld {
     }
 
     fn release_poke_clone(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
-        if victim >= self.abilityless_clones.len() || !self.abilityless_clones[victim].base.alive {
+        let item = self.thrown_items[item_index];
+        if victim >= self.abilityless_clones.len()
+            || !self.abilityless_clones[victim].base.alive
+            || self.slime_instance(Slime::Clone(victim)) != item.capture_victim_instance
+        {
             return;
         }
-        let item = self.thrown_items[item_index];
         let remaining_captor = self
             .thrown_items
             .iter()
@@ -32932,6 +32959,7 @@ impl RolloutWorld {
                     && other.active
                     && other.capture_victim_is_clone
                     && other.capture_victim == Some(victim)
+                    && other.capture_victim_instance == item.capture_victim_instance
             })
             .map(|(index, _)| index);
         let owner = self.abilityless_clones[victim].owner;
