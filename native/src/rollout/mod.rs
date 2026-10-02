@@ -1260,13 +1260,13 @@ pub struct SpawnedTeslaNode {
     pub line_hierarchy_base: u32,
     pub line_appended: u32,
     pub line_entity: Option<usize>,
-    pub line_center: Vec2,
-    pub line_right: Vec2,
-    pub line_up: Vec2,
-    /// The lightning box's |One / startExtents| until Init copies it into its
-    /// row; SetExtents before Init only replaces startExtents.
-    pub line_start_inverse_extents: Vec2,
-    pub line_rotation: Fix,
+    /// The lightning's FixTransform, which UpdateLightningLine sets. Its box
+    /// is the row, which takes this pose only at Init and DetPhysics' sync.
+    pub line_position: Vec2,
+    pub line_transform: Orientation,
+    /// The lightning box's startExtents until Init builds its Box from
+    /// them; SetExtents before Init only replaces startExtents.
+    pub line_start_extents: Vec2,
     pub flicker_time: Fix,
     pub flicker_ticks: u32,
     pub flicker_was_stopped: bool,
@@ -8168,6 +8168,9 @@ impl RolloutWorld {
             row.up_y = collider.up.y.raw();
             row.rotation = clone.base.rotation().raw();
         }
+        for node_index in 0..self.tesla_nodes.len() {
+            self.sync_tesla_line(node_index);
+        }
         if self.platforms.iter().any(|platform| platform.collider.inner.center != platform.surface.center) {
             for platform in self.platforms.iter_mut() {
                 platform.collider.inner.center = platform.surface.center;
@@ -14311,15 +14314,8 @@ impl RolloutWorld {
     }
 
     fn destroy_tesla_line(&mut self, node_index: usize, deferred: bool) {
+        self.sync_tesla_line(node_index);
         if let Some(entity) = self.tesla_nodes[node_index].line_entity.take() {
-            let node = self.tesla_nodes[node_index];
-            self.entities[entity].x = node.line_center.x.raw();
-            self.entities[entity].y = node.line_center.y.raw();
-            self.entities[entity].right_x = node.line_right.x.raw();
-            self.entities[entity].right_y = node.line_right.y.raw();
-            self.entities[entity].up_x = node.line_up.x.raw();
-            self.entities[entity].up_y = node.line_up.y.raw();
-            self.entities[entity].rotation = node.line_rotation.raw();
             self.entities[entity].owner = 0;
             if !deferred {
                 self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
@@ -15400,6 +15396,7 @@ impl RolloutWorld {
         self.tesla_nodes[node_index].line_hierarchy_base = hierarchy_base;
         self.tesla_nodes[node_index].line_appended = self.tick + 1;
         self.tesla_nodes[node_index].line_entity = None;
+        self.tesla_nodes[node_index].line_start_extents = data.tesla.lightning_extents;
         self.tesla_nodes[node_index].flicker_time = Fix::ZERO;
         self.tesla_nodes[node_index].flicker_ticks = 0;
         self.tesla_nodes[child_index].connected = true;
@@ -15420,9 +15417,14 @@ impl RolloutWorld {
         }
     }
 
-    /// The collider of the StretchableLightning a connection instantiated.
+    /// The collider of the StretchableLightning a connection instantiated:
+    /// DPhysicsBox.Box() builds it from the FixTransform and startExtents
+    /// (DPhysicsBox.cs:355-367).
     fn register_tesla_line(&mut self, node_index: usize, data: &data::RolloutData) {
         let node = self.tesla_nodes[node_index];
+        let start = node.line_start_extents;
+        let right = node.line_transform.right() * start.x;
+        let up = node.line_transform.up() * start.y;
         let entity = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -15434,9 +15436,16 @@ impl RolloutWorld {
             hierarchy: 100_000_000
                 + node.line_hierarchy_base
                 + data.tesla.lightning_collider_hierarchy,
+            x: node.line_position.x.raw(),
+            y: node.line_position.y.raw(),
+            right_x: right.x.raw(),
+            right_y: right.y.raw(),
+            up_x: up.x.raw(),
+            up_y: up.y.raw(),
+            rotation: node.line_transform.rotation().raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        }, node.line_start_inverse_extents);
+        }, Vec2::new((Fix::ONE / start.x).abs(), (Fix::ONE / start.y).abs()));
         self.tesla_nodes[node_index].line_entity = Some(entity);
     }
 
@@ -15664,42 +15673,53 @@ impl RolloutWorld {
         } else {
             Vec2::UP
         };
-        let line_up_basis = Vec2::new(-direction.y, direction.x);
-        let line_rotation = line_up_basis.perp_cw().normalized_angle();
         let half = Fix::from_f32(0.5);
         let mut half_length = distance * half;
         if half_length == Fix::ZERO {
             half_length = data.tesla.lightning_minimum_extent;
         }
-        // Before Initialize, SetExtents only replaces startExtents.x. Once
-        // the box exists it keeps y as CalcExtents().y = One / inverseExtents.y,
-        // which UpdateExtents inverts back, and the physics sync's
-        // Box.SetRotation rebuilds both axes from the angle.
-        let height = if let Some(entity) = node.line_entity {
-            Fix::ONE / self.entity_inverse_extents[entity].y
-        } else {
-            data.tesla.lightning_extents.y
-        };
-        let line = OrientedBox::from_basis(
-            from + delta * half,
-            Vec2::angle(line_rotation),
-            Vec2::new(half_length, height),
-        );
         let node = &mut self.tesla_nodes[node_index];
-        node.line_center = line.center;
-        node.line_right = line.right;
-        node.line_up = line.up;
-        node.line_rotation = line_rotation;
-        // The physics sync moves the box to this pose before the broadphase
-        // averages every collider, the inactive line included, to pick its
-        // sweep axis.
-        if let Some(entity) = node.line_entity {
-            self.entities[entity].x = line.center.x.raw();
-            self.entities[entity].y = line.center.y.raw();
-            self.entity_inverse_extents[entity] = line.inverse_extents;
-        } else {
-            node.line_start_inverse_extents = line.inverse_extents;
-        }
+        node.line_position = from + delta * half;
+        node.line_transform.set_up(Vec2::new(-direction.y, direction.x));
+        // SetExtents keeps y as CalcExtents().y. Before Initialize it only
+        // replaces startExtents; after, UpdateExtents rescales the box where
+        // it stands, and the box takes the new pose at DetPhysics' sync.
+        let Some(entity) = node.line_entity else {
+            node.line_start_extents = Vec2::new(half_length, node.line_start_extents.y);
+            return;
+        };
+        let inverse = self.entity_inverse_extents[entity];
+        let extents = Vec2::new(half_length, Fix::ONE / inverse.y);
+        let row = &mut self.entities[entity];
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)) * inverse.x * extents.x;
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)) * inverse.y * extents.y;
+        row.right_x = right.x.raw();
+        row.right_y = right.y.raw();
+        row.up_x = up.x.raw();
+        row.up_y = up.y.raw();
+        self.entity_inverse_extents[entity] = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+    }
+
+    /// DPhysicsBox.UpdatePhysicsPositions at DetPhysics' sync: the lightning
+    /// box takes its FixTransform, Box.SetRotation rebuilding both axes from
+    /// the stored inverseExtents (DPhysicsBox.cs:276-291, Box.cs:30-35).
+    fn sync_tesla_line(&mut self, node_index: usize) {
+        let node = self.tesla_nodes[node_index];
+        let Some(entity) = node.line_entity else {
+            return;
+        };
+        let inverse = self.entity_inverse_extents[entity];
+        let basis = Vec2::angle(node.line_transform.rotation());
+        let right = (Vec2::RIGHT / inverse.x).complex_mul(basis);
+        let up = (Vec2::UP / inverse.y).complex_mul(basis);
+        let row = &mut self.entities[entity];
+        row.x = node.line_position.x.raw();
+        row.y = node.line_position.y.raw();
+        row.right_x = right.x.raw();
+        row.right_y = right.y.raw();
+        row.up_x = up.x.raw();
+        row.up_y = up.y.raw();
+        row.rotation = node.line_transform.rotation().raw();
     }
 
     fn spike_attack_box_in(
@@ -20268,7 +20288,7 @@ impl RolloutWorld {
             .iter_mut()
             .find(|node| node.line_entity == Some(entity) && self.entities[entity].flags & E_ACTIVE != 0)
         {
-            node.line_center += shift;
+            node.line_position += shift;
             moved = true;
         } else if let Some(platform_index) = self
             .platform_entities
@@ -28129,17 +28149,15 @@ impl RolloutWorld {
             return (row_is_active(&row) && !self.blink_object_hidden(Some(entity)))
                 .then_some(DetCollider::Circle(Circle { center, radius: item.collider_radius }));
         }
-        // A Tesla line's box is on its node; its row carries only the centre.
         // A node evicted this tick keeps its lightning until the pass ends.
-        if let Some((node_index, node)) = self.tesla_nodes.iter().enumerate().find(|(_, node)| {
+        if let Some(node_index) = self.tesla_nodes.iter().position(|node| {
             (node.active || fix_destroyed(&self.entities, node.entity)) && node.line_entity == Some(entity)
         }) {
-            return self.line_part(node_index).then_some(DetCollider::Box(OrientedBox {
-                center: node.line_center,
-                right: node.line_right,
-                up: node.line_up,
-                inverse_extents: self.entity_inverse_extents[entity],
-            }));
+            return self.line_part(node_index).then_some(DetCollider::Box(Self::row_box(
+                &self.entity_inverse_extents,
+                entity,
+                self.entities[entity],
+            )));
         }
         match self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity) {
             Some(index) => self.hurtbox_collider(index),
@@ -37750,13 +37768,13 @@ impl RolloutWorld {
                     | if line_hidden { 0 } else { self.entities[line_entity].flags & E_ACTIVE }
                     | self.entities[line_entity].flags & E_ENABLED,
                 hierarchy: self.entities[line_entity].hierarchy,
-                x: node.line_center.x.raw(),
-                y: node.line_center.y.raw(),
-                right_x: node.line_right.x.raw(),
-                right_y: node.line_right.y.raw(),
-                up_x: node.line_up.x.raw(),
-                up_y: node.line_up.y.raw(),
-                rotation: node.line_rotation.raw(),
+                x: self.entities[line_entity].x,
+                y: self.entities[line_entity].y,
+                right_x: self.entities[line_entity].right_x,
+                right_y: self.entities[line_entity].right_y,
+                up_x: self.entities[line_entity].up_x,
+                up_y: self.entities[line_entity].up_y,
+                rotation: self.entities[line_entity].rotation,
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             };

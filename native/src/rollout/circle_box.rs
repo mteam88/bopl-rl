@@ -110,13 +110,8 @@ impl RolloutWorld {
             }),
             Part::Body(_) | Part::Clone(_) => self.body_row_collider(self.part_entity(part).expect("registered body")),
             Part::Line(i) => {
-                let node = &self.tesla_nodes[i];
-                Collider::Box(OrientedBox {
-                    center: node.line_center,
-                    right: node.line_right,
-                    up: node.line_up,
-                    inverse_extents: self.entity_inverse_extents[node.line_entity.expect("a registered lightning")],
-                })
+                let entity = self.tesla_nodes[i].line_entity.expect("a registered lightning");
+                Collider::Box(Self::row_box(&self.entity_inverse_extents, entity, self.entities[entity]))
             }
             Part::Cloud(i) => {
                 let cloud = &self.smoke_clouds[i];
@@ -588,8 +583,7 @@ impl RolloutWorld {
             Part::Hook(r) => self.ropes[r].hook_position,
             Part::Arrow(i) => self.arrows[i].position,
             Part::Hole(i) => self.black_holes[i].position,
-            Part::Body(_) | Part::Clone(_) => self.part_collider(part).center(),
-            Part::Line(i) => self.tesla_nodes[i].line_center,
+            Part::Body(_) | Part::Clone(_) | Part::Line(_) => self.part_collider(part).center(),
             Part::Cloud(i) => self.smoke_clouds[i].position,
             Part::Explosion(_) | Part::Water => self.part_collider(part).center(),
         }
