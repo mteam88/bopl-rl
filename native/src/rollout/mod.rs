@@ -14493,6 +14493,9 @@ impl RolloutWorld {
         // RocketEngineInit re-reads its surface position from the raised,
         // unscaled placement point (RocketEngine.cs:101, PlaceRocketEngine.cs:44-53).
         let raised = closest + normal * data.engine.plant_offset.y;
+        // RocketEngineInit calls srr.UpdateBounds() before it re-reads the
+        // local (RocketEngine.cs:87-88); Place measured with the cached bounds.
+        self.update_surface_bounds(platform_index);
         let Ok(local) = self.platforms[platform_index]
             .surface
             .local_position(raised, Fix::ZERO)
@@ -14842,6 +14845,10 @@ impl RolloutWorld {
         }
 
         let hierarchy_base = self.register_prefab(data::get().prefab("SpikeAttack"));
+        // SpikeAttack.Initialize calls attachedGround.UpdateBounds() before it
+        // reads the local (SpikeAttack.cs:68-69); CastSpike's normal came from
+        // the cached bounds.
+        self.update_surface_bounds(platform_index);
         let local = self.platforms[platform_index]
             .surface
             .local_position(surface_position, Fix::ZERO)
@@ -26245,7 +26252,10 @@ impl RolloutWorld {
         let fixed_offset = Fix::from_f32(0.75);
         let surface_offset = data.spike.down_thrust.evaluate(Fix::ZERO) + fixed_offset;
         // SpikeAttack.Initialize re-measures vec12 with LocalPlayerPosFromPos and places
-        // the box from that local, which the lossy round trip moves.
+        // the box from that local, which the lossy round trip moves. It
+        // calls UpdateBounds first; the duplicator measured with the cached
+        // bounds.
+        self.update_surface_bounds(platform_index);
         let surface = &self.platforms[platform_index].surface;
         let local = surface.local_position(surface_position, Fix::ZERO).unwrap_or(local);
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
@@ -26353,7 +26363,10 @@ impl RolloutWorld {
         let relative_right = right.complex_mul(inverse_basis);
         let surface_offset = Fix::from_f32(0.3) * source.scale;
         // RocketEngineInit re-measures vec12 with LocalPlayerPosFromPos and places
-        // the box from that local, which the lossy round trip moves.
+        // the box from that local, which the lossy round trip moves. It
+        // calls UpdateBounds first; the duplicator measured with the cached
+        // bounds.
+        self.update_surface_bounds(platform_index);
         let surface = &self.platforms[platform_index].surface;
         let local = surface.local_position(surface_position, Fix::ZERO).unwrap_or(local);
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
