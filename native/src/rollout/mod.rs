@@ -4804,8 +4804,10 @@ pub struct RolloutWorld {
     /// StockRespawnChooser) and IsDestroyed set by `destroy_fix`.
     pub updater_batch: Vec<(u32, u32, bool)>,
     /// The runtime part of Updater's list: each pass's batch as it was
-    /// sorted and appended, as (pass, HierarchyNumber, owner).
-    pub updater_list: Vec<(u32, u32, u32)>,
+    /// sorted and appended, as (pass, HierarchyNumber, owner, IsDestroyed),
+    /// IsDestroyed set by `destroy_fix`. Updater removes the destroyed ones
+    /// before its walk and at the frame's close (Updater.cs:289-296, 329-336).
+    pub updater_list: Vec<(u32, u32, u32, bool)>,
     /// Instantiations made during the updater phase by objects this port
     /// updates out of hierarchy order, as (object hierarchy, spawn).
     /// Updater runs them in hierarchy order, so a spawn by a lower object
@@ -7631,6 +7633,7 @@ impl RolloutWorld {
         self.shockwaves_init(false, data);
         self.shockwaves_init(true, data);
         self.duplicated_objects_tick();
+        self.remove_destroyed_updatables();
         // Updatables earlier than a TimeStop effect observe the scale from
         // the start of the pass. DetPhysics observes any scale written by the
         // effect later in this same pass.
@@ -8281,9 +8284,6 @@ impl RolloutWorld {
         self.destroy_fix_owned(Some(owner), member, row);
     }
 
-    /// `destroy_fix` on a GameObject known by its row: a platform's collider
-    /// registered with the row's HierarchyNumber, and the batch entry under
-    /// it, if it joined this pass, names the owner.
     /// killPlayer's DestroyFix of each of the dying slime's ability objects
     /// (PlayerCollision.cs:159-164, 184-189, 203-209, Updater.cs:89-96). A held
     /// instance's IsDestroyed is its generation turning over, so a shot or
@@ -8301,9 +8301,17 @@ impl RolloutWorld {
         }
     }
 
+    /// `destroy_fix` on a GameObject known by its row: a platform's collider
+    /// registered with the row's HierarchyNumber, and the entry under it, in
+    /// the batch or the list, names the owner.
     fn destroy_fix_row(&mut self, row: usize) {
         let key = self.entities[row].hierarchy;
-        let owner = self.updater_batch.iter().find(|entry| key >= 100_000_000 && entry.0 == key).map(|entry| entry.1);
+        let owner = (key >= 100_000_000)
+            .then(|| {
+                let batch = self.updater_batch.iter().find(|entry| entry.0 == key).map(|entry| entry.1);
+                batch.or_else(|| self.updater_list.iter().find(|entry| entry.1 == key).map(|entry| entry.2))
+            })
+            .flatten();
         self.destroy_fix_owned(owner, None, Some(row));
     }
 
@@ -8323,6 +8331,11 @@ impl RolloutWorld {
                 entry.2 = true;
             }
         }
+        for entry in &mut self.updater_list {
+            if (Some(entry.2) == owner && member.is_none_or(|number| entry.1 == number)) || children.contains(&entry.2) {
+                entry.3 = true;
+            }
+        }
         if let Some(row) = row.and_then(|row| self.entities.get_mut(row)) {
             row.flags |= E_FIX_DESTROYED;
         }
@@ -8337,14 +8350,14 @@ impl RolloutWorld {
         batch.retain(|&(_, _, destroyed)| !destroyed);
         dotnet_sort::introspective_sort(&mut batch, |x, y| x.0.cmp(&y.0));
         let pass = self.tick;
-        self.updater_list.extend(batch.iter().map(|&(number, owner, _)| (pass, number, owner)));
+        self.updater_list.extend(batch.iter().map(|&(number, owner, _)| (pass, number, owner, false)));
         batch.clear();
         self.updater_batch = batch;
     }
 
     /// The updatables Updater appended on pass `pass`, in list order: the
     /// batch as `append_updater_batch`'s sort left it.
-    fn updater_pass_batch(&self, pass: u32) -> &[(u32, u32, u32)] {
+    fn updater_pass_batch(&self, pass: u32) -> &[(u32, u32, u32, bool)] {
         let start = self.updater_list.partition_point(|entry| entry.0 < pass);
         let end = self.updater_list.partition_point(|entry| entry.0 <= pass);
         &self.updater_list[start..end]
@@ -14877,10 +14890,20 @@ impl RolloutWorld {
         self.scratch.item_order = order;
     }
 
+    /// Updater.Update removes every IsDestroyed updatable from its list after
+    /// DetPhysics.UpdateDuplicatedObjects, before the UpdateSim walk and
+    /// whether or not time is stopped, and again at the frame's close
+    /// (Updater.cs:284-296, 329-336).
+    fn remove_destroyed_updatables(&mut self) {
+        self.updater_list.retain(|entry| !entry.3);
+    }
+
     /// The frame's closing DestroyImmediate takes every object DestroyFix
     /// marked, so none is IsDestroyed past the frame, and the retired body
-    /// records let go of their rows (Updater.cs:339-344).
+    /// records let go of their rows (Updater.cs:339-344). The list's closing
+    /// removal comes first (Updater.cs:329-336).
     fn destroy_marked_objects(&mut self) {
+        self.remove_destroyed_updatables();
         for row in &mut self.entities {
             row.flags &= !E_FIX_DESTROYED;
         }
@@ -32560,11 +32583,12 @@ impl RolloutWorld {
         }
     }
 
-    /// Whether Updater lists item `item`'s updatables this pass: a live item,
-    /// or one DestroyFixed this pass, which stays listed with its UpdateSim
-    /// skipped until the frame's closing removal (Updater.cs:298-303, 329-345).
+    /// Whether Updater's list holds item `item`'s updatables: from the pass
+    /// that appended them until a removal after a DestroyFix. One destroyed
+    /// during the walk stays listed, its UpdateSim skipped, until the frame's
+    /// closing removal (Updater.cs:289-303, 329-336).
     fn thrown_item_listed(&self, item: &ThrownItem) -> bool {
-        item.active || fix_destroyed(&self.entities, item.entity)
+        self.updater_pass_batch(item.appended).iter().any(|entry| entry.2 == item.hierarchy_base)
     }
 
     /// Each thrown item's turn in Updater's walk (Updater.cs:298-303), after
@@ -40721,6 +40745,9 @@ mod tests {
             flags: E_ACTIVE | E_ENABLED,
             ..CEntity::default()
         }, Vec2::ZERO);
+        let hierarchy_base = world.register_prefab(data::get().prefab("PokeBall"));
+        world.tick = 2;
+        world.append_updater_batch();
         world.thrown_items.push(ThrownItem {
             active: true,
             owner: 0,
@@ -40730,9 +40757,10 @@ mod tests {
             scale: Fix::ONE,
             collider_radius: data::get().poke_ball.item_radius,
             launched: true,
+            hierarchy_base,
+            appended: 2,
             ..ThrownItem::default()
         });
-        world.tick = 2;
 
         world.thrown_items_turns(data::get(), DT);
 
