@@ -38196,11 +38196,13 @@ impl RolloutWorld {
                 let publish = sync_form_row(circle, flags, rocking, entered == rock_e, slot.base.id);
                 // A Blink tunnel or teleport disables the Rock's GameObject,
                 // so its body stops, but the collider still follows the
-                // transform the tunnel moves.
+                // transform the tunnel moves, at the Player.Scale an earlier
+                // Ability.UpdateSim this pass gave it.
                 if slot.blink_tunnel_active || slot.teleport_effect_active {
                     if rocking {
                         circle.x = slot.base.position.x.raw();
                         circle.y = slot.base.position.y.raw();
+                        circle.radius = slot.rock_circle().circle_radius.raw();
                     }
                 } else if publish {
                     // BounceBall.ExitAbility leaves the Rock's FixTransform
