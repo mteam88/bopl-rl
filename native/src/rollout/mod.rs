@@ -6449,17 +6449,16 @@ impl RolloutWorld {
             }
             if i == SLIME_AWAKE_TICK {
                 spawn_anim = data.player.spawn_anim_ticks;
+                // The recorder starts sampling on the pass the slime wakes.
+                self.record_warmup_rewind(i);
                 self.spawn_animation_overlap_pushes();
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT);
                     self.run_callback_hits(data);
                 }
-                // The recorder starts sampling on the pass the slime wakes.
-                self.record_warmup_rewind(i);
                 continue;
             }
             if spawn_anim > 0 {
-                self.spawn_animation_overlap_pushes();
                 spawn_anim -= 1;
                 if spawn_anim == 0 {
                     for slot in &mut self.players {
@@ -6470,7 +6469,10 @@ impl RolloutWorld {
                             Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
                     }
                 }
+                // RewindRecorder samples in the Updater pass, ahead of the
+                // DetPhysics.Simulate whose overlap callbacks push the bodies.
                 self.record_warmup_rewind(i);
+                self.spawn_animation_overlap_pushes();
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT);
                     self.run_callback_hits(data);
@@ -7414,6 +7416,10 @@ impl RolloutWorld {
                 slot.base.move_step(*action, action.direction(), world, None);
             });
         }
+        // RewindRecorder.UpdateSim is after PlayerBody.UpdateSim, and the
+        // Updater pass is over before DetPhysics.Simulate dispatches the
+        // overlap callbacks below.
+        self.record_warmup_rewind(warmup_tick);
         // Spawned slimes already have live Player-layer hurtboxes once the
         // animation enables simulation. DetPhysics dispatches those overlap
         // callbacks during the level warmup exactly as it does after the
@@ -7429,9 +7435,6 @@ impl RolloutWorld {
                 }
             }
         }
-        // RewindRecorder.UpdateSim is after PlayerBody.UpdateSim but before
-        // PlayerPhysics.LateUpdateSim snaps grounded riders to their surface.
-        self.record_warmup_rewind(warmup_tick);
         for slot in &mut self.players {
             if slot.base.alive {
                 slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
