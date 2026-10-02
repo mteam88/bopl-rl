@@ -12240,9 +12240,6 @@ impl RolloutWorld {
         if self.players[index].dead_ground(self.tick).is_some() {
             return false;
         }
-        if speed == Fix::ZERO {
-            return self.apply_platform_drop(index);
-        }
         let slot = &self.players[index];
         let hurtbox_radius = slot.forms[slot.active_slot].circle_radius;
         let dt = slot.base.fixed_delta_time;
