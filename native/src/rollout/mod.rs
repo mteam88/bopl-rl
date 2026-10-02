@@ -2325,6 +2325,9 @@ pub struct FrozenSolidState {
     pub active: bool,
     pub appended: u32,
     pub victim: usize,
+    /// The frozen SlimeController's body row. Rows are never reused, so a
+    /// death that destroys that slime marks it for good.
+    pub victim_body: usize,
     pub freeze_left: Fix,
     pub freeze_position: Vec2,
     pub hierarchy_base: u32,
@@ -4035,6 +4038,15 @@ impl PlayerSlot {
         self.sync_slime_row(entities);
     }
 
+    /// The slime GameObject's activeSelf: a form, a dash, a teleport or a
+    /// QuantumTunnel hides it.
+    fn slime_active_self(&self) -> bool {
+        self.active == ActiveAbility::None
+            && !self.base.dash.active
+            && !self.teleport_effect_active
+            && !self.blink_tunnel_active
+    }
+
     /// SetActive on the slime GameObject takes effect at once, so a DetPhysics
     /// query or FindObjectsOfType<SlimeController> later in the pass already
     /// skips a hidden slime. The row's pose and other flags wait for the refresh.
@@ -4050,11 +4062,7 @@ impl PlayerSlot {
         {
             return;
         }
-        let shown = self.active == ActiveAbility::None
-            && !self.base.dash.active
-            && !self.teleport_effect_active
-            && !self.blink_tunnel_active;
-        if shown {
+        if self.slime_active_self() {
             row.flags |= E_ACTIVE;
         } else {
             row.flags &= !E_ACTIVE;
@@ -29299,6 +29307,7 @@ impl RolloutWorld {
             active: true,
             appended: self.tick + 1,
             victim,
+            victim_body: self.players[victim].body_entity,
             freeze_left: duration,
             freeze_position,
             hierarchy_base,
@@ -29429,44 +29438,45 @@ impl RolloutWorld {
         }
     }
 
-    /// FrozenSolid.UpdateSim (FrozenSolid.cs:68-89). Its release DestroyFixes
-    /// it (FrozenSolid.cs:156).
+    /// FrozenSolid.UpdateSim (FrozenSolid.cs:68-89). It shatters once the
+    /// slime it froze is destroyed or inactive, or its Player has no body
+    /// left (FrozenSolid.cs:74). Shatter re-ragdolls and resets the cooldowns
+    /// of a victim that is not destroyed, then DestroyFixes the ice
+    /// (FrozenSolid.cs:117-157).
     fn frozen_solid_step(&mut self, effect_index: usize, updater_dt: Fix) {
         let effect = self.frozen_solids[effect_index];
         if !effect.active {
             return;
         }
-        if !self.hittable(effect.victim) {
+        let destroyed = self.entities[effect.victim_body].flags & (E_DESTROYED | E_REMOVED) != 0;
+        let slot = &self.players[effect.victim];
+        if destroyed || !slot.slime_active_self() || self.players[slot.owner].bodies_alive <= 0 {
             self.frozen_solids[effect_index].active = false;
-            let slot = &mut self.players[effect.victim];
-            slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-            // FrozenSolid.End's ApplyRagDoll (FrozenSolid.cs:137).
-            slot.obs_state = STATE_RAGDOLL;
-            slot.ragdoll = RagdollState {
-                hold_on_ground: slot.base.grounded,
-                time: Fix::ZERO,
-                duration: Fix::from_f32(0.35),
-            };
-            slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-            slot.base.set_right(Vec2::UP);
-            slot.timers.fill(Fix::ZERO);
+            if !destroyed {
+                let slot = &mut self.players[effect.victim];
+                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
+                if slot.active != ActiveAbility::None || slot.base.dash.active {
+                    // Cast out of the ice: the release ragdoll lands on the
+                    // slime the form left behind.
+                    slot.slime.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+                    slot.slime.set_rotation(Vec2::UP.normalized_angle());
+                    slot.inactive_obs_state = STATE_RAGDOLL;
+                } else {
+                    slot.obs_state = STATE_RAGDOLL;
+                    slot.ragdoll = RagdollState {
+                        hold_on_ground: slot.base.grounded,
+                        time: Fix::ZERO,
+                        duration: Fix::from_f32(0.35),
+                    };
+                    slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+                    slot.base.set_right(Vec2::UP);
+                }
+                slot.timers.fill(Fix::ZERO);
+            }
             self.destroy_fix(effect.hierarchy_base, None, None);
             return;
         }
         let slot = &mut self.players[effect.victim];
-        if slot.active != ActiveAbility::None || slot.base.dash.active {
-            // Cast out of the ice before its first pass: the inactive
-            // slime shatters it, and the release ragdoll lands on the
-            // slime the form left behind.
-            self.frozen_solids[effect_index].active = false;
-            slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-            slot.slime.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-            slot.slime.set_rotation(Vec2::UP.normalized_angle());
-            slot.inactive_obs_state = STATE_RAGDOLL;
-            slot.timers.fill(Fix::ZERO);
-            self.destroy_fix(effect.hierarchy_base, None, None);
-            return;
-        }
         slot.pinned_from = (self.tick, effect.hierarchy_base, slot.base.position);
         slot.base.position = effect.freeze_position;
         slot.base.velocity = Vec2::ZERO;
@@ -40650,7 +40660,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         world.begin_freeze(0, Fix::from_int(10));
         world.players[0].timers.fill(Fix::from_int(3));
-        world.players[0].base.alive = false;
+        world.players[0].set_teleport_hidden(&mut world.entities, true);
         world.tick += 1;
 
         world.frozen_solids_tick(data::get(), DT);
