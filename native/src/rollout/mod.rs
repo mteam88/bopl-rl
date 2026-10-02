@@ -2396,11 +2396,11 @@ impl EatingState {
 /// FrozenSolid has no physics collider or observation row. It is still an
 /// Updater member: Begin acts immediately, registration is deferred, and each
 /// later update pins and re-ragdolls its victim until the ice shatters.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct FrozenSolidState {
     pub active: bool,
     pub appended: u32,
-    pub victim: usize,
+    pub victim: Slime,
     /// The frozen SlimeController's body row. Rows are never reused, so a
     /// death that destroys that slime marks it for good.
     pub victim_body: usize,
@@ -2615,6 +2615,9 @@ pub struct AbilitylessClone {
     pub drowned_tick: u32,
     /// Its PlayerCollision.wasKilledThisFrame (PlayerCollision.cs:449-470).
     pub was_killed_tick: Option<u32>,
+    /// Its SlimeController.abilityCooldownTimers, all past its empty ability
+    /// list, as a slime's `spare_timer`.
+    pub spare_timer: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3529,9 +3532,9 @@ pub struct PlayerSlot {
     /// until a ragdoll times out (SlimeController.cs:114, 1038-1058).
     pub magnet_holder: Option<MagnetGun>,
     pub eating: EatingState,
-    /// Live FrozenSolid instances pinning this slime. Ground contact does not
-    /// end the refreshed ragdoll while any of them remains active.
-    pub frozen_solid_count: u16,
+    /// SlimeController.abilityCooldownTimers past the ability list: Init's
+    /// -1.5, which only a FrozenSolid's Shatter changes, to zero.
+    pub spare_timer: Fix,
     /// (pass, holder hierarchy, body position before that FrozenSolid or
     /// Poke Ball pinned it). An earlier-spawned Mjolnir updates before the
     /// holder, so it strikes and homes on the body where it was.
@@ -6270,7 +6273,7 @@ impl RolloutWorld {
                 ragdoll: RagdollState::default(),
                 magnet_holder: None,
                 eating: EatingState::default(),
-                frozen_solid_count: 0,
+                spare_timer: Fix::from_f32(-1.5),
                 pinned_from: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
                 invulnerable: 0,
@@ -7046,7 +7049,8 @@ impl RolloutWorld {
         slot.ability_count = 0;
         slot.abilities = [ABILITY_NULL; 3];
         slot.cooldowns = [Fix::ZERO; 3];
-        slot.timers = [Fix::from_f32(-1.5); 3];
+        slot.timers = [clone.spare_timer; 3];
+        slot.spare_timer = clone.spare_timer;
         slot.ability_instantiated = [true; 3];
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.clone_player_hierarchy = clone.hierarchy_base;
@@ -20850,7 +20854,7 @@ impl RolloutWorld {
         slot.blink_tunnel_released = false;
         slot.ragdoll = RagdollState::default();
         slot.magnet_holder = None;
-        slot.frozen_solid_count = 0;
+        slot.spare_timer = Fix::from_f32(-1.5);
         slot.freeze_form_exit_tick = u32::MAX;
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
@@ -21347,7 +21351,7 @@ impl RolloutWorld {
         slot.blink_tunnel_released = false;
         slot.ragdoll = RagdollState::default();
         slot.magnet_holder = None;
-        slot.frozen_solid_count = 0;
+        slot.spare_timer = Fix::from_f32(-1.5);
         slot.freeze_form_exit_tick = u32::MAX;
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
@@ -26147,6 +26151,7 @@ impl RolloutWorld {
             eating: EatingState::default(),
             drowned_tick: u32::MAX,
             was_killed_tick: None,
+            spare_timer: Fix::from_f32(-1.5),
         };
         if let Some(free) = self
             .abilityless_clones
@@ -28954,7 +28959,18 @@ impl RolloutWorld {
             {
                 self.exit_form_for_freeze(victim);
             }
-            self.begin_freeze(victim, data.freeze.freeze_seconds);
+            self.begin_freeze(Slime::Player(victim), data.freeze.freeze_seconds);
+        } else if let Some(clone) = self
+            .abilityless_clones
+            .iter()
+            .position(|clone| clone.active && clone.entity == Some(hit.entity))
+        {
+            // An ability-less clone is a SlimeController too, its Player that
+            // of its owner.
+            let owner = self.abilityless_clones[clone].owner;
+            if self.abilityless_clones[clone].invulnerable == 0 && self.players[owner].bodies_alive > 0 {
+                self.begin_freeze(Slime::Clone(clone), data.freeze.freeze_seconds);
+            }
         }
     }
 
@@ -28978,14 +28994,20 @@ impl RolloutWorld {
         }
     }
 
-    fn begin_freeze(&mut self, victim: usize, duration: Fix) {
-        let freeze_position = self.players[victim].base.position;
+    fn begin_freeze(&mut self, victim: Slime, duration: Fix) {
+        let (freeze_position, victim_body) = match victim {
+            Slime::Player(index) => (self.players[index].base.position, self.players[index].body_entity),
+            Slime::Clone(index) => {
+                let clone = &self.abilityless_clones[index];
+                (clone.base.position, clone.entity.unwrap_or(usize::MAX))
+            }
+        };
         let hierarchy_base = self.register_prefab(data::get().prefab("FrozenSolid"));
         let state = FrozenSolidState {
             active: true,
             appended: self.tick + 1,
             victim,
-            victim_body: self.players[victim].body_entity,
+            victim_body,
             freeze_left: duration,
             freeze_position,
             hierarchy_base,
@@ -28995,16 +29017,15 @@ impl RolloutWorld {
         } else {
             self.frozen_solids.push(state);
         }
-        let slot = &mut self.players[victim];
-        slot.frozen_solid_count = slot.frozen_solid_count.saturating_add(1);
-        slot.base.velocity = Vec2::ZERO;
         // FrozenSolid.Begin applies ragdoll first, then UnGround invokes
         // SlimeController.OnNoLongerGrounded and overwrites the state with
         // Fall. Until FrozenSolid's first pass (it updates after the slimes,
         // and not on the pass it spawns) the slime plays on as usual, casts
         // included; PlayerPhysics.skipNextUpdate only suppresses its gravity.
-        UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, false);
-        slot.base.skip_next_gravity = true;
+        let slime = victim.of(&mut self.players, &mut self.abilityless_clones);
+        slime.base.velocity = Vec2::ZERO;
+        slime.base.skip_next_gravity = true;
+        UngroundBody::Slime(slime).unground(&self.platforms, self.tick, false);
     }
 
     /// The ragdolled slime's pass. Returns false when the ragdoll ends in it:
@@ -29118,33 +29139,55 @@ impl RolloutWorld {
             return;
         }
         let destroyed = self.entities[effect.victim_body].flags & (E_DESTROYED | E_REMOVED) != 0;
-        let slot = &self.players[effect.victim];
-        if destroyed || !slot.slime_active_self() || self.players[slot.owner].bodies_alive <= 0 {
+        let (owner, hidden) = match effect.victim {
+            Slime::Player(index) => (self.players[index].owner, !self.players[index].slime_active_self()),
+            Slime::Clone(index) => {
+                let clone = &self.abilityless_clones[index];
+                (clone.owner, self.abilityless_clone_hidden(clone))
+            }
+        };
+        if destroyed || hidden || self.players[owner].bodies_alive <= 0 {
             self.frozen_solids[effect_index].active = false;
             if !destroyed {
-                let slot = &mut self.players[effect.victim];
-                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-                // Cast out of the ice, the release ragdoll lands on the slime
-                // the form hides.
-                slot.controller_mut().apply_ragdoll(Fix::from_f32(0.35), Vec2::new(Fix::ZERO, Fix::from_int(4)));
-                slot.timers.fill(Fix::ZERO);
+                self.shatter_release(effect.victim);
             }
             self.destroy_fix(effect.hierarchy_base, None, None);
             return;
         }
-        let slot = &mut self.players[effect.victim];
-        slot.pinned_from = (self.tick, effect.hierarchy_base, slot.base.position);
-        slot.base.position = effect.freeze_position;
-        slot.slime_mut().apply_ragdoll(Fix::ONE, Vec2::ZERO);
-        slot.base.skip_next_gravity = true;
+        let tick = self.tick;
+        let mut slime = effect.victim.of(&mut self.players, &mut self.abilityless_clones);
+        let pinned = std::mem::replace(&mut slime.base.position, effect.freeze_position);
+        slime.apply_ragdoll(Fix::ONE, Vec2::ZERO);
+        slime.base.skip_next_gravity = true;
+        if let Slime::Player(index) = effect.victim {
+            self.players[index].pinned_from = (tick, effect.hierarchy_base, pinned);
+        }
         let state = &mut self.frozen_solids[effect_index];
         state.freeze_left -= updater_dt;
         if state.freeze_left <= Fix::ZERO {
             state.active = false;
-            slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-            slot.slime_mut().apply_ragdoll(Fix::from_f32(0.35), Vec2::new(Fix::ZERO, Fix::from_int(4)));
-            slot.timers.fill(Fix::ZERO);
+            self.shatter_release(effect.victim);
             self.destroy_fix(effect.hierarchy_base, None, None);
+        }
+    }
+
+    /// FrozenSolid.Shatter on a victim still there: the release ragdoll, and
+    /// every cooldown timer back to zero (FrozenSolid.cs:117-138). Cast out
+    /// of the ice, the ragdoll lands on the slime the form hides.
+    fn shatter_release(&mut self, victim: Slime) {
+        let (duration, speed) = (Fix::from_f32(0.35), Vec2::new(Fix::ZERO, Fix::from_int(4)));
+        match victim {
+            Slime::Player(index) => {
+                let slot = &mut self.players[index];
+                slot.controller_mut().apply_ragdoll(duration, speed);
+                slot.timers.fill(Fix::ZERO);
+                slot.spare_timer = Fix::ZERO;
+            }
+            Slime::Clone(index) => {
+                let clone = &mut self.abilityless_clones[index];
+                clone.slime_mut().apply_ragdoll(duration, speed);
+                clone.spare_timer = Fix::ZERO;
+            }
         }
     }
 
@@ -38937,9 +38980,7 @@ impl RolloutWorld {
                 abilities: [0; 3],
                 ability_flags: [0; 3],
                 cooldowns: [0; 3],
-                // SlimeController.Init fills its three timers with -1.5 and
-                // no ability ever advances them.
-                timers: [Fix::from_f32(-1.5).raw(); 3],
+                timers: [clone.spare_timer.raw(); 3],
             }
         };
         let mut next_clone = 0;
@@ -39056,7 +39097,7 @@ impl RolloutWorld {
                 abilities: slot.abilities,
                 ability_flags,
                 // An empty ability list publishes no cooldowns, and OldUpdate
-                // never advances the timers from Init's -1.5.
+                // never advances the timers past it.
                 cooldowns: std::array::from_fn(|s| {
                     if s < slot.ability_count { slot.cooldowns[s].raw() } else { 0 }
                 }),
@@ -39064,7 +39105,7 @@ impl RolloutWorld {
                     if s < slot.ability_count {
                         slot.timers[s].raw()
                     } else {
-                        Fix::from_f32(-1.5).raw()
+                        slot.spare_timer.raw()
                     }
                 }),
             });
@@ -40306,7 +40347,7 @@ mod tests {
     fn frozen_solid_shatters_when_victim_leaves_play() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.begin_freeze(0, Fix::from_int(10));
+        world.begin_freeze(Slime::Player(0), Fix::from_int(10));
         world.players[0].timers.fill(Fix::from_int(3));
         world.players[0].set_teleport_hidden(&mut world.entities, true);
         world.tick += 1;
@@ -40314,7 +40355,6 @@ mod tests {
         world.frozen_solids_tick(data::get(), DT);
 
         assert!(!world.frozen_solids[0].active);
-        assert_eq!(world.players[0].frozen_solid_count, 0);
         assert_eq!(world.players[0].obs_state, STATE_RAGDOLL);
         assert_eq!(world.players[0].ragdoll.duration, Fix::from_f32(0.35));
         assert_eq!(
