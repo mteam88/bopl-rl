@@ -3974,7 +3974,6 @@ impl PlayerSlot {
             self.base.local = form.local; // leak: local
         }
         self.base.scale = form.scale; // leak: scale
-        self.base.grounded_speed = form.grounded_speed; // leak: grounded_speed
         self.base.collider = form.collider; // leak: collider
         self.base.synced = form.synced; // leak: synced
         self.base.collider_rotation = form.collider_rotation; // leak: collider_rotation
