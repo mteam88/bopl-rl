@@ -183,6 +183,7 @@ pub(super) enum HookTarget {
     Clone(usize),
     Spike(usize),
     Engine(usize),
+    Missile(usize),
 }
 
 /// A pooled parent is named by its slot and its hierarchy, so a later
@@ -203,6 +204,8 @@ pub enum RopeParent {
     Arrow(usize, u32),
     /// A RocketEngine: its box is on NonLethalTerrain.
     Engine(usize, u32),
+    /// A SparkShot missile: its box is on item.
+    Missile(usize, u32),
 }
 
 /// A rope parent's FixTransform: the frame RopeHook measures the end's
@@ -232,14 +235,15 @@ impl ParentPose {
     }
 }
 
-type Attachables<'a> = (&'a [SpawnedSpike], &'a [SpawnedTeslaNode], &'a [Arrow], &'a [SpawnedEngine]);
+type Attachables<'a> =
+    (&'a [SpawnedSpike], &'a [SpawnedTeslaNode], &'a [Arrow], &'a [SpawnedEngine], &'a [GuidedMissile]);
 
 /// The pose of `parent`'s FixTransform, which a destroyed one keeps.
 fn parent_pose(
     players: &[PlayerSlot],
     items: &[ThrownItem],
     shots: &[PortalShotState],
-    (spikes, nodes, arrows, engines): Attachables,
+    (spikes, nodes, arrows, engines, missiles): Attachables,
     parent: RopeParent,
 ) -> ParentPose {
     match parent {
@@ -264,6 +268,9 @@ fn parent_pose(
         RopeParent::Engine(i, _) => {
             ParentPose::turned(engines[i].transform_position, engines[i].transform_rotation, engines[i].scale)
         }
+        RopeParent::Missile(i, _) => {
+            ParentPose::turned(missiles[i].position, missiles[i].transform.rotation(), missiles[i].scale)
+        }
     }
 }
 
@@ -276,7 +283,7 @@ fn parent_position(
     parent: RopeParent,
     offset: Vec2,
 ) -> Option<Vec2> {
-    let (spikes, nodes, arrows, engines) = attachables;
+    let (spikes, nodes, arrows, engines, missiles) = attachables;
     let live = match parent {
         RopeParent::Rock(player, rock) => {
             let slot = &players[player];
@@ -291,6 +298,7 @@ fn parent_position(
         RopeParent::Engine(index, base) => {
             engines[index].active && !engines[index].macho_carried && engines[index].hierarchy_base == base
         }
+        RopeParent::Missile(index, base) => missiles[index].active && missiles[index].hierarchy_base == base,
     };
     live.then(|| parent_pose(players, items, shots, attachables, parent).place(offset))
 }
@@ -1528,6 +1536,7 @@ impl RolloutWorld {
             RopeParent::Item(item, _) => !self.blink_object_hidden(self.thrown_items[item].entity),
             RopeParent::Shot(shot, _) => !self.blink_object_hidden(self.portal_shots[shot].entity),
             RopeParent::Arrow(arrow, _) => !self.blink_object_hidden(self.arrows[arrow].entity),
+            RopeParent::Missile(missile, _) => !self.blink_object_hidden(self.guided_missiles[missile].entity),
         }
     }
 
@@ -1669,7 +1678,7 @@ impl RolloutWorld {
                 &self.players,
                 &self.thrown_items,
                 &self.portal_shots,
-                (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines),
+                (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines, &self.guided_missiles),
                 parent,
                 self.ropes[index].attach[0].offset,
             )
@@ -1692,7 +1701,7 @@ impl RolloutWorld {
                     &self.players,
                     &self.thrown_items,
                     &self.portal_shots,
-                    (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines),
+                    (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines, &self.guided_missiles),
                     parent,
                 )
                 .position;
@@ -1710,6 +1719,7 @@ impl RolloutWorld {
                     RopeParent::Engine(engine, _) => Some(
                         &mut self.platform_dynamics[self.engines[engine].platform_index].body,
                     ),
+                    RopeParent::Missile(missile, _) => Some(&mut self.guided_missiles[missile].body),
                     RopeParent::Arrow(..) => None,
                 };
                 if let Some(body) = body {
@@ -2025,6 +2035,7 @@ impl RolloutWorld {
             HookTarget::Node(index) => RopeParent::Node(index, self.tesla_nodes[index].hierarchy_base),
             HookTarget::Spike(index) => RopeParent::Spike(index, self.spike_attacks[index].hierarchy_base),
             HookTarget::Engine(index) => RopeParent::Engine(index, self.engines[index].hierarchy_base),
+            HookTarget::Missile(index) => RopeParent::Missile(index, self.guided_missiles[index].hierarchy_base),
         };
         // The end's offset in the parent's FixTransform as the callback finds
         // it, after SyncGameObject (RopeHook.cs:154-157, 172-175).
@@ -2032,7 +2043,7 @@ impl RolloutWorld {
             &self.players,
             &self.thrown_items,
             &self.portal_shots,
-            (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines),
+            (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines, &self.guided_missiles),
             parent,
         );
         let offset = pose.offset(point);
@@ -2191,6 +2202,7 @@ impl RolloutWorld {
             &self.tesla_nodes[..],
             &self.arrows[..],
             &self.engines[..],
+            &self.guided_missiles[..],
         );
         for rope in &mut self.ropes {
             // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool
@@ -2252,8 +2264,17 @@ impl RolloutWorld {
                     held(parent)
                 }
                 // Likewise an arrow that stuck in Simulate (Arrow.OnCollide
-                // DestroyFixes its FixTransform, RopeAttachment.cs:174).
+                // DestroyFixes its FixTransform, RopeAttachment.cs:174), and
+                // a missile that blew up there.
                 Some(parent @ RopeParent::Arrow(arrow, base)) if spikes.2[arrow].hierarchy_base == base => held(parent),
+                Some(parent @ RopeParent::Missile(missile, base))
+                    if spikes.4[missile].hierarchy_base == base
+                        && spikes.4[missile]
+                            .entity
+                            .is_some_and(|entity| self.entities[entity].flags & E_DESTROYED != 0) =>
+                {
+                    held(parent)
+                }
                 parent => parent.and_then(|parent| parent_position(players, items, shots, spikes, parent, offset)),
             };
             if let Some(position) = position {

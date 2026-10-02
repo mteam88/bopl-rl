@@ -1462,10 +1462,10 @@ impl RolloutWorld {
                     Part::Spike(i) => HookTarget::Spike(i),
                     Part::Engine(i) => HookTarget::Engine(i),
                     Part::Arrow(i) => HookTarget::Arrow(i),
+                    Part::Missile(i) => HookTarget::Missile(i),
                     // A hook on a Duplicator copy has no rope parent here yet.
                     Part::DuplicatedRock(_) => return,
-                    Part::Missile(_)
-                    | Part::Hook(_)
+                    Part::Hook(_)
                     | Part::Hole(_)
                     | Part::Line(_)
                     | Part::Cloud(_)
