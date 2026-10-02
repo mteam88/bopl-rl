@@ -21746,8 +21746,13 @@ impl RolloutWorld {
     /// ends the wisp animation calls Shoot, which sends a ReviveParticle from
     /// the effect to each clone's marker in playersToRevive order
     /// (ReviveEffect.cs:46-66). The clones it revives share the effect, so
-    /// this is their one turn.
+    /// this is their one turn. Like any SpriteAnimator, it stands still in a
+    /// Time Stop that does not protect the effect's player
+    /// (SpriteAnimator.cs:85-101).
     fn revive_effect_step(&mut self, index: usize, data: &data::RolloutData) {
+        if self.is_time_stopped_for(self.players[index].owner) {
+            return;
+        }
         let effect = self.players[index].revival_effect_hierarchy;
         let mut clones = [None; MAX_BODIES];
         for (body, slot) in self.players.iter().enumerate() {
