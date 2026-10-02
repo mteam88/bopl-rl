@@ -11441,17 +11441,6 @@ impl RolloutWorld {
                         slot.base.unground(surface, true);
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
-                        // The Gust body's own boundary component is enabled by
-                        // this entry and still takes its turn in this same
-                        // updater pass: it sits at hierarchyNumber 4, behind
-                        // the SlimeController that entered the ability
-                        // (Player.prefab, 2) and ahead of QuickSpell
-                        // (Gust.prefab, 6). The slime's component, at the same
-                        // 4, is skipped instead - onEnterAbility deactivated
-                        // it (SlimeController.cs:190).
-                        if self.form_bounds_kill(index, data) {
-                            return;
-                        }
                         self.form_entry_turn(data, index);
                         self.quick_spell_tick(index, jump_pressed, data);
                         return;
@@ -11483,12 +11472,6 @@ impl RolloutWorld {
                         slot.base.unground(surface, true);
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
-                        // Revival.prefab places its boundary component at the
-                        // same hierarchyNumber 4 as Gust's, ahead of its own
-                        // QuickSpell (6), so the entry pass tests it here too.
-                        if self.form_bounds_kill(index, data) {
-                            return;
-                        }
                         self.form_entry_turn(data, index);
                         self.quick_spell_tick(index, jump_pressed, data);
                         return;
@@ -11957,17 +11940,7 @@ impl RolloutWorld {
             self.tesla_cast_tick(index, jump_pressed, data);
             return;
         }
-        if self.players[index].active == ActiveAbility::Gust {
-            if self.form_bounds_kill(index, data) {
-                return;
-            }
-            self.quick_spell_tick(index, jump_pressed, data);
-            return;
-        }
-        if self.players[index].active == ActiveAbility::Revival {
-            if self.form_bounds_kill(index, data) {
-                return;
-            }
+        if matches!(self.players[index].active, ActiveAbility::Gust | ActiveAbility::Revival) {
             self.quick_spell_tick(index, jump_pressed, data);
             return;
         }
@@ -13629,10 +13602,10 @@ impl RolloutWorld {
     }
 
     /// DestroyIfOutsideSceneBounds as the QuickSpell and planting prefabs
-    /// carry it. It is hierarchyNumber 4 on Gust.prefab and Revival.prefab,
-    /// ahead of their QuickSpell (6), and on Spike.prefab, Engine.prefab and
-    /// Tesla coil.prefab, after the SpriteAnimator (2) whose callbacks plant
-    /// or exit and ahead of Spike or PlantObjectOnPlatform (6). Each precedes
+    /// carry it. It is hierarchyNumber 4 on Gust.prefab, Revival.prefab,
+    /// Spike.prefab, Engine.prefab and Tesla coil.prefab, after the
+    /// SpriteAnimator (2) whose callbacks cast, plant or exit and ahead of
+    /// QuickSpell, Spike or PlantObjectOnPlatform (6). Each precedes
     /// the PlayerBody that would advance the transform, so it always reads
     /// the position the pass started with - including the entry pass, where
     /// OnEnterAbility has already placed the body.
@@ -13655,7 +13628,8 @@ impl RolloutWorld {
     }
 
     /// Gust.prefab and Revival.prefab run Ability (publishing the pose), then
-    /// the SpriteAnimator that may end the spell, and PlayerBody last.
+    /// the SpriteAnimator whose callbacks cast or exit, DestroyIfOutsideSceneBounds
+    /// (the entry pass's too, which enabled it), and PlayerBody last.
     fn quick_spell_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         let form = self.players[index].active;
         let slot = &mut self.players[index];
@@ -13671,7 +13645,10 @@ impl RolloutWorld {
         } else {
             self.revival_tick(index, data);
         }
-        if self.players[index].active == form && self.players[index].base.alive {
+        if self.players[index].active == form
+            && self.players[index].base.alive
+            && !self.form_bounds_kill(index, data)
+        {
             self.form_body_move(index, jump_pressed);
         }
     }
