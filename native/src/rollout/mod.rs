@@ -14576,6 +14576,9 @@ impl RolloutWorld {
         // the normal (PlaceSparkNode.cs:35-37, PlaceRocketEngine.cs:40-42).
         let closest = self.platforms[platform_index].surface.position(local, Fix::ZERO);
         let normal = self.platforms[platform_index].surface.normal(closest);
+        // PlaceSparkNode sets the FixTransform at the point raised by the
+        // unscaled plantOffset (PlaceSparkNode.cs:38-45).
+        let raised = closest + normal * data.tesla.plant_offset.y;
         let scale = self.players[index].player_scale;
         let collider_scale = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
         let ability_slot = self.players[index].active_slot;
@@ -14671,7 +14674,7 @@ impl RolloutWorld {
             relative_rotation,
             collider_center: center,
             collider_rotation: node_rotation,
-            transform_position: transform_root(center, collider_offset, node_rotation),
+            transform_position: raised,
             transform_rotation: node_rotation,
             surface_offset,
             hitbox_offset: data.tesla.hitbox_offset_y * scale,
@@ -15037,7 +15040,9 @@ impl RolloutWorld {
             relative_rotation,
             collider_center,
             collider_rotation: rocket_rotation,
-            transform_position: transform_root(collider_center, collider_offset, rocket_rotation),
+            // PlaceRocketEngine sets the FixTransform at the raised point
+            // (PlaceRocketEngine.cs:44-51); SyncGameObject moves it later.
+            transform_position: raised,
             transform_rotation: rocket_rotation,
             surface_offset,
             scale,
@@ -18805,7 +18810,9 @@ impl RolloutWorld {
         engine.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         engine.collider_rotation = desired_rotation;
-        engine.sync_transform();
+        // MachoThrow2 turns the FixTransform and leaves it where it was
+        // (MachoThrow2.cs:628-636).
+        engine.transform_rotation = desired_rotation;
         engine.offset_scale = engine.scale;
         // RocketEngineInit's two `hitbox.Scale = scale` writes each divide the
         // inverse extents by `(1 / scale) * scale`; the offset keeps `s / s`.
@@ -18880,7 +18887,9 @@ impl RolloutWorld {
         node.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         node.collider_rotation = desired_rotation;
-        node.sync_transform();
+        // MachoThrow2 zeroes the FixTransform's rotation and leaves it where
+        // it was (MachoThrow2.cs:609-618).
+        node.transform_rotation = desired_rotation;
         node.hitbox_offset = data.tesla.hitbox_offset_y * node.scale;
         node.offset_scale = node.scale;
         // `hitbox.Scale = startScale` multiplies the radius by `(1 / s) * s`.
@@ -25754,7 +25763,7 @@ impl RolloutWorld {
         if let Some(engine_index) = self.engines.iter().position(|engine| {
             engine.active && !engine.macho_carried && engine.entity == Some(hit.entity)
         }) {
-            self.duplicate_attached_engine(engine_index, direction, caster, data);
+            self.duplicate_attached_engine(engine_index, hit.position, direction, caster, data);
             return;
         }
         if let Some(node_index) = self
@@ -25762,7 +25771,7 @@ impl RolloutWorld {
             .iter()
             .position(|node| node.active && !node.macho_carried && node.entity == Some(hit.entity))
         {
-            self.duplicate_attached_tesla(node_index, direction, caster, data);
+            self.duplicate_attached_tesla(node_index, hit.position, direction, caster, data);
             return;
         }
         if self.entities[hit.entity].layer == 26
@@ -26835,9 +26844,13 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
+    /// ShootDuplicator's copy of a RocketEngine: DuplicateObject instantiates
+    /// its FixTransform at the ray's `hit_position` (ShootDuplicator.cs:430,
+    /// 678, 726), and RocketEngineInit re-places only its box.
     fn duplicate_attached_engine(
         &mut self,
         source_index: usize,
+        hit_position: Vec2,
         direction: Vec2,
         caster: usize,
         data: &data::RolloutData,
@@ -26920,7 +26933,7 @@ impl RolloutWorld {
             relative_rotation: rotation - parent_rotation,
             collider_center,
             collider_rotation: rotation,
-            transform_position: transform_root(collider_center, source.collider_offset, rotation),
+            transform_position: hit_position,
             transform_rotation: rotation,
             surface_offset,
             scale: source.scale,
@@ -26943,9 +26956,12 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
+    /// The SparkNode copy, whose FixTransform DuplicateObject likewise leaves
+    /// at `hit_position`.
     fn duplicate_attached_tesla(
         &mut self,
         source_index: usize,
+        hit_position: Vec2,
         direction: Vec2,
         caster: usize,
         data: &data::RolloutData,
@@ -27016,7 +27032,7 @@ impl RolloutWorld {
             relative_rotation: rotation - parent_rotation,
             collider_center: center,
             collider_rotation: rotation,
-            transform_position: transform_root(center, source.collider_offset, rotation),
+            transform_position: hit_position,
             transform_rotation: rotation,
             surface_offset,
             hitbox_offset: data.tesla.hitbox_offset_y * source.scale,
@@ -41179,7 +41195,7 @@ mod tests {
         let placed = surface.position(local, Fix::ZERO);
         let expected = surface.local_position(placed, Fix::ZERO).unwrap();
 
-        world.duplicate_attached_engine(0, Vec2::RIGHT, 0, data::get());
+        world.duplicate_attached_engine(0, source_position, Vec2::RIGHT, 0, data::get());
 
         assert_eq!(world.engines[1].local, expected);
     }
