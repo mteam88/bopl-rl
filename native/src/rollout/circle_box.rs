@@ -1325,7 +1325,7 @@ impl RolloutWorld {
                     // arrow's contact whether or not it landed first
                     // (Mine.cs:227-235).
                     ABILITY_MINE if MINE_IGNITERS & (1 << layer) != 0 => {
-                        if state.magnet_holder.is_some_and(|holder| Some(self.players[holder].magnet_entity) == collider) {
+                        if state.hold.holder.is_some_and(|holder| Some(self.players[holder].magnet_entity) == collider) {
                             return;
                         }
                         self.run_callback_hit(CallbackHit::MineIgnite { item }, route, data);
@@ -1340,7 +1340,7 @@ impl RolloutWorld {
                     // hurtbox (GrenadeExplode.cs:41-68).
                     ABILITY_GRENADE if layer == LAYER_PLAYER => {
                         let entity = collider.expect("grouped Player-layer part");
-                        if state.magnet_holder.is_some_and(|holder| self.players[holder].magnet_entity == entity) {
+                        if state.hold.holder.is_some_and(|holder| self.players[holder].magnet_entity == entity) {
                             return;
                         }
                         // The collider's IPlayerIdHolder: a slime's or form's
@@ -1423,8 +1423,7 @@ impl RolloutWorld {
                     self.arrow_land(arrow, None, Some(other), data);
                 } else {
                     let state = &mut self.arrows[arrow];
-                    state.magnet_holder = None;
-                    state.magnet_hold_ticks = -1;
+                    state.hold.release();
                 }
             }
             Part::Hook(rope) => {

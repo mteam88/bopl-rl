@@ -532,6 +532,49 @@ fn spawned_hierarchy(base: u32) -> u32 {
     100_000_000 + base + 1
 }
 
+/// BoplBody's hold: the MagnetGun that last held the body, by its player
+/// slot, and framesUntilDrop (BoplBody.cs:42-45, 285-331).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hold {
+    pub holder: Option<usize>,
+    frames: i8,
+}
+
+impl Default for Hold {
+    fn default() -> Self {
+        Self { holder: None, frames: -1 }
+    }
+}
+
+impl Hold {
+    /// BoplBody.Hold.
+    fn hold(&mut self, frames: i8, holder: usize) {
+        self.holder = Some(holder);
+        self.frames = frames;
+    }
+
+    /// BoplBody.Drop.
+    fn release(&mut self) {
+        *self = Self::default();
+    }
+
+    /// BoplBody.IsBeingHeld.
+    fn held(&self) -> bool {
+        self.frames >= 0
+    }
+
+    /// BoplBody.UpdateSim's countdown: it drops the body when it reaches
+    /// zero. Below zero it only keeps counting, which nothing reads.
+    fn update_sim(&mut self) {
+        if self.frames >= 0 {
+            self.frames -= 1;
+            if self.frames == 0 {
+                self.release();
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Arrow {
     pub active: bool,
@@ -572,8 +615,7 @@ pub struct Arrow {
     /// Projectile.DelayedEnableHurtOwner: 5 units of travel time.
     pub hurt_owner_after: Fix,
     pub can_hurt_owner: bool,
-    pub magnet_holder: Option<usize>,
-    pub magnet_hold_ticks: i8,
+    pub hold: Hold,
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
@@ -732,9 +774,7 @@ pub struct ThrownItem {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
-    /// Player slot whose Magnet currently refreshes this item's Hold(2).
-    pub magnet_holder: Option<usize>,
-    pub magnet_hold_ticks: i8,
+    pub hold: Hold,
 }
 
 impl ThrownItem {
@@ -838,8 +878,7 @@ pub struct GuidedMissile {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
-    pub magnet_holder: Option<usize>,
-    pub magnet_hold_ticks: i8,
+    pub hold: Hold,
 }
 
 impl GuidedMissile {
@@ -2599,8 +2638,7 @@ pub struct RevivalMarker {
     pub position: Vec2,
     pub body: crate::physics::Body,
     pub scale: Fix,
-    pub magnet_holder: Option<usize>,
-    pub magnet_hold_ticks: i8,
+    pub hold: Hold,
     /// BoplBody.prevScale: `scale` as the body's UpdateSim last saw it.
     pub body_prev_scale: Fix,
 }
@@ -2619,8 +2657,7 @@ pub struct TeleportMarker {
     pub position: Vec2,
     pub body: crate::physics::Body,
     pub scale: Fix,
-    pub magnet_holder: Option<usize>,
-    pub magnet_hold_ticks: i8,
+    pub hold: Hold,
 }
 
 /// A PortalShot rigid body. The projectile is registered immediately by
@@ -8569,7 +8606,7 @@ impl RolloutWorld {
                 32 => self.frozen_solid_step(index, updater_dt),
                 40 => self.portal_shot_step(index, data, updater_dt),
                 19 => {
-                    let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
+                    let being_held = self.guided_missiles[index].hold.held();
                     self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
                 }
                 _ => unreachable!(),
@@ -8729,12 +8766,8 @@ impl RolloutWorld {
             if !space {
                 marker.position.y = marker.position.y.max(Fix::from_f32(-11.3));
             }
-            if physics_dt > Fix::ZERO && marker.magnet_holder.is_some() {
-                marker.magnet_hold_ticks -= 1;
-                if marker.magnet_hold_ticks == 0 {
-                    marker.magnet_holder = None;
-                    marker.magnet_hold_ticks = -1;
-                }
+            if physics_dt > Fix::ZERO {
+                marker.hold.update_sim();
             }
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
@@ -8767,12 +8800,8 @@ impl RolloutWorld {
             if !marker.active || !marker.registered {
                 continue;
             }
-            if physics_dt > Fix::ZERO && marker.magnet_holder.is_some() {
-                marker.magnet_hold_ticks -= 1;
-                if marker.magnet_hold_ticks == 0 {
-                    marker.magnet_holder = None;
-                    marker.magnet_hold_ticks = -1;
-                }
+            if physics_dt > Fix::ZERO {
+                marker.hold.update_sim();
             }
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
@@ -9023,7 +9052,7 @@ impl RolloutWorld {
         for arrow in &self.arrows {
             if let Some(entity) = arrow
                 .entity
-                .filter(|_| arrow.active && arrow.registered && arrow.magnet_holder.is_none())
+                .filter(|_| arrow.active && arrow.registered && !arrow.hold.held())
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, arrow.position, data)
             {
@@ -9056,7 +9085,7 @@ impl RolloutWorld {
         }
         for item in &self.thrown_items {
             if let Some(entity) = item.entity.filter(|_| {
-                item.active && item.body.inverse_mass > Fix::ZERO && item.magnet_holder.is_none()
+                item.active && item.body.inverse_mass > Fix::ZERO && !item.hold.held()
             }) && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, item.position, data)
             {
@@ -9074,7 +9103,7 @@ impl RolloutWorld {
                 missile.active
                     && missile.registered
                     && missile.body.inverse_mass > Fix::ZERO
-                    && missile.magnet_holder.is_none()
+                    && !missile.hold.held()
             }) && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, missile.position, data)
             {
@@ -9092,7 +9121,7 @@ impl RolloutWorld {
                 marker.active
                     && marker.registered
                     && marker.body.inverse_mass > Fix::ZERO
-                    && marker.magnet_holder.is_none()
+                    && !marker.hold.held()
             }) && Self::portal_inside(endpoint, marker.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -9109,7 +9138,7 @@ impl RolloutWorld {
                 marker.active
                     && marker.registered
                     && marker.body.inverse_mass > Fix::ZERO
-                    && marker.magnet_holder.is_none()
+                    && !marker.hold.held()
             }) && Self::portal_inside(endpoint, marker.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -9292,7 +9321,7 @@ impl RolloutWorld {
             let arrow = self.arrows[index];
             let Some(entity) = arrow
                 .entity
-                .filter(|_| arrow.active && arrow.registered && arrow.magnet_holder.is_none())
+                .filter(|_| arrow.active && arrow.registered && !arrow.hold.held())
             else {
                 continue;
             };
@@ -9330,7 +9359,7 @@ impl RolloutWorld {
         for index in 0..self.thrown_items.len() {
             let item = self.thrown_items[index];
             let Some(entity) = item.entity.filter(|_| {
-                item.active && item.body.inverse_mass > Fix::ZERO && item.magnet_holder.is_none()
+                item.active && item.body.inverse_mass > Fix::ZERO && !item.hold.held()
             }) else {
                 continue;
             };
@@ -9371,7 +9400,7 @@ impl RolloutWorld {
                 missile.active
                     && missile.registered
                     && missile.body.inverse_mass > Fix::ZERO
-                    && missile.magnet_holder.is_none()
+                    && !missile.hold.held()
             }) else {
                 continue;
             };
@@ -9394,7 +9423,7 @@ impl RolloutWorld {
                 marker.active
                     && marker.registered
                     && marker.body.inverse_mass > Fix::ZERO
-                    && marker.magnet_holder.is_none()
+                    && !marker.hold.held()
             }) else {
                 continue;
             };
@@ -9412,7 +9441,7 @@ impl RolloutWorld {
                 marker.active
                     && marker.registered
                     && marker.body.inverse_mass > Fix::ZERO
-                    && marker.magnet_holder.is_none()
+                    && !marker.hold.held()
             }) else {
                 continue;
             };
@@ -10599,8 +10628,7 @@ impl RolloutWorld {
                                     + Vec2::UP * data.teleport.up_cast_offset,
                                 body: data.teleport.marker_body,
                                 scale: self.players[index].player_scale,
-                                magnet_holder: None,
-                                magnet_hold_ticks: -1,
+                                hold: Hold::default(),
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                             self.players[index].teleport_ignore_cooldown[s] = true;
@@ -15994,8 +16022,7 @@ impl RolloutWorld {
                 position: spawn,
                 body: data.revival.marker_body,
                 scale: Fix::ONE,
-                magnet_holder: None,
-                magnet_hold_ticks: -1,
+                hold: Hold::default(),
                 body_prev_scale: Fix::ONE,
             });
             self.players[index].revival_markers[ability_slot] = Some(marker_index);
@@ -21122,8 +21149,7 @@ impl RolloutWorld {
                 position: indicator_position,
                 body: data.revival.marker_body,
                 scale: Fix::ONE,
-                magnet_holder: None,
-                magnet_hold_ticks: -1,
+                hold: Hold::default(),
                 body_prev_scale: Fix::ONE,
             });
             self.push_entity(CEntity {
@@ -22812,8 +22838,7 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
-            magnet_holder: None,
-            magnet_hold_ticks: -1,
+            hold: Hold::default(),
         };
         // The mine registers its collider on the next pass, as a fresh row;
         // a free slot's old row stays removed.
@@ -23177,8 +23202,7 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
-            magnet_holder: None,
-            magnet_hold_ticks: -1,
+            hold: Hold::default(),
         };
         // A held payload has no collider until ManualInit, which appends a
         // fresh row; the free slot's old row stays removed.
@@ -24583,20 +24607,17 @@ impl RolloutWorld {
             MagnetHeld::ThrownItem(i) => {
                 let item = &mut self.thrown_items[i];
                 item.body.angular_velocity = data.magnet.locked_angular_velocity;
-                item.magnet_holder = Some(index);
-                item.magnet_hold_ticks = 3;
+                item.hold.hold(3, index);
             }
             MagnetHeld::Missile(i) => {
                 let missile = &mut self.guided_missiles[i];
                 missile.body.angular_velocity = data.magnet.locked_angular_velocity;
-                missile.magnet_holder = Some(index);
-                missile.magnet_hold_ticks = 3;
+                missile.hold.hold(3, index);
             }
             MagnetHeld::Arrow(i) => {
                 let arrow = &mut self.arrows[i];
                 arrow.angular_velocity = data.magnet.locked_angular_velocity;
-                arrow.magnet_holder = Some(index);
-                arrow.magnet_hold_ticks = 3;
+                arrow.hold.hold(3, index);
             }
             MagnetHeld::Player(slime) => {
                 // MagnetGun hands every form its own ExitAbility and moves
@@ -24652,14 +24673,12 @@ impl RolloutWorld {
             MagnetHeld::RevivalMarker(i) => {
                 let marker = &mut self.revival_marker_pool[i];
                 marker.body.angular_velocity = data.magnet.locked_angular_velocity;
-                marker.magnet_holder = Some(index);
-                marker.magnet_hold_ticks = 3;
+                marker.hold.hold(3, index);
             }
             MagnetHeld::TeleportMarker(i) => {
                 let marker = &mut self.teleport_marker_pool[i];
                 marker.body.angular_velocity = data.magnet.locked_angular_velocity;
-                marker.magnet_holder = Some(index);
-                marker.magnet_hold_ticks = 3;
+                marker.hold.hold(3, index);
             }
             MagnetHeld::BlackHole(_) | MagnetHeld::Nothing => {}
         }
@@ -24949,8 +24968,7 @@ impl RolloutWorld {
                 let item = &mut self.thrown_items[i];
                 item.position = position + correction.unwrap_or(Vec2::ZERO);
                 item.body.velocity = Vec2::ZERO;
-                item.magnet_holder = Some(index);
-                item.magnet_hold_ticks = 2;
+                item.hold.hold(2, index);
                 // Each locked pass hands a Grenade (the Smoke payload carries
                 // one too) back the time its own UpdateSim takes, so the fuse
                 // runs again from the first pass the Magnet lets go
@@ -24967,8 +24985,7 @@ impl RolloutWorld {
                 let missile = &mut self.guided_missiles[i];
                 missile.position = position;
                 missile.body.velocity = Vec2::ZERO;
-                missile.magnet_holder = Some(index);
-                missile.magnet_hold_ticks = 2;
+                missile.hold.hold(2, index);
                 missile.sync_body_to_transform();
                 let (shape, own) = (missile.collider(&self.entity_inverse_extents), missile.entity);
                 if let Some(correction) = self.move_object_out_of_walls(WallMover::Box(shape), own) {
@@ -24985,8 +25002,7 @@ impl RolloutWorld {
                 let arrow = &mut self.arrows[i];
                 arrow.position = position + correction.unwrap_or(Vec2::ZERO);
                 arrow.velocity = Vec2::ZERO;
-                arrow.magnet_holder = Some(index);
-                arrow.magnet_hold_ticks = 2;
+                arrow.hold.hold(2, index);
             }
             MagnetHeld::Player(slime) => {
                 // MagnetGun.cs:1124-1128.
@@ -25075,8 +25091,7 @@ impl RolloutWorld {
                 let marker = &mut self.revival_marker_pool[i];
                 marker.position = position;
                 marker.body.velocity = Vec2::ZERO;
-                marker.magnet_holder = Some(index);
-                marker.magnet_hold_ticks = 2;
+                marker.hold.hold(2, index);
             }
             MagnetHeld::TeleportMarker(i) => {
                 let velocity = self.teleport_marker_pool[i].body.velocity;
@@ -25084,8 +25099,7 @@ impl RolloutWorld {
                 let marker = &mut self.teleport_marker_pool[i];
                 marker.position = position;
                 marker.body.velocity = Vec2::ZERO;
-                marker.magnet_holder = Some(index);
-                marker.magnet_hold_ticks = 2;
+                marker.hold.hold(2, index);
             }
             MagnetHeld::Nothing => {}
         }
@@ -25095,26 +25109,23 @@ impl RolloutWorld {
         match held {
             MagnetHeld::ThrownItem(i) => {
                 if let Some(item) = self.thrown_items.get_mut(i)
-                    && item.magnet_holder == Some(index)
+                    && item.hold.holder == Some(index)
                 {
-                    item.magnet_holder = None;
-                    item.magnet_hold_ticks = -1;
+                    item.hold.release();
                 }
             }
             MagnetHeld::Missile(i) => {
                 if let Some(missile) = self.guided_missiles.get_mut(i)
-                    && missile.magnet_holder == Some(index)
+                    && missile.hold.holder == Some(index)
                 {
-                    missile.magnet_holder = None;
-                    missile.magnet_hold_ticks = -1;
+                    missile.hold.release();
                 }
             }
             MagnetHeld::Arrow(i) => {
                 if let Some(arrow) = self.arrows.get_mut(i)
-                    && arrow.magnet_holder == Some(index)
+                    && arrow.hold.holder == Some(index)
                 {
-                    arrow.magnet_holder = None;
-                    arrow.magnet_hold_ticks = -1;
+                    arrow.hold.release();
                 }
             }
             MagnetHeld::Boulder(i) => {
@@ -25124,18 +25135,16 @@ impl RolloutWorld {
             }
             MagnetHeld::RevivalMarker(i) => {
                 if let Some(marker) = self.revival_marker_pool.get_mut(i)
-                    && marker.magnet_holder == Some(index)
+                    && marker.hold.holder == Some(index)
                 {
-                    marker.magnet_holder = None;
-                    marker.magnet_hold_ticks = -1;
+                    marker.hold.release();
                 }
             }
             MagnetHeld::TeleportMarker(i) => {
                 if let Some(marker) = self.teleport_marker_pool.get_mut(i)
-                    && marker.magnet_holder == Some(index)
+                    && marker.hold.holder == Some(index)
                 {
-                    marker.magnet_holder = None;
-                    marker.magnet_hold_ticks = -1;
+                    marker.hold.release();
                 }
             }
             MagnetHeld::Nothing
@@ -26084,8 +26093,7 @@ impl RolloutWorld {
                 time_passed: source.time_passed,
                 hurt_owner_after: -Fix::ONE,
                 can_hurt_owner: source.can_hurt_owner,
-                magnet_holder: None,
-                magnet_hold_ticks: -1,
+                hold: Hold::default(),
                 duplicated: true,
                 duplicate_lifespan: 1800,
                 duplicate_shake_offset: Vec2::ZERO,
@@ -26874,8 +26882,7 @@ impl RolloutWorld {
             clone.appended = self.tick + 1;
             clone.hierarchy_base = hierarchy_base;
             clone.entity = None;
-            clone.magnet_holder = None;
-            clone.magnet_hold_ticks = -1;
+            clone.hold.release();
             clone.position = position;
             clone.body = Body {
                 velocity: (position - source.position).normalized_safe() * speed,
@@ -31394,8 +31401,7 @@ impl RolloutWorld {
             time_passed: Fix::ZERO,
             hurt_owner_after,
             can_hurt_owner: false,
-            magnet_holder: None,
-            magnet_hold_ticks: -1,
+            hold: Hold::default(),
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
@@ -31643,13 +31649,9 @@ impl RolloutWorld {
                 self.sync_guided_missile_entity(index);
                 continue;
             }
-            let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
-            if physics_dt > Fix::ZERO && being_held {
-                self.guided_missiles[index].magnet_hold_ticks -= 1;
-                if self.guided_missiles[index].magnet_hold_ticks == 0 {
-                    self.guided_missiles[index].magnet_holder = None;
-                    self.guided_missiles[index].magnet_hold_ticks = -1;
-                }
+            let being_held = self.guided_missiles[index].hold.held();
+            if physics_dt > Fix::ZERO {
+                self.guided_missiles[index].hold.update_sim();
             }
             let position = self.guided_missiles[index].position;
             let mut boundary_explosion = None;
@@ -31786,14 +31788,8 @@ impl RolloutWorld {
         }
         // Arrow.UpdateSim runs in the updater pass, before BoplBody's
         // hold countdown and DetPhysics integration.
-        let being_held = arrow.magnet_hold_ticks >= 0;
-        if being_held {
-            arrow.magnet_hold_ticks -= 1;
-            if arrow.magnet_hold_ticks == 0 {
-                arrow.magnet_holder = None;
-                arrow.magnet_hold_ticks = -1;
-            }
-        }
+        let being_held = arrow.hold.held();
+        arrow.hold.update_sim();
         // Arrow.UpdateSim runs in the updater pass, before DetPhysics
         // integrates gravity and position. Preserve that authored phase
         // for the policy-visible collider orientation.
@@ -31998,7 +31994,7 @@ impl RolloutWorld {
             }
 
             let phase = self.thrown_items[item_index].phase;
-            let being_held = self.thrown_items[item_index].magnet_holder.is_some();
+            let being_held = self.thrown_items[item_index].hold.held();
             {
                 let mine = &mut self.thrown_items[item_index];
                 mine.age += DT;
@@ -32668,12 +32664,8 @@ impl RolloutWorld {
             return;
         }
         let item = &mut self.thrown_items[item_index];
-        if updater_dt > Fix::ZERO && item.magnet_holder.is_some() {
-            item.magnet_hold_ticks -= 1;
-            if item.magnet_hold_ticks == 0 {
-                item.magnet_holder = None;
-                item.magnet_hold_ticks = -1;
-            }
+        if updater_dt > Fix::ZERO {
+            item.hold.update_sim();
         }
         // A held payload's collider has not run ManualInit, so BoplBody skips
         // the rescale and keeps prevScale (BoplBody.cs:332).
@@ -33863,7 +33855,7 @@ impl RolloutWorld {
                 // Every pair explodes, a destroyed missile included, but
                 // not while a Magnet holds it (Missile.cs:181-192).
                 let missile_state = self.guided_missiles[missile];
-                if missile_state.magnet_hold_ticks < 0 {
+                if !missile_state.hold.held() {
                     self.spawn_missile_explosion(
                         missile_state.position,
                         missile_state.owner,
@@ -40815,7 +40807,6 @@ mod tests {
             position: firepoint,
             body: data.revival.marker_body,
             scale: Fix::from_int(2),
-            magnet_hold_ticks: -1,
             ..RevivalMarker::default()
         });
         world.teleport_marker_pool.push(TeleportMarker {
@@ -40824,7 +40815,6 @@ mod tests {
             position: firepoint + Vec2::RIGHT,
             body: data.teleport.marker_body,
             scale: Fix::from_int(3),
-            magnet_hold_ticks: -1,
             ..TeleportMarker::default()
         });
         world.register_revival_marker(0, data);
@@ -40839,7 +40829,7 @@ mod tests {
         world.magnet_try_pickup_item(0, data);
         assert_eq!(world.players[0].magnet.held, MagnetHeld::RevivalMarker(0));
         world.magnet_update_held_item(0, data);
-        assert_eq!(world.revival_marker_pool[0].magnet_holder, Some(0));
+        assert_eq!(world.revival_marker_pool[0].hold.holder, Some(0));
         world.magnet_fire_held_item(0, Vec2::RIGHT, data);
         assert_eq!(
             world.revival_marker_pool[0].body.force,
