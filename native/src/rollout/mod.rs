@@ -1901,6 +1901,8 @@ pub struct FormBody {
     pub inverse_mass: Fix,
     pub inverse_inertia: Fix,
     pub mass_scale: Fix,
+    /// A form BoplBody's magnet hold; only the Rock's is ever held.
+    pub hold: Hold,
     /// The form's FixTransform, which DetPhysics syncs its box from whether
     /// the form is casting, hidden by a teleport or gone inactive.
     pub pose: FormPose,
@@ -3821,9 +3823,11 @@ impl PlayerSlot {
             .unwrap_or(self.active_slot)
     }
 
-    /// The Rock's BoplBody.UpdateSim, which runs after BounceBall's.
-    fn rock_body_mass(&mut self) {
+    /// The Rock's BoplBody.UpdateSim, which runs after BounceBall's: the
+    /// hold's countdown, then the mass follows the scale.
+    fn rock_body_update(&mut self) {
         let s = self.rock_slot();
+        self.forms[s].hold.update_sim();
         self.forms[s].follow_body_mass(&mut self.rock.body);
     }
 
@@ -9167,6 +9171,7 @@ impl RolloutWorld {
         for slot in &self.players {
             if slot.active == ActiveAbility::Rock
                 && slot.rock_entity != usize::MAX
+                && !slot.forms[slot.rock_slot()].hold.held()
                 && Self::portal_inside(endpoint, slot.base.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -9466,8 +9471,10 @@ impl RolloutWorld {
             }
         }
         for index in 0..self.players.len() {
-            if self.players[index].active != ActiveAbility::Rock
-                || self.players[index].rock_entity == usize::MAX
+            let slot = &self.players[index];
+            if slot.active != ActiveAbility::Rock
+                || slot.rock_entity == usize::MAX
+                || slot.forms[slot.rock_slot()].hold.held()
             {
                 continue;
             }
@@ -11099,7 +11106,7 @@ impl RolloutWorld {
                         if self.ability_boundary_kill(index) {
                             return;
                         }
-                        self.players[index].rock_body_mass();
+                        self.players[index].rock_body_update();
                         return;
                     }
                     ABILITY_ROLL => {
@@ -11997,7 +12004,7 @@ impl RolloutWorld {
                 self.players[index].reported_position = self.players[index].base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
             } else {
-                self.players[index].rock_body_mass();
+                self.players[index].rock_body_update();
             }
             return;
         }
@@ -25049,6 +25056,8 @@ impl RolloutWorld {
                 rock.base.position = position + correction.unwrap_or(Vec2::ZERO);
                 rock.rock.body.velocity = Vec2::ZERO;
                 rock.base.velocity = Vec2::ZERO;
+                let s = rock.rock_slot();
+                rock.forms[s].hold.hold(2, index);
             }
             MagnetHeld::BlackHole(i) => {
                 self.black_holes[i].position = position;
