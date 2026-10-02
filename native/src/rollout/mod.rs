@@ -472,6 +472,11 @@ const MAX_CLONES: i32 = 16;
 const REVIVE_NONE: u8 = 0;
 const REVIVE_ON_DEATH: u8 = 1;
 const REVIVE_BEING: u8 = 2;
+/// PlayerCollision.isInvulnerableMask bits: SlimeController's from
+/// PrepareToRevive until ReSpawn (SlimeController.cs:576, 598, 616), and
+/// PokeBall's while it holds the slime (PokeBall.cs:13, 189, 215).
+const INVULNERABLE_REVIVE: u32 = 4;
+const INVULNERABLE_POKE: u32 = 16;
 const CAUSE_SQUISHED: u32 = 1;
 const CAUSE_ACCIDENT: u32 = 2;
 const CAUSE_EATEN: u32 = 3;
@@ -2568,7 +2573,8 @@ pub struct AbilitylessClone {
     /// Its SlimeController.inputVector, as a slime's `slime_input`.
     pub slime_input: Vec2,
     pub captured_by_ball: Option<usize>,
-    pub poke_invulnerable: bool,
+    /// Its PlayerCollision.isInvulnerableMask.
+    pub invulnerable: u32,
     /// Its SlimeController's ragdoll, as a slime's; the body's
     /// `skip_next_gravity` is its PlayerPhysics.skipNextUpdate.
     pub ragdoll: RagdollState,
@@ -3505,10 +3511,11 @@ pub struct PlayerSlot {
     /// can capture the same slime from a prebuilt manifold set; this points to
     /// a remaining captor when another one pops.
     pub captured_by_ball: Option<usize>,
-    /// PlayerCollision's mask-16 bit. It is deliberately not reference
-    /// counted: every Poke Ball release clears the shared bit even when a
-    /// second ball still retains and pins the same victim.
-    pub poke_invulnerable: bool,
+    /// The slime's PlayerCollision.isInvulnerableMask, which IsInvulnerable
+    /// tests whole. A bit is not reference counted: every Poke Ball release
+    /// clears the shared bit even when a second ball still retains and pins
+    /// the same victim.
+    pub invulnerable: u32,
     /// PlayerCollision.wasKilledThisFrame: set when OnCollide reaches its
     /// kill, cleared by the slime's next UpdateSim (PlayerCollision.cs:74-77,
     /// 449-470).
@@ -6209,7 +6216,7 @@ impl RolloutWorld {
                 pinned_from: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
                 captured_by_ball: None,
-                poke_invulnerable: false,
+                invulnerable: 0,
                 was_killed_tick: None,
                 stock_death: None,
                 late_obs_tick: u32::MAX,
@@ -6990,7 +6997,7 @@ impl RolloutWorld {
         slot.prev_input_align = clone.prev_input_align;
         slot.slime_input = clone.slime_input;
         slot.captured_by_ball = clone.captured_by_ball;
-        slot.poke_invulnerable = clone.poke_invulnerable;
+        slot.invulnerable = clone.invulnerable;
         slot.set_blink_tunnel(&mut self.entities, clone.blink_tunnel_active);
         slot.blink_tunnel_appended = clone.blink_tunnel_appended;
         slot.blink_tunnel_hierarchy = clone.blink_tunnel_hierarchy;
@@ -10035,7 +10042,7 @@ impl RolloutWorld {
                     victim_deaths: slot.deaths,
                     ..EatingState::default()
                 };
-                (prey_scale, slot.team, slot.poke_invulnerable, eating)
+                (prey_scale, slot.team, slot.invulnerable != 0, eating)
             }
             Slime::Clone(clone_index) => {
                 let clone = &self.abilityless_clones[clone_index];
@@ -10045,7 +10052,7 @@ impl RolloutWorld {
                     ..EatingState::default()
                 };
                 let team = self.players[clone.owner].team;
-                (clone.base.scale, team, clone.poke_invulnerable, eating)
+                (clone.base.scale, team, clone.invulnerable != 0, eating)
             }
         };
         if scale - prey_scale < SCALE_DIFF_BEFORE_NOM_NOM
@@ -10067,7 +10074,7 @@ impl RolloutWorld {
         if let Some(entity) = eating.victim_clone {
             if let Some(clone) = (self.abilityless_clones.iter())
                 .position(|clone| clone.active && clone.entity == Some(entity))
-                && !self.abilityless_clones[clone].poke_invulnerable
+                && self.abilityless_clones[clone].invulnerable == 0
             {
                 self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false);
             }
@@ -21101,7 +21108,6 @@ impl RolloutWorld {
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
         slot.captured_by_ball = None;
-        slot.poke_invulnerable = false;
         slot.late_obs_tick = u32::MAX;
         slot.missile = MissileFormState::default();
         slot.throw_item = ThrowItemState::default();
@@ -21598,7 +21604,6 @@ impl RolloutWorld {
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
         slot.captured_by_ball = None;
-        slot.poke_invulnerable = false;
         slot.late_obs_tick = u32::MAX;
         slot.missile = MissileFormState::default();
         slot.throw_item = ThrowItemState::default();
@@ -21731,6 +21736,7 @@ impl RolloutWorld {
             let owner = slot.owner;
             self.players[owner].extra_life = REVIVE_NONE;
             let slot = &mut self.players[index];
+            slot.invulnerable &= !INVULNERABLE_REVIVE;
             slot.base.position = target;
             slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             slot.respawn_spawn_ticks = data.player.spawn_anim_ticks + 1;
@@ -26341,7 +26347,7 @@ impl RolloutWorld {
             prev_input_align: Fix::ZERO,
             slime_input: Vec2::ZERO,
             captured_by_ball: None,
-            poke_invulnerable: false,
+            invulnerable: 0,
             ragdoll: RagdollState::default(),
             magnet_holder: None,
             blink_tunnel_active: false,
@@ -29136,11 +29142,9 @@ impl RolloutWorld {
         if let Some(victim) = self.players.iter().position(|slot| {
             self.playable_slot(slot) && Self::hurtbox_entity(slot) == hit.entity
         }) {
-            // The modeled gameplay invulnerability source reachable from the
-            // rollout ABI is Poke Ball capture. Spawn shielding and Machoman's
-            // block do not expose an actionable ordinary slime/form collider
-            // in the currently ported public lifecycle.
-            if self.players[victim].poke_invulnerable {
+            // The slime's PlayerCollision. A form's own one is never
+            // invulnerable: only the unused Machoman sets its mask.
+            if self.players[victim].invulnerable != 0 {
                 return;
             }
             if self.players[victim].active != ActiveAbility::None
@@ -32031,7 +32035,7 @@ impl RolloutWorld {
             slot.late_obs_rotation = slot.base.rotation();
             slot.late_obs_state = slot.obs_state;
             slot.captured_by_ball = Some(item_index);
-            slot.poke_invulnerable = true;
+            slot.invulnerable |= INVULNERABLE_POKE;
             // BeginCapture applies ragdoll first, then UnGround invokes
             // SlimeController.OnNoLongerGrounded and overwrites the state with
             // Fall. Until a hold ragdolls it again, the slime's next pass is an
@@ -32071,7 +32075,7 @@ impl RolloutWorld {
         let owner = self.abilityless_clones[clone_index].owner;
         let clone = &mut self.abilityless_clones[clone_index];
         clone.captured_by_ball = Some(item_index);
-        clone.poke_invulnerable = true;
+        clone.invulnerable |= INVULNERABLE_POKE;
         // UnGround's OnNoLongerGrounded overwrites BeginCapture's ragdoll
         // with fall, as for a player victim.
         UngroundBody::Slime(clone.slime_mut()).unground(&self.platforms, self.tick, false);
@@ -32410,7 +32414,7 @@ impl RolloutWorld {
                 || !self.playable_slot(player)
                 || player.active != ActiveAbility::None
                 || player.base.dash.active
-                || player.poke_invulnerable
+                || player.invulnerable != 0
             {
                 continue;
             }
@@ -32428,7 +32432,7 @@ impl RolloutWorld {
                 || self.abilityless_clone_hidden(clone)
                 || !clone.base.alive
                 || clone.owner == owner
-                || clone.poke_invulnerable
+                || clone.invulnerable != 0
             {
                 continue;
             }
@@ -32508,7 +32512,7 @@ impl RolloutWorld {
             if !self.playable_slot(player)
                 || player.active != ActiveAbility::None
                 || player.base.dash.active
-                || player.poke_invulnerable
+                || player.invulnerable != 0
             {
                 continue;
             }
@@ -32734,7 +32738,7 @@ impl RolloutWorld {
             let (player_index, position) = match victim {
                 MjolnirVictim::Body(body) => {
                     if !self.hittable(body)
-                        || self.players[body].poke_invulnerable
+                        || self.players[body].invulnerable != 0
                         || !self.slime_present(body)
                     {
                         continue;
@@ -32782,7 +32786,7 @@ impl RolloutWorld {
             let player_index = self.players[body].owner;
             if player_index == thrower
                 || !self.hittable(body)
-                || self.players[body].poke_invulnerable
+                || self.players[body].invulnerable != 0
                 || (item.killed_players | victims) & (1 << player_index) != 0
             {
                 continue;
@@ -33055,7 +33059,7 @@ impl RolloutWorld {
         slot.captured_by_ball = remaining_captor;
         // PlayerCollision.SetInvulnerable(false, 16) clears the bit rather
         // than decrementing a captor count.
-        slot.poke_invulnerable = false;
+        slot.invulnerable &= !INVULNERABLE_POKE;
         let position = item.position + Vec2::UP * Fix::from_f32(0.4);
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
         let speed = Vec2::new(item.body.velocity.x / Fix::from_int(3), data.poke_ball.pop_up_speed);
@@ -33096,7 +33100,7 @@ impl RolloutWorld {
         let owner = self.abilityless_clones[victim].owner;
         let clone = &mut self.abilityless_clones[victim];
         clone.captured_by_ball = remaining_captor;
-        clone.poke_invulnerable = false;
+        clone.invulnerable &= !INVULNERABLE_POKE;
         clone.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
         let speed = Vec2::new(item.body.velocity.x / Fix::from_int(3), data.poke_ball.pop_up_speed);
@@ -35315,7 +35319,7 @@ impl RolloutWorld {
             // has markers: SpawnClone copies its empty ability list to a clone
             // at every marker (PlayerCollision.cs:138-160), as a body's death
             // does.
-            if !self.abilityless_clones[clone_index].poke_invulnerable
+            if self.abilityless_clones[clone_index].invulnerable == 0
                 && self
                     .players
                     .iter()
@@ -36429,8 +36433,9 @@ impl RolloutWorld {
         // on (SlimeController.cs:215-221). The steps of the slime's killPlayer
         // taken ahead of the form's exit below wait on that answer.
         let in_form = self.players[index].ability_entered;
-        let slime_kill_refused = in_form && self.players[index].poke_invulnerable;
-        if self.players[index].poke_invulnerable && !in_form && !ignore_invulnerability {
+        let invulnerable = self.players[index].invulnerable != 0;
+        let slime_kill_refused = in_form && invulnerable;
+        if invulnerable && !in_form && !ignore_invulnerability {
             return false;
         }
         let owner = self.players[index].owner;
@@ -36704,7 +36709,9 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
-            // The revival clone's PrepareToRevive (SlimeController.cs:623-625).
+            // The revival clone's PrepareToRevive (SlimeController.cs:611-625),
+            // on SpawnClone's fresh PlayerCollision.
+            slot.invulnerable = INVULNERABLE_REVIVE;
             slot.base.simulated = false;
             slot.has_spawned = false;
             slot.base.physics_enabled = false;
@@ -36879,7 +36886,9 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.stocks -= 1;
         slot.stock_clone_pending = true;
-        // The replacement slime's Awake and BeforeSpawnInit.
+        // The replacement slime's Awake and BeforeSpawnInit, and the
+        // PrepareToRevive SpawnClone gives its fresh PlayerCollision.
+        slot.invulnerable = INVULNERABLE_REVIVE;
         slot.base.simulated = false;
         slot.has_spawned = false;
         slot.base.physics_enabled = false;
@@ -37000,6 +37009,7 @@ impl RolloutWorld {
             let owner = self.players[index].owner;
             self.players[owner].extra_life = REVIVE_NONE;
             let slot = &mut self.players[index];
+            slot.invulnerable &= !INVULNERABLE_REVIVE;
             slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
             slot.base.position = position;
             // ReSpawn simulates the body again (SlimeController.cs:591), so
@@ -40343,7 +40353,7 @@ mod tests {
         assert!(world.thrown_items[0].capture_victim_is_clone);
         assert_eq!(world.thrown_items[0].capture_victim, Some(0));
         assert_eq!(world.abilityless_clones[0].captured_by_ball, Some(0));
-        assert!(world.abilityless_clones[0].poke_invulnerable);
+        assert!(world.abilityless_clones[0].invulnerable & INVULNERABLE_POKE != 0);
     }
 
     #[test]
