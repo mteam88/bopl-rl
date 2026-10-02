@@ -818,7 +818,8 @@ impl Player {
     /// (Roll.cs:534-544, Machoman.cs:97) and leaves the slime's flag alone.
     pub(crate) fn jump(&mut self, platforms: &[Platform]) {
         self.record_upside_down_jump(platforms);
-        self.jump_with_strength(platforms, self.constants.jump_strength);
+        let retained = self.attached_ground(platforms).map(|p| &p.surface);
+        self.jump_off(retained, retained, self.constants.jump_strength);
         self.jumped_this_frame = true;
     }
     /// `SlimeController.Jump` reads the normal of the ground it is leaving and
@@ -834,18 +835,17 @@ impl Player {
             .map_or(Vec2::UP, |p| p.surface.normal(self.position));
         self.was_upside_down = normal.y < Fix::ZERO;
     }
-    pub(crate) fn jump_with_strength(&mut self, platforms: &[Platform], strength: Fix) {
-        // PlayerPhysics.Jump uses world up while airborne and only reads the
-        // attached platform when grounded (PlayerPhysics.cs:333). Roll can
-        // charge in the air, so an attached platform is not required here.
-        // The retained attachedGround is read whether or not it is still
-        // active (Blink/Teleport can deactivate it under a grounded player
-        // before Move ungrounds them), as in move_grounded_scaled; a ground
-        // that no longer exists at all jumps off world up. UnGround still
-        // lifts an airborne body off the ground it last left.
-        let retained = platforms.iter().find(|p| Some(p.id) == self.ground);
-        let platform = retained.filter(|_| self.grounded);
-        let normal = platform.map_or(Vec2::UP, |p| p.surface.normal(self.position));
+    /// PlayerPhysics.Jump (PlayerPhysics.cs:330-346). Airborne it jumps off
+    /// world up; grounded it reads currentNormal off `ground`, the
+    /// attachedGround it holds with no null test: a platform active or not,
+    /// or a destroyed one whose last pose the dead object keeps. Its UnGround
+    /// lifts the body only off a non-null attachedGround, `attached`, which
+    /// a destroyed ground stays until its pass's drain (PlayerPhysics.cs:
+    /// 366-370), and an airborne body off the ground it last left.
+    pub(crate) fn jump_off(&mut self, ground: Option<&Surface>, attached: Option<&Surface>, strength: Fix) {
+        let normal = ground
+            .filter(|_| self.grounded)
+            .map_or(Vec2::UP, |surface| surface.normal(self.position));
         let amount = ((normal.y + Fix::ONE) / self.constants.jump_normal_scale)
             .min(Fix::ONE)
             .max(Fix::ZERO);
@@ -853,7 +853,7 @@ impl Player {
         self.velocity =
             normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum + up * strength;
         self.position += self.velocity * self.constants.jump_teleport;
-        self.unground(retained.map(|p| &p.surface), true);
+        self.unground(attached, true);
     }
     /// PlayerPhysics.Move's ground input direction: -1, 0 or 1 along the
     /// surface tangent.

@@ -3769,9 +3769,15 @@ impl PlayerSlot {
     /// jumpedThisFrame (PlayerPhysics.cs:332). Only that PlayerPhysics'
     /// LateUpdateSim clears it, so a form that jumps out keeps it until its
     /// next entry pass, whose PlayerBody then refuses a jump release of the
-    /// rope (PlayerPhysics.cs:163; PlayerBody.cs:167).
-    fn form_jump(&mut self, platforms: &[Platform], strength: Fix) {
-        self.base.jump_with_strength(platforms, strength);
+    /// rope (PlayerPhysics.cs:163; PlayerBody.cs:167). A ground destroyed
+    /// under the form is still its attachedGround, which the jump leaves, so
+    /// the record is spent.
+    fn form_jump(&mut self, platforms: &[Platform], tick: u32, strength: Fix) {
+        let lost = self.ground_destroyed.take();
+        let retained = self.base.attached_ground(platforms).map(|platform| &platform.surface);
+        let ground = retained.or(lost.as_ref().map(|lost| &lost.surface));
+        let attached = retained.or(lost.as_ref().and_then(|lost| lost.attached(tick)));
+        self.base.jump_off(ground, attached, strength);
         self.base.jumped_this_frame = true;
     }
 
@@ -12274,7 +12280,7 @@ impl RolloutWorld {
             if slot.roll.charging {
                 slot.roll.seconds_charged += slot.base.fixed_delta_time;
                 if slot.roll.jump_button_has_been_up && jump_down {
-                    slot.form_jump(&self.platforms, data.roll.constants.jump_strength);
+                    slot.form_jump(&self.platforms, self.tick, data.roll.constants.jump_strength);
                     self.exit_form(index);
                     return;
                 }
@@ -12304,7 +12310,7 @@ impl RolloutWorld {
                 slot.roll.short_jumping = true;
                 // Roll.ShortJump is PlayerPhysics.Jump at shortJumpStr, whose
                 // UnGround lifts off the attachedGround it keeps (Roll.cs:534-544).
-                slot.form_jump(&self.platforms, data.roll.short_jump_strength);
+                slot.form_jump(&self.platforms, self.tick, data.roll.short_jump_strength);
             }
         }
         if self.players[index].roll.time_since_release > data.roll.dash_time {
@@ -19247,13 +19253,15 @@ impl RolloutWorld {
 
         let input = action.direction();
         // UpdateSim dots the raw stick with the attached ground's forwards
-        // direction, and idle only starts walking past DEADZONE (0.4).
-        let forwards = self.players[index]
+        // direction, and idle only starts walking past DEADZONE (0.4). A
+        // ground destroyed earlier in this pass is not null until the drain.
+        let slot = &self.players[index];
+        let forwards = slot
             .base
             .attached_ground(&self.platforms)
-            .map_or(Vec2::RIGHT, |platform| {
-                platform.surface.normal(self.players[index].base.position).perp_cw()
-            });
+            .map(|platform| &platform.surface)
+            .or(slot.dead_ground(self.tick))
+            .map_or(Vec2::RIGHT, |surface| surface.normal(slot.base.position).perp_cw());
         let alignment = input.dot(forwards);
         let aligned = alignment.abs() >= Fix::from_f32(0.2);
         let moving_right = alignment > Fix::ZERO;
@@ -19294,7 +19302,7 @@ impl RolloutWorld {
                 }
                 if frame > data.macho_throw.jump_after_throw_frames && jump_pressed {
                     // PlayerPhysics.Jump runs airborne too, off world up.
-                    self.players[index].form_jump(&self.platforms, data.macho_throw.constants.jump_strength);
+                    self.players[index].form_jump(&self.platforms, self.tick, data.macho_throw.constants.jump_strength);
                     self.exit_form(index);
                     return;
                 }
@@ -39934,9 +39942,10 @@ mod tests {
 
         let normal = world.platforms[index].surface.normal(top);
         let platforms = world.platforms.clone();
+        let ground = platforms[index].surface.clone();
         world.players[0]
             .base
-            .jump_with_strength(&platforms, Fix::ONE);
+            .jump_off(Some(&ground), Some(&ground), Fix::ONE);
 
         assert!(!world.players[0].base.grounded);
         assert!(world.players[0].base.velocity.dot(normal) > Fix::ZERO);
