@@ -2694,12 +2694,11 @@ pub struct BeamPoolSlot {
     pub trace_entity: Option<usize>,
     pub trace_beam_id: i32,
     pub hitbox: crate::beam::hitbox::Hitbox,
-    /// Collider state DetPhysics simulated before UpdateBeams resized the
-    /// pooled object for this pass. Collision callbacks consume this copy
-    /// after the graph has already been rendered.
-    pub contact_collider: Option<OrientedBox>,
-    pub contact_beam_id: i32,
-    pub contact_owner_id: i32,
+    /// The box SortAndSweep bounded this pass, before UpdateBeams resized
+    /// the pooled object; None for an object UpdateBeams instantiated. The
+    /// narrow phase and the callbacks see the resized box and the new
+    /// PlayerOwnerId and beamId (DetPhysics.cs:2929, BeamObject.cs:43-55).
+    pub swept_collider: Option<OrientedBox>,
     pub active: bool,
 }
 
@@ -17912,13 +17911,7 @@ impl RolloutWorld {
                 self.beam_pool[i].active = true;
             }
             let slot = &mut self.beam_pool[i];
-            if existed {
-                slot.contact_collider = slot.hitbox.collider;
-                slot.contact_beam_id = slot.hitbox.beam_id;
-                slot.contact_owner_id = slot.hitbox.owner_id;
-            } else {
-                slot.contact_collider = None;
-            }
+            slot.swept_collider = if existed { slot.hitbox.collider } else { None };
             slot.hitbox.set_dimension_values(
                 hitbox_config,
                 beam.position,

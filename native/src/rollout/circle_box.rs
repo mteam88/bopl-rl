@@ -183,7 +183,7 @@ impl RolloutWorld {
             }
             Blast::Beam(i) => {
                 let slot = &self.beam_pool[i];
-                i < self.scratch.beam_contacts && slot.contact_collider.is_some() && slot.hitbox.collider.is_some()
+                i < self.scratch.beam_contacts && slot.swept_collider.is_some() && slot.hitbox.collider.is_some()
             }
             Blast::Orb(i) => self.beam_orbs[i].active && self.beam_orbs[i].enabled,
         };
@@ -243,7 +243,7 @@ impl RolloutWorld {
             Blast::Smoke(i) => (player_id(&self.players, self.smoke_explosions[i].owner), true, false),
             Blast::Smear(i) => (player_id(&self.players, self.meteor_smears[i].owner), true, false),
             Blast::Drill(p, _) => (self.players[p].base.id, true, false),
-            Blast::Beam(i) => (self.beam_pool[i].contact_owner_id as u32, true, true),
+            Blast::Beam(i) => (self.beam_pool[i].hitbox.owner_id as u32, true, true),
             Blast::Orb(i) => (player_id(&self.players, self.beam_orbs[i].owner), false, false),
         }
     }
@@ -266,7 +266,7 @@ impl RolloutWorld {
                 Part::Explosion(Blast::Beam(i)) => {
                     slot.active == ActiveAbility::Beam && slot.beam_entity != usize::MAX && {
                         let own = self.entities[slot.beam_entity].hierarchy.wrapping_sub(100_000_000).wrapping_add(2) as i32;
-                        self.beam_pool[i].contact_beam_id.wrapping_abs() == own.wrapping_abs()
+                        self.beam_pool[i].hitbox.beam_id.wrapping_abs() == own.wrapping_abs()
                     }
                 }
                 _ => false,
