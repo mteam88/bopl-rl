@@ -31806,16 +31806,10 @@ impl RolloutWorld {
         }
     }
 
-    /// PokeBall.BeginCapture. `sync_collider` distinguishes the UpdateSim
-    /// proximity path (before DetPhysics synchronizes shapes) from OnCollide
-    /// (after this pass's manifolds and observation collider positions exist).
-    fn capture_poke_victim(
-        &mut self,
-        item_index: usize,
-        victim: usize,
-        data: &data::RolloutData,
-        sync_collider: bool,
-    ) {
+    /// PokeBall.BeginCapture. `victim.body.position` moves only the slime's
+    /// FixTransform; its box follows at DetPhysics' next sync (PokeBall.cs:178-199,
+    /// PlayerBody.cs:42-52).
+    fn capture_poke_victim(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
         let capture_position = self.thrown_items[item_index].position;
         {
             let slot = &mut self.players[victim];
@@ -31833,9 +31827,6 @@ impl RolloutWorld {
             UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, false);
             slot.base.position = capture_position;
             slot.base.velocity = Vec2::ZERO;
-            if sync_collider {
-                slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
-            }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
             slot.base.skip_next_gravity = true;
@@ -31873,7 +31864,6 @@ impl RolloutWorld {
         clone.base.skip_next_gravity = true;
         clone.base.position = capture_position;
         clone.base.velocity = Vec2::ZERO;
-        clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         self.players[owner].invisible = true;
         let instance = self.slime_instance(Slime::Clone(clone_index));
         let item = &mut self.thrown_items[item_index];
@@ -32253,7 +32243,7 @@ impl RolloutWorld {
             if victim_is_clone {
                 self.capture_poke_clone(item_index, victim, data);
             } else {
-                self.capture_poke_victim(item_index, victim, data, true);
+                self.capture_poke_victim(item_index, victim, data);
             }
         }
     }
@@ -33511,7 +33501,7 @@ impl RolloutWorld {
                         self.capture_poke_clone(item, victim, data);
                     }
                 } else if self.players[victim].base.alive {
-                    self.capture_poke_victim(item, victim, data, false);
+                    self.capture_poke_victim(item, victim, data);
                 }
             }
             // PlayerCollision.KillPlayerOnCollision's killPlayer, which never
