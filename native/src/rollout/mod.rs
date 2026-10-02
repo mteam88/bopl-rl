@@ -15699,10 +15699,6 @@ impl RolloutWorld {
         }
     }
 
-    fn spike_attack_box(&self, spike: SpawnedSpike) -> OrientedBox {
-        Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, spike)
-    }
-
     fn spike_attack_box_in(
         platform_dynamics: &[PlatformDynamics],
         inverse_extents: &[Vec2],
@@ -33390,12 +33386,6 @@ impl RolloutWorld {
         self.circle_box_group(data);
     }
 
-    fn player_sweep_rank(&self, player_index: usize) -> SweepRank {
-        let player_min = self.player_sweep_min(player_index);
-        let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
-        sweep_rank(&self.entities, player_min, entity)
-    }
-
     fn clone_box_registered(&self, index: usize) -> bool {
         let clone = &self.abilityless_clones[index];
         clone.active
@@ -33585,27 +33575,6 @@ impl RolloutWorld {
                     }
                 }
             }
-        }
-    }
-
-    /// The low edge, on the broadphase sweep axis, of the player's registered
-    /// Player-layer shape.
-    fn player_sweep_min(&self, player_index: usize) -> Fix {
-        self.swept_min(Swept::Player(player_index))
-    }
-
-    /// Whether a circle hitbox overlaps the player's registered Player-layer
-    /// shape: the slime's and Dash's own box, or the collider a form's prefab
-    /// registered (`hurtbox_collider`).
-    /// The collider a hitbox meets on player `player_index`.
-    fn player_hit_shape(&self, player_index: usize) -> Option<Collider> {
-        let player = &self.players[player_index];
-        if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
-            return Some(Collider::Box(player.base.collider));
-        }
-        match self.hurtbox_collider(player_index)? {
-            DetCollider::Circle(circle) => Some(Collider::Circle(circle)),
-            DetCollider::Box(shape) => Some(Collider::Box(shape)),
         }
     }
 

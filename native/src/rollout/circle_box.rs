@@ -607,9 +607,9 @@ impl RolloutWorld {
     /// with its arm from the FixTransform, on a child's CompositeBody
     /// (DPhysicsCircle.cs:377-392, DPhysicsBox.cs:436-451).
     pub(super) fn part_add_force_at(&mut self, part: Part, force: Vec2, point: Vec2) {
-        // A slime's, form's or clone's box has no BoplBody: the impulse goes
-        // to the DetPhysics body its row publishes.
-        if let (Part::Body(_) | Part::Clone(_), Some(entity)) = (part, self.part_entity(part)) {
+        // A slime's, form's or clone's box and a grapple hook's circle have no
+        // BoplBody: the impulse goes to the DetPhysics body its row publishes.
+        if let (Part::Body(_) | Part::Clone(_) | Part::Hook(_), Some(entity)) = (part, self.part_entity(part)) {
             let row = &mut self.entities[entity];
             let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy)) + force * Fix::from_raw(row.inverse_mass);
             row.vx = velocity.x.raw();
@@ -820,6 +820,11 @@ impl RolloutWorld {
         for (i, pickup) in self.ability_pickups.iter().enumerate() {
             if pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity) {
                 parts.push(Part::Pickup(i));
+            }
+        }
+        for rope in 0..self.ropes.len() {
+            if self.hook_live(rope) {
+                parts.push(Part::Hook(rope));
             }
         }
         for i in 0..self.players.len() {
@@ -1443,26 +1448,31 @@ impl RolloutWorld {
                     Part::Node(i) => HookTarget::Node(i),
                     Part::Pickup(_) => HookTarget::Pickup,
                     // RopeHook ignores every body of the caster's and the end's
-                    // player (RopeHook.cs:108-115).
-                    Part::Rock(player) => {
-                        let body_player = self.players[player].owner;
+                    // player (RopeHook.cs:108-115); a slime's, form's or
+                    // clone's Player-layer collider carries its PlayerBody.
+                    Part::Rock(_) | Part::Body(_) | Part::Clone(_) => {
+                        let (body_player, target) = match other {
+                            Part::Clone(clone) => (self.abilityless_clones[clone].owner, HookTarget::Clone(clone)),
+                            Part::Rock(player) | Part::Body(player) => {
+                                (self.players[player].owner, HookTarget::Player(player))
+                            }
+                            _ => unreachable!(),
+                        };
                         if body_player == self.players[self.ropes[rope].owner].owner
                             || body_player == self.ropes[rope].hook_end_player
                         {
                             return;
                         }
-                        HookTarget::Player(player)
+                        target
                     }
+                    Part::Spike(i) => HookTarget::Spike(i),
+                    Part::Engine(i) => HookTarget::Engine(i),
                     Part::Arrow(i) => HookTarget::Arrow(i),
                     // A hook on a Duplicator copy has no rope parent here yet.
                     Part::DuplicatedRock(_) => return,
-                    Part::Engine(_)
-                    | Part::Spike(_)
-                    | Part::Missile(_)
+                    Part::Missile(_)
                     | Part::Hook(_)
                     | Part::Hole(_)
-                    | Part::Body(_)
-                    | Part::Clone(_)
                     | Part::Line(_)
                     | Part::Cloud(_)
                     | Part::Explosion(_)

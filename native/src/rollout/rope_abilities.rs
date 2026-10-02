@@ -1840,103 +1840,43 @@ impl RolloutWorld {
         Circle { center: self.ropes[rope].hook_position, radius: data::get().ropes.hook_radius }
     }
 
-    /// Queues RopeHook.OnCollide for one of the hook's pairs at its place in
-    /// DetPhysics' callback queue, with the collider the pair met.
-    pub(super) fn queue_hook_hit(
-        &mut self,
-        rope: usize,
-        group: u8,
-        other: SweepRank,
-        target: HookTarget,
-        shape: Collider,
-    ) {
+    /// Queues RopeHook.OnCollide for a hook's pair with a black hole at its
+    /// place in DetPhysics' Circle/Circle callback queue, with the collider
+    /// the pair met.
+    pub(super) fn queue_hook_hit(&mut self, rope: usize, other: SweepRank, target: HookTarget, shape: Collider) {
         let circle = self.hook_circle(rope);
         let min = if self.sweep_x() { circle.center.x } else { circle.center.y } - circle.radius;
         let rank = sweep_rank(&self.entities, min, self.ropes[rope].hook_entity);
         let (later, earlier) = sweep_pair(rank, other);
         self.scratch
             .callback_hits
-            .push(((group, later, earlier), CallbackHit::RopeHook { rope, target, shape }));
+            .push(((GROUP_CC, later, earlier), CallbackHit::RopeHook { rope, target, shape }));
     }
 
     /// The hooks' pairs with black holes, which circle_circle_group does not
-    /// list yet, and their Circle/Box pairs, on the colliders the
-    /// Circle/Circle corrections left.
+    /// list yet.
     pub(super) fn grapple_hook_pairs(&mut self) {
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let circle_circle = GROUP_CC;
         let mut hits = Vec::new();
         for rope in 0..self.ropes.len() {
             if !self.hook_live(rope) {
                 continue;
             }
             let circle = self.hook_circle(rope);
-            let touches = |other: Circle| crate::physics::contact::circle_circle(circle, other).is_some();
             for (index, hole) in self.black_holes.iter().enumerate() {
                 let shape = Circle { center: hole.position, radius: hole.radius };
-                if hole.active && !self.blink_object_hidden(hole.entity) && touches(shape) {
+                if hole.active
+                    && !self.blink_object_hidden(hole.entity)
+                    && crate::physics::contact::circle_circle(circle, shape).is_some()
+                {
                     let rank = sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
-                    hits.push((rope, circle_circle, rank, HookTarget::BlackHole(index), Collider::Circle(shape)));
-                }
-            }
-            // RopeHook ignores every body of the caster's and the end's
-            // player (RopeHook.cs:122-129).
-            let owner = self.players[self.ropes[rope].owner].owner;
-            let end_player = self.ropes[rope].hook_end_player;
-            for player in 0..self.players.len() {
-                let body_player = self.players[player].owner;
-                if body_player == owner || body_player == end_player {
-                    continue;
-                }
-                // The Player-layer collider DetPhysics holds, a spawning
-                // slime's included. A Rock form's circle meets the hook in
-                // circle_circle_group. A form's own Player-layer collider
-                // carries its PlayerBody, so the hook meets the form's box.
-                if let Some(circle_body) = self.body_part_circle(player)
-                    && let Some(shape) = self.player_hit_shape(player)
-                    && Collider::Circle(circle).contact(shape).is_some()
-                {
-                    let group = GROUP_CB - circle_body as u8;
-                    hits.push((rope, group, self.player_sweep_rank(player), HookTarget::Player(player), shape));
-                }
-            }
-            for index in self.player_layer_clones() {
-                let clone = &self.abilityless_clones[index];
-                if clone.owner != owner
-                    && clone.owner != end_player
-                    && crate::physics::contact::circle_box(circle, clone.base.synced).is_some()
-                {
-                    let collider = clone.base.synced;
-                    let min = axis(collider.center) - axis(collider.right).abs() - axis(collider.up).abs();
-                    let rank = sweep_rank(&self.entities, min, clone.entity);
-                    hits.push((rope, GROUP_CB, rank, HookTarget::Clone(index), Collider::Box(collider)));
-                }
-            }
-            for index in 0..self.spike_attacks.len() {
-                let spike = self.spike_attacks[index];
-                if !spike.active || !spike.entity.is_some_and(|entity| self.collides(entity)) {
-                    continue;
-                }
-                let shape = self.spike_attack_box(spike);
-                if crate::physics::contact::circle_box(circle, shape).is_some() {
-                    let rank = self.part_rank(Part::Spike(index));
-                    hits.push((rope, GROUP_CB, rank, HookTarget::Spike(index), Collider::Box(shape)));
-                }
-            }
-            for index in 0..self.engines.len() {
-                if !self.engines[index].entity.is_some_and(|entity| self.collides(entity)) {
-                    continue;
-                }
-                let shape = self.engines[index].rocket_box(&self.entity_inverse_extents);
-                if crate::physics::contact::circle_box(circle, shape).is_some() {
-                    let rank = self.part_rank(Part::Engine(index));
-                    hits.push((rope, GROUP_CB, rank, HookTarget::Engine(index), Collider::Box(shape)));
+                    hits.push((rope, rank, HookTarget::BlackHole(index), Collider::Circle(shape)));
                 }
             }
         }
-        for (rope, group, rank, target, shape) in hits {
-            self.queue_hook_hit(rope, group, rank, target, shape);
+        for (rope, rank, target, shape) in hits {
+            self.queue_hook_hit(rope, rank, target, shape);
         }
     }
 
