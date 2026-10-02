@@ -7758,6 +7758,7 @@ impl RolloutWorld {
         // same-tick UpdateSim impulse runs after them.
         self.register_pending_objects(data);
         self.init_pending_grenade_fuses(data);
+        self.init_appended_springs();
         self.register_pending_time_stops();
         self.duplicated_objects_tick();
         self.remove_destroyed_updatables();
@@ -34075,17 +34076,6 @@ impl RolloutWorld {
         if !self.platforms[i].active {
             return;
         }
-        // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on the current
-        // position and clears inSuddenDeath before any UpdateSim, so an
-        // in-progress sudden death is re-activated with a fresh delay and
-        // sinks the new home on that same pass (AnimateVelocity.cs:126-137).
-        if !self.platform_dynamics[i].intro_disabled
-            && self.platform_dynamics[i].init_tick == Some(self.tick)
-        {
-            self.platform_dynamics[i].init_tick = None;
-            self.platform_dynamics[i].home_position = self.platforms[i].surface.center;
-            self.platform_dynamics[i].sudden_death_delay = None;
-        }
         // A body instantiated this pass joins the Updater on the next.
         if self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick) {
             return;
@@ -34843,6 +34833,22 @@ impl RolloutWorld {
         self.platforms[i].surface.bounds_radius = radius;
         self.platform_dynamics[i].surface_shape_dirty = false;
         self.platforms_changed();
+    }
+
+    /// AnimateVelocity.Init for each platform body Updater appends this pass,
+    /// before any UpdateSim can move it: the spring homes on the position the
+    /// spawn pass left and clears inSuddenDeath, so an in-progress sudden
+    /// death is re-activated with a fresh delay and sinks the new home on
+    /// this pass (AnimateVelocity.cs:74-93, 126-137; Updater.cs:264-287).
+    fn init_appended_springs(&mut self) {
+        for i in 0..self.platforms.len() {
+            let dynamics = &mut self.platform_dynamics[i];
+            if dynamics.init_tick == Some(self.tick) {
+                dynamics.init_tick = None;
+                dynamics.home_position = self.platforms[i].surface.center;
+                dynamics.sudden_death_delay = None;
+            }
+        }
     }
 
     /// BoplBody.UpdateSim, at BoplBody's place in the prefab: the hold's
