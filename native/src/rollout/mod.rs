@@ -36880,10 +36880,10 @@ impl RolloutWorld {
             // slime (SlimeController.cs:588-595).
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
+            // ReSpawn moves only the FixTransform: the re-enabled hurtbox
+            // waits at the hold point for DetPhysics' sync (SlimeController.cs:
+            // 588-600).
             slot.base.position = position;
-            // ReSpawn simulates the body again (SlimeController.cs:591), so
-            // the hurtbox is exported at the chosen point this pass.
-            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             slot.obs_state = STATE_FALL;
         }
     }
@@ -36908,8 +36908,17 @@ impl RolloutWorld {
             // It also assigns hurtBox.Scale = player.Scale every pass
             // (SlimeController.cs:1078), which is not the identity at a
             // Player.Scale other than one, so the hidden box keeps drifting.
+            // The setter rescales the box where DetPhysics holds it
+            // (DPhysicsBox.cs:203-219).
+            let old = slot.body_collider_scale;
             slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
-            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+            let ratio = (Fix::ONE / old) * slot.body_collider_scale;
+            let inverse_extents = slot.hurtbox_inverse_extents(&self.entity_inverse_extents);
+            for collider in [&mut slot.base.synced, &mut slot.base.collider] {
+                collider.right = collider.right * ratio;
+                collider.up = collider.up * ratio;
+                collider.inverse_extents = inverse_extents;
+            }
         }
         // From the pass after SpawnClone, the revival clone's
         // DestroyIfOutsideSceneBounds runs at the marker position
