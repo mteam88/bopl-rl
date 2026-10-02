@@ -11956,8 +11956,6 @@ impl RolloutWorld {
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
-                        // PlatformTransform.OnEnterAbility: the body freezes at
-                        // its position; the ability object carries no velocity.
                         slot.platform = PlatformState {
                             active_corner: Vec2::new(Fix::ONE, Fix::ONE),
                             platform_index: usize::MAX,
@@ -11965,9 +11963,9 @@ impl RolloutWorld {
                             ..PlatformState::default()
                         };
                         slot.platform_hurtbox_disabled[s] = false;
-                        slot.base.velocity = Vec2::ZERO;
-                        slot.base.external_velocity = Vec2::ZERO;
-                        // PlatformTransform.OnEnterAbility (PlatformTransform.cs:122).
+                        // PlatformTransform.OnEnterAbility only unrotates its own
+                        // PlayerBody and places it (PlatformTransform.cs:117-135):
+                        // the velocities its last use left on it stay.
                         slot.base.set_rotation(Fix::ZERO);
                         // Ability.EnterAbility scales the form's hurtbox, and
                         // the form's Ability.UpdateSim assigns the same scale
