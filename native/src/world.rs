@@ -946,21 +946,22 @@ impl Player {
             .surface
             .move_unblocked(self.local, self.radius, allowed, dt);
     }
-    pub(crate) fn gravity_step(&mut self, walls: &mut impl Walls) {
-        if std::mem::take(&mut self.skip_next_gravity) {
-            return;
+    /// PlayerPhysics.UpdateSim's gravity and landing raycasts
+    /// (PlayerPhysics.cs:116-131). Returns whether a ray attached the body,
+    /// which raises OnAttachedToGround.
+    pub(crate) fn gravity_step(&mut self, walls: &mut impl Walls) -> bool {
+        if std::mem::take(&mut self.skip_next_gravity) || self.grounded {
+            return false;
         }
-        if !self.grounded {
-            crate::player_physics::apply_gravity(
-                &mut self.velocity,
-                self.constants.gravity_accel,
-                self.constants.gravity_modifier,
-                self.constants.gravity_max_fall_speed,
-                self.space,
-            )
-            .expect("valid movement gravity constants");
-            self.collision_rays(walls);
-        }
+        crate::player_physics::apply_gravity(
+            &mut self.velocity,
+            self.constants.gravity_accel,
+            self.constants.gravity_modifier,
+            self.constants.gravity_max_fall_speed,
+            self.space,
+        )
+        .expect("valid movement gravity constants");
+        self.collision_rays(walls)
     }
     pub(crate) fn step(&mut self, action: Action, walls: &mut impl Walls) {
         self.step_with_input(action, action.direction(), walls);

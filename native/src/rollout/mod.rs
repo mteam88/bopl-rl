@@ -2193,9 +2193,6 @@ impl MagnetState {
 /// (`obs_state`) is State.ragdoll.
 #[derive(Clone, Copy, Default)]
 pub struct RagdollState {
-    /// The effect applied ragdoll while the slime was already grounded, so
-    /// no AttachToGround callback may replace it with Land before timeout.
-    pub hold_on_ground: bool,
     pub time: Fix,
     pub duration: Fix,
 }
@@ -2261,11 +2258,10 @@ impl SlimeMut<'_> {
 
     /// SlimeController.ApplyRagDoll (SlimeController.cs:1012-1036): the speed
     /// with its horizontal part slowed becomes selfImposedVelocity, and the
-    /// body faces the speed as given. A ragdoll applied on the ground does
-    /// not end on a landing.
+    /// body faces the speed as given.
     fn apply_ragdoll(&mut self, duration: Fix, speed: Vec2) {
         *self.obs_state = STATE_RAGDOLL;
-        *self.ragdoll = RagdollState { hold_on_ground: self.base.grounded, time: Fix::ZERO, duration };
+        *self.ragdoll = RagdollState { time: Fix::ZERO, duration };
         let right = speed.normalized_safe();
         self.base.velocity = Vec2::new(speed.x / Fix::from_f32(1.5), speed.y);
         if right != Vec2::ZERO {
@@ -4313,8 +4309,9 @@ fn begin_land(obs_state: &mut u32, state_ticks: &mut u32) {
 enum RagdollPass {
     /// It goes on: OldUpdate returns before Move (SlimeController.cs:787).
     Ragdolled,
-    /// AttachToGround already switched it to the land state, before
-    /// SlimeController.UpdateSim.
+    /// PlayerPhysics.UpdateSim's raycasts attached it, and attachToGround
+    /// already switched it to the land state before SlimeController.UpdateSim
+    /// (PlayerPhysics.cs:116-131, 471-478; SlimeController.cs:1117-1128).
     Landed,
     /// It timed out; the caller's EnterFall follows.
     FellOut,
@@ -4324,17 +4321,18 @@ enum RagdollPass {
 /// (SlimeController.cs:1050-1059): timeInRagdoll takes FixedDeltaTime and,
 /// past ragdollDuration, magnetHolder is forgotten, selfImposedVelocity moves
 /// into externalVelocity and EnterFall straightens the body
-/// (SlimeController.cs:263-272). A frozen slime or a ragdoll applied on the
-/// ground does not end on a landing.
+/// (SlimeController.cs:263-272). Only `landed`, this pass's
+/// OnAttachedToGround, ends it early: a slime held grounded or held still
+/// by skipNextUpdate rides it out.
 fn ragdoll_pass(
     ragdoll: &mut RagdollState,
     magnet_holder: &mut Option<MagnetGun>,
     base: &mut Player,
     obs_state: &mut u32,
     state_ticks: &mut u32,
-    frozen: bool,
+    landed: bool,
 ) -> RagdollPass {
-    if base.grounded && !frozen && !ragdoll.hold_on_ground {
+    if landed {
         *obs_state = STATE_FALL;
         *state_ticks = 0;
         return RagdollPass::Landed;
@@ -29348,23 +29346,11 @@ impl RolloutWorld {
     /// SlimeController then carries on through OldUpdate and Move like any
     /// other pass, with PlayerPhysics.UpdateSim already done here.
     fn ragdoll_player_tick(&mut self, index: usize, action: Action, jump_pressed: bool) -> bool {
-        let slot = &mut self.players[index];
-        // The ragdolled slime's PlayerPhysics still consumes skipNextUpdate
-        // every pass, unless a rewind has disabled it (RewindRecorder.cs:155).
-        let physics = !slot.rewind.rewinding;
-        let skip = physics && std::mem::take(&mut slot.base.skip_next_gravity);
-        if physics && !skip && !slot.base.grounded {
-            let space = slot.base.space;
-            crate::player_physics::apply_gravity(
-                &mut slot.base.velocity,
-                slot.base.constants.gravity_accel,
-                slot.base.constants.gravity_modifier,
-                slot.base.constants.gravity_max_fall_speed,
-                space,
-            )
-            .expect("valid ragdoll gravity constants");
-            self.slot_physics(index, |slot, world| slot.base.collision_rays(world));
-        }
+        // The ragdolled slime's PlayerPhysics still runs its UpdateSim,
+        // skipNextUpdate included, unless a rewind has disabled it
+        // (RewindRecorder.cs:155).
+        let landed = !self.players[index].rewind.rewinding
+            && self.slot_physics(index, |slot, world| slot.base.gravity_step(world));
         let slot = &mut self.players[index];
         // SlimeController publishes Player.Position after PlayerPhysics. A
         // landing ray can move the body before that publication.
@@ -29376,7 +29362,7 @@ impl RolloutWorld {
             &mut slot.base,
             &mut slot.obs_state,
             &mut slot.state_ticks,
-            slot.frozen_solid_count != 0,
+            landed,
         ) {
             RagdollPass::Ragdolled => {}
             RagdollPass::Landed => return false,
@@ -29385,9 +29371,9 @@ impl RolloutWorld {
                     // This EnterFall re-aims even on the ground.
                     slot.align_transform_air();
                 }
-                let held_on_ground = slot.ragdoll.hold_on_ground && slot.base.grounded;
+                let grounded = slot.base.grounded;
                 self.slot_physics(index, |slot, world| slot.enter_fall(world));
-                self.players[index].ragdoll_grounded_fall = held_on_ground;
+                self.players[index].ragdoll_grounded_fall = grounded;
                 return false;
             }
         }
@@ -29477,14 +29463,7 @@ impl RolloutWorld {
                     slot.slime.set_rotation(Vec2::UP.normalized_angle());
                     slot.inactive_obs_state = STATE_RAGDOLL;
                 } else {
-                    slot.obs_state = STATE_RAGDOLL;
-                    slot.ragdoll = RagdollState {
-                        hold_on_ground: slot.base.grounded,
-                        time: Fix::ZERO,
-                        duration: Fix::from_f32(0.35),
-                    };
-                    slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-                    slot.base.set_right(Vec2::UP);
+                    slot.slime_mut().apply_ragdoll(Fix::from_f32(0.35), Vec2::new(Fix::ZERO, Fix::from_int(4)));
                 }
                 slot.timers.fill(Fix::ZERO);
             }
@@ -29494,24 +29473,14 @@ impl RolloutWorld {
         let slot = &mut self.players[effect.victim];
         slot.pinned_from = (self.tick, effect.hierarchy_base, slot.base.position);
         slot.base.position = effect.freeze_position;
-        slot.base.velocity = Vec2::ZERO;
-        slot.obs_state = STATE_RAGDOLL;
-        slot.ragdoll = RagdollState {
-            hold_on_ground: false,
-            time: Fix::ZERO,
-            duration: Fix::ONE,
-        };
+        slot.slime_mut().apply_ragdoll(Fix::ONE, Vec2::ZERO);
         slot.base.skip_next_gravity = true;
         let state = &mut self.frozen_solids[effect_index];
         state.freeze_left -= updater_dt;
         if state.freeze_left <= Fix::ZERO {
             state.active = false;
             slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-            slot.ragdoll.duration = Fix::from_f32(0.35);
-            slot.ragdoll.hold_on_ground = slot.base.grounded;
-            slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-            // FixTransform.right = normalized release speed.
-            slot.base.set_right(Vec2::UP);
+            slot.slime_mut().apply_ragdoll(Fix::from_f32(0.35), Vec2::new(Fix::ZERO, Fix::from_int(4)));
             slot.timers.fill(Fix::ZERO);
             self.destroy_fix(effect.hierarchy_base, None, None);
         }
@@ -32535,14 +32504,8 @@ impl RolloutWorld {
             if victim_is_clone {
                 let clone = &mut self.abilityless_clones[victim];
                 clone.base.position = position;
-                clone.base.velocity = Vec2::ZERO;
+                clone.slime_mut().apply_ragdoll(Fix::ONE, Vec2::ZERO);
                 clone.base.move_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
-                clone.obs_state = STATE_RAGDOLL;
-                clone.ragdoll = RagdollState {
-                    hold_on_ground: clone.base.grounded,
-                    time: Fix::ZERO,
-                    duration: Fix::ONE,
-                };
                 clone.base.skip_next_gravity = true;
                 // The pin writes the transform (PokeBall.cs:196), so the row reads
                 // it, not the body its PlayerBody integrated earlier.
@@ -32555,17 +32518,11 @@ impl RolloutWorld {
                     slot.pinned_from = (tick, hierarchy, slot.base.position);
                 }
                 slot.base.position = position;
-                slot.base.velocity = Vec2::ZERO;
-                slot.base.move_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
-                slot.obs_state = STATE_RAGDOLL;
                 // A victim that landed while BeginCapture had left it falling
-                // stays attached: this ragdoll keeps it on the ground, and
+                // stays attached: no attachToGround ends this ragdoll, and
                 // PlayerPhysics.LateUpdateSim puts it back on its platform.
-                slot.ragdoll = RagdollState {
-                    hold_on_ground: slot.base.grounded,
-                    time: Fix::ZERO,
-                    duration: Fix::ONE,
-                };
+                slot.slime_mut().apply_ragdoll(Fix::ONE, Vec2::ZERO);
+                slot.base.move_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
                 slot.base.skip_next_gravity = true;
             }
             self.thrown_items[item_index].capture_left -= updater_dt;
@@ -33252,23 +33209,16 @@ impl RolloutWorld {
         // than decrementing a captor count.
         slot.poke_invulnerable = false;
         let position = item.position + Vec2::UP * Fix::from_f32(0.4);
-        // PokeBall.cs:228 passes x / 3 to ApplyRagDoll, which divides it by
-        // 3/2 again (SlimeController.cs:1027); each division rounds.
-        let velocity = Vec2::new(
-            item.body.velocity.x / Fix::from_int(3) / (Fix::from_int(3) / Fix::from_int(2)),
-            data.poke_ball.pop_up_speed,
-        );
-        let eject_direction = Vec2::new(
-            item.body.velocity.x / Fix::from_int(3),
-            data.poke_ball.pop_up_speed,
-        )
-        .normalized_safe();
+        // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
+        let speed = Vec2::new(item.body.velocity.x / Fix::from_int(3), data.poke_ball.pop_up_speed);
         if slot.active != ActiveAbility::None || slot.base.dash.active {
             // The victim cast out of the ball: the eject lands on the
             // deactivated slime the form left behind, and the form's exit
-            // overwrites it.
+            // overwrites it. ApplyRagDoll divides x by 3/2 again
+            // (SlimeController.cs:1027); each division rounds.
             slot.slime.position = position;
-            slot.slime.velocity = velocity;
+            slot.slime.velocity = Vec2::new(speed.x / (Fix::from_int(3) / Fix::from_int(2)), speed.y);
+            let eject_direction = speed.normalized_safe();
             if eject_direction != Vec2::ZERO {
                 slot.slime.set_rotation(eject_direction.normalized_angle());
             }
@@ -33276,23 +33226,14 @@ impl RolloutWorld {
             return;
         }
         slot.base.position = position;
-        slot.base.velocity = velocity;
-        if eject_direction != Vec2::ZERO {
-            slot.base.set_right(eject_direction);
-        }
+        // ApplyRagDoll leaves skipNextUpdate as it was: a Pop's pin set it
+        // this pass, while a Burst over a victim that vanished returns before
+        // the pin (PokeBall.cs:93-104).
+        slot.slime_mut().apply_ragdoll(Fix::from_f32(0.45), speed);
         // ReleaseVictim never ungrounds: a victim that landed during the
         // capture stays attached, and its LateUpdateSim puts it back on the
         // platform.
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
-        slot.obs_state = STATE_RAGDOLL;
-        // ApplyRagDoll leaves skipNextUpdate as it was: a Pop's pin set it
-        // this pass, while a Burst over a victim that vanished returns before
-        // the pin (PokeBall.cs:93-104).
-        slot.ragdoll = RagdollState {
-            hold_on_ground: slot.base.grounded,
-            time: Fix::ZERO,
-            duration: Fix::from_f32(0.45),
-        };
     }
 
     fn release_poke_clone(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
@@ -33316,29 +33257,12 @@ impl RolloutWorld {
         clone.captured_by_ball = remaining_captor;
         clone.poke_invulnerable = false;
         clone.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
-        // PokeBall.cs:228 passes x / 3 to ApplyRagDoll, which divides it by
-        // 3/2 again (SlimeController.cs:1027); each division rounds.
-        clone.base.velocity = Vec2::new(
-            item.body.velocity.x / Fix::from_int(3) / (Fix::from_int(3) / Fix::from_int(2)),
-            data.poke_ball.pop_up_speed,
-        );
-        let eject_direction = Vec2::new(
-            item.body.velocity.x / Fix::from_int(3),
-            data.poke_ball.pop_up_speed,
-        )
-        .normalized_safe();
-        if eject_direction != Vec2::ZERO {
-            clone.base.set_right(eject_direction);
-        }
+        // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
+        let speed = Vec2::new(item.body.velocity.x / Fix::from_int(3), data.poke_ball.pop_up_speed);
+        clone.slime_mut().apply_ragdoll(Fix::from_f32(0.45), speed);
         clone.base.grounded = false;
         clone.base.ground = None;
         clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
-        clone.obs_state = STATE_RAGDOLL;
-        clone.ragdoll = RagdollState {
-            hold_on_ground: clone.base.grounded,
-            time: Fix::ZERO,
-            duration: Fix::from_f32(0.45),
-        };
         self.players[owner].invisible = false;
         // The eject writes the transform's position and ApplyRagDoll its
         // right (PokeBall.cs:227-228, SlimeController.cs:1031-1035), so the
@@ -35307,14 +35231,13 @@ impl RolloutWorld {
                 clone.base.physics_scale = clone.base.scale;
             }
         }
-        if !stopped {
-            // A clone's PlayerPhysics.UpdateSim also runs before its
-            // SlimeController: gravity and the landing raycasts come first.
-            self.clone_physics(clone_index, |clone, walls| {
+        // A clone's PlayerPhysics.UpdateSim also runs before its
+        // SlimeController: gravity and the landing raycasts come first.
+        let landed = !stopped
+            && self.clone_physics(clone_index, |clone, walls| {
                 clone.base.begin_pass();
-                clone.base.gravity_step(walls);
+                clone.base.gravity_step(walls)
             });
-        }
         // OldUpdate's Player.SetPosition: with the slime destroyed or
         // disabled, the first clone to update takes the player's position.
         let call = PositionCall::Clone(clone_index, self.abilityless_clones[clone_index].base.position);
@@ -35345,7 +35268,7 @@ impl RolloutWorld {
                 &mut clone.base,
                 &mut clone.obs_state,
                 &mut clone.state_ticks,
-                false,
+                landed,
             ) {
                 RagdollPass::Ragdolled => ragdolled = true,
                 RagdollPass::Landed => {}
