@@ -3831,6 +3831,29 @@ impl PlayerSlot {
         }
     }
 
+    /// Whether a form or a Dash holds `base`, with the slime hidden in `slime`.
+    fn in_form(&self) -> bool {
+        self.active != ActiveAbility::None || self.base.dash.active
+    }
+
+    /// The SlimeController with its own PlayerBody and PlayerPhysics: live as
+    /// `base`, or as `slime` while a form hides them.
+    fn controller_mut(&mut self) -> SlimeMut<'_> {
+        if !self.in_form() {
+            return self.slime_mut();
+        }
+        SlimeMut {
+            base: &mut self.slime,
+            ragdoll: &mut self.ragdoll,
+            obs_state: &mut self.inactive_obs_state,
+            state_ticks: &mut self.state_ticks,
+            facing_right: &mut self.facing_right,
+            ground_destroyed: &mut self.ground_destroyed,
+            rope: self.rope,
+            rope_top: self.rope_top,
+        }
+    }
+
     fn collider_scale(&self) -> Fix {
         let form = &self.forms[self.active_slot];
         if self.active == ActiveAbility::None || form.scale == Fix::ZERO {
@@ -29456,15 +29479,9 @@ impl RolloutWorld {
             if !destroyed {
                 let slot = &mut self.players[effect.victim];
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-                if slot.active != ActiveAbility::None || slot.base.dash.active {
-                    // Cast out of the ice: the release ragdoll lands on the
-                    // slime the form left behind.
-                    slot.slime.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-                    slot.slime.set_rotation(Vec2::UP.normalized_angle());
-                    slot.inactive_obs_state = STATE_RAGDOLL;
-                } else {
-                    slot.slime_mut().apply_ragdoll(Fix::from_f32(0.35), Vec2::new(Fix::ZERO, Fix::from_int(4)));
-                }
+                // Cast out of the ice, the release ragdoll lands on the slime
+                // the form hides.
+                slot.controller_mut().apply_ragdoll(Fix::from_f32(0.35), Vec2::new(Fix::ZERO, Fix::from_int(4)));
                 slot.timers.fill(Fix::ZERO);
             }
             self.destroy_fix(effect.hierarchy_base, None, None);
@@ -33211,25 +33228,17 @@ impl RolloutWorld {
         let position = item.position + Vec2::UP * Fix::from_f32(0.4);
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
         let speed = Vec2::new(item.body.velocity.x / Fix::from_int(3), data.poke_ball.pop_up_speed);
-        if slot.active != ActiveAbility::None || slot.base.dash.active {
-            // The victim cast out of the ball: the eject lands on the
-            // deactivated slime the form left behind, and the form's exit
-            // overwrites it. ApplyRagDoll divides x by 3/2 again
-            // (SlimeController.cs:1027); each division rounds.
-            slot.slime.position = position;
-            slot.slime.velocity = Vec2::new(speed.x / (Fix::from_int(3) / Fix::from_int(2)), speed.y);
-            let eject_direction = speed.normalized_safe();
-            if eject_direction != Vec2::ZERO {
-                slot.slime.set_rotation(eject_direction.normalized_angle());
-            }
-            slot.inactive_obs_state = STATE_RAGDOLL;
-            return;
-        }
-        slot.base.position = position;
         // ApplyRagDoll leaves skipNextUpdate as it was: a Pop's pin set it
         // this pass, while a Burst over a victim that vanished returns before
         // the pin (PokeBall.cs:93-104).
-        slot.slime_mut().apply_ragdoll(Fix::from_f32(0.45), speed);
+        let mut slime = slot.controller_mut();
+        slime.base.position = position;
+        slime.apply_ragdoll(Fix::from_f32(0.45), speed);
+        // A victim that cast out of the ball takes the eject on the slime the
+        // form hides, and the form's exit overwrites it.
+        if slot.in_form() {
+            return;
+        }
         // ReleaseVictim never ungrounds: a victim that landed during the
         // capture stays attached, and its LateUpdateSim puts it back on the
         // platform.
