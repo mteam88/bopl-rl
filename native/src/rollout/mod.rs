@@ -4587,13 +4587,12 @@ struct PlatformScratch {
     /// skipped as disabled, and is not visited again until the next pass.
     updater_cursor: (u32, UpdaterKey),
     /// This pass's walk over the players: their order, each player's turn
-    /// hierarchy, the walk's length (zero outside it), the next turn to
-    /// take, and the turns whose RewindRecorders have sampled.
+    /// hierarchy, the walk's length (zero outside it) and the next turn to
+    /// take.
     turn_order: [usize; MAX_BODIES],
     turn_key: [UpdaterKey; MAX_BODIES],
     turn_count: usize,
     next_turn: usize,
-    turns_recorded: usize,
     /// The walk's Updater delta, and whether a Rewind is in play.
     turn_dt: Fix,
     /// Bodies whose form entry recorded the Player's form flags before the
@@ -7729,7 +7728,6 @@ impl RolloutWorld {
         self.scratch.turn_key = player_key;
         self.scratch.turn_count = player_count;
         self.scratch.next_turn = 0;
-        self.scratch.turns_recorded = 0;
         // A clone older than a slime or form takes its turn in their walk.
         let action_count = actions.len().min(self.player_count);
         self.scratch.clone_action_count = action_count;
@@ -7769,13 +7767,7 @@ impl RolloutWorld {
             self.player_turn(data, turn);
         }
         self.scratch.turn_count = 0;
-        let recorded = self.scratch.turns_recorded;
         self.scratch.updater_hierarchy = u32::MAX;
-        // SlimeController.Awake adds the RewindRecorder to the slime itself,
-        // so it updates with the player prefab, ahead of every spawned
-        // updater: a Portal or a Black Hole acting this pass sees the
-        // rewind's velocity, and the sample is taken before they act.
-        self.rewind_recorders_tick(&player_order[recorded..player_count]);
         // Each Duplicator copy's prefab updates as one block at its own
         // Updater turn, after everything instantiated before it: an older
         // pickup's vibration draws ahead of the copy's shake, and an older
@@ -34636,18 +34628,20 @@ impl RolloutWorld {
     /// One player's turn in the pass's walk over the players in Updater
     /// order (`game_tick`).
     fn player_turn(&mut self, data: &data::RolloutData, turn: usize) {
+        self.slime_turn(data, turn);
+        // SlimeController.Awake adds the RewindRecorder to the slime itself
+        // (RewindRecorder.cs:93), so it updates last in the slime's own turn
+        // (RewindRecorder.cs:91-97): ahead of the spawned updaters and the
+        // forms after it, a Magnet's entry pull among them.
+        self.rewind_recorders_tick(&[self.scratch.turn_order[turn]]);
+    }
+
+    fn slime_turn(&mut self, data: &data::RolloutData, turn: usize) {
         let index = self.scratch.turn_order[turn];
         self.scratch.updater_hierarchy = self.scratch.turn_key[index].2;
         if index >= self.player_count && !self.players[index].base.alive {
             return;
         }
-        // SlimeController.Awake adds the RewindRecorder to the slime itself
-        // (RewindRecorder.cs:93), so each slime already updated took its
-        // sample before anything later acts: spawned updaters, and another
-        // player's Magnet pull, which that recorder sees only next pass.
-        let order = self.scratch.turn_order;
-        self.rewind_recorders_tick(&order[self.scratch.turns_recorded..turn]);
-        self.scratch.turns_recorded = turn;
         let key = self.scratch.turn_key[index];
         self.run_spawned_before(data, self.scratch.turn_dt, key);
         let packet = self.scratch.clone_actions[self.players[index].owner];
