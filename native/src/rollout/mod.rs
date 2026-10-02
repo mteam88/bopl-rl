@@ -1844,8 +1844,8 @@ pub const PLATFORM_EXIT: u32 = 3;
 /// and PlayerPhysics follow Player.Scale on their own. Ability assigns the
 /// scale to the box every pass, which divides the inverse extents its row
 /// holds by the rounded `(One / old) * new`, and PlayerPhysics.UpdateScale
-/// multiplies the radius by `new / prevScal`, so the drift carries over. A
-/// zero scale marks a form that has not been entered yet.
+/// multiplies its body's radius by `new / prevScal`, so the drift carries
+/// over. A zero scale marks a form that has not been entered yet.
 #[derive(Clone, Debug, Default)]
 pub struct FormBody {
     /// The form's PlayerPhysics and PlayerBody while it is inactive. While it
@@ -1853,8 +1853,6 @@ pub struct FormBody {
     /// out at exit.
     pub body: Player,
     pub scale: Fix,
-    pub radius: Fix,
-    pub physics_scale: Fix,
     /// FixTransform.offset, which SetScale_DPhysicsOnly multiplies by
     /// `new / old` (FixTransform.cs:99-103).
     pub offset: Vec2,
@@ -1905,26 +1903,26 @@ impl FormBody {
     /// The form object of `ability` before its first entry, as its prefab's
     /// Awake leaves it: its PlayerBody's simulated (Push.prefab's is off, so
     /// that body never takes a turn, PlayerBody.cs:107-112) and its own
-    /// PlayerPhysics' serialized constants (PlayerPhysics.cs); none for a form
-    /// without a PlayerPhysics.
+    /// PlayerPhysics' serialized constants and radius with prevScal One
+    /// (PlayerPhysics.cs:39); none for a form without a PlayerPhysics.
     fn unentered(ability: u32) -> FormBody {
         let data = data::get().abilities.get(ability as usize);
         let simulated = data.and_then(|data| data.body_simulated).unwrap_or(true);
         let mut body = Player { simulated, physics_enabled: true, ..Player::default() };
-        if let Some(constants) = data.and_then(|data| data.constants.as_ref()) {
-            body.constants = constants.clone();
+        if let Some(data) = data.filter(|data| data.constants.is_some()) {
+            body.constants = data.constants.clone().unwrap();
+            body.radius = data.physics_radius;
+            body.physics_scale = Fix::ONE;
         }
         FormBody { body, ..FormBody::default() }
     }
 
     /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135).
-    fn set_scale(&mut self, value: Fix, radius: Fix, inverse_extents: &mut Vec2) {
+    fn set_scale(&mut self, value: Fix, inverse_extents: &mut Vec2) {
         if self.scale == Fix::ZERO {
             *self = FormBody {
                 body: std::mem::take(&mut self.body),
                 scale: Fix::ONE,
-                radius,
-                physics_scale: Fix::ONE,
                 pose: self.pose,
                 synced: self.synced,
                 ..FormBody::default()
@@ -1934,11 +1932,11 @@ impl FormBody {
     }
 
     /// `set_scale` for a box collider with an offset.
-    fn set_scale_offset(&mut self, value: Fix, radius: Fix, offset: Vec2, inverse_extents: &mut Vec2) {
+    fn set_scale_offset(&mut self, value: Fix, offset: Vec2, inverse_extents: &mut Vec2) {
         let value = hurtbox_scale(value);
         let fresh = self.scale == Fix::ZERO;
         let old = if fresh { Fix::ONE } else { self.scale };
-        self.set_scale(value, radius, inverse_extents);
+        self.set_scale(value, inverse_extents);
         if fresh {
             self.offset = offset;
         }
@@ -1963,30 +1961,12 @@ impl FormBody {
         self.scale = value;
     }
 
-    /// `set_circle_scale` for a circle form with its own PlayerPhysics, whose
-    /// radius `physics_radius` then follows.
-    fn set_circle_scale_physics(&mut self, value: Fix, radius: Fix, physics_radius: Fix) {
-        if self.scale == Fix::ZERO {
-            *self = FormBody {
-                body: std::mem::take(&mut self.body),
-                scale: Fix::ONE,
-                circle_radius: radius,
-                radius: physics_radius,
-                physics_scale: Fix::ONE,
-                pose: self.pose,
-                synced: self.synced,
-                ..FormBody::default()
-            };
-        }
-        self.set_circle_scale(value, radius);
-    }
-
-    /// `set_circle_scale_physics` for a circle whose FixTransform carries an
+    /// `set_circle_scale` for a circle whose FixTransform carries an
     /// offset, which SetScale_DPhysicsOnly multiplies by `new / old`.
-    fn set_circle_scale_offset(&mut self, value: Fix, radius: Fix, physics_radius: Fix, offset: Vec2) {
+    fn set_circle_scale_offset(&mut self, value: Fix, radius: Fix, offset: Vec2) {
         let fresh = self.scale == Fix::ZERO;
         let old = if fresh { Fix::ONE } else { self.scale };
-        self.set_circle_scale_physics(value, radius, physics_radius);
+        self.set_circle_scale(value, radius);
         if fresh {
             self.offset = offset;
         }
@@ -2018,16 +1998,6 @@ impl FormBody {
         body.inverse_mass = self.inverse_mass;
         body.inverse_inertia = self.inverse_inertia;
     }
-
-    /// PlayerPhysics.UpdateScale.
-    fn physics_radius(&mut self) -> Fix {
-        if self.physics_scale != self.scale {
-            self.radius *= self.scale / self.physics_scale;
-            self.physics_scale = self.scale;
-        }
-        self.radius
-    }
-
 }
 
 /// Box.SetRotation: a box's axes rebuilt from the inverseExtents it stores
@@ -3682,6 +3652,18 @@ fn rock_scale_bounds() -> (Fix, Fix) {
 }
 
 impl PlayerSlot {
+    /// PlayerPhysics.UpdateScale on slot `s`'s live form body: its radius
+    /// follows the form box's Scale by `new / prevScal`
+    /// (PlayerPhysics.cs:106-123).
+    fn update_form_scale(&mut self, s: usize) -> Fix {
+        let scale = self.forms[s].scale;
+        if self.base.physics_scale != scale {
+            self.base.radius *= scale / self.base.physics_scale;
+            self.base.physics_scale = scale;
+        }
+        self.base.radius
+    }
+
     /// The active form's PlayerPhysics.Jump.
     fn form_jump(&mut self, platforms: &[Platform], strength: Fix) {
         self.base.jump_with_strength(platforms, strength);
@@ -3764,10 +3746,10 @@ impl PlayerSlot {
         Some(multiplier)
     }
 
-    fn scale_form(&mut self, radius: Fix, offset: Vec2, inverse_extents: &mut [Vec2]) {
+    fn scale_form(&mut self, offset: Vec2, inverse_extents: &mut [Vec2]) {
         let scale = hurtbox_scale(self.player_scale);
         let entity = self.form_entities[self.active_slot];
-        self.forms[self.active_slot].set_scale_offset(scale, radius, offset, &mut inverse_extents[entity]);
+        self.forms[self.active_slot].set_scale_offset(scale, offset, &mut inverse_extents[entity]);
     }
 
     /// FixTransform.offset of slot `s`'s gun form box: as its last Scale set
@@ -4173,12 +4155,10 @@ impl PlayerSlot {
     }
 
     /// `potentialCollider.Scale = Player.Scale` on the active circle form
-    /// (Ability.cs:105, 135). The spell prefabs' own PlayerPhysics radius is
-    /// the slime's 0.76.
+    /// (Ability.cs:105, 135).
     fn scale_form_circle(&mut self, radius: Fix, offset: Vec2) {
         let scale = self.player_scale;
-        let physics_radius = data::get().player.radius;
-        self.forms[self.active_slot].set_circle_scale_offset(scale, radius, physics_radius, offset);
+        self.forms[self.active_slot].set_circle_scale_offset(scale, radius, offset);
     }
 
     /// The Time Stop form's CastSpell circle radius and FixTransform offset.
@@ -10780,13 +10760,12 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                        slot.base.dash.radius = form.physics_radius();
+                        form.set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        slot.base.dash.radius = slot.update_form_scale(s);
                         // Dash.OnEnterAbility syncs its hitbox after SyncPhysicsTo
                         // (Dash.cs:94-95); readyDash then places the body itself.
-                        let radius = slot.base.dash.radius;
-                        self.sync_physics_to_player_info(index, radius);
-                        let (position, up) = (self.player_info_pose(index, radius))
+                        self.sync_physics_to_player_info(index);
+                        let (position, up) = (self.player_info_pose(index))
                             .unwrap_or((self.players[index].base.position, Vec2::UP));
                         self.sync_form_entry(index, position, up, Vec2::ZERO);
                         // Dash is registered after SlimeController in this
@@ -10810,13 +10789,12 @@ impl RolloutWorld {
                         // airborne form starts unrotated (PlayerPhysics.cs:525).
                         // Ability.EnterAbility scales the box first, and
                         // UpdateScale brings the form's radius to it.
-                        let form_radius = {
+                        {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                            form.physics_radius()
-                        };
+                            form.set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        }
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, match ability {
@@ -10829,7 +10807,7 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        self.form_enter(index, form_radius, Vec2::ZERO);
+                        self.form_enter(index, Vec2::ZERO);
                         let slot = &mut self.players[index];
                         let grounded = slot.base.grounded;
                         slot.throw_item = ThrowItemState {
@@ -10850,13 +10828,12 @@ impl RolloutWorld {
                         // PlayerPhysics radius to Player.Scale before placing it.
                         // Ability.EnterAbility assigns Player.Scale to the
                         // slot's box first.
-                        let form_radius = {
+                        {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale(scale, data.missile.physics_radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                            form.physics_radius()
-                        };
+                            form.set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        }
                         self.enter_form_flags(index);
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
@@ -10867,12 +10844,12 @@ impl RolloutWorld {
                         // The form's Ability.UpdateSim assigns Player.Scale
                         // again on the entry pass.
                         let scale = slot.player_scale;
-                        slot.forms[s].set_scale(scale, data.missile.physics_radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        slot.forms[s].set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         // SparkShot.OnEnterAbility syncs the hurtbox after
                         // SyncPhysicsTo, then restores PlayerInfo's rotation
                         // (SparkShot.cs:89-91).
                         let entry = slot.player_info.rotation;
-                        self.sync_physics_to_player_info(index, form_radius);
+                        self.sync_physics_to_player_info(index);
                         let slot = &mut self.players[index];
                         let entry_rotation = slot.base.rotation();
                         slot.missile = MissileFormState::default();
@@ -11003,9 +10980,9 @@ impl RolloutWorld {
                         // later in this updater pass.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale_offset(scale, data.push.radius, data.push.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                        let (radius, offset) = (form.physics_radius(), form.offset);
-                        self.form_enter(index, radius, offset);
+                        form.set_scale_offset(scale, data.push.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        let offset = form.offset;
+                        self.form_enter(index, offset);
                         // The box later updaters this pass (BlackHole) read.
                         let slot = &mut self.players[index];
                         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
@@ -11153,10 +11130,7 @@ impl RolloutWorld {
                         // Ability.EnterAbility scales the slot's circle, and
                         // SyncPhysicsTo's UpdateScale its PlayerPhysics radius.
                         let scale = slot.player_scale;
-                        let form = &mut slot.forms[s];
-                        let radius = data.roll.radius;
-                        form.set_circle_scale_physics(scale, radius, data.roll.physics_radius);
-                        let physics = form.physics_radius();
+                        slot.forms[s].set_circle_scale(scale, data.roll.radius);
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Roll);
                         slot.active_slot = s;
@@ -11169,7 +11143,7 @@ impl RolloutWorld {
                         };
                         let (radius, offset) =
                             slot.form_circle(slot.roll_entity, data.roll.radius, Vec2::ZERO);
-                        self.form_enter_circle(index, physics, radius, offset);
+                        self.form_enter_circle(index, radius, offset);
                         // Roll.OnEnterAbility (Roll.cs:177-186).
                         let slot = &mut self.players[index];
                         slot.base.external_velocity *= Fix::from_f64(0.2);
@@ -11210,7 +11184,7 @@ impl RolloutWorld {
                         slot.telemetry.ability_activations[s] += 1;
                         let form = &slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.meteor.collider_offset } else { form.offset };
-                        self.form_enter(index, self.players[index].base.radius, offset);
+                        self.form_enter(index, offset);
                         // MeteorSmash.OnEnterAbility then stills and unrotates
                         // the body (MeteorSmash.cs:130-136).
                         let slot = &mut self.players[index];
@@ -11245,13 +11219,12 @@ impl RolloutWorld {
                         // Ability.EnterAbility scales the box, then
                         // SyncPhysicsTo's UpdateScale brings the form's radius
                         // to it before placing the form from the slime's local.
-                        let form_radius = {
+                        {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale_offset(scale, data.player.radius, data.mine.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                            form.physics_radius()
-                        };
+                            form.set_scale_offset(scale, data.mine.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        }
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Mine);
@@ -11261,7 +11234,7 @@ impl RolloutWorld {
                         let rotation = slot.player_info.rotation;
                         let form = &slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
-                        self.form_enter(index, form_radius, offset);
+                        self.form_enter(index, offset);
                         // ThrowItem.OnEnterAbility then hands the body PlayerInfo's
                         // rotation (ThrowItem.cs:116-118).
                         let slot = &mut self.players[index];
@@ -11292,10 +11265,9 @@ impl RolloutWorld {
                         // Ability.UpdateSim scales it again this pass, in
                         // `time_stop_cast_tick`.
                         slot.scale_time_stop_circle(data);
-                        let physics = slot.forms[s].physics_radius();
                         let (radius, offset) = slot.time_stop_circle(data);
                         // CastSpell.OnEnterAbility (CastSpell.cs:130-133).
-                        self.form_enter_circle(index, physics, radius, offset);
+                        self.form_enter_circle(index, radius, offset);
                         let slot = &mut self.players[index];
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
@@ -11327,9 +11299,8 @@ impl RolloutWorld {
                         // position (Spike.cs:78-82).
                         self.scale_spike_form(index, data);
                         let slot = &mut self.players[index];
-                        let radius = slot.forms[s].physics_radius();
                         let (position, offset) = (slot.player_info.position, slot.forms[s].offset);
-                        self.form_enter(index, radius, offset);
+                        self.form_enter(index, offset);
                         let slot = &mut self.players[index];
                         slot.base.position = position;
                         slot.sync_form_pose();
@@ -11427,7 +11398,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            data.freeze.radius,
                             data.freeze.collider_offset,
                         );
                         self.form_entry_turn(data, index);
@@ -11450,7 +11420,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            data.blink.radius,
                             data.blink.collider_offset,
                         );
                         self.form_entry_turn(data, index);
@@ -11478,7 +11447,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            ray.radius,
                             ray.collider_offset,
                         );
                         self.form_entry_turn(data, index);
@@ -11502,7 +11470,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            data.duplicator.radius,
                             data.duplicator.collider_offset,
                         );
                         if grounded {
@@ -11542,10 +11509,9 @@ impl RolloutWorld {
                         // the body with.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale_offset(scale, data.magnet.radius, data.magnet.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                        let radius = form.physics_radius();
+                        form.set_scale_offset(scale, data.magnet.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         let offset = form.offset;
-                        self.form_enter(index, radius, offset);
+                        self.form_enter(index, offset);
                         self.aim_form_entry_tail(index);
                         // OnEnterAbility ends with `body.rotation = Fix.Zero`
                         // (MagnetGun.cs:325), and FixTransform's rotation
@@ -11579,9 +11545,8 @@ impl RolloutWorld {
                         // the body with.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                        let radius = form.physics_radius();
-                        self.form_enter(index, radius, Vec2::ZERO);
+                        form.set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        self.form_enter(index, Vec2::ZERO);
                         // Later updaters this pass (BlackHole's pull) see the
                         // synced hurtbox.
                         let slot = &mut self.players[index];
@@ -11619,12 +11584,11 @@ impl RolloutWorld {
                         slot.scale_form_circle(data.gust.hurtbox_radius, data.gust.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.gust_entity, data.gust.hurtbox_radius, data.gust.collider_offset);
-                        let physics = slot.forms[s].physics_radius();
                         let position = slot.player_info.position;
                         // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
                         // sync places the circle, then the body returns to
                         // PlayerInfo's position (EnterAbilityOffset is zero).
-                        self.form_enter_circle(index, physics, radius, offset);
+                        self.form_enter_circle(index, radius, offset);
                         let slot = &mut self.players[index];
                         slot.base.position = position;
                         // QuickSpell synchronizes the copied PlayerInfo,
@@ -11665,12 +11629,11 @@ impl RolloutWorld {
                         slot.scale_form_circle(data.revival.hurtbox_radius, data.revival.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.revival_entity, data.revival.hurtbox_radius, data.revival.collider_offset);
-                        let physics = slot.forms[s].physics_radius();
                         let position = slot.player_info.position;
                         // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
                         // sync places the circle, then the body returns to
                         // PlayerInfo's position (EnterAbilityOffset is zero).
-                        self.form_enter_circle(index, physics, radius, offset);
+                        self.form_enter_circle(index, radius, offset);
                         let slot = &mut self.players[index];
                         slot.base.position = position;
                         slot.base.ground = attached_ground;
@@ -11697,8 +11660,7 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         let scale = hurtbox_scale(slot.player_scale);
                         let form = &mut slot.forms[s];
-                        form.set_scale_offset(scale, data.black_hole.physics_radius, data.black_hole.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                        let radius = form.physics_radius();
+                        form.set_scale_offset(scale, data.black_hole.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         let offset = form.offset;
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::BlackHole);
@@ -11712,7 +11674,7 @@ impl RolloutWorld {
                         // BlackHoleClap.OnEnterAbility syncs the box, then gives
                         // the body PlayerInfo's rotation back (BlackHoleClap.cs:57-59).
                         let entry = slot.player_info.rotation;
-                        self.form_enter(index, radius, offset);
+                        self.form_enter(index, offset);
                         let slot = &mut self.players[index];
                         slot.base.set_rotation(entry);
                         if !grounded {
@@ -11732,8 +11694,8 @@ impl RolloutWorld {
                         // entry tick rather than surviving the cast.
                         // The form's Ability.UpdateSim assigns the scale again.
                         let slot = &mut self.players[index];
-                        slot.scale_form(data.black_hole.physics_radius, data.black_hole.collider_offset, &mut self.entity_inverse_extents);
-                        slot.base.radius = slot.forms[s].physics_radius();
+                        slot.scale_form(data.black_hole.collider_offset, &mut self.entity_inverse_extents);
+                        slot.update_form_scale(s);
                         self.form_entry_turn(data, index);
                         if self.ability_boundary_kill(index) {
                             return;
@@ -11755,13 +11717,9 @@ impl RolloutWorld {
                         // form with.
                         self.players[index].active_slot = s;
                         self.scale_macho_throw_form(index, data);
-                        let form_radius = {
-                            let slot = &mut self.players[index];
-                            slot.forms[s].physics_radius()
-                        };
                         // SyncPhysicsTo aligns the rotation to the normal at
                         // the re-placed position before the hurtbox sync.
-                        self.sync_physics_to_player_info(index, form_radius);
+                        self.sync_physics_to_player_info(index);
                         let base = &self.players[index].base;
                         let (form_position, form_up) = (base.position, base.up());
                         let ground = base.ground;
@@ -11840,7 +11798,7 @@ impl RolloutWorld {
                         let right = Vec2::angle(rotation);
                         // EnterAbility assigns Player.Scale to the box
                         // (Ability.cs:103-106) before OnEnterAbility syncs it.
-                        slot.scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
+                        slot.scale_form(data.drill.collider_offset, &mut self.entity_inverse_extents);
                         let collider = stored_box(
                             slot.base.position + slot.forms[s].offset.complex_mul(slot.base.up().perp_cw()),
                             right,
@@ -11875,18 +11833,17 @@ impl RolloutWorld {
                         } else {
                             data.beam.air_extents
                         };
-                        let physics_radius = {
+                        {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale_offset(scale, data.beam.radius, data.beam.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
-                            form.physics_radius()
-                        };
+                            form.set_scale_offset(scale, data.beam.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
+                        }
                         // SyncPhysicsTo re-snaps a grounded body and aligns it
                         // to the surface normal there, or unrotates an airborne
                         // one, before SetFacingDirection reads body.right
                         // (Beam.cs:9-16).
-                        self.sync_physics_to_player_info(index, physics_radius);
+                        self.sync_physics_to_player_info(index);
                         let form_position = self.players[index].base.position;
                         let right = self.players[index].base.up().perp_cw();
                         let mut aim = action.direction();
@@ -12301,8 +12258,8 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             let scale = slot.player_scale;
             let form = &mut slot.forms[slot.active_slot];
-            form.set_circle_scale_physics(scale, data.roll.radius, data.roll.physics_radius);
-            slot.base.radius = form.physics_radius();
+            form.set_circle_scale(scale, data.roll.radius);
+            slot.update_form_scale(slot.active_slot);
         }
         let jump_down = action.buttons & 1 != 0;
         if !jump_down {
@@ -12663,8 +12620,8 @@ impl RolloutWorld {
     fn scale_meteor_form(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(slot.player_scale, data.meteor.physics_radius, data.meteor.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
-        slot.base.radius = form.physics_radius();
+        form.set_scale_offset(slot.player_scale, data.meteor.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        slot.update_form_scale(slot.active_slot);
     }
 
     fn meteor_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
@@ -13299,8 +13256,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let scale = slot.player_scale;
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(scale, data.push.radius, data.push.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
-        slot.base.radius = form.physics_radius();
+        form.set_scale_offset(scale, data.push.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        slot.update_form_scale(slot.active_slot);
         self.players[index].base.external_velocity *= Fix::from_f64(0.8);
         // ControlPlatform delegates to PlayerPhysics.Move(zero) before its
         // Time Stop and grounded checks. This retains normal friction,
@@ -14198,7 +14155,7 @@ impl RolloutWorld {
         // radius to this pass's scale, and LateUpdateSim seats a grounded form
         // at it (PlayerPhysics.cs:106-114, 123, 142).
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
         // PlayerBody follows CastSpell in the prefab. It carries the rope
         // Ability.EnterAbility handed it, grounded or not, so a jump pressed
         // while hanging lets go with the rope end's velocity
@@ -14308,7 +14265,7 @@ impl RolloutWorld {
         }
         // PlayerPhysics.UpdateScale.
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
         if self.form_bounds_kill(index, data) {
             return;
         }
@@ -14331,7 +14288,7 @@ impl RolloutWorld {
     /// prefab's first updatable, ahead of the SpriteAnimator that casts.
     fn scale_spike_form(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
-        slot.forms[slot.active_slot].set_scale_offset(slot.player_scale, data.player.radius, data.spike.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        slot.forms[slot.active_slot].set_scale_offset(slot.player_scale, data.spike.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
     }
 
     fn spike_form_move(&mut self, index: usize, published: Vec2, jump_pressed: bool) {
@@ -14399,7 +14356,7 @@ impl RolloutWorld {
             data.tesla.collider_offset
         };
         let scale = slot.player_scale;
-        slot.forms[slot.active_slot].set_scale_offset(scale, data.player.radius, offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        slot.forms[slot.active_slot].set_scale_offset(scale, offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
     }
 
     /// PlantObjectOnPlatform.OnEnterAbility (PlantObjectOnPlatform.cs:80-85):
@@ -14410,9 +14367,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let position = slot.player_info.position;
         let s = slot.active_slot;
-        let radius = slot.forms[s].physics_radius();
         let offset = slot.forms[s].offset;
-        self.form_enter(index, radius, offset);
+        self.form_enter(index, offset);
         let slot = &mut self.players[index];
         slot.base.position = position;
         slot.sync_form_pose();
@@ -14421,7 +14377,7 @@ impl RolloutWorld {
     /// PlayerPhysics.UpdateScale on a PlantObjectOnPlatform form.
     fn plant_form_radius(&mut self, index: usize) {
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
     }
 
     /// PlayerBody's step in a PlantObjectOnPlatform form, entry pass included;
@@ -16328,8 +16284,8 @@ impl RolloutWorld {
         // The animator (1) has not exited the form, so Ability (2) assigns
         // Player.Scale to the box and PlayerPhysics (4) UpdateScales the radius.
         let slot = &mut self.players[index];
-        slot.scale_form(data.black_hole.physics_radius, data.black_hole.collider_offset, &mut self.entity_inverse_extents);
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.scale_form(data.black_hole.collider_offset, &mut self.entity_inverse_extents);
+        slot.update_form_scale(slot.active_slot);
         // BlackHoleClap's DestroyIfOutsideSceneBounds runs before PlayerBody
         // integrates this pass; its ExitAbility publishes the attached
         // position without ungrounding (BlackHoleClap.cs:158).
@@ -17177,7 +17133,7 @@ impl RolloutWorld {
         // Ability.UpdateSim assigns Player.Scale to the box and publishes the
         // collider before SpriteAnimator, PlayerBody, and Drill advance this
         // prefab for the current pass (Ability.cs:120-136).
-        self.players[index].scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
+        self.players[index].scale_form(data.drill.collider_offset, &mut self.entity_inverse_extents);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
         if advance_animation {
@@ -17601,7 +17557,7 @@ impl RolloutWorld {
         // after SpriteAnimator's callbacks (Beam.prefab component order).
         {
             let slot = &mut self.players[index];
-            slot.scale_form(data.beam.radius, data.beam.collider_offset, &mut self.entity_inverse_extents);
+            slot.scale_form(data.beam.collider_offset, &mut self.entity_inverse_extents);
         }
         let mut exit_now = false;
         if advance_animation {
@@ -17686,7 +17642,7 @@ impl RolloutWorld {
         }
         {
             let slot = &mut self.players[index];
-            slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+            slot.update_form_scale(slot.active_slot);
         }
         // Beam.prefab's DestroyIfOutsideSceneBounds (hierarchy 4) runs after
         // SpriteAnimator and before PlayerBody and Beam, so the orb goes
@@ -19254,7 +19210,7 @@ impl RolloutWorld {
     fn scale_macho_throw_form(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(slot.player_scale, data.macho_throw.physics_radius, data.macho_throw.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        form.set_scale_offset(slot.player_scale, data.macho_throw.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
         slot.base.scale = form.scale;
     }
 
@@ -19333,7 +19289,7 @@ impl RolloutWorld {
         self.players[index].reported_tick = self.tick;
         // PlayerPhysics.UpdateScale.
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
         self.slot_physics(index, |slot, world| slot.base.gravity_step(world));
         // DestroyIfOutsideSceneBounds (5) runs before PlayerBody, and
         // MachoThrow2.ExitAbility drops the held boulder.
@@ -22278,8 +22234,8 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             let scale = slot.player_scale;
             let form = &mut slot.forms[slot.active_slot];
-            form.set_scale(scale, data::get().player.radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
-            slot.base.dash.radius = form.physics_radius();
+            form.set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+            slot.base.dash.radius = slot.update_form_scale(slot.active_slot);
         }
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
@@ -22667,8 +22623,8 @@ impl RolloutWorld {
         // form's box, and its PlayerPhysics.UpdateScale follows.
         let slot = &mut self.players[index];
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale(slot.player_scale, data.missile.physics_radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
-        slot.base.radius = form.physics_radius();
+        form.set_scale(slot.player_scale, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        slot.update_form_scale(slot.active_slot);
 
         // PlayerPhysics' gravity raycast can attach the form, and move it
         // onto the surface, before the boundary check sees it.
@@ -22826,8 +22782,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let scale = slot.player_scale;
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(scale, data.player.radius, data.mine.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
-        slot.base.radius = form.physics_radius();
+        form.set_scale_offset(scale, data.mine.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        slot.update_form_scale(slot.active_slot);
         // Mine.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds 5,
         // ThrowItem 6, PlayerBody 8 - so the boundary runs *before* ThrowItem's
         // own update. This comment used to claim the reverse, which is the same
@@ -23164,8 +23120,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let scale = slot.player_scale;
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
-        slot.base.radius = form.physics_radius();
+        form.set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+        slot.update_form_scale(slot.active_slot);
         // The enter animation's callback spawns the held payload the same way
         // (ThrowItem2.cs:151-163), so a form the boundary kills on that pass
         // still releases it.
@@ -23676,10 +23632,10 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(gun.radius, gun.collider_offset, &mut self.entity_inverse_extents);
+        self.players[index].scale_form(gun.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
         self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
@@ -23844,10 +23800,10 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(gun.radius, gun.collider_offset, &mut self.entity_inverse_extents);
+        self.players[index].scale_form(gun.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
         self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
@@ -24004,10 +23960,10 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(ray.radius, ray.collider_offset, &mut self.entity_inverse_extents);
+        self.players[index].scale_form(ray.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
         self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
@@ -24164,10 +24120,10 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(gun.radius, gun.collider_offset, &mut self.entity_inverse_extents);
+        self.players[index].scale_form(gun.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        slot.update_form_scale(slot.active_slot);
         self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
@@ -24239,8 +24195,8 @@ impl RolloutWorld {
         // the form's radius to it.
         let slot = &mut self.players[index];
         let form = &mut slot.forms[ability_slot];
-        form.set_scale_offset(scale, data.magnet.radius, data.magnet.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[ability_slot]]);
-        slot.base.radius = form.physics_radius();
+        form.set_scale_offset(scale, data.magnet.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[ability_slot]]);
+        slot.update_form_scale(ability_slot);
     }
 
     /// MagnetGun.UpdateSim, hierarchy 2. Pull/pickup callbacks are layered
@@ -28345,8 +28301,9 @@ impl RolloutWorld {
     /// currentlyAttachedGround, a destroyed one included, and that ground's
     /// normal there. None for an airborne PlayerInfo, or one whose ground has
     /// gone.
-    fn player_info_pose(&self, index: usize, radius: Fix) -> Option<(Vec2, Vec2)> {
+    fn player_info_pose(&self, index: usize) -> Option<(Vec2, Vec2)> {
         let slot = &self.players[index];
+        let radius = slot.base.radius;
         let info = &slot.player_info;
         let surface = (self.platforms.iter())
             .find(|platform| platform.active && Some(platform.id) == info.ground)
@@ -28359,17 +28316,18 @@ impl RolloutWorld {
 
     /// PlayerPhysics.SyncPhysicsTo(PlayerInfo) on the live form's own
     /// PlayerPhysics and PlayerBody (PlayerPhysics.cs:525-552), the mirror of
-    /// `ability_exit`, after UpdateScale has brought the form to `radius`. A
+    /// `ability_exit`. UpdateScale first brings the form's radius to its box. A
     /// grounded form takes PlayerInfo's ground, local and groundedSpeed, sits
     /// at that local and turns to the normal there, with no self-imposed
     /// velocity; an airborne one takes its position and velocities, unrotated
     /// and with no ground.
-    fn sync_physics_to_player_info(&mut self, index: usize, radius: Fix) {
-        let pose = self.player_info_pose(index, radius);
+    fn sync_physics_to_player_info(&mut self, index: usize) {
+        let slot = &mut self.players[index];
+        slot.base.grounded = slot.player_info.grounded;
+        slot.update_form_scale(slot.player_info.slot as usize);
+        let pose = self.player_info_pose(index);
         let slot = &mut self.players[index];
         let (info, base) = (&slot.player_info, &mut slot.base);
-        base.grounded = info.grounded;
-        base.radius = radius;
         base.external_velocity = info.external_velocity;
         if info.grounded {
             base.ground = info.ground;
@@ -28398,8 +28356,8 @@ impl RolloutWorld {
     /// OnEnterAbility's SyncPhysicsTo(PlayerInfo), then its
     /// hurtBox.UpdatePhysicsPositions: the box at the body, `offset` along the
     /// body's right, which later queries this pass read.
-    fn form_enter(&mut self, index: usize, radius: Fix, offset: Vec2) {
-        self.sync_physics_to_player_info(index, radius);
+    fn form_enter(&mut self, index: usize, offset: Vec2) {
+        self.sync_physics_to_player_info(index);
         let slot = &self.players[index];
         self.sync_form_entry(index, slot.base.position, slot.base.up(), offset);
     }
@@ -28407,11 +28365,9 @@ impl RolloutWorld {
     /// GunTransform.OnEnterAbility (GunTransform.cs:62-82): Ability.EnterAbility
     /// scales the box, SyncPhysicsTo places the body at the radius UpdateScale
     /// gives it, and the hurtbox syncs to that pose before the aiming tail.
-    fn gun_form_enter(&mut self, index: usize, radius: Fix, offset: Vec2) {
-        let slot = &mut self.players[index];
-        slot.scale_form(radius, offset, &mut self.entity_inverse_extents);
-        let radius = slot.forms[slot.active_slot].physics_radius();
-        self.sync_physics_to_player_info(index, radius);
+    fn gun_form_enter(&mut self, index: usize, offset: Vec2) {
+        self.players[index].scale_form(offset, &mut self.entity_inverse_extents);
+        self.sync_physics_to_player_info(index);
         self.sync_gun_entry(index, offset);
         self.aim_form_entry_tail(index);
     }
@@ -28436,8 +28392,8 @@ impl RolloutWorld {
     /// A circle form's OnEnterAbility: SyncPhysicsTo(PlayerInfo), then the
     /// circle's UpdatePhysicsPositions at `position + right * offset`
     /// (Roll.cs:175-176, CastSpell.cs:130-131, QuickSpell.cs:79-80).
-    fn form_enter_circle(&mut self, index: usize, physics: Fix, radius: Fix, offset: Vec2) {
-        self.sync_physics_to_player_info(index, physics);
+    fn form_enter_circle(&mut self, index: usize, radius: Fix, offset: Vec2) {
+        self.sync_physics_to_player_info(index);
         let slot = &self.players[index];
         let center = slot.base.position + slot.base.up().perp_cw().complex_mul(offset);
         let entity = Self::hurtbox_entity(slot);
@@ -30610,8 +30566,8 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             let scale = slot.player_scale;
             let form = &mut slot.forms[slot.active_slot];
-            form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
-            slot.base.radius = form.physics_radius();
+            form.set_scale(scale, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
+            slot.update_form_scale(slot.active_slot);
         }
         // The Bow's DestroyIfOutsideSceneBounds (hierarchy 50) runs after
         // PlayerPhysics (48) and before BowTransform (51), so a Bow below the
@@ -34678,7 +34634,7 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 // Ability.UpdateSim still assigns Player.Scale to the box
                 // (Ability.cs:135).
-                slot.scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
+                slot.scale_form(data.drill.collider_offset, &mut self.entity_inverse_extents);
                 slot.reported_position = slot.base.position;
                 slot.reported_tick = self.tick;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
