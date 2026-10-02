@@ -17929,8 +17929,9 @@ impl RolloutWorld {
         };
         for (index, (platform, &entity)) in platforms.iter().zip(platform_entities).enumerate() {
             let row = entities[entity];
-            // The row's active bit syncs at the end of the tick; a Blink wall
-            // hides or returns earlier in this pass.
+            // The row's active bit is the observation's, derived at the
+            // refresh; platforms[i].active is the live state a Blink wall
+            // changes earlier in this pass.
             if !platform.active
                 || row.flags & (E_REMOVED | E_DESTROYED) != 0
                 || mask & (1u32 << row.layer) == 0
@@ -28074,8 +28075,8 @@ impl RolloutWorld {
 
     /// DetPhysics.IsActive for a platform's rounded rect. GameObject.SetActive
     /// and the collider's enabled flag take effect at once, so it reads the
-    /// platform's live state; the row's flags are only the observation
-    /// snapshot the refresh writes. A destroyed or dropped row stays out
+    /// platform's live state, platforms[i].active; the row's flags are only
+    /// derived from it at the refresh, for the observation. A destroyed or dropped row stays out
     /// (DetPhysics.cs:1658-1665, 2731).
     fn platform_is_active(&self, platform: usize) -> bool {
         let row = &self.entities[self.platform_entities[platform]];
@@ -28719,8 +28720,8 @@ impl RolloutWorld {
     }
 
     /// DetPhysics.IsActive for a platform child: its wall and its own object
-    /// are in the live hierarchy, which a QuantumTunnel changes mid-pass and
-    /// the published rows only follow at the next refresh
+    /// are in the live hierarchy, which a QuantumTunnel changes mid-pass. The
+    /// published rows are derived from it at the refresh, for the observation
     /// (DetPhysics.cs:1658-1665).
     fn attached_live(&self, platform_index: usize, entity: Option<usize>) -> bool {
         platform_index < self.platforms.len() && !self.attached_hidden(platform_index, entity)
@@ -36216,9 +36217,10 @@ impl RolloutWorld {
         // against the walls those corrections moved. SpikeAttack and
         // RocketEngine boxes are composite children, a Guided Missile's a
         // free body. A child out of the hierarchy with its wall or on its own
-        // is out of this Simulate (`attached_hidden`); the row's E_ACTIVE is
-        // last pass's, so a wall whose QuantumTunnel ended this pass brings
-        // its children back.
+        // is out of this Simulate (`attached_hidden`, from the live
+        // platforms[i].active; the row's E_ACTIVE is only the observation's,
+        // derived at the refresh), so a wall whose QuantumTunnel ended this
+        // pass brings its children back.
         let mut parts = std::mem::take(&mut self.scratch.wall_parts);
         parts.clear();
         for (i, spike) in self.spike_attacks.iter().enumerate() {
@@ -39125,6 +39127,8 @@ impl RolloutWorld {
             } else {
                 &dynamics.root_body
             };
+            // The row's E_ACTIVE is derived here for the observation; sim
+            // code reads platforms[i].active, the one source.
             if e.flags & E_DESTROYED == 0 {
                 e.flags = platform_row_flags(platform, dynamics);
             }
