@@ -532,11 +532,20 @@ fn spawned_hierarchy(base: u32) -> u32 {
     100_000_000 + base + 1
 }
 
-/// BoplBody's hold: the MagnetGun that last held the body, by its player
-/// slot, and framesUntilDrop (BoplBody.cs:42-45, 285-331).
+/// A MagnetGun: the ability instance in a player's slot. A newer instance
+/// in the slot, its generation turned over, leaves it IsDestroyed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MagnetGun {
+    pub player: usize,
+    pub slot: usize,
+    pub generation: u32,
+}
+
+/// BoplBody's hold: magnetGunHolder, the MagnetGun that last held the body,
+/// and framesUntilDrop (BoplBody.cs:42-45, 285-331).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hold {
-    pub holder: Option<usize>,
+    pub holder: Option<MagnetGun>,
     frames: i8,
 }
 
@@ -548,7 +557,7 @@ impl Default for Hold {
 
 impl Hold {
     /// BoplBody.Hold.
-    fn hold(&mut self, frames: i8, holder: usize) {
+    fn hold(&mut self, frames: i8, holder: MagnetGun) {
         self.holder = Some(holder);
         self.frames = frames;
     }
@@ -2169,6 +2178,17 @@ pub struct MagnetState {
     pub parry_circle: Circle,
 }
 
+impl MagnetState {
+    /// MagnetGun.enterPause: paused, holding nothing, on a fresh idle
+    /// animation, which has no callback to leave the pause (MagnetGun.cs:344-354).
+    fn enter_pause(&mut self) {
+        self.phase = 4;
+        self.held = MagnetHeld::Nothing;
+        self.animation = 2;
+        self.animation_ticks = 0;
+    }
+}
+
 /// SlimeController's ragdoll timer, which runs while its currentState
 /// (`obs_state`) is State.ragdoll.
 #[derive(Clone, Copy, Default)]
@@ -2489,6 +2509,8 @@ pub struct AbilitylessClone {
     /// Its SlimeController's ragdoll, as a slime's; the body's
     /// `skip_next_gravity` is its PlayerPhysics.skipNextUpdate.
     pub ragdoll: RagdollState,
+    /// Its SlimeController's magnetHolder, as a slime's.
+    pub magnet_holder: Option<MagnetGun>,
     pub blink_tunnel_active: bool,
     pub blink_tunnel_appended: u32,
     pub blink_tunnel_hierarchy: u32,
@@ -3389,6 +3411,9 @@ pub struct PlayerSlot {
     /// falls with whatever its last use left.
     pub form_gravity: [Fix; 3],
     pub ragdoll: RagdollState,
+    /// SlimeController.magnetHolder: the MagnetGun that last took the slime,
+    /// until a ragdoll times out (SlimeController.cs:114, 1038-1058).
+    pub magnet_holder: Option<MagnetGun>,
     pub eating: EatingState,
     /// Live FrozenSolid instances pinning this slime. Ground contact does not
     /// end the refreshed ragdoll while any of them remains active.
@@ -4279,11 +4304,13 @@ enum RagdollPass {
 
 /// SlimeController.UpdateSim's ragdoll, a slime's or a clone's
 /// (SlimeController.cs:1050-1059): timeInRagdoll takes FixedDeltaTime and,
-/// past ragdollDuration, selfImposedVelocity moves into externalVelocity and
-/// EnterFall straightens the body (SlimeController.cs:263-272). A frozen
-/// slime or a ragdoll applied on the ground does not end on a landing.
+/// past ragdollDuration, magnetHolder is forgotten, selfImposedVelocity moves
+/// into externalVelocity and EnterFall straightens the body
+/// (SlimeController.cs:263-272). A frozen slime or a ragdoll applied on the
+/// ground does not end on a landing.
 fn ragdoll_pass(
     ragdoll: &mut RagdollState,
+    magnet_holder: &mut Option<MagnetGun>,
     base: &mut Player,
     obs_state: &mut u32,
     state_ticks: &mut u32,
@@ -4298,6 +4325,7 @@ fn ragdoll_pass(
     if ragdoll.time <= ragdoll.duration {
         return RagdollPass::Ragdolled;
     }
+    *magnet_holder = None;
     base.external_velocity += base.velocity;
     base.velocity = Vec2::ZERO;
     base.set_rotation(Fix::ZERO);
@@ -6076,6 +6104,7 @@ impl RolloutWorld {
                 gun_prev_scales: [Fix::ONE; 3],
                 form_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
+                magnet_holder: None,
                 eating: EatingState::default(),
                 frozen_solid_count: 0,
                 pinned_from: (u32::MAX, 0, Vec2::ZERO),
@@ -6845,6 +6874,7 @@ impl RolloutWorld {
         slot.has_spawned = true;
         slot.obs_state = clone.obs_state;
         slot.ragdoll = clone.ragdoll;
+        slot.magnet_holder = clone.magnet_holder;
         slot.state_ticks = clone.state_ticks;
         slot.facing_right = clone.facing_right;
         slot.prev_input_align = clone.prev_input_align;
@@ -18402,8 +18432,9 @@ impl RolloutWorld {
             return;
         }
         self.macho_boulders[boulder_index].hold();
+        // A destroyed magnetGunHolder is null to Unity's `!=`.
         if !self.platforms[platform_index].active
-            || self.platform_dynamics[platform_index].hold.holder.is_some()
+            || self.platform_dynamics[platform_index].hold.holder.is_some_and(|gun| !self.magnet_gun_destroyed(gun))
         {
             Self::drop_boulder(&mut self.platform_dynamics[platform_index], data);
             self.platforms_changed();
@@ -20999,6 +21030,7 @@ impl RolloutWorld {
         slot.blink_tunnel_age = Fix::ZERO;
         slot.blink_tunnel_released = false;
         slot.ragdoll = RagdollState::default();
+        slot.magnet_holder = None;
         slot.frozen_solid_count = 0;
         slot.freeze_form_exit_tick = u32::MAX;
         slot.ragdoll_grounded_fall = false;
@@ -21496,6 +21528,7 @@ impl RolloutWorld {
         slot.blink_tunnel_age = Fix::ZERO;
         slot.blink_tunnel_released = false;
         slot.ragdoll = RagdollState::default();
+        slot.magnet_holder = None;
         slot.frozen_solid_count = 0;
         slot.freeze_form_exit_tick = u32::MAX;
         slot.ragdoll_grounded_fall = false;
@@ -24100,13 +24133,9 @@ impl RolloutWorld {
         if matches!(self.players[index].magnet.phase, 1..=3)
             && self.players[index].magnet.time_spent_pulling > magnet.max_pull_duration
         {
-            let state = &mut self.players[index].magnet;
-            state.phase = 4;
-            state.animation = 2;
-            state.animation_ticks = 0;
-            // enterPause changes heldItemState to nothing. BoplBody's own
-            // countdown releases its holder on the following updater passes.
-            state.held = MagnetHeld::Nothing;
+            // BoplBody's own countdown releases a held body on the following
+            // updater passes.
+            self.players[index].magnet.enter_pause();
         }
 
         let frozen = self.is_time_stopped_for(index);
@@ -24516,20 +24545,7 @@ impl RolloutWorld {
     }
 
     fn magnet_take_target(&mut self, index: usize, held: MagnetHeld, data: &data::RolloutData) {
-        // MagnetSteal/OnItemWasStolen pauses the previous holder. BlackHole's
-        // shipped Hold method clears its own holder immediately, but the
-        // currently locked gun still retains its private reference.
-        for previous in 0..self.players.len() {
-            if previous != index
-                && self.players[previous].active == ActiveAbility::Magnet
-                && self.players[previous].magnet.held == held
-                && self.players[previous].magnet.phase != 5
-            {
-                self.players[previous].magnet.phase = 4;
-                self.players[previous].magnet.held = MagnetHeld::Nothing;
-            }
-        }
-
+        let gun = self.magnet_gun(index);
         let (position, velocity, scale, boulder_recoil) = match held {
             MagnetHeld::ThrownItem(i) => {
                 let item = self.thrown_items[i];
@@ -24613,8 +24629,6 @@ impl RolloutWorld {
         }
         {
             let slot = &mut self.players[index];
-            slot.magnet.phase = 3;
-            slot.magnet.time_spent_pulling = Fix::ZERO;
             slot.magnet.held = held;
             slot.magnet.held_position = position;
             slot.magnet_extra_offsets[slot.active_slot] = extra;
@@ -24625,22 +24639,29 @@ impl RolloutWorld {
             };
             slot.base.external_velocity += velocity / divisor * Fix::from_int(35);
         }
+        // The held BoplBody's magnetGunHolder has its item stolen before the
+        // gun Holds the body, this gun too if its last Hold has not lapsed
+        // (MagnetGun.cs:648-651, 735-738). A BlackHole's never does: its Hold
+        // nulls the holder the grab just set (BlackHole.cs:119-123).
+        if let Some(previous) = self.magnet_held_body_hold(held).and_then(|hold| hold.holder) {
+            self.magnet_item_was_stolen(previous);
+        }
 
         match held {
             MagnetHeld::ThrownItem(i) => {
                 let item = &mut self.thrown_items[i];
                 item.body.angular_velocity = data.magnet.locked_angular_velocity;
-                item.hold.hold(3, index);
+                item.hold.hold(3, gun);
             }
             MagnetHeld::Missile(i) => {
                 let missile = &mut self.guided_missiles[i];
                 missile.body.angular_velocity = data.magnet.locked_angular_velocity;
-                missile.hold.hold(3, index);
+                missile.hold.hold(3, gun);
             }
             MagnetHeld::Arrow(i) => {
                 let arrow = &mut self.arrows[i];
                 arrow.angular_velocity = data.magnet.locked_angular_velocity;
-                arrow.hold.hold(3, index);
+                arrow.hold.hold(3, gun);
             }
             MagnetHeld::Player(slime) => {
                 // MagnetGun hands every form its own ExitAbility and moves
@@ -24663,6 +24684,7 @@ impl RolloutWorld {
                     self.ability_exit(i, info);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 }
+                self.magnet_steal_slime(slime, gun);
                 // MagnetGun.cs:686-689. UnGround() takes nullRotation; a
                 // packet SyncPhysicsTo took airborne left no attachedGround
                 // for it to lift the slime off.
@@ -24670,6 +24692,10 @@ impl RolloutWorld {
                 body.unground(&self.platforms, self.tick, true);
                 body.base.skip_next_gravity = true;
                 body.apply_ragdoll(data.magnet.small_ragdoll_duration, Vec2::ZERO);
+                // heldItemState becomes player only now, so a gun that paused
+                // itself through the slime's MagnetSteal holds it all the
+                // same (MagnetGun.cs:690).
+                self.players[index].magnet.held = held;
             }
             MagnetHeld::Rock(i) => {
                 self.players[i].rock.body.angular_velocity = data.magnet.locked_angular_velocity;
@@ -24678,7 +24704,7 @@ impl RolloutWorld {
                 let platform = self.macho_boulders[i].platform_index;
                 self.platform_dynamics[platform].body.angular_velocity =
                     data.magnet.locked_angular_velocity;
-                self.platform_dynamics[platform].hold.hold(3, index);
+                self.platform_dynamics[platform].hold.hold(3, gun);
                 // A grounded gun Holds the Boulder, and lets go of it if it
                 // stands on it: UnGround() with its default nullRotation, so
                 // the firepoint swings back to body.right (1,0) for the rest
@@ -24694,25 +24720,88 @@ impl RolloutWorld {
             MagnetHeld::AbilityPickup(i) => {
                 let pickup = &mut self.ability_pickups[i];
                 pickup.body.angular_velocity = data.magnet.locked_angular_velocity;
-                pickup.hold.hold(3, index);
+                pickup.hold.hold(3, gun);
             }
             MagnetHeld::PortalShot(i) => {
                 let shot = &mut self.portal_shots[i];
                 shot.body.angular_velocity = data.magnet.locked_angular_velocity;
-                shot.hold.hold(3, index);
+                shot.hold.hold(3, gun);
             }
             MagnetHeld::RevivalMarker(i) => {
                 let marker = &mut self.revival_marker_pool[i];
                 marker.body.angular_velocity = data.magnet.locked_angular_velocity;
-                marker.hold.hold(3, index);
+                marker.hold.hold(3, gun);
             }
             MagnetHeld::TeleportMarker(i) => {
                 let marker = &mut self.teleport_marker_pool[i];
                 marker.body.angular_velocity = data.magnet.locked_angular_velocity;
-                marker.hold.hold(3, index);
+                marker.hold.hold(3, gun);
             }
             MagnetHeld::BlackHole(_) | MagnetHeld::Nothing => {}
         }
+        // TryPickupNearbyItems returned true: UpdateSim locks the gun, paused
+        // by a steal or not (MagnetGun.cs:1062-1065).
+        let state = &mut self.players[index].magnet;
+        state.phase = 3;
+        state.time_spent_pulling = Fix::ZERO;
+    }
+
+    /// The MagnetGun in the player's active slot.
+    fn magnet_gun(&self, index: usize) -> MagnetGun {
+        let slot = self.players[index].active_slot;
+        MagnetGun { player: index, slot, generation: self.players[index].ability_generation[slot] }
+    }
+
+    /// MagnetGun.IsDestroyed.
+    fn magnet_gun_destroyed(&self, gun: MagnetGun) -> bool {
+        self.players[gun.player].ability_generation[gun.slot] != gun.generation
+    }
+
+    /// The row of a MagnetGun's hurtbox; a destroyed gun's is in no
+    /// collision.
+    fn magnet_gun_hurtbox(&self, gun: MagnetGun) -> Option<usize> {
+        (!self.magnet_gun_destroyed(gun)).then_some(self.players[gun.player].magnet_entity)
+    }
+
+    /// MagnetGun.OnItemWasStolen, which every caller makes only on a gun that
+    /// isn't destroyed: it pauses the gun unless it is exiting
+    /// (MagnetGun.cs:766-772).
+    fn magnet_item_was_stolen(&mut self, gun: MagnetGun) {
+        if !self.magnet_gun_destroyed(gun) && self.players[gun.player].magnet.phase != 5 {
+            self.players[gun.player].magnet.enter_pause();
+        }
+    }
+
+    /// SlimeController.MagnetSteal: the gun that last took the slime has its
+    /// item stolen, and `gun` takes its place (SlimeController.cs:1038-1045).
+    fn magnet_steal_slime(&mut self, slime: Slime, gun: MagnetGun) {
+        let holder = match slime {
+            Slime::Player(i) => &mut self.players[i].magnet_holder,
+            Slime::Clone(i) => &mut self.abilityless_clones[i].magnet_holder,
+        };
+        if let Some(previous) = holder.replace(gun) {
+            self.magnet_item_was_stolen(previous);
+        }
+    }
+
+    /// The BoplBody Hold of what a MagnetGun holds; a slime and a BlackHole
+    /// have none.
+    fn magnet_held_body_hold(&self, held: MagnetHeld) -> Option<Hold> {
+        Some(match held {
+            MagnetHeld::ThrownItem(i) => self.thrown_items[i].hold,
+            MagnetHeld::Missile(i) => self.guided_missiles[i].hold,
+            MagnetHeld::Arrow(i) => self.arrows[i].hold,
+            MagnetHeld::Rock(i) => {
+                let slot = &self.players[i];
+                slot.forms[slot.rock_slot()].hold
+            }
+            MagnetHeld::Boulder(i) => self.platform_dynamics[self.macho_boulders[i].platform_index].hold,
+            MagnetHeld::AbilityPickup(i) => self.ability_pickups[i].hold,
+            MagnetHeld::PortalShot(i) => self.portal_shots[i].hold,
+            MagnetHeld::RevivalMarker(i) => self.revival_marker_pool[i].hold,
+            MagnetHeld::TeleportMarker(i) => self.teleport_marker_pool[i].hold,
+            MagnetHeld::Player(_) | MagnetHeld::BlackHole(_) | MagnetHeld::Nothing => return None,
+        })
     }
 
     /// MagnetGun.StaticUpdate runs after all ordinary UpdateSim callbacks and
@@ -24749,10 +24838,7 @@ impl RolloutWorld {
             return;
         }
         let slot = &mut self.players[index];
-        slot.magnet.phase = 4;
-        slot.magnet.animation = 2;
-        slot.magnet.animation_ticks = 0;
-        slot.magnet.held = MagnetHeld::Nothing;
+        slot.magnet.enter_pause();
         slot.base.external_velocity +=
             direction * data.magnet.parry_push_strength * Fix::from_int(35);
     }
@@ -24932,9 +25018,10 @@ impl RolloutWorld {
         self.magnet_null_item_if_dropped(index);
         let held = self.players[index].magnet.held;
         if held == MagnetHeld::Nothing {
-            self.players[index].magnet.phase = 4;
+            self.players[index].magnet.enter_pause();
             return;
         }
+        let gun = self.magnet_gun(index);
 
         let object_position = match held {
             MagnetHeld::ThrownItem(i) => self.thrown_items[i].position,
@@ -24999,7 +25086,7 @@ impl RolloutWorld {
                 let item = &mut self.thrown_items[i];
                 item.position = position + correction.unwrap_or(Vec2::ZERO);
                 item.body.velocity = Vec2::ZERO;
-                item.hold.hold(2, index);
+                item.hold.hold(2, gun);
                 // Each locked pass hands a Grenade (the Smoke payload carries
                 // one too) back the time its own UpdateSim takes, so the fuse
                 // runs again from the first pass the Magnet lets go
@@ -25016,7 +25103,7 @@ impl RolloutWorld {
                 let missile = &mut self.guided_missiles[i];
                 missile.position = position;
                 missile.body.velocity = Vec2::ZERO;
-                missile.hold.hold(2, index);
+                missile.hold.hold(2, gun);
                 missile.sync_body_to_transform();
                 let (shape, own) = (missile.collider(&self.entity_inverse_extents), missile.entity);
                 if let Some(correction) = self.move_object_out_of_walls(WallMover::Box(shape), own) {
@@ -25033,7 +25120,7 @@ impl RolloutWorld {
                 let arrow = &mut self.arrows[i];
                 arrow.position = position + correction.unwrap_or(Vec2::ZERO);
                 arrow.velocity = Vec2::ZERO;
-                arrow.hold.hold(2, index);
+                arrow.hold.hold(2, gun);
             }
             MagnetHeld::Player(slime) => {
                 // MagnetGun.cs:1124-1128.
@@ -25057,7 +25144,7 @@ impl RolloutWorld {
                 rock.rock.body.velocity = Vec2::ZERO;
                 rock.base.velocity = Vec2::ZERO;
                 let s = rock.rock_slot();
-                rock.forms[s].hold.hold(2, index);
+                rock.forms[s].hold.hold(2, gun);
             }
             MagnetHeld::BlackHole(i) => {
                 self.black_holes[i].position = position;
@@ -25090,7 +25177,7 @@ impl RolloutWorld {
                 self.platform_dynamics[platform].composite_position = position;
                 self.platform_dynamics[platform].home_position = position;
                 self.platform_dynamics[platform].body.velocity = Vec2::ZERO;
-                self.platform_dynamics[platform].hold.hold(2, index);
+                self.platform_dynamics[platform].hold.hold(2, gun);
                 self.macho_boulders[i].hold();
                 // The Magnet's own surface move and raycasts later this pass
                 // query the collider where it now stands.
@@ -25108,7 +25195,7 @@ impl RolloutWorld {
                 let pickup = &mut self.ability_pickups[i];
                 pickup.position = correction.map_or(position, |correction| circle.center + correction);
                 pickup.body.velocity = Vec2::ZERO;
-                pickup.hold.hold(2, index);
+                pickup.hold.hold(2, gun);
             }
             MagnetHeld::PortalShot(i) => {
                 let velocity = self.portal_shots[i].body.velocity;
@@ -25119,7 +25206,7 @@ impl RolloutWorld {
                 let shot = &mut self.portal_shots[i];
                 shot.position = position + correction.unwrap_or(Vec2::ZERO);
                 shot.body.velocity = Vec2::ZERO;
-                shot.hold.hold(2, index);
+                shot.hold.hold(2, gun);
             }
             MagnetHeld::RevivalMarker(i) => {
                 let velocity = self.revival_marker_pool[i].body.velocity;
@@ -25127,7 +25214,7 @@ impl RolloutWorld {
                 let marker = &mut self.revival_marker_pool[i];
                 marker.position = position;
                 marker.body.velocity = Vec2::ZERO;
-                marker.hold.hold(2, index);
+                marker.hold.hold(2, gun);
             }
             MagnetHeld::TeleportMarker(i) => {
                 let velocity = self.teleport_marker_pool[i].body.velocity;
@@ -25135,7 +25222,7 @@ impl RolloutWorld {
                 let marker = &mut self.teleport_marker_pool[i];
                 marker.position = position;
                 marker.body.velocity = Vec2::ZERO;
-                marker.hold.hold(2, index);
+                marker.hold.hold(2, gun);
             }
             MagnetHeld::Nothing => {}
         }
@@ -25265,10 +25352,10 @@ impl RolloutWorld {
         }
     }
 
-    /// A MagnetGun that exits, dies or is tunneled only forgets what it
-    /// held: the held BoplBody's Hold lapses with its own countdown, and a
-    /// Boulder's own UpdateSim drops it once nobody Holds it
-    /// (MagnetGun.cs:356-373, BoplBody.cs:325-331, Boulder.cs:21-29).
+    /// A MagnetGun that exits or dies only forgets what it held: the held
+    /// BoplBody's Hold lapses with its own countdown, and a Boulder's own
+    /// UpdateSim drops it once nobody Holds it (MagnetGun.cs:356-373,
+    /// BoplBody.cs:325-331, Boulder.cs:21-29).
     fn magnet_forget_held(&mut self, index: usize) {
         self.players[index].magnet.held = MagnetHeld::Nothing;
     }
@@ -26361,6 +26448,7 @@ impl RolloutWorld {
             captured_by_ball: None,
             poke_invulnerable: false,
             ragdoll: RagdollState::default(),
+            magnet_holder: None,
             blink_tunnel_active: false,
             blink_tunnel_appended: 0,
             blink_tunnel_hierarchy: 0,
@@ -28505,8 +28593,10 @@ impl RolloutWorld {
         }
         let rope_top = self.players[victim].rope_top;
         self.attach_player_rope(victim, None, rope_top);
+        // QuantumTunnel.Init steals from a MagnetGun victim (QuantumTunnel.cs:96-100).
         if self.players[victim].active == ActiveAbility::Magnet {
-            self.magnet_forget_held(victim);
+            let gun = self.magnet_gun(victim);
+            self.magnet_item_was_stolen(gun);
         }
         let slot = &mut self.players[victim];
         // QuantumTunnel.Init reassigns the victim's rotation, which rebuilds
@@ -29257,6 +29347,7 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
         match ragdoll_pass(
             &mut slot.ragdoll,
+            &mut slot.magnet_holder,
             &mut slot.base,
             &mut slot.obs_state,
             &mut slot.state_ticks,
@@ -35216,6 +35307,7 @@ impl RolloutWorld {
             let clone = &mut self.abilityless_clones[clone_index];
             match ragdoll_pass(
                 &mut clone.ragdoll,
+                &mut clone.magnet_holder,
                 &mut clone.base,
                 &mut clone.obs_state,
                 &mut clone.state_ticks,
@@ -40817,7 +40909,7 @@ mod tests {
         world.magnet_try_pickup_item(0, data);
         assert_eq!(world.players[0].magnet.held, MagnetHeld::RevivalMarker(0));
         world.magnet_update_held_item(0, data);
-        assert_eq!(world.revival_marker_pool[0].hold.holder, Some(0));
+        assert_eq!(world.revival_marker_pool[0].hold.holder.map(|gun| gun.player), Some(0));
         world.magnet_fire_held_item(0, Vec2::RIGHT, data);
         assert_eq!(
             world.revival_marker_pool[0].body.force,
