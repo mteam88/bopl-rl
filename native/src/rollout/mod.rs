@@ -3213,7 +3213,8 @@ enum UngroundBody<'a> {
     /// A SlimeController's own body: OnNoLongerGrounded
     /// (SlimeController.cs:956-965) sets State.fall, ending any ragdoll.
     Slime(SlimeMut<'a>),
-    /// The slot's active form: only Beam subscribes (Beam.cs:164-173).
+    /// The slot's active form, live or left by an exit earlier in its own
+    /// UpdateSim: only Beam subscribes (Beam.cs:164-173).
     Form(&'a mut PlayerSlot),
 }
 
@@ -3221,7 +3222,7 @@ impl UngroundBody<'_> {
     fn base(&mut self) -> &mut Player {
         match self {
             Self::Slime(slime) => slime.base,
-            Self::Form(slot) => &mut slot.base,
+            Self::Form(slot) => slot.form_body_mut(),
         }
     }
 
@@ -3230,6 +3231,11 @@ impl UngroundBody<'_> {
     fn unground(&mut self, platforms: &[Platform], tick: u32, null_rotation: bool) -> Fix {
         match self {
             Self::Slime(slime) => slime.unground(platforms, tick, null_rotation),
+            Self::Form(slot) if slot.active == ActiveAbility::None => {
+                // The form an exit left keeps its own PlayerPhysics. Its Move
+                // spent any destroyed ground before that exit.
+                unground_physics(&mut slot.forms[slot.active_slot].body, &mut None, platforms, tick, null_rotation)
+            }
             Self::Form(slot) => {
                 let rotation = unground_physics(
                     &mut slot.base,
@@ -3963,9 +3969,9 @@ impl PlayerSlot {
 
     /// The active form's FixTransform follows its body.
     fn sync_form_pose(&mut self) {
-        let base = &self.base;
+        let body = self.form_body();
         self.forms[self.active_slot].pose =
-            FormPose { position: base.position, orientation: base.orientation };
+            FormPose { position: body.position, orientation: body.orientation };
     }
 
     /// SyncAllPhysicsObjectsToFixTransformPosition for the player's boxes:
@@ -4020,10 +4026,9 @@ impl PlayerSlot {
     /// of a form's UpdateSim, e.g. GunTransform.cs:147-151), it turns the
     /// disabled form's FixTransform, which its box keeps syncing.
     fn set_form_up(&mut self, up: Vec2) {
+        self.form_body_mut().set_up(up);
         if self.active == ActiveAbility::None {
-            self.forms[self.active_slot].pose.orientation.set_up(up);
-        } else {
-            self.base.set_up(up);
+            self.sync_form_pose();
         }
     }
 
@@ -23486,10 +23491,12 @@ impl RolloutWorld {
             dropped = self.apply_platform_drop(index);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
-            self.fire_freeze(index, data);
+            self.fire_gun(index, gun.fire_ticks, gun.knockback, |world, firepoint, aim| {
+                world.shoot_freeze_ray(firepoint, aim, data)
+            });
             // A water-reflected beam can hit the shooter's own Player-layer
-            // form. Shoot then exits and freezes the restored slime; the
-            // deactivated GunTransform returns before movement/recoil logic.
+            // form. Shoot then exits and freezes the restored slime; Fire
+            // recoils the left form, and the deactivated GunTransform returns.
             if self.players[index].active != ActiveAbility::Freeze {
                 return;
             }
@@ -23581,43 +23588,38 @@ impl RolloutWorld {
         self.form_body_move(index, jump_pressed);
     }
 
-    fn fire_freeze(&mut self, index: usize, data: &data::RolloutData) {
-        let (aim, grounded, normal) = {
-            let slot = &self.players[index];
-            (
-                slot.gun.aim.normalized_safe(),
-                slot.base.grounded,
-                slot.base
-                    .ground
-                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .map(|p| p.surface.normal(slot.base.position)),
-            )
-        };
-        {
-            let slot = &mut self.players[index];
-            slot.gun.has_fired = true;
-            slot.form_gravity[slot.active_slot] = Fix::ONE;
-            slot.gun.fire_ticks = data.freeze.fire_ticks;
-            // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.set_form_up(slot.gun.aim.perp());
-        }
-        let firepoint = {
-            let slot = &self.players[index];
-            let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
-        };
-        self.shoot_freeze_ray(firepoint, aim, data);
-        if self.players[index].active != ActiveAbility::Freeze {
-            return;
-        }
-
+    /// GunTransform.Fire (GunTransform.cs:116-135) around the gun's Shoot.
+    /// Fire works on the form's own body to its end, also when a
+    /// DropPlatformTest exit came before it or the shot exited the form
+    /// (FreezeRayGun hands a form it hits, the shooter's own included,
+    /// straight to Ability.ExitAbility); DetPhysics then syncs that left
+    /// form's box from the FixTransform the recoil moved.
+    fn fire_gun(&mut self, index: usize, fire_ticks: u32, knockback: Fix, shoot: impl FnOnce(&mut Self, Vec2, Vec2)) {
         let slot = &mut self.players[index];
-        if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * data.freeze.knockback);
-            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+        slot.gun.has_fired = true;
+        slot.gun.fire_ticks = fire_ticks;
+        // Fire assigns up from inputVector before normalizing it again for
+        // the shot and knockback.
+        slot.set_form_up(slot.gun.aim.perp());
+        let aim = slot.gun.aim.normalized_safe();
+        let offset = slot.gun_firepoint_offsets[slot.active_slot];
+        let firepoint = slot.form_body().position + slot.gun.aim.perp() * offset.y + aim * offset.x;
+        shoot(self, firepoint, aim);
+        let tick = self.tick;
+        let slot = &mut self.players[index];
+        slot.form_gravity[slot.active_slot] = Fix::ONE;
+        let body = slot.form_body();
+        if body.grounded {
+            let normal = body.attached_ground(&self.platforms).map_or(body.up(), |ground| ground.surface.normal(body.position));
+            slot.form_body_mut().velocity = -(normal * knockback);
+            UngroundBody::Form(slot).unground(&self.platforms, tick, true);
         } else {
-            slot.base.velocity = -(aim * data.freeze.knockback);
+            slot.form_body_mut().velocity = -(aim * knockback);
+        }
+        if slot.active == ActiveAbility::None {
+            let entity = slot.form_entities[slot.active_slot];
+            slot.sync_form_pose();
+            slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
         }
     }
 
@@ -23651,7 +23653,9 @@ impl RolloutWorld {
             dropped = self.apply_platform_drop(index);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
-            self.fire_blink(index, data);
+            self.fire_gun(index, gun.fire_ticks, gun.knockback, |world, firepoint, aim| {
+                world.shoot_blink_ray(firepoint, aim, index, data)
+            });
             if self.players[index].active != ActiveAbility::Blink {
                 return;
             }
@@ -23749,46 +23753,6 @@ impl RolloutWorld {
         self.form_body_move(index, jump_pressed);
     }
 
-    fn fire_blink(&mut self, index: usize, data: &data::RolloutData) {
-        let (aim, grounded, normal) = {
-            let slot = &self.players[index];
-            (
-                slot.gun.aim.normalized_safe(),
-                slot.base.grounded,
-                slot.base
-                    .ground
-                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .map(|p| p.surface.normal(slot.base.position)),
-            )
-        };
-        {
-            let slot = &mut self.players[index];
-            slot.gun.has_fired = true;
-            slot.form_gravity[slot.active_slot] = Fix::ONE;
-            slot.gun.fire_ticks = data.blink.fire_ticks;
-            // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.set_form_up(slot.gun.aim.perp());
-        }
-        let firepoint = {
-            let slot = &self.players[index];
-            let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
-        };
-        self.shoot_blink_ray(firepoint, aim, index, data);
-        if self.players[index].active != ActiveAbility::Blink {
-            return;
-        }
-
-        let slot = &mut self.players[index];
-        if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * data.blink.knockback);
-            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-        } else {
-            slot.base.velocity = -(aim * data.blink.knockback);
-        }
-    }
-
     /// GunTransform with ShootScaleChange. Growth and Shrink share every
     /// authored form constant and animation; only the spawned ScaleChanger's
     /// signed multipliers differ.
@@ -23820,7 +23784,9 @@ impl RolloutWorld {
             dropped = self.apply_platform_drop(index);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
-            self.fire_scale_ray(index, growth, data);
+            self.fire_gun(index, ray.fire_ticks, ray.knockback, |world, firepoint, aim| {
+                world.shoot_scale_ray(firepoint, aim, index, growth, data)
+            });
         }
 
         if dropped {
@@ -23909,51 +23875,6 @@ impl RolloutWorld {
         self.form_body_move(index, jump_pressed);
     }
 
-    fn fire_scale_ray(&mut self, index: usize, growth: bool, data: &data::RolloutData) {
-        let ray = if growth {
-            &data.scale_rays.growth
-        } else {
-            &data.scale_rays.shrink
-        };
-        let (aim, grounded, normal) = {
-            let slot = &self.players[index];
-            (
-                slot.gun.aim.normalized_safe(),
-                slot.base.grounded,
-                slot.base
-                    .ground
-                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .map(|p| p.surface.normal(slot.base.position)),
-            )
-        };
-        {
-            let slot = &mut self.players[index];
-            slot.gun.has_fired = true;
-            slot.form_gravity[slot.active_slot] = Fix::ONE;
-            slot.gun.fire_ticks = ray.fire_ticks;
-            // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.set_form_up(slot.gun.aim.perp());
-        }
-        let firepoint = {
-            let slot = &self.players[index];
-            let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
-        };
-        self.shoot_scale_ray(firepoint, aim, index, growth, data);
-        if self.players[index].active == ActiveAbility::None {
-            return;
-        }
-
-        let slot = &mut self.players[index];
-        if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * ray.knockback);
-            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-        } else {
-            slot.base.velocity = -(aim * ray.knockback);
-        }
-    }
-
     /// GunTransform with ShootDuplicator. The form lifecycle is authored
     /// independently (its transform and fire clips differ from the other ray
     /// guns), while the movement rules are GunTransform's shared rules.
@@ -23980,7 +23901,9 @@ impl RolloutWorld {
             dropped = self.apply_platform_drop(index);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
-            self.fire_duplicator(index, data);
+            self.fire_gun(index, gun.fire_ticks, gun.knockback, |world, firepoint, aim| {
+                world.shoot_duplicator_ray(firepoint, aim, index, data, false)
+            });
         }
 
         if dropped {
@@ -25405,47 +25328,6 @@ impl RolloutWorld {
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
-        }
-    }
-
-    fn fire_duplicator(&mut self, index: usize, data: &data::RolloutData) {
-        let gun = &data.duplicator;
-        let (aim, grounded, normal) = {
-            let slot = &self.players[index];
-            (
-                slot.gun.aim.normalized_safe(),
-                slot.base.grounded,
-                slot.base
-                    .ground
-                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .map(|p| p.surface.normal(slot.base.position)),
-            )
-        };
-        {
-            let slot = &mut self.players[index];
-            slot.gun.has_fired = true;
-            slot.form_gravity[slot.active_slot] = Fix::ONE;
-            slot.gun.fire_ticks = gun.fire_ticks;
-            // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.set_form_up(slot.gun.aim.perp());
-        }
-        let firepoint = {
-            let slot = &self.players[index];
-            let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
-        };
-        self.shoot_duplicator_ray(firepoint, aim, index, data, false);
-        if self.players[index].active == ActiveAbility::None {
-            return;
-        }
-
-        let slot = &mut self.players[index];
-        if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * gun.knockback);
-            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-        } else {
-            slot.base.velocity = -(aim * gun.knockback);
         }
     }
 
