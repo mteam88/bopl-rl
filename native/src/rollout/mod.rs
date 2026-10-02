@@ -1759,6 +1759,8 @@ pub struct PlatformDynamics {
     /// inertia on the updater pass after DPhysics changes FixTransform scale.
     pub body_scale: Fix,
     pub body_resizable: bool,
+    /// The platform BoplBody's magnet hold; only a Boulder's is ever held.
+    pub hold: Hold,
     /// GameSessionHandler keeps authored grounds active but disables their
     /// colliders/AnimateVelocity until the shared level-intro routine ends.
     pub intro_disabled: bool,
@@ -2616,13 +2618,21 @@ pub struct MachoBoulder {
     pub platform_index: usize,
     pub appended: u32,
     pub hierarchy_base: u32,
-    pub held: bool,
+    /// Boulder.isDropped: only its own UpdateSim drops it for good.
     pub dropped: bool,
-    /// Boulder.shouldDrop: false from Awake until its first UpdateSim.
+    /// Boulder.shouldDrop: false from Awake until its first UpdateSim, and
+    /// again after each Hold.
     pub should_drop: bool,
     /// Its DestroyIfOutsideSceneBounds destroyed it at its Updater turn;
     /// the platform stays inactive until the platform walk is over.
     pub drowning: bool,
+}
+
+impl MachoBoulder {
+    /// Boulder.Hold: its next UpdateSim leaves it undropped (Boulder.cs:31-34).
+    fn hold(&mut self) {
+        self.should_drop = false;
+    }
 }
 
 /// A RevivePositionIndicator spawned by one Revival ability instance.
@@ -5834,6 +5844,7 @@ impl RolloutWorld {
                 scale: p.base_scale,
                 body_scale: p.base_scale,
                 body_resizable: false,
+                hold: Hold::default(),
                 intro_disabled: true,
                 min_scale: p.min_scale,
                 max_scale: p.max_scale,
@@ -9248,9 +9259,7 @@ impl RolloutWorld {
             }
         }
         for platform_index in 0..self.platforms.len() {
-            let held = self.macho_boulders.iter().any(|boulder| {
-                boulder.active && boulder.platform_index == platform_index && boulder.held
-            });
+            let held = self.platform_dynamics[platform_index].hold.held();
             let entity = self.platform_entities[platform_index];
             if !held
                 && self.platform_dynamics[platform_index].body.inverse_mass > Fix::ZERO
@@ -9592,9 +9601,7 @@ impl RolloutWorld {
         }
         let mut platforms_changed = false;
         for platform_index in 0..self.platforms.len() {
-            let held = self.macho_boulders.iter().any(|boulder| {
-                boulder.active && boulder.platform_index == platform_index && boulder.held
-            });
+            let held = self.platform_dynamics[platform_index].hold.held();
             let entity = self.platform_entities[platform_index];
             if held
                 || self.platform_dynamics[platform_index].body.inverse_mass <= Fix::ZERO
@@ -13325,7 +13332,7 @@ impl RolloutWorld {
             }
             ActiveAbility::Magnet => {
                 // MagnetGun.ExitAbility (MagnetGun.cs:356-373).
-                self.drop_magnet_held_item(index);
+                self.magnet_forget_held(index);
                 let slot = &mut self.players[index];
                 slot.base.set_rotation(Fix::ZERO);
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
@@ -13546,7 +13553,7 @@ impl RolloutWorld {
     /// MagnetGun.cs:1225-1246).
     fn landing_exit(&mut self, index: usize) {
         if self.players[index].active == ActiveAbility::Magnet {
-            self.drop_magnet_held_item(index);
+            self.magnet_forget_held(index);
         }
         // `body.rotation = 0`: the FixTransform setter rebuilds up too.
         let slot = &mut self.players[index];
@@ -18323,6 +18330,11 @@ impl RolloutWorld {
         slot.base.position + local.complex_mul(slot.base.up().perp_cw())
     }
 
+    /// MachoThrow2 forgets a boulder its own UpdateSim has dropped, and
+    /// UpdateHeldBoulder carries the held one to the hands. UpdateSim
+    /// (`sync_pose`) then Holds it, and Drops and forgets it once it is
+    /// inactive or a MagnetGun holds its BoplBody; LateUpdateSim does neither
+    /// (MachoThrow2.cs:179-183, 207-219, 233-250).
     fn macho_update_held_boulder(
         &mut self,
         index: usize,
@@ -18332,15 +18344,6 @@ impl RolloutWorld {
         let Some(boulder_index) = self.players[index].macho_throw.held_boulder else {
             return;
         };
-        if self.players.iter().any(|player| {
-            player.active == ActiveAbility::Magnet
-                && player.magnet.held == MagnetHeld::Boulder(boulder_index)
-        }) {
-            // Boulder.body.magnetGunHolder makes MachoThrow2 release its
-            // private reference. Magnet's Hold call still owns the boulder.
-            self.players[index].macho_throw.held_boulder = None;
-            return;
-        }
         if boulder_index >= self.macho_boulders.len()
             || !self.macho_boulders[boulder_index].active
             || self.macho_boulders[boulder_index].dropped
@@ -18381,6 +18384,17 @@ impl RolloutWorld {
         // moves the result by up to 17 raw per component.
         self.players[index].base.external_velocity +=
             velocity * data.macho_throw.force_from_boulder / Fix::from_int(35) * Fix::from_int(35);
+        if !sync_pose {
+            return;
+        }
+        self.macho_boulders[boulder_index].hold();
+        if !self.platforms[platform_index].active
+            || self.platform_dynamics[platform_index].hold.holder.is_some()
+        {
+            Self::drop_boulder(&mut self.platform_dynamics[platform_index], data);
+            self.platforms_changed();
+            self.players[index].macho_throw.held_boulder = None;
+        }
     }
 
     /// `hitbox.position` and `hitbox.rotation` write the FixTransform; the
@@ -18888,6 +18902,7 @@ impl RolloutWorld {
             // BoplBody.prevScale retains the prefab default of one.
             body_scale: Fix::ONE,
             body_resizable: false,
+            hold: Hold::default(),
             intro_disabled: false,
             min_scale: data.macho_throw.boulder_min_scale,
             max_scale: data.macho_throw.boulder_max_scale,
@@ -18945,8 +18960,7 @@ impl RolloutWorld {
             platform_index,
             appended: self.tick + 1,
             hierarchy_base,
-            held,
-            dropped: !held,
+            dropped: false,
             should_drop: false,
             drowning: false,
         };
@@ -19053,8 +19067,6 @@ impl RolloutWorld {
         if dynamics.attached_children == 0 {
             dynamics.root_body = dynamics.body;
         }
-        self.macho_boulders[boulder_index].held = false;
-        self.macho_boulders[boulder_index].dropped = true;
         self.players[index].macho_throw.held_boulder = None;
         self.platforms_changed();
     }
@@ -19073,6 +19085,9 @@ impl RolloutWorld {
         }
     }
 
+    /// MachoThrow2.ExitAbility only Drops the held boulder: Boulder.Drop's
+    /// gravity and bounciness, while isDropped waits for the boulder's own
+    /// UpdateSim (MachoThrow2.cs:760-765, Boulder.cs:21-48).
     fn drop_macho_held_boulder(&mut self, index: usize, data: &data::RolloutData) {
         let Some(held) = self.players[index].macho_throw.held_boulder.take() else {
             return;
@@ -19085,8 +19100,6 @@ impl RolloutWorld {
             Self::drop_boulder(&mut self.platform_dynamics[platform], data);
             self.platforms_changed();
         }
-        self.macho_boulders[held].held = false;
-        self.macho_boulders[held].dropped = true;
     }
 
     /// Ability.EnterAbility and each Ability.UpdateSim assign Player.Scale to
@@ -19390,7 +19403,7 @@ impl RolloutWorld {
     /// which a Duplicator copy is (Boulder.cs:21-29).
     fn macho_boulder_update(&mut self, data: &data::RolloutData, boulder_index: usize) {
         let boulder = self.macho_boulders[boulder_index];
-        if !boulder.held && !boulder.dropped && boulder.should_drop {
+        if !boulder.dropped && boulder.should_drop {
             Self::drop_boulder(&mut self.platform_dynamics[boulder.platform_index], data);
             self.macho_boulders[boulder_index].dropped = true;
             self.platforms_changed();
@@ -24648,16 +24661,20 @@ impl RolloutWorld {
                 self.players[i].rock.body.angular_velocity = data.magnet.locked_angular_velocity;
             }
             MagnetHeld::Boulder(i) => {
-                self.macho_boulders[i].held = true;
                 let platform = self.macho_boulders[i].platform_index;
                 self.platform_dynamics[platform].body.angular_velocity =
                     data.magnet.locked_angular_velocity;
-                // MagnetGun.cs:747-753 calls UnGround() with its default
-                // nullRotation, so the firepoint swings back to body.right
-                // (1,0) for the rest of the pass.
+                self.platform_dynamics[platform].hold.hold(3, index);
+                // A grounded gun Holds the Boulder, and lets go of it if it
+                // stands on it: UnGround() with its default nullRotation, so
+                // the firepoint swings back to body.right (1,0) for the rest
+                // of the pass (MagnetGun.cs:749-756).
                 let slot = &mut self.players[index];
-                if slot.base.grounded && slot.base.ground == Some(self.platforms[platform].id) {
-                    UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+                if slot.base.grounded && slot.base.ground.is_some() {
+                    self.macho_boulders[i].hold();
+                    if slot.base.ground == Some(self.platforms[platform].id) {
+                        UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+                    }
                 }
             }
             MagnetHeld::AbilityPickup(i) => {
@@ -25053,7 +25070,8 @@ impl RolloutWorld {
                 self.platform_dynamics[platform].composite_position = position;
                 self.platform_dynamics[platform].home_position = position;
                 self.platform_dynamics[platform].body.velocity = Vec2::ZERO;
-                self.macho_boulders[i].held = true;
+                self.platform_dynamics[platform].hold.hold(2, index);
+                self.macho_boulders[i].hold();
                 // The Magnet's own surface move and raycasts later this pass
                 // query the collider where it now stands.
                 self.platforms_changed();
@@ -25165,8 +25183,7 @@ impl RolloutWorld {
                 }
             }
             MagnetHeld::Boulder(i) => {
-                if let Some(boulder) = self.macho_boulders.get_mut(i) {
-                    boulder.held = false;
+                if let Some(boulder) = self.macho_boulders.get(i) {
                     let platform = boulder.platform_index;
                     if let Some(dynamics) = self.platform_dynamics.get_mut(platform) {
                         dynamics.body.force += direction * data.magnet.fire_boulder_force;
@@ -25227,14 +25244,11 @@ impl RolloutWorld {
     }
 
     /// A MagnetGun that exits, dies or is tunneled only forgets what it
-    /// held: the held BoplBody's Hold lapses with its own countdown
-    /// (MagnetGun.cs:356-373, BoplBody.cs:325-331).
-    fn drop_magnet_held_item(&mut self, index: usize) {
-        if let MagnetHeld::Boulder(i) = core::mem::take(&mut self.players[index].magnet.held)
-            && let Some(boulder) = self.macho_boulders.get_mut(i)
-        {
-            boulder.held = false;
-        }
+    /// held: the held BoplBody's Hold lapses with its own countdown, and a
+    /// Boulder's own UpdateSim drops it once nobody Holds it
+    /// (MagnetGun.cs:356-373, BoplBody.cs:325-331, Boulder.cs:21-29).
+    fn magnet_forget_held(&mut self, index: usize) {
+        self.players[index].magnet.held = MagnetHeld::Nothing;
     }
 
     fn fire_magnet(&mut self, index: usize, data: &data::RolloutData) {
@@ -28469,7 +28483,7 @@ impl RolloutWorld {
         let rope_top = self.players[victim].rope_top;
         self.attach_player_rope(victim, None, rope_top);
         if self.players[victim].active == ActiveAbility::Magnet {
-            self.drop_magnet_held_item(victim);
+            self.magnet_forget_held(victim);
         }
         let slot = &mut self.players[victim];
         // QuantumTunnel.Init reassigns the victim's rotation, which rebuilds
@@ -30233,6 +30247,9 @@ impl RolloutWorld {
         dynamics.drop_players_frames = -1;
         dynamics.dont_drop_player_id = 0;
         dynamics.drop_force = Fix::ZERO;
+        // Nor is BoplBody's private framesUntilDrop or its NonSerialized
+        // magnetGunHolder (BoplBody.cs:42-45): the copy is not held.
+        dynamics.hold = Hold::default();
         dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
         dynamics.duplicate_lifespan = i32::MAX;
         dynamics.duplicate_shake_offset = Vec2::ZERO;
@@ -30274,7 +30291,6 @@ impl RolloutWorld {
                 platform_index: self.platforms.len(),
                 appended: self.tick + 1,
                 hierarchy_base,
-                held: false,
                 dropped: false,
                 should_drop: false,
                 drowning: false,
@@ -30979,6 +30995,7 @@ impl RolloutWorld {
             scale,
             body_scale: scale,
             body_resizable: true,
+            hold: Hold::default(),
             intro_disabled: false,
             min_scale: pd.spawn_min_scale,
             max_scale: pd.spawn_max_scale,
@@ -31166,7 +31183,6 @@ impl RolloutWorld {
             if self.macho_boulders[boulder_index].platform_index == index {
                 let owner = self.macho_boulders[boulder_index].owner;
                 self.macho_boulders[boulder_index].active = false;
-                self.macho_boulders[boulder_index].held = false;
                 if owner < self.players.len()
                     && self.players[owner].macho_throw.held_boulder == Some(boulder_index)
                 {
@@ -34729,7 +34745,7 @@ impl RolloutWorld {
                     U::AnimateVelocity => self.platform_spring(data, updater_dt, i),
                     U::ShakablePlatform => shook |= self.platform_shake(data, updater_dt, i),
                     U::ResizablePlatform => self.platform_resizable(data, i),
-                    U::BoplBody => self.platform_body_scale(i),
+                    U::BoplBody => self.platform_body_update(i),
                     U::AntiLockPlatform => self.platform_orbit(data, updater_dt, i),
                     U::VectorFieldPlatform => self.platform_vector_field(data, updater_dt, i),
                     // A drowning destroys the boulder and ends its turn.
@@ -34817,13 +34833,15 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    /// BoplBody.UpdateSim: a non-resizable body follows a DPhysics scale
-    /// change with its mass and inertia, at BoplBody's place in the prefab.
-    fn platform_body_scale(&mut self, i: usize) {
+    /// BoplBody.UpdateSim, at BoplBody's place in the prefab: the hold's
+    /// countdown, then a non-resizable body follows a DPhysics scale change
+    /// with its mass and inertia.
+    fn platform_body_update(&mut self, i: usize) {
         if !self.platforms[i].active {
             return;
         }
         let dynamics = &mut self.platform_dynamics[i];
+        dynamics.hold.update_sim();
         let previous = dynamics.body_scale;
         let scale = dynamics.scale;
         if !dynamics.body_resizable && previous != scale {
@@ -36591,7 +36609,7 @@ impl RolloutWorld {
             self.drop_macho_held_boulder(index, data::get());
         }
         if self.players[index].active == ActiveAbility::Magnet {
-            self.drop_magnet_held_item(index);
+            self.magnet_forget_held(index);
         }
         // killPlayer destroys every ability object the slime holds, active or
         // not (PlayerCollision.cs:159-167, 184-192, 203-211), so each Beam's
