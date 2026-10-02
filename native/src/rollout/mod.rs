@@ -23038,13 +23038,21 @@ impl RolloutWorld {
         slot.reported_tick = tick;
     }
 
+    /// A form's DestroyIfOutsideSceneBounds. Its selfDestruct instantiates
+    /// the water effect and hands the form's own ExitAbility a dead packet,
+    /// whose onExitAbility kills through the slime's killPlayer with
+    /// ignoreInvulnerability false, all inside this updater
+    /// (DestroyIfOutsideSceneBounds.cs:43-55, 135-141, SlimeController.cs:215-221).
+    /// That kill decides whether the slime dies: a Poke Ball's mask refuses it.
     fn ability_boundary_kill(&mut self, index: usize) -> bool {
         if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
             return false;
         }
-        self.players[index].base.alive = false;
-        self.players[index].base.out_of_bounds = true;
+        self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
         self.players[index].reported_position = self.players[index].base.position;
+        // A default AbilityExitInfo's causeOfDeath is Other.
+        let cause = if self.players[index].active == ActiveAbility::None { CAUSE_ACCIDENT } else { CAUSE_OTHER };
+        self.kill_with(index, ENVIRONMENT, cause, KillRoute::UPDATER, false, true, cause == CAUSE_ACCIDENT);
         true
     }
 
