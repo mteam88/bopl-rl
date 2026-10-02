@@ -496,33 +496,6 @@ fn clamp_revival_position(mut position: Vec2) -> Vec2 {
     position
 }
 
-/// `obs_state` is the slime's state when EnterAbility runs, before the
-/// deactivated slime's Move for the pass can land it.
-fn retained_ground(player: &PlayerSlot, obs_state: u32, platforms: &[Platform]) -> Option<u32> {
-    if player.base.grounded {
-        return player.base.ground;
-    }
-    // The ordinary controller can finish a landing animation with its public
-    // Idle state one pass before this slice restores `ground`. PlayerInfo in
-    // the game still carries the attached platform into the ability prefab.
-    if obs_state == STATE_FALL || obs_state == STATE_NOTHING {
-        return None;
-    }
-    let mut best = None;
-    let mut best_error = Fix::from_f32(0.1);
-    for platform in platforms {
-        let Ok(surface_point) = platform.surface.closest_point(player.base.position) else {
-            continue;
-        };
-        let error = ((player.base.position - surface_point).length() - player.base.radius).abs();
-        if error < best_error {
-            best_error = error;
-            best = Some(platform.id);
-        }
-    }
-    best
-}
-
 /// Slime controllers wake this many ticks into the warmup (measured against
 /// the .NET reset: ability cooldown timers read -1.5s + (240-62)/60 = 1.4667s
 /// after a 240-tick warmup).
@@ -10493,7 +10466,6 @@ impl RolloutWorld {
                 if !data.abilities[ability as usize].instant {
                     self.players[owner].ability_time = Fix::ZERO;
                 }
-                let entry_obs_state;
                 {
                     let slot = &mut self.players[index];
                     // SlimeController.UpdateSim ungrounds a slime whose ground
@@ -10532,8 +10504,6 @@ impl RolloutWorld {
                     if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == self.tick) {
                         slot.tie_position = Some((self.tick, slot.base.position));
                     }
-                    // EnterAbility reads the state before this pass's Move.
-                    entry_obs_state = slot.obs_state;
                     // The PlayerInfo package carries the post-gravity state;
                     // PlayerBody has not integrated the position yet. The
                     // deactivated slime still gets this pass's Move
@@ -11669,12 +11639,9 @@ impl RolloutWorld {
                         // UnGround that OnEnterAbility calls next therefore has
                         // nothing to push off from when the cast started
                         // mid-air, and skips its 0.05-unit separation
-                        // (PlayerPhysics.cs:366-370). Reading the slime's own
-                        // retained reference instead displaced every airborne
-                        // cast 0.05 units along a stale normal. Revival, the
-                        // other QuickSpell form, already reads it this way.
-                        let attached_ground =
-                            retained_ground(&self.players[index], entry_obs_state, &self.platforms);
+                        // (PlayerPhysics.cs:366-370).
+                        let slot = &self.players[index];
+                        let attached_ground = slot.base.ground.filter(|_| slot.base.grounded);
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Gust);
@@ -11718,8 +11685,9 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_REVIVAL => {
-                        let attached_ground =
-                            retained_ground(&self.players[index], entry_obs_state, &self.platforms);
+                        // SyncPhysicsTo (PlayerPhysics.cs:525-551).
+                        let slot = &self.players[index];
+                        let attached_ground = slot.base.ground.filter(|_| slot.base.grounded);
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Revival);
