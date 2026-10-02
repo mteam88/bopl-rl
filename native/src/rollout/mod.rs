@@ -1910,6 +1910,10 @@ pub struct FormBody {
     pub inverse_mass: Fix,
     pub inverse_inertia: Fix,
     pub mass_scale: Fix,
+    /// A form BoplBody's DetPhysics force while the form is out: what was
+    /// added after its last integration, which the next one applies. Only
+    /// the Rock's body takes forces.
+    pub force: Vec2,
     /// A form BoplBody's magnet hold; only the Rock's is ever held.
     pub hold: Hold,
     /// The form's FixTransform, which DetPhysics syncs its box from whether
@@ -4126,6 +4130,9 @@ impl PlayerSlot {
     }
 
     fn slime_body_returns(&mut self) {
+        if self.active == ActiveAbility::Rock {
+            self.forms[self.active_slot].force = self.rock.body.force;
+        }
         let form = std::mem::replace(&mut self.base, std::mem::take(&mut self.slime));
         // Only the Player object's fields cross; the slime's own PlayerPhysics
         // and PlayerBody take what onExitAbility writes on them afterwards.
@@ -11067,6 +11074,9 @@ impl RolloutWorld {
                         }
                         let start_radius = slot.forms[s].start_radius;
                         let mut body = data.rock.body;
+                        // The slot's BoplBody is the one its last use left,
+                        // still holding any force added after its last step.
+                        body.force = std::mem::take(&mut slot.forms[s].force);
                         let velocity = self_imposed + slot.player_info.external_velocity;
                         let direction = if self_imposed.x <= Fix::ZERO {
                             Fix::ONE
