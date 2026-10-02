@@ -25380,7 +25380,7 @@ impl RolloutWorld {
         while candidates != 0 {
             let platform = candidates.trailing_zeros() as usize;
             candidates &= candidates - 1;
-            if !self.platforms[platform].active || excluded == Some(platform) {
+            if !self.platform_is_active(platform) || excluded == Some(platform) {
                 continue;
             }
             let mut collider = self.platforms[platform].collider;
@@ -25420,7 +25420,7 @@ impl RolloutWorld {
         for platform in 0..self.platforms.len() {
             let entity = self.platform_entities[platform];
             let row = self.entities[entity];
-            if !self.platforms[platform].active || entity == caster || row.layer >= 32 || mask & (1u32 << row.layer) == 0 {
+            if !self.platform_is_active(platform) || entity == caster || row.layer >= 32 || mask & (1u32 << row.layer) == 0 {
                 continue;
             }
             if let Some(hit) = self.platforms[platform].collider.raycast(origin, direction)
