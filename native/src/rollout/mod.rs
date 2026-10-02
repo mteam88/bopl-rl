@@ -31863,10 +31863,8 @@ impl RolloutWorld {
         if position.y < floor || position.x.abs() > Fix::from_f64(131.25) {
             // Only the water exit has an effect: the two-updatable splash.
             // In space the floor exit looks for an UpEffect Arrow lacks.
-            if position.y < floor && !data.maps[self.map].is_space()
-                && let Some(entity) = self.arrows[i].entity
-            {
-                self.queued_spawns.push((self.entities[entity].hierarchy, BoundsEffect::Splash));
+            if position.y < floor && !data.maps[self.map].is_space() {
+                self.spawn_bounds_effect(BoundsEffect::Splash, data);
             }
             self.destroy_arrow(i);
             return;
