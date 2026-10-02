@@ -14164,6 +14164,8 @@ impl RolloutWorld {
         let relative_rotation = node_rotation - parent_rotation;
 
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
+        let center = parent_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let entity = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -14173,12 +14175,13 @@ impl RolloutWorld {
             owner: player_id(&self.players, index),
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
+            x: center.x.raw(),
+            y: center.y.raw(),
             radius: (data.tesla.node_radius * collider_scale).raw(),
+            rotation: node_rotation.raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
         }, Vec2::ZERO);
-        let center = parent_position
-            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let node = SpawnedTeslaNode {
             attach_order,
             active: true,
@@ -26459,6 +26462,8 @@ impl RolloutWorld {
             + source.collider_offset.complex_mul(relative_right);
         let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("simple_SparkNode"), data.copy_orders("simple_SparkNode")), 1);
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
+        let center = parent_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let entity = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -26468,12 +26473,13 @@ impl RolloutWorld {
             owner: player_id(&self.players, caster),
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
+            x: center.x.raw(),
+            y: center.y.raw(),
             radius: (data.tesla.node_radius * source.scale).raw(),
+            rotation: rotation.raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
         }, Vec2::ZERO);
-        let center = parent_position
-            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let clone = SpawnedTeslaNode {
             attach_order,
             active: true,
