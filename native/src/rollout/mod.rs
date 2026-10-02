@@ -19058,6 +19058,13 @@ impl RolloutWorld {
         if platform_index >= self.platforms.len() {
             return;
         }
+        // Fire returns when the held Boulder is not isActiveAndEnabled: a
+        // QuantumTunnel or teleport hid it since MachoThrow2's last turn. One
+        // drowned this pass is only DestroyFixed, still active until the
+        // pass ends (MachoThrow2.cs:681-684, Updater.cs:339-343).
+        if !quick && !self.platforms[platform_index].active && !self.macho_boulders[boulder_index].drowning {
+            return;
+        }
         if !quick && let Some((position, rotation)) = self.players[index].macho_throw.late_pose.take() {
             self.place_macho_boulder(platform_index, position, rotation);
         }
