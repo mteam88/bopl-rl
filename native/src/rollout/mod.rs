@@ -2589,7 +2589,6 @@ pub struct AbilitylessClone {
     pub prev_input_align: Fix,
     /// Its SlimeController.inputVector, as a slime's `slime_input`.
     pub slime_input: Vec2,
-    pub captured_by_ball: Option<usize>,
     /// Its PlayerCollision.isInvulnerableMask.
     pub invulnerable: u32,
     /// Its SlimeController's ragdoll, as a slime's; the body's
@@ -3541,10 +3540,6 @@ pub struct PlayerSlot {
     /// pass's Player.UpdatePlayer publication. Keep that earlier publication
     /// while the restored SlimeController finishes its same-pass movement.
     pub freeze_form_exit_tick: u32,
-    /// One live Poke Ball pinning this victim. More than one physics callback
-    /// can capture the same slime from a prebuilt manifold set; this points to
-    /// a remaining captor when another one pops.
-    pub captured_by_ball: Option<usize>,
     /// The slime's PlayerCollision.isInvulnerableMask, which IsInvulnerable
     /// tests whole. A bit is not reference counted: every Poke Ball release
     /// clears the shared bit even when a second ball still retains and pins
@@ -6278,7 +6273,6 @@ impl RolloutWorld {
                 frozen_solid_count: 0,
                 pinned_from: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
-                captured_by_ball: None,
                 invulnerable: 0,
                 was_killed_tick: None,
                 ignored: [0; 6],
@@ -7067,7 +7061,6 @@ impl RolloutWorld {
         slot.facing_right = clone.facing_right;
         slot.prev_input_align = clone.prev_input_align;
         slot.slime_input = clone.slime_input;
-        slot.captured_by_ball = clone.captured_by_ball;
         slot.invulnerable = clone.invulnerable;
         slot.set_blink_tunnel(&mut self.entities, clone.blink_tunnel_active);
         slot.blink_tunnel_appended = clone.blink_tunnel_appended;
@@ -20846,7 +20839,6 @@ impl RolloutWorld {
         slot.freeze_form_exit_tick = u32::MAX;
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
-        slot.captured_by_ball = None;
         slot.late_obs_tick = u32::MAX;
         slot.missile = MissileFormState::default();
         slot.throw_item = ThrowItemState::default();
@@ -21344,7 +21336,6 @@ impl RolloutWorld {
         slot.freeze_form_exit_tick = u32::MAX;
         // The clone's own PlayerPhysics has no skipNextUpdate pending.
         slot.base.skip_next_gravity = false;
-        slot.captured_by_ball = None;
         slot.late_obs_tick = u32::MAX;
         slot.missile = MissileFormState::default();
         slot.throw_item = ThrowItemState::default();
@@ -26124,7 +26115,6 @@ impl RolloutWorld {
             facing_right: true,
             prev_input_align: Fix::ZERO,
             slime_input: Vec2::ZERO,
-            captured_by_ball: None,
             invulnerable: 0,
             ragdoll: RagdollState::default(),
             magnet_holder: None,
@@ -31824,7 +31814,6 @@ impl RolloutWorld {
             slot.late_obs_position = slot.base.position;
             slot.late_obs_rotation = slot.base.rotation();
             slot.late_obs_state = slot.obs_state;
-            slot.captured_by_ball = Some(item_index);
             slot.invulnerable |= INVULNERABLE_POKE;
             // BeginCapture applies ragdoll first, then UnGround invokes
             // SlimeController.OnNoLongerGrounded and overwrites the state with
@@ -31863,7 +31852,6 @@ impl RolloutWorld {
         let capture_position = self.thrown_items[item_index].position;
         let owner = self.abilityless_clones[clone_index].owner;
         let clone = &mut self.abilityless_clones[clone_index];
-        clone.captured_by_ball = Some(item_index);
         clone.invulnerable |= INVULNERABLE_POKE;
         // UnGround's OnNoLongerGrounded overwrites BeginCapture's ragdoll
         // with fall, as for a player victim.
@@ -32845,22 +32833,9 @@ impl RolloutWorld {
         {
             return;
         }
-        let remaining_captor = self
-            .thrown_items
-            .iter()
-            .enumerate()
-            .find(|(index, other)| {
-                *index != item_index
-                    && other.active
-                    && !other.capture_victim_is_clone
-                    && other.capture_victim == Some(victim)
-                    && other.capture_victim_instance == item.capture_victim_instance
-            })
-            .map(|(index, _)| index);
         let owner = self.players[victim].owner;
         self.players[owner].invisible = false;
         let slot = &mut self.players[victim];
-        slot.captured_by_ball = remaining_captor;
         // PlayerCollision.SetInvulnerable(false, 16) clears the bit rather
         // than decrementing a captor count.
         slot.invulnerable &= !INVULNERABLE_POKE;
@@ -32893,21 +32868,8 @@ impl RolloutWorld {
         {
             return;
         }
-        let remaining_captor = self
-            .thrown_items
-            .iter()
-            .enumerate()
-            .find(|(index, other)| {
-                *index != item_index
-                    && other.active
-                    && other.capture_victim_is_clone
-                    && other.capture_victim == Some(victim)
-                    && other.capture_victim_instance == item.capture_victim_instance
-            })
-            .map(|(index, _)| index);
         let owner = self.abilityless_clones[victim].owner;
         let clone = &mut self.abilityless_clones[victim];
-        clone.captured_by_ball = remaining_captor;
         clone.invulnerable &= !INVULNERABLE_POKE;
         clone.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll.
@@ -34811,28 +34773,6 @@ impl RolloutWorld {
             || self.abilityless_clones[clone_index].appended > self.tick
             || !self.active_self(self.abilityless_clones[clone_index].entity)
         {
-            return;
-        }
-        if self.abilityless_clones[clone_index]
-            .captured_by_ball
-            .is_some()
-        {
-            // PlayerBody still moves a captured clone by the shoves it takes
-            // and decays them (PlayerBody.cs:244-246); the Poke Ball pins it.
-            let owner = self.abilityless_clones[clone_index].owner;
-            let stopped =
-                self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
-            let base = &mut self.abilityless_clones[clone_index].base;
-            if stopped {
-                base.external_velocity *= Fix::from_f64(0.95);
-            } else {
-                // PlayerPhysics returns on the pin's skipNextUpdate.
-                base.skip_next_gravity = false;
-                base.integrate();
-            }
-            let clone = &mut self.abilityless_clones[clone_index];
-            clone.base.move_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
-            self.sync_abilityless_clone_entity(clone_index);
             return;
         }
         let owner = self.abilityless_clones[clone_index].owner;
@@ -40237,7 +40177,6 @@ mod tests {
 
         assert!(world.thrown_items[0].capture_victim_is_clone);
         assert_eq!(world.thrown_items[0].capture_victim, Some(0));
-        assert_eq!(world.abilityless_clones[0].captured_by_ball, Some(0));
         assert!(world.abilityless_clones[0].invulnerable & INVULNERABLE_POKE != 0);
     }
 

@@ -2069,7 +2069,6 @@ impl RolloutWorld {
                 clone.active
                     && clone.base.alive
                     && clone.entity.is_some()
-                    && clone.captured_by_ball.is_none()
                     && !self.blink_object_hidden(clone.entity)
             })
             .collect();
