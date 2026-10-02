@@ -23948,11 +23948,14 @@ impl RolloutWorld {
         let slot = &self.players[index];
         half_length = half_length.max(Fix::from_f64(0.01));
         let half_width = magnet.pull_width.max(Fix::from_f64(0.01));
-        let query = OrientedBox::from_basis(
-            firepoint + direction * half_length,
-            direction,
-            Vec2::new(half_length, half_width),
-        );
+        // A literal Box, its axes scaled straight from the extents
+        // (MagnetGun.cs:503-509).
+        let query = OrientedBox {
+            center: firepoint + direction * half_length,
+            right: direction * half_length,
+            up: direction.perp() * half_width,
+            inverse_extents: Vec2::new(Fix::ONE / half_length, Fix::ONE / half_width),
+        };
         let multiplier = magnet
             .pull_curve
             .evaluate(slot.magnet.time_spent_pulling / magnet.max_pull_duration);
