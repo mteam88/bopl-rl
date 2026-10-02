@@ -9813,24 +9813,23 @@ impl RolloutWorld {
         }
     }
 
-    /// Portal.UpdateSim's SlimeController query: an active, undestroyed
-    /// SlimeController whose Player is alive (Portal.cs:177-189).
+    /// Portal.UpdateSim's SlimeController query: an activeSelf SlimeController
+    /// not IsDestroyed, whose Player IsAlive (Portal.cs:177-189). Nothing else
+    /// counts, so a slime parked for its stock choice, waiting to revive or in
+    /// its spawn animation goes through too.
     fn portal_finds(&self, slime: Slime) -> bool {
-        match slime {
+        let (found, owner) = match slime {
             Slime::Player(index) => {
                 let slot = &self.players[index];
-                slot.base.alive
-                    && self.slime_active(index)
-                    && slot.respawn_ticks == 0
-                    && slot.respawn_spawn_ticks == 0
-                    && !slot.revival_clone_pending
-                    && !slot.stock_clone_pending
+                (self.slime_active(index) && !fix_destroyed(&self.entities, Some(slot.body_entity)), slot.owner)
             }
+            // A clone is IsDestroyed once it is no longer active.
             Slime::Clone(index) => {
                 let clone = &self.abilityless_clones[index];
-                clone.active && clone.base.alive && !self.players[clone.owner].out
+                (clone.active && !self.abilityless_clone_hidden(clone), clone.owner)
             }
-        }
+        };
+        found && self.players[owner].bodies_alive > 0
     }
 
     fn playable(&self, index: usize) -> bool {
