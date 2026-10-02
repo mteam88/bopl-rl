@@ -40057,6 +40057,16 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let target_entity = world.players[1].body_entity;
+        let rock_entity = world.entities.len();
+        world.push_entity(CEntity {
+            layer: LAYER_PLAYER,
+            flags: E_ACTIVE | E_ENABLED,
+            radius: data::get().rock.radius.raw(),
+            inverse_mass: data::get().rock.body.inverse_mass.raw(),
+            ..CEntity::default()
+        }, Vec2::ZERO);
+        world.players[0].rock_entity = rock_entity;
+        world.players[0].form_entities[0] = rock_entity;
         world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Rock);
         world.players[0].rope = Some(0);
         world.players[0].forms[0] = FormBody {
