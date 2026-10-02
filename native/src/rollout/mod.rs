@@ -37911,7 +37911,8 @@ impl RolloutWorld {
     fn refresh_actor_entities(&mut self) {
         // Every equipped prefab's form box is enabled, the spare copy of an
         // ability held twice included; only the cast slot's box is synced
-        // with the form below.
+        // with the form below. A spare is never live: casting the other copy
+        // exited it, deactivating its GameObject where it stood.
         for index in 0..self.players.len() {
             let slot = &mut self.players[index];
             if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
@@ -37925,7 +37926,7 @@ impl RolloutWorld {
                     && self.entities[row].flags & E_DESTROYED == 0
                     && !(ability == ABILITY_PLATFORM && slot.platform_hurtbox_disabled[s])
                 {
-                    self.entities[row].flags |= E_ENABLED;
+                    self.entities[row].flags = (self.entities[row].flags | E_ENABLED) & !E_ACTIVE;
                 }
             }
         }
