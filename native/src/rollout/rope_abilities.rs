@@ -1736,10 +1736,17 @@ impl RolloutWorld {
                     continue;
                 }
                 let rb = rectangle.bounds();
-                if bounds[1].x <= rb.min.x
-                    || bounds[0].x >= rb.max.x
-                    || bounds[1].y <= rb.min.y
-                    || bounds[0].y >= rb.max.y
+                // Along the swept axis the box sorted first (a rounded
+                // rectangle before a rope on a tied minimum) must reach past
+                // the other's minimum; across it they overlap strictly.
+                let (swept, across) = if sweep_x { (0, 1) } else { (1, 0) };
+                let along = |v: Vec2, axis: usize| if axis == 0 { v.x } else { v.y };
+                let (rope_min, rope_max) = (along(bounds[0], swept), along(bounds[1], swept));
+                let (rect_min, rect_max) = (along(rb.min, swept), along(rb.max, swept));
+                let reaches = if rect_min <= rope_min { rect_max > rope_min } else { rope_max > rect_min };
+                if !reaches
+                    || along(bounds[1], across) <= along(rb.min, across)
+                    || along(bounds[0], across) >= along(rb.max, across)
                 {
                     continue;
                 }
