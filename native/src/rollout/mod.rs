@@ -8201,11 +8201,12 @@ impl RolloutWorld {
         self.sync_guided_missile_rows();
         // DetPhysics.SyncGameObject: each child's FixTransform takes its
         // collider's pose before the collision callbacks (DetPhysics.cs:3172-3192).
-        // A spike a MachoThrow carries is inactive, so its transform stays.
+        // A spike a MachoThrow carries keeps the rotation its transform gave it.
         for spike in &mut self.spike_attacks {
-            if !spike.macho_carried
-                && let Some(parent) = self.platform_dynamics.get(spike.platform_index)
-            {
+            if spike.macho_carried {
+                spike.transform_position =
+                    transform_root(spike.collider_center, spike.collider_offset, spike.transform_rotation);
+            } else if let Some(parent) = self.platform_dynamics.get(spike.platform_index) {
                 spike.sync_transform(parent.body.orientation);
             }
         }
@@ -14166,6 +14167,10 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        // ManualInit registers the circle at the placed FixTransform plus its
+        // unscaled offset; the Scale setter and AddCircleToRR leave that
+        // center for the next physics step (DPhysicsCircle.cs:254-300).
+        let registered = raised + data.tesla.node_collider_offset.complex_mul(node_right);
         let entity = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -14175,8 +14180,8 @@ impl RolloutWorld {
             owner: player_id(&self.players, index),
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
-            x: center.x.raw(),
-            y: center.y.raw(),
+            x: registered.x.raw(),
+            y: registered.y.raw(),
             radius: (data.tesla.node_radius * collider_scale).raw(),
             rotation: node_rotation.raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
@@ -26464,6 +26469,9 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        // ManualInit registers the circle at the copy's FixTransform plus the
+        // source's offset (ShootDuplicator.cs:470-494, DPhysicsCircle.cs:294).
+        let registered = hit_position + source.collider_offset.complex_mul(right);
         let entity = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -26473,8 +26481,8 @@ impl RolloutWorld {
             owner: player_id(&self.players, caster),
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
-            x: center.x.raw(),
-            y: center.y.raw(),
+            x: registered.x.raw(),
+            y: registered.y.raw(),
             radius: (data.tesla.node_radius * source.scale).raw(),
             rotation: rotation.raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
@@ -35578,9 +35586,73 @@ impl RolloutWorld {
         }
     }
 
+    /// SyncAllPhysicsObjectsToFixTransformPosition for the attachables a
+    /// MachoThrow carries: out of every CompositeBody, each collider takes its
+    /// FixTransform's pose, `position + right * offset` (DetPhysics.cs:2508-2525).
+    /// Until the first SyncGameObject the transform's right is the one its
+    /// placement's `up` set, not the rotation's.
+    fn sync_carried_attachables(&mut self) {
+        let tick = self.tick;
+        let right = |rotation: Fix, placed_up: Option<Vec2>, placed_now: bool| match placed_up {
+            Some(up) if placed_now => up.perp_cw(),
+            _ => Vec2::angle(rotation),
+        };
+        let live = |entities: &[CEntity], entity: Option<usize>| {
+            entity.filter(|&entity| entities[entity].flags & (E_DESTROYED | E_REMOVED) == 0)
+        };
+        for node in &mut self.tesla_nodes {
+            let Some(entity) = live(&self.entities, node.entity).filter(|_| node.macho_carried) else {
+                continue;
+            };
+            let right = right(node.transform_rotation, node.placed_up, node.placed_tick == tick);
+            node.collider_center = node.transform_position + node.collider_offset.complex_mul(right);
+            node.collider_rotation = node.transform_rotation;
+            let row = &mut self.entities[entity];
+            row.x = node.collider_center.x.raw();
+            row.y = node.collider_center.y.raw();
+            row.rotation = node.collider_rotation.raw();
+        }
+        for engine in &mut self.engines {
+            let Some(entity) = live(&self.entities, engine.entity).filter(|_| engine.macho_carried) else {
+                continue;
+            };
+            let right = right(engine.transform_rotation, engine.placed_up, engine.appended > tick);
+            engine.collider_center = engine.transform_position + engine.collider_offset.complex_mul(right);
+            engine.collider_rotation = engine.transform_rotation;
+            let basis = Vec2::angle(engine.collider_rotation);
+            let extents = engine.box_extents(&self.entity_inverse_extents);
+            let row = &mut self.entities[entity];
+            row.x = engine.collider_center.x.raw();
+            row.y = engine.collider_center.y.raw();
+            row.right_x = (basis * extents.x).x.raw();
+            row.right_y = (basis * extents.x).y.raw();
+            row.up_x = (Vec2::UP * extents.y).complex_mul(basis).x.raw();
+            row.up_y = (Vec2::UP * extents.y).complex_mul(basis).y.raw();
+            row.rotation = engine.collider_rotation.raw();
+        }
+        for spike in &mut self.spike_attacks {
+            let Some(entity) = live(&self.entities, spike.entity).filter(|_| spike.macho_carried) else {
+                continue;
+            };
+            let right = right(spike.transform_rotation, spike.placed_up, spike.placed_tick == tick);
+            spike.collider_center = spike.transform_position + spike.collider_offset.complex_mul(right);
+            let basis = Vec2::angle(spike.transform_rotation);
+            let extents = spike.box_extents(&self.entity_inverse_extents);
+            let row = &mut self.entities[entity];
+            row.x = spike.collider_center.x.raw();
+            row.y = spike.collider_center.y.raw();
+            row.right_x = (basis * extents.x).x.raw();
+            row.right_y = (basis * extents.x).y.raw();
+            row.up_x = (Vec2::UP * extents.y).complex_mul(basis).x.raw();
+            row.up_y = (Vec2::UP * extents.y).complex_mul(basis).y.raw();
+            row.rotation = spike.transform_rotation.raw();
+        }
+    }
+
     fn platforms_tick(&mut self, data: &data::RolloutData, physics_dt: Fix) {
         // DetPhysics.Simulate opens with RemoveDestroyedColliders.
         self.remove_destroyed_colliders();
+        self.sync_carried_attachables();
         // An evicted platform's ResizablePlatform.UpdateSim resized it at its
         // Updater turn; at the removal curve's final key it destroyed it.
         let late_pulls = std::mem::take(&mut self.late_platform_pulls);
