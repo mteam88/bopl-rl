@@ -26,7 +26,7 @@ mod rope_abilities;
 mod sweep;
 use circle_box::{Blast, Part};
 use sweep::Swept;
-use rope_abilities::HookTarget;
+use rope_abilities::{HookTarget, RopeAttachment};
 
 pub const ABI_VERSION: u32 = 3;
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
@@ -2557,7 +2557,8 @@ pub struct MachoThrowState {
     pub picked_engine: Option<usize>,
     pub picked_tesla: Option<usize>,
     pub picked_spike: Option<usize>,
-    pub picked_rope: Option<usize>,
+    /// The rope and the end whose RopeAttachment it carries.
+    pub picked_rope: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -4341,7 +4342,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 40)
+    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 40)
 }
 
 /// The place just after `key`.
@@ -7805,7 +7806,7 @@ impl RolloutWorld {
         for index in 0..self.ropes.len() {
             if !self.ropes[index].physics.enabled
                 || self.ropes[index].appended > self.tick
-                || self.ropes[index].parent.is_none()
+                || self.ropes[index].attach[0].parent.is_none()
             {
                 continue;
             }
@@ -7816,6 +7817,23 @@ impl RolloutWorld {
             self.run_spawned_before(data, updater_dt, key);
             self.updater_take_turn(key);
             self.rope_parent_step(index);
+        }
+        // A RopeAttachment PlatformTransform instantiated takes its own turn.
+        for index in 0..self.ropes.len() {
+            for slot in 0..2 {
+                if !self.ropes[index].physics.enabled {
+                    continue;
+                }
+                let Some(key) = self.rope_end_attachment_key(index, slot) else {
+                    continue;
+                };
+                if key.0 > self.tick || self.updater_passed(key) {
+                    continue;
+                }
+                self.run_spawned_before(data, updater_dt, key);
+                self.updater_take_turn(key);
+                self.rope_end_attachment_step(index, slot);
+            }
         }
         // Pickups and shockwaves newer than a live ScaleChanger see what it
         // rescaled; scale_changers_tick steps them in turn.
@@ -8459,8 +8477,15 @@ impl RolloutWorld {
             if rope.physics.enabled {
                 push(self.rope_key(i), 8, i);
             }
-            if rope.physics.enabled && rope.parent.is_some() {
+            if rope.physics.enabled && rope.attach[0].parent.is_some() {
                 push(self.rope_attachment_key(i), 29, i);
+            }
+            for slot in 0..2 {
+                if rope.physics.enabled
+                    && let Some(key) = self.rope_end_attachment_key(i, slot)
+                {
+                    push(key, 30, 2 * i + slot);
+                }
             }
         }
         for (i, shot) in self.portal_shots.iter().enumerate() {
@@ -8600,6 +8625,7 @@ impl RolloutWorld {
                 27 => self.stock_chooser_step(index, data),
                 28 => self.gold_mushroom_step(index / 3, index % 3, data),
                 29 => self.rope_parent_step(index),
+                30 => self.rope_end_attachment_step(index / 2, index % 2),
                 40 => self.portal_shot_step(index, data, updater_dt),
                 19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
@@ -18646,14 +18672,17 @@ impl RolloutWorld {
         // Ropes are scanned after Transform children and only replace a
         // candidate at a strictly smaller distance.
         for (rope_index, rope) in self.ropes.iter().enumerate() {
-            if rope.physics.enabled && rope.platform == Some(platform_index) {
-                let direct = (rope.platform_local - player_local).abs();
+            for (slot, attachment) in rope.attach.iter().enumerate() {
+                if !rope.physics.enabled || attachment.platform != Some(platform_index) {
+                    continue;
+                }
+                let direct = (attachment.local - player_local).abs();
                 let fraction = direct.min(Fix::ONE - direct);
                 if fraction * circumference < data.macho_throw.max_attachable_distance
                     && fraction < best_fraction
                 {
                     best_fraction = fraction;
-                    best = Some((4, rope_index));
+                    best = Some((4, 2 * rope_index + slot));
                 }
             }
         }
@@ -18705,7 +18734,7 @@ impl RolloutWorld {
             self.players[owner].macho_throw.picked_spike = Some(attachable_index);
             self.rebuild_platform_attachment_body(old_platform, false);
         } else {
-            self.players[owner].macho_throw.picked_rope = Some(attachable_index);
+            self.players[owner].macho_throw.picked_rope = Some((attachable_index / 2, attachable_index % 2));
         }
         self.platforms_changed();
     }
@@ -18956,7 +18985,7 @@ impl RolloutWorld {
         platform_index: usize,
         data: &data::RolloutData,
     ) {
-        let Some(rope_index) = self.players[owner].macho_throw.picked_rope.take() else {
+        let Some((rope_index, slot)) = self.players[owner].macho_throw.picked_rope.take() else {
             return;
         };
         if rope_index >= self.ropes.len() || !self.ropes[rope_index].physics.enabled {
@@ -18964,11 +18993,12 @@ impl RolloutWorld {
         }
         // The attachment's FixTransform is where RepositionOnParent last put
         // it, not where its platform has since moved (MachoThrow2.cs:590).
-        let old_position = self.ropes[rope_index]
+        let attachment = self.ropes[rope_index].attach[slot];
+        let old_position = attachment
             .platform
-            .map(|_| self.ropes[rope_index].platform_anchor)
+            .map(|_| attachment.anchor)
             .unwrap_or_else(|| {
-                let endpoint = if self.ropes[rope_index].platform_top {
+                let endpoint = if slot == 0 {
                     0
                 } else {
                     self.ropes[rope_index].physics.count - 1
@@ -18990,11 +19020,11 @@ impl RolloutWorld {
             stretchiness: data.ropes.stretchiness,
         };
         let rope = &mut self.ropes[rope_index];
-        rope.platform = Some(platform_index);
-        rope.platform_local = local;
-        rope.platform_anchor = new_position;
-        rope.platform_pull = data.ropes.boulder_pull;
-        rope.platform_attach_tick = 0;
+        rope.attach[slot].platform = Some(platform_index);
+        rope.attach[slot].local = local;
+        rope.attach[slot].anchor = new_position;
+        rope.attach[slot].pull = data.ropes.boulder_pull;
+        rope.attach[slot].attach_tick = 0;
         for segment in 0..rope.physics.count / 2 {
             rope.physics.segment[segment] += delta;
         }
@@ -19543,9 +19573,9 @@ impl RolloutWorld {
         // A newer RopeAttachment on it sees IsDestroyed this pass.
         let entity = self.platform_entities[platform_index];
         let hierarchy = self.entities[entity].hierarchy - 100_000_000;
-        for rope in &mut self.ropes {
-            if rope.platform == Some(platform_index) {
-                rope.platform_destroyed_at = (self.tick, hierarchy);
+        for attachment in self.ropes.iter_mut().flat_map(|rope| &mut rope.attach) {
+            if attachment.platform == Some(platform_index) {
+                attachment.destroyed_at = (self.tick, hierarchy);
             }
         }
         // In space the floor exit instantiates UpEffect, which Boulder.prefab
@@ -31060,15 +31090,18 @@ impl RolloutWorld {
         };
         let top = self.players[owner].rope_top;
         let anchor = surface.position(local, Fix::ZERO);
-        let rope = &mut self.ropes[rope_index];
-        rope.platform = Some(platform_index);
-        rope.platform_local = local;
-        rope.platform_anchor = anchor;
-        rope.platform_pull = data::get().ropes.platform_pull;
-        rope.platform_top = top;
-        rope.platform_attach_tick = self.tick;
         // RopeAttachment is the prefab's only MonoUpdatable.
-        self.register_prefab(data::get().prefab("RopeAttachment"));
+        let registrations = data::get().prefab("RopeAttachment");
+        let hierarchy = self.register_prefab(registrations) + registrations[0];
+        self.ropes[rope_index].attach[usize::from(!top)] = RopeAttachment {
+            platform: Some(platform_index),
+            local,
+            anchor,
+            pull: data::get().ropes.platform_pull,
+            attach_tick: self.tick,
+            turn: Some((self.tick + 1, hierarchy)),
+            ..RopeAttachment::EMPTY
+        };
         let slot = &mut self.players[owner];
         slot.rope_prev[slot.rope_body()] = (slot.base.velocity, slot.base.external_velocity);
         slot.rope = None;
@@ -31456,15 +31489,15 @@ impl RolloutWorld {
                 effect.source -= 1;
             }
         }
-        for rope in &mut self.ropes {
-            let Some(platform_index) = rope.platform else {
+        for attachment in self.ropes.iter_mut().flat_map(|rope| &mut rope.attach) {
+            let Some(platform_index) = attachment.platform else {
                 continue;
             };
             if platform_index == index {
-                rope.platform = None;
-                rope.platform_gone = true;
+                attachment.platform = None;
+                attachment.gone = true;
             } else if platform_index > index {
-                rope.platform = Some(platform_index - 1);
+                attachment.platform = Some(platform_index - 1);
             }
         }
         self.platforms.remove(index);
@@ -34506,9 +34539,9 @@ impl RolloutWorld {
                 self.mark_wall_nodes_destroyed(i);
                 // A newer RopeAttachment on it sees IsDestroyed this pass.
                 let hierarchy = self.platform_turn_key(i).2 - 100_000_000;
-                for rope in &mut self.ropes {
-                    if rope.platform == Some(i) {
-                        rope.platform_destroyed_at = (self.tick, hierarchy);
+                for attachment in self.ropes.iter_mut().flat_map(|rope| &mut rope.attach) {
+                    if attachment.platform == Some(i) {
+                        attachment.destroyed_at = (self.tick, hierarchy);
                     }
                 }
                 return;

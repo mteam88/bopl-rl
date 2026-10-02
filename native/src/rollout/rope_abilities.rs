@@ -79,41 +79,15 @@ pub(crate) struct RolloutRope {
     pub disabled_this_frame: bool,
     pub time_air_start: Fix,
     pub time_air_end: Fix,
-    pub platform: Option<usize>,
-    pub platform_local: Fix,
-    /// RopeAttachment.unscaledParentOffset: where on a non-platform parent
-    /// the end sits, in the parent's unrotated, unscaled frame. RopeHook
-    /// passes the collider centre, so it is zero except on LethalTerrain,
-    /// which keeps the hook's own position.
-    pub parent_offset: Vec2,
-    /// RopeAttachment's own fixTrans.position: placed on attach and by each
-    /// RepositionOnParent, or on an object parent's position, and read by
-    /// the next pull before it moves again.
-    pub platform_anchor: Vec2,
-    /// RopeAttachment.effectivePlatformPullStr switches on Boulder parents.
-    pub platform_pull: Fix,
-    /// RopeAttachment.topAttachment. Web/Grapple platform anchors use the
-    /// top endpoint; PlatformTransform can transfer either player endpoint.
-    pub platform_top: bool,
-    /// A dynamically instantiated RopeAttachment joins Updater next pass.
-    pub platform_attach_tick: u32,
-    /// The platform was removed; the attachment lets go in its next UpdateSim
-    /// and holds the end at `platform_anchor` until then.
-    pub platform_gone: bool,
-    /// The pass and updater hierarchy of an UpdateSim that DestroyFix'd the
-    /// platform; an older RopeAttachment still saw it alive that pass.
-    pub platform_destroyed_at: (u32, u32),
+    /// The RopeAttachments holding its ends, `[0]` the top (topAttachment)
+    /// and `[1]` the bottom: the hook prefab's own, or the one WebSwing
+    /// instantiates, on the top end, and one PlatformTransform.CreatePlatform
+    /// instantiates on the end its PlayerBody held (PlatformTransform.cs:171-183).
+    pub attach: [RopeAttachment; 2],
     /// Where the hook met a platform this pass. RopeHook.OnCollide takes the
     /// surface coordinate after DetPhysics synced the platform the contact
     /// passes pushed.
     pub hook_hit: Option<Vec2>,
-    /// RopeHook.OnCollide takes the hit collider's centre, so a rope that
-    /// meets a black hole hangs off the hole's centre.
-    pub black_hole: Option<usize>,
-    pub black_hole_reel_frames: usize,
-    /// A body the hook stuck to through AttachToNonPlatform: the rope hangs
-    /// off its collider centre and pulls on it.
-    pub parent: Option<RopeParent>,
     pub segment_ids: [u32; MAX_SEGMENTS - 1],
     pub hook_active: bool,
     pub hook_remove_next: bool,
@@ -127,6 +101,62 @@ pub(crate) struct RolloutRope {
     pub reel_in: bool,
     /// Rope.hookArrived: the hook met something it collides with.
     pub hook_arrived: bool,
+}
+
+/// One RopeAttachment component and the end of its rope it holds
+/// (RopeAttachment.cs).
+#[derive(Clone, Copy)]
+pub(crate) struct RopeAttachment {
+    pub platform: Option<usize>,
+    /// LocalPlatformPosition on `platform`.
+    pub local: Fix,
+    /// unscaledParentOffset: where on a non-platform parent the end sits, in
+    /// the parent's unrotated, unscaled frame. RopeHook passes the collider
+    /// centre, so it is zero except on LethalTerrain, which keeps the hook's
+    /// own position.
+    pub offset: Vec2,
+    /// fixTrans.position: placed on attach and by each RepositionOnParent,
+    /// or on an object parent's position, and read by the next pull before
+    /// it moves again.
+    pub anchor: Vec2,
+    /// effectivePlatformPullStr switches on Boulder parents.
+    pub pull: Fix,
+    /// A dynamically instantiated RopeAttachment joins Updater next pass.
+    pub attach_tick: u32,
+    /// The platform was removed; the attachment lets go in its next UpdateSim
+    /// and holds the end at `anchor` until then.
+    pub gone: bool,
+    /// The pass and updater hierarchy of an UpdateSim that DestroyFix'd the
+    /// platform; an older RopeAttachment still saw it alive that pass.
+    pub destroyed_at: (u32, u32),
+    /// RopeHook.OnCollide takes the hit collider's centre, so a rope that
+    /// meets a black hole hangs off the hole's centre.
+    pub black_hole: Option<usize>,
+    pub reel_frames: usize,
+    /// A body the hook stuck to through AttachToNonPlatform: the rope hangs
+    /// off its collider centre and pulls on it.
+    pub parent: Option<RopeParent>,
+    /// The Updater place of an instantiated RopeAttachment prefab, appended
+    /// and numbered; the hook's own and WebSwing's take their turn with the
+    /// rope.
+    pub turn: Option<(u32, u32)>,
+}
+
+impl RopeAttachment {
+    pub(super) const EMPTY: Self = Self {
+        platform: None,
+        local: Fix::ZERO,
+        offset: Vec2::ZERO,
+        anchor: Vec2::ZERO,
+        pull: PLATFORM_PULL,
+        attach_tick: 0,
+        gone: false,
+        destroyed_at: (0, 0),
+        black_hole: None,
+        reel_frames: 0,
+        parent: None,
+        turn: None,
+    };
 }
 
 /// What a RopeHook's circle met in one DetPhysics pair.
@@ -474,19 +504,8 @@ fn empty_rope() -> RolloutRope {
         disabled_this_frame: false,
         time_air_start: Fix::ZERO,
         time_air_end: Fix::ZERO,
-        platform: None,
-        platform_local: Fix::ZERO,
-        parent_offset: Vec2::ZERO,
-        platform_anchor: Vec2::ZERO,
-        platform_pull: PLATFORM_PULL,
-        platform_top: true,
-        platform_attach_tick: 0,
-        platform_gone: false,
-        platform_destroyed_at: (0, 0),
+        attach: [RopeAttachment::EMPTY; 2],
         hook_hit: None,
-        black_hole: None,
-        black_hole_reel_frames: 0,
-        parent: None,
         segment_ids: [0; MAX_SEGMENTS - 1],
         hook_active: false,
         hook_remove_next: false,
@@ -592,19 +611,20 @@ impl RolloutWorld {
         } else {
             Fix::from_int(100)
         };
-        rope.platform = platform;
-        rope.platform_local = platform_local;
-        rope.platform_anchor = platform.map_or(Vec2::ZERO, |platform| {
+        rope.attach[0].platform = platform;
+        rope.attach[0].local = platform_local;
+        rope.attach[0].anchor = platform.map_or(Vec2::ZERO, |platform| {
             self.platforms[platform].surface.position(platform_local, Fix::ZERO)
         });
-        rope.platform_gone = false;
+        rope.attach[0].gone = false;
         rope.hook_hit = None;
-        rope.platform_pull = platform_pull;
-        rope.platform_top = true;
-        rope.platform_attach_tick = self.tick;
-        rope.black_hole = None;
-        rope.black_hole_reel_frames = 0;
-        rope.parent = None;
+        rope.attach[0].pull = platform_pull;
+        rope.attach[0].attach_tick = self.tick;
+        rope.attach[0].black_hole = None;
+        rope.attach[0].reel_frames = 0;
+        rope.attach[0].parent = None;
+        rope.attach[0].turn = None;
+        rope.attach[1] = RopeAttachment::EMPTY;
         rope.segment_ids = segment_ids;
         let body = &mut rope.physics;
         body.count = SEGMENTS;
@@ -1389,14 +1409,14 @@ impl RolloutWorld {
                 continue;
             }
             let hierarchy = self.ropes[index].hierarchy;
-            if let Some(hole_index) = self.ropes[index].black_hole {
+            if let Some(hole_index) = self.ropes[index].attach[0].black_hole {
                 if hole_index >= self.black_holes.len()
                     || !self.black_holes[hole_index].active
                     || self.blink_object_hidden(self.black_holes[hole_index].entity)
                     || self.black_holes[hole_index].mass <= Fix::ZERO
                 {
                     self.deattach_rope(index, true);
-                    self.ropes[index].black_hole = None;
+                    self.ropes[index].attach[0].black_hole = None;
                     continue;
                 }
                 let hole = self.black_holes[hole_index];
@@ -1404,8 +1424,8 @@ impl RolloutWorld {
                     && !self.ropes[index].physics.detached
                     && !stopped
                 {
-                    self.ropes[index].black_hole_reel_frames += 1;
-                    let frame = self.ropes[index].black_hole_reel_frames;
+                    self.ropes[index].attach[0].reel_frames += 1;
+                    let frame = self.ropes[index].attach[0].reel_frames;
                     if ((frame > 60 && frame.is_multiple_of(3))
                         || (frame <= 60 && frame.is_multiple_of(8))
                         || self.ropes[index].physics.count < 8)
@@ -1426,105 +1446,16 @@ impl RolloutWorld {
                         > PLATFORM_BREAK_STRETCH
                 }) {
                     self.deattach_rope(index, true);
-                    self.ropes[index].black_hole = None;
+                    self.ropes[index].attach[0].black_hole = None;
                 }
                 continue;
             }
             // RopeAttachment on an object takes its own turn: rope_parent_step.
-            if self.ropes[index].parent.is_some() {
+            if self.ropes[index].attach[0].parent.is_some() {
                 continue;
             }
-            if self.ropes[index].platform_gone
-                && self.ropes[index].platform_destroyed_at.0 == self.tick
-                && hierarchy < self.ropes[index].platform_destroyed_at.1
-            {
-                // The platform is destroyed later in this pass, so this
-                // attachment held the end on it, where it last stood.
-                let rope = &mut self.ropes[index];
-                let endpoint = if rope.platform_top { 0 } else { rope.physics.count - 1 };
-                rope.physics.segment[endpoint] = rope.platform_anchor;
-                continue;
-            }
-            if std::mem::take(&mut self.ropes[index].platform_gone) {
-                let top = self.ropes[index].platform_top;
-                self.deattach_rope(index, top);
-                continue;
-            }
-            let Some(platform) = self.ropes[index].platform else {
-                continue;
-            };
-            if self.ropes[index].platform_attach_tick == self.tick {
-                continue;
-            }
-            // A boulder's DestroyIfOutsideSceneBounds, older than this
-            // RopeAttachment, drowns it earlier in the pass; an evicted
-            // platform's ResizablePlatform may have destroyed it already too.
-            if platform >= self.platforms.len()
-                || self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
-                || !self.platforms[platform].active
-                || self.boulder_drowns_before(platform, hierarchy)
-                || (self.ropes[index].platform_destroyed_at.0 == self.tick
-                    && self.ropes[index].platform_destroyed_at.1 < hierarchy)
-            {
-                let top = self.ropes[index].platform_top;
-                self.deattach_rope(index, top);
-                self.ropes[index].platform = None;
-                continue;
-            }
-            let top = self.ropes[index].platform_top;
-            let endpoint = if top {
-                0
-            } else {
-                self.ropes[index].physics.count - 1
-            };
-            let neighbor = if top {
-                1
-            } else {
-                self.ropes[index].physics.count - 2
-            };
-            let anchor = self.platforms[platform]
-                .surface
-                .position(self.ropes[index].platform_local, Fix::ZERO);
-            if self.ropes[index].physics.time_since_hook_arrived > Fix::ZERO
-                && !self.ropes[index].physics.detached
-                && !stopped
-            {
-                let force = (self.ropes[index].physics.segment[endpoint]
-                    - self.ropes[index].physics.segment[neighbor])
-                    * self.ropes[index].platform_pull;
-                let arm = (self.ropes[index].platform_anchor - self.platforms[platform].surface.center)
-                    .normalized_safe();
-                self.platform_dynamics[platform]
-                    .body
-                    .apply_impulse(force, arm);
-                moved_platform = true;
-            }
-            if top {
-                self.ropes[index].time_air_start = Fix::ZERO;
-            } else {
-                self.ropes[index].time_air_end = Fix::ZERO;
-            }
-            let scale = PLATFORM_HEAVINESS / self.platform_dynamics[platform].body.inverse_mass;
-            self.ropes[index]
-                .physics
-                .set_mass(PLATFORM_MASS, top, scale);
-            if top {
-                self.ropes[index].physics.force_start = Vec2::ZERO;
-            } else {
-                self.ropes[index].physics.force_end = Vec2::ZERO;
-            }
-            self.ropes[index].physics.segment[endpoint] = anchor;
-            self.ropes[index].platform_anchor = anchor;
-            for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
-                if (self.ropes[index].physics.segment[segment]
-                    - self.ropes[index].physics.segment[segment + 1])
-                    .length_squared()
-                    > PLATFORM_BREAK_STRETCH
-                {
-                    self.deattach_rope(index, top);
-                    self.ropes[index].platform = None;
-                    break;
-                }
+            if self.ropes[index].attach[0].turn.is_none() {
+                moved_platform |= self.rope_platform_hold(index, 0, hierarchy, stopped);
             }
         }
         if moved_platform {
@@ -1547,6 +1478,127 @@ impl RolloutWorld {
         self.platforms[platform].active
     }
 
+    /// A platform RopeAttachment's UpdateSim on rope `index`'s end held by
+    /// attachment `slot`, at Updater number `hierarchy`: let go of a platform
+    /// gone or out of the hierarchy, pull it by the end's stretch, and pin
+    /// the end on it (RopeAttachment.cs:85-151). Whether it pushed the
+    /// platform.
+    fn rope_platform_hold(&mut self, index: usize, slot: usize, hierarchy: u32, stopped: bool) -> bool {
+        let mut moved = false;
+        if self.ropes[index].attach[slot].gone
+            && self.ropes[index].attach[slot].destroyed_at.0 == self.tick
+            && hierarchy < self.ropes[index].attach[slot].destroyed_at.1
+        {
+            // The platform is destroyed later in this pass, so this
+            // attachment held the end on it, where it last stood.
+            let rope = &mut self.ropes[index];
+            let endpoint = if slot == 0 { 0 } else { rope.physics.count - 1 };
+            rope.physics.segment[endpoint] = rope.attach[slot].anchor;
+            return false;
+        }
+        if std::mem::take(&mut self.ropes[index].attach[slot].gone) {
+            self.deattach_rope(index, slot == 0);
+            return false;
+        }
+        let Some(platform) = self.ropes[index].attach[slot].platform else {
+            return false;
+        };
+        if self.ropes[index].attach[slot].attach_tick == self.tick {
+            return false;
+        }
+        // A boulder's DestroyIfOutsideSceneBounds, older than this
+        // RopeAttachment, drowns it earlier in the pass; an evicted
+        // platform's ResizablePlatform may have destroyed it already too.
+        if platform >= self.platforms.len()
+            || self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
+            || !self.platforms[platform].active
+            || self.boulder_drowns_before(platform, hierarchy)
+            || (self.ropes[index].attach[slot].destroyed_at.0 == self.tick
+                && self.ropes[index].attach[slot].destroyed_at.1 < hierarchy)
+        {
+            self.deattach_rope(index, slot == 0);
+            self.ropes[index].attach[slot].platform = None;
+            return false;
+        }
+        let top = slot == 0;
+        let endpoint = if top {
+            0
+        } else {
+            self.ropes[index].physics.count - 1
+        };
+        let neighbor = if top {
+            1
+        } else {
+            self.ropes[index].physics.count - 2
+        };
+        let anchor = self.platforms[platform]
+            .surface
+            .position(self.ropes[index].attach[slot].local, Fix::ZERO);
+        if self.ropes[index].physics.time_since_hook_arrived > Fix::ZERO
+            && !self.ropes[index].physics.detached
+            && !stopped
+        {
+            let force = (self.ropes[index].physics.segment[endpoint]
+                - self.ropes[index].physics.segment[neighbor])
+                * self.ropes[index].attach[slot].pull;
+            let arm = (self.ropes[index].attach[slot].anchor - self.platforms[platform].surface.center)
+                .normalized_safe();
+            self.platform_dynamics[platform]
+                .body
+                .apply_impulse(force, arm);
+            moved = true;
+        }
+        if top {
+            self.ropes[index].time_air_start = Fix::ZERO;
+        } else {
+            self.ropes[index].time_air_end = Fix::ZERO;
+        }
+        let scale = PLATFORM_HEAVINESS / self.platform_dynamics[platform].body.inverse_mass;
+        self.ropes[index]
+            .physics
+            .set_mass(PLATFORM_MASS, top, scale);
+        if top {
+            self.ropes[index].physics.force_start = Vec2::ZERO;
+        } else {
+            self.ropes[index].physics.force_end = Vec2::ZERO;
+        }
+        self.ropes[index].physics.segment[endpoint] = anchor;
+        self.ropes[index].attach[slot].anchor = anchor;
+        for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
+            if (self.ropes[index].physics.segment[segment]
+                - self.ropes[index].physics.segment[segment + 1])
+                .length_squared()
+                > PLATFORM_BREAK_STRETCH
+            {
+                self.deattach_rope(index, top);
+                self.ropes[index].attach[slot].platform = None;
+                break;
+            }
+        }
+        moved
+    }
+
+    /// The Updater key of a RopeAttachment prefab PlatformTransform
+    /// instantiated on rope `index`'s end `slot`.
+    pub(super) fn rope_end_attachment_key(&self, index: usize, slot: usize) -> Option<UpdaterKey> {
+        let (appended, hierarchy) = self.ropes[index].attach[slot].turn?;
+        Some(self.updater_member_key(appended, 100_000_000 + hierarchy))
+    }
+
+    /// That RopeAttachment's UpdateSim at its own turn in Updater's walk.
+    pub(super) fn rope_end_attachment_step(&mut self, index: usize, slot: usize) {
+        let Some((appended, hierarchy)) = self.ropes[index].attach[slot].turn else {
+            return;
+        };
+        if !self.ropes[index].physics.enabled || appended > self.tick {
+            return;
+        }
+        let stopped = self.player_time_scale < Fix::from_f32(0.01);
+        if self.rope_platform_hold(index, slot, hierarchy, stopped) {
+            self.platforms_changed();
+        }
+    }
+
     /// The Updater key of the RopeAttachment on rope `index`'s hook: the
     /// hook prefab's member numbered HOOK_ATTACHMENT_LOCAL.
     pub(super) fn rope_attachment_key(&self, index: usize) -> UpdaterKey {
@@ -1565,7 +1617,7 @@ impl RolloutWorld {
             if !self.ropes[index].physics.enabled || self.ropes[index].appended > self.tick {
                 return;
             }
-            let Some(parent) = self.ropes[index].parent else {
+            let Some(parent) = self.ropes[index].attach[0].parent else {
                 return;
             };
             let hierarchy = self.ropes[index].hierarchy;
@@ -1575,11 +1627,11 @@ impl RolloutWorld {
                 &self.portal_shots,
                 (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines),
                 parent,
-                self.ropes[index].parent_offset,
+                self.ropes[index].attach[0].offset,
             )
             .filter(|_| self.parent_platform_active(parent)) else {
                 self.deattach_rope(index, true);
-                self.ropes[index].parent = None;
+                self.ropes[index].attach[0].parent = None;
                 return;
             };
             let physics = &self.ropes[index].physics;
@@ -1601,7 +1653,7 @@ impl RolloutWorld {
                     RopeParent::Engine(engine, _) => self.engines[engine].transform_position,
                     _ => position,
                 };
-                let arm = (self.ropes[index].platform_anchor - centre).normalized_safe();
+                let arm = (self.ropes[index].attach[0].anchor - centre).normalized_safe();
                 let body = match parent {
                     RopeParent::Rock(player) => Some(&mut self.players[player].rock.body),
                     RopeParent::Item(item, _) => Some(&mut self.thrown_items[item].body),
@@ -1630,7 +1682,7 @@ impl RolloutWorld {
                     arrow.angular_velocity += arrow.inverse_inertia * arm.cross(force);
                 }
             }
-            self.ropes[index].platform_anchor = position;
+            self.ropes[index].attach[0].anchor = position;
             for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
                 if (self.ropes[index].physics.segment[segment]
                     - self.ropes[index].physics.segment[segment + 1])
@@ -1638,7 +1690,7 @@ impl RolloutWorld {
                     > PLATFORM_BREAK_STRETCH
                 {
                     self.deattach_rope(index, true);
-                    self.ropes[index].parent = None;
+                    self.ropes[index].attach[0].parent = None;
                     break;
                 }
             }
@@ -1739,13 +1791,13 @@ impl RolloutWorld {
             let Some(position) = rope.hook_hit.take() else {
                 continue;
             };
-            let Some(platform) = rope.platform else {
+            let Some(platform) = rope.attach[0].platform else {
                 continue;
             };
             let surface = &self.platforms[platform].surface;
             if let Ok(local) = surface.local_position(position, Fix::ZERO) {
-                rope.platform_local = local;
-                rope.platform_anchor = surface.position(local, Fix::ZERO);
+                rope.attach[0].local = local;
+                rope.attach[0].anchor = surface.position(local, Fix::ZERO);
             }
         }
     }
@@ -1880,11 +1932,11 @@ impl RolloutWorld {
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
-                rope.platform = Some(platform);
-                rope.platform_local = local;
-                rope.platform_anchor = anchor;
+                rope.attach[0].platform = Some(platform);
+                rope.attach[0].local = local;
+                rope.attach[0].anchor = anchor;
                 rope.hook_hit = Some(position);
-                rope.platform_pull = platform_pull;
+                rope.attach[0].pull = platform_pull;
                 rope.reel_in = true;
                 rope.hook_arrived = true;
                 rope.hook_active = false;
@@ -1915,9 +1967,9 @@ impl RolloutWorld {
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
                 rope.physics.set_mass(source.non_platform_mass, true, Fix::ONE);
                 rope.time_air_start = Fix::ONE;
-                rope.platform = None;
-                rope.black_hole = Some(hole_index);
-                rope.black_hole_reel_frames = 0;
+                rope.attach[0].platform = None;
+                rope.attach[0].black_hole = Some(hole_index);
+                rope.attach[0].reel_frames = 0;
                 rope.reel_in = true;
                 rope.hook_arrived = true;
                 rope.hook_active = false;
@@ -2041,12 +2093,12 @@ impl RolloutWorld {
         rope.physics.time_since_hook_arrived = Fix::ZERO;
         rope.physics.set_mass(source.non_platform_mass, true, scale);
         rope.time_air_start = Fix::ONE;
-        rope.platform = None;
+        rope.attach[0].platform = None;
         // The attachment shares the hook's GameObject, so its transform stays
         // on the hook until a pass re-places it.
-        rope.platform_anchor = rope.hook_position;
-        rope.parent = Some(parent);
-        rope.parent_offset = offset;
+        rope.attach[0].anchor = rope.hook_position;
+        rope.attach[0].parent = Some(parent);
+        rope.attach[0].offset = offset;
         rope.reel_in = true;
         rope.hook_arrived = true;
         rope.hook_active = false;
@@ -2202,29 +2254,26 @@ impl RolloutWorld {
             // current Updater list, so its RopeAttachment has no late pass
             // on the cast tick. PlayerBody is an authored component and does
             // pin the player endpoint immediately.
-            if rope.appended <= self.tick
-                && let Some(platform) = rope.platform
-                && rope.platform_attach_tick != self.tick
-            {
-                let endpoint = if rope.platform_top {
-                    0
-                } else {
-                    rope.physics.count - 1
-                };
-                // RepositionOnParent skips a destroyed platform, and the end
-                // stays where the attachment last stood (RopeAttachment.cs).
-                if self.entities[self.platform_entities[platform]].flags & E_DESTROYED == 0 {
-                    rope.platform_anchor =
-                        self.platforms[platform].surface.position(rope.platform_local, Fix::ZERO);
+            for (slot, attachment) in rope.attach.iter_mut().enumerate() {
+                let endpoint = if slot == 0 { 0 } else { rope.physics.count - 1 };
+                if rope.appended <= self.tick
+                    && let Some(platform) = attachment.platform
+                    && attachment.attach_tick != self.tick
+                {
+                    // RepositionOnParent skips a destroyed platform, and the end
+                    // stays where the attachment last stood (RopeAttachment.cs).
+                    if self.entities[self.platform_entities[platform]].flags & E_DESTROYED == 0 {
+                        attachment.anchor =
+                            self.platforms[platform].surface.position(attachment.local, Fix::ZERO);
+                    }
+                    rope.physics.segment[endpoint] = attachment.anchor;
                 }
-                rope.physics.segment[endpoint] = rope.platform_anchor;
-            }
-            if rope.platform_gone {
-                let endpoint = if rope.platform_top { 0 } else { rope.physics.count - 1 };
-                rope.physics.segment[endpoint] = rope.platform_anchor;
+                if attachment.gone {
+                    rope.physics.segment[endpoint] = attachment.anchor;
+                }
             }
             if rope.appended <= self.tick
-                && let Some(hole_index) = rope.black_hole
+                && let Some(hole_index) = rope.attach[0].black_hole
                 && hole_index < self.black_holes.len()
                 && self.black_holes[hole_index].active
             {
@@ -2236,7 +2285,7 @@ impl RolloutWorld {
             // still holds the end where it landed. A hook that lands on its
             // cast tick leaves the end on the hook: the attachment has no late
             // pass yet (RopeAttachment.cs:170-178).
-            let position = match rope.parent {
+            let position = match rope.attach[0].parent {
                 _ if rope.appended > self.tick => None,
                 Some(RopeParent::Shot(shot, born)) if shots[shot].appended == born => {
                     Some(shots[shot].position)
@@ -2258,11 +2307,11 @@ impl RolloutWorld {
                     Some(spikes.2[arrow].position)
                 }
                 parent => parent.and_then(|parent| {
-                    parent_position(players, items, shots, spikes, parent, rope.parent_offset)
+                    parent_position(players, items, shots, spikes, parent, rope.attach[0].offset)
                 }),
             };
             if let Some(position) = position {
-                rope.platform_anchor = position;
+                rope.attach[0].anchor = position;
                 rope.physics.segment[0] = position;
             }
             if rope.hook_active {
@@ -2279,14 +2328,14 @@ impl RolloutWorld {
             if !rope.physics.enabled || rope.appended > self.tick || rope.hook_active {
                 continue;
             }
-            let Some(RopeParent::Item(item, id)) = rope.parent else {
+            let Some(RopeParent::Item(item, id)) = rope.attach[0].parent else {
                 continue;
             };
             let mine = &self.thrown_items[item];
             if mine.id != id || mine.ability != ABILITY_MINE || mine.hierarchy_base >= rope.hierarchy {
                 continue;
             }
-            rope.platform_anchor = mine.position;
+            rope.attach[0].anchor = mine.position;
             rope.physics.segment[0] = mine.position;
         }
     }
