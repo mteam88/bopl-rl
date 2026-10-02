@@ -2244,6 +2244,8 @@ struct SlimeMut<'a> {
     /// PlayerBody.ropeBody and topAttachment.
     rope: Option<usize>,
     rope_top: bool,
+    /// SlimeController.inputVector.
+    input: Vec2,
 }
 
 impl SlimeMut<'_> {
@@ -2266,6 +2268,35 @@ impl SlimeMut<'_> {
         self.base.velocity = Vec2::new(speed.x / Fix::from_f32(1.5), speed.y);
         if right != Vec2::ZERO {
             self.base.set_right(right);
+        }
+    }
+
+    /// SlimeController.EnterFall (SlimeController.cs:263-272): AlignTransformAir,
+    /// State.fall, and VelocityBasedRaycasts (attachToGroundIfHit), which may
+    /// land the slime at once.
+    fn enter_fall(&mut self, walls: &mut impl Walls) {
+        self.align_transform_air();
+        *self.obs_state = STATE_FALL;
+        *self.state_ticks = 0;
+        // The rays' attachToGround callback enters State.land at once and
+        // turns a slime set down on a ceiling (SlimeController.cs:270,
+        // 1126-1134), even on a pass whose state switch already ran, and even
+        // a slime still attached that the rays meet its ground again.
+        if self.base.collision_rays(walls) {
+            self.attach_to_ground();
+        }
+    }
+
+    /// EnterFall's AlignTransformAir, against the slime's stale inputVector
+    /// (SlimeController.cs:263-266, 967-982).
+    fn align_transform_air(&mut self) {
+        if std::mem::take(&mut self.base.was_upside_down) {
+            *self.facing_right = !*self.facing_right;
+        }
+        if self.input.x < -Fix::from_f32(0.02) {
+            *self.facing_right = false;
+        } else if self.input.x > Fix::from_f32(0.02) {
+            *self.facing_right = true;
         }
     }
 
@@ -2502,6 +2533,8 @@ pub struct AbilitylessClone {
     pub state_ticks: u32,
     pub facing_right: bool,
     pub prev_input_align: Fix,
+    /// Its SlimeController.inputVector, as a slime's `slime_input`.
+    pub slime_input: Vec2,
     pub captured_by_ball: Option<usize>,
     pub poke_invulnerable: bool,
     /// Its SlimeController's ragdoll, as a slime's; the body's
@@ -3188,6 +3221,7 @@ impl AbilitylessClone {
             ground_destroyed: &mut self.ground_destroyed,
             rope: self.grip.rope,
             rope_top: self.grip.top,
+            input: self.slime_input,
         }
     }
 
@@ -3824,6 +3858,7 @@ impl PlayerSlot {
             ground_destroyed: &mut self.ground_destroyed,
             rope: self.rope,
             rope_top: self.rope_top,
+            input: self.slime_input,
         }
     }
 
@@ -3847,6 +3882,7 @@ impl PlayerSlot {
             ground_destroyed: &mut self.ground_destroyed,
             rope: self.rope,
             rope_top: self.rope_top,
+            input: self.slime_input,
         }
     }
 
@@ -4271,38 +4307,6 @@ impl PlayerSlot {
     fn empty_prefab_facing(&mut self) {
         self.facing_right = true;
         self.base.was_upside_down = false;
-    }
-
-    /// SlimeController.EnterFall (SlimeController.cs:263-272): AlignTransformAir,
-    /// State.fall, and VelocityBasedRaycasts (attachToGroundIfHit), which may
-    /// land the slime at once.
-    fn enter_fall(&mut self, walls: &mut impl Walls) {
-        self.align_transform_air();
-        self.obs_state = STATE_FALL;
-        self.state_ticks = 0;
-        // The rays' attachToGround callback enters State.land at once and
-        // turns a slime set down on a ceiling (SlimeController.cs:270,
-        // 1126-1134), even on a pass whose state switch already ran, and even
-        // a slime still attached that the rays meet its ground again.
-        if self.base.collision_rays(walls) {
-            if self.base.landed_upside_down == Some(true) {
-                self.facing_right = !self.facing_right;
-            }
-            self.begin_land();
-        }
-    }
-
-    /// EnterFall's AlignTransformAir, against the slime's stale inputVector
-    /// (SlimeController.cs:263-266, 967-982).
-    fn align_transform_air(&mut self) {
-        if std::mem::take(&mut self.base.was_upside_down) {
-            self.facing_right = !self.facing_right;
-        }
-        if self.slime_input.x < -Fix::from_f32(0.02) {
-            self.facing_right = false;
-        } else if self.slime_input.x > Fix::from_f32(0.02) {
-            self.facing_right = true;
-        }
     }
 }
 
@@ -6906,6 +6910,7 @@ impl RolloutWorld {
         slot.state_ticks = clone.state_ticks;
         slot.facing_right = clone.facing_right;
         slot.prev_input_align = clone.prev_input_align;
+        slot.slime_input = clone.slime_input;
         slot.captured_by_ball = clone.captured_by_ball;
         slot.poke_invulnerable = clone.poke_invulnerable;
         slot.set_blink_tunnel(&mut self.entities, clone.blink_tunnel_active);
@@ -13683,7 +13688,7 @@ impl RolloutWorld {
                 slot.state_ticks = 0;
             }
         } else {
-            self.slot_physics(index, |slot, world| slot.enter_fall(world));
+            self.slot_physics(index, |slot, world| slot.slime_mut().enter_fall(world));
         }
         // hurtBox.UpdatePhysicsPositions: later updaters this pass see the slime.
         let slot = &mut self.players[index];
@@ -26461,6 +26466,7 @@ impl RolloutWorld {
             state_ticks: 0,
             facing_right: true,
             prev_input_align: Fix::ZERO,
+            slime_input: Vec2::ZERO,
             captured_by_ball: None,
             poke_invulnerable: false,
             ragdoll: RagdollState::default(),
@@ -29361,7 +29367,7 @@ impl RolloutWorld {
             RagdollPass::Ragdolled => {}
             RagdollPass::Landed => return false,
             RagdollPass::FellOut => {
-                self.slot_physics(index, |slot, world| slot.enter_fall(world));
+                self.slot_physics(index, |slot, world| slot.slime_mut().enter_fall(world));
                 return false;
             }
         }
@@ -35245,11 +35251,7 @@ impl RolloutWorld {
                 RagdollPass::Ragdolled => ragdolled = true,
                 RagdollPass::Landed => {}
                 RagdollPass::FellOut => {
-                    // EnterFall (SlimeController.cs:263-272). Its rays'
-                    // landing is the state switch's to take.
-                    clone.obs_state = STATE_FALL;
-                    clone.state_ticks = 0;
-                    self.clone_physics(clone_index, |clone, walls| clone.base.collision_rays(walls));
+                    self.clone_physics(clone_index, |clone, walls| clone.slime_mut().enter_fall(walls));
                 }
             }
         }
@@ -35267,6 +35269,9 @@ impl RolloutWorld {
                 ..packet.aim_action()
             };
             let movement = packet.input_direction(self.players[owner].keyboard);
+            // OldUpdate's inputVector, past its ragdoll and biting return
+            // (SlimeController.cs:786-792).
+            self.abilityless_clones[clone_index].slime_input = movement;
             let tick = self.tick;
             let integrate = self.clone_physics(clone_index, |clone, walls| {
                 // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
