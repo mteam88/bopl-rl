@@ -2399,6 +2399,10 @@ pub struct ScaleChangerState {
     /// a player target, a nonzero id is the abilityless clone's hurtbox the
     /// changer took as its victim.
     pub entity_id: u32,
+    /// A pooled victim's (Missile, thrown item, Smoke cloud) instance: the
+    /// changer holds the collider itself (ScaleChanger.cs:16, 36), so a newer
+    /// object in the victim's slot is not its victim.
+    pub victim_base: u32,
     pub current_scale: Fix,
     pub time: Fix,
     pub growth: bool,
@@ -27685,6 +27689,12 @@ impl RolloutWorld {
         target_kind: u8,
         growth: bool,
     ) -> usize {
+        let victim_base = match target_kind {
+            1 => self.guided_missiles[victim].hierarchy_base,
+            3 => self.thrown_items[victim].hierarchy_base,
+            4 => self.smoke_clouds[victim].hierarchy_base,
+            _ => 0,
+        };
         let hierarchy_base = self.register_prefab(data::get().prefab(if growth { "GrowRayEffect" } else { "ShrinkRayEffect" }));
         let effect = ScaleChangerState {
             active: true,
@@ -27692,6 +27702,7 @@ impl RolloutWorld {
             victim,
             target_kind,
             entity_id: 0,
+            victim_base,
             current_scale: Fix::ONE,
             time: Fix::ZERO,
             growth,
@@ -27763,6 +27774,7 @@ impl RolloutWorld {
             victim: entity,
             target_kind: 5,
             entity_id: self.entities[entity].id,
+            victim_base: 0,
             current_scale,
             time: Fix::ZERO,
             growth,
@@ -29707,7 +29719,8 @@ impl RolloutWorld {
         }
         if effect.target_kind == 1
             && (effect.victim >= self.guided_missiles.len()
-                || !self.guided_missiles[effect.victim].active)
+                || !self.guided_missiles[effect.victim].active
+                || self.guided_missiles[effect.victim].hierarchy_base != effect.victim_base)
         {
             self.scale_changers[index].active = false;
             self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
@@ -29715,7 +29728,8 @@ impl RolloutWorld {
         }
         if effect.target_kind == 3
             && (effect.victim >= self.thrown_items.len()
-                || !self.thrown_items[effect.victim].active)
+                || !self.thrown_items[effect.victim].active
+                || self.thrown_items[effect.victim].hierarchy_base != effect.victim_base)
         {
             self.scale_changers[index].active = false;
             self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
@@ -29723,7 +29737,8 @@ impl RolloutWorld {
         }
         if effect.target_kind == 4
             && (effect.victim >= self.smoke_clouds.len()
-                || !self.smoke_clouds[effect.victim].active)
+                || !self.smoke_clouds[effect.victim].active
+                || self.smoke_clouds[effect.victim].hierarchy_base != effect.victim_base)
         {
             self.scale_changers[index].active = false;
             self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
