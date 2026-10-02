@@ -3595,6 +3595,17 @@ pub struct PlayerSlot {
     pub revival_effect_position: Vec2,
     /// ReviveParticle's distanceToTravel and distanceTravelled after Shoot.
     pub revival_particle: Option<(Fix, Fix)>,
+    /// The ReviveEffect's place in Updater's list: the pass after the kill
+    /// that instantiated it, and its prefab's base. Every clone of that kill
+    /// shares it.
+    pub revival_effect_appended: u32,
+    pub revival_effect_hierarchy: u32,
+    /// This clone's index in the ReviveEffect's playersToRevive, the order
+    /// Shoot sends their particles in.
+    pub revival_clone_id: usize,
+    /// The ReviveParticle's place in Updater's list, from Shoot.
+    pub revival_particle_appended: u32,
+    pub revival_particle_hierarchy: u32,
     /// Marker owned by each equipped Teleport instance. The first cast fills
     /// it; the second consumes it and queues the two-way area swap.
     pub teleport_markers: [Option<usize>; 3],
@@ -4451,7 +4462,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 40 | 41)
+    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 40 | 41 | 42)
 }
 
 /// The place just after `key`.
@@ -6253,6 +6264,11 @@ impl RolloutWorld {
                 revival_effect_ticks: 0,
                 revival_effect_position: Vec2::ZERO,
                 revival_particle: None,
+                revival_effect_appended: 0,
+                revival_effect_hierarchy: 0,
+                revival_clone_id: 0,
+                revival_particle_appended: 0,
+                revival_particle_hierarchy: 0,
                 teleport_markers: [None; 3],
                 teleport_ignore_cooldown: [false; 3],
                 portal_blue: [None; 3],
@@ -7981,7 +7997,7 @@ impl RolloutWorld {
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
         self.macho_boulders_remove_drowned();
         self.shockwaves_update(data, 0..deferred_to);
-        self.revival_effects_tick(data);
+        self.revival_effects_tick(data, updater_dt);
         self.teleport_effects_tick(data, updater_dt);
         self.teleport_pending_tick(data, updater_dt);
         self.blink_tunnels_tick(data, updater_dt);
@@ -8682,6 +8698,11 @@ impl RolloutWorld {
                 push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 41, i);
             }
         }
+        for i in 0..self.players.len() {
+            if let Some(key) = self.revival_key(i) {
+                push(key, 42, i);
+            }
+        }
         queue.sort_unstable();
         for &(key, kind, index) in &queue {
             // A turn an earlier updatable's own walk already passed is not
@@ -8736,6 +8757,7 @@ impl RolloutWorld {
                 40 => self.portal_shot_step(index, data, updater_dt),
                 19 => self.guided_missile_turn(index, DT * self.player_time_scale, data),
                 41 => self.revival_marker_turn(index, data.maps[self.map].is_space()),
+                42 => self.revival_turn(index, data),
                 _ => unreachable!(),
             }
             // Updater never returns to a turn it has passed: one skipped here,
@@ -21675,73 +21697,143 @@ impl RolloutWorld {
         slot.stock_indicator_hierarchy = [u32::MAX; 3];
     }
 
-    fn revival_effects_tick(&mut self, data: &data::RolloutData) {
-        for index in 0..self.players.len() {
-            if self.players[index].revival_clone_pending
-                || self.players[index].revival_effect_ticks == 0
-            {
-                continue;
-            }
-            let marker_index =
-                self.players[index].revival_target_marker.expect("live Revival effect marker");
-            let target = self.revival_marker_pool[marker_index].position;
-            let Some((distance, mut travelled)) = self.players[index].revival_particle else {
-                let slot = &mut self.players[index];
-                slot.revival_effect_ticks -= 1;
-                if slot.revival_effect_ticks == 0 {
-                    // Shoot measures the particle's distance to the marker
-                    // where it stands now (ReviveParticle.cs:67).
-                    let distance = (target - slot.revival_effect_position).length();
-                    slot.revival_particle = Some((distance, Fix::ZERO));
-                    slot.revival_effect_ticks = 1;
-                    self.register_prefab(data::get().prefab("ReviveParticle 1"));
-                }
-                continue;
-            };
-            // ReviveParticle registers in Awake and again in InitRevive, so it
-            // updates twice a pass, on its player's FixedDeltaTime, or on the
-            // plain one once the clone it revives is destroyed.
-            let revives = self.players[index].base.alive;
-            let dt = if !revives || self.time_stop_protected[index] {
-                DT
-            } else {
-                DT * self.player_time_scale
-            };
-            let step = (data.revival.particle_speed * dt).abs();
-            let mut arrived = false;
-            for _ in 0..2 {
-                if travelled > distance {
-                    break;
-                }
-                travelled += step;
-                if travelled >= distance {
-                    arrived = true;
-                    break;
-                }
-            }
-            if !arrived {
-                self.players[index].revival_particle = Some((distance, travelled));
-                continue;
-            }
-            self.players[index].revival_target_marker = None;
-            self.end_revival_marker(marker_index);
-            let slot = &mut self.players[index];
-            slot.revival_effect_ticks = 0;
-            slot.revival_particle = None;
-            if !revives {
-                continue;
-            }
-            // SlimeController.ReSpawn sets ExtraLife back to NoRevive
-            // (SlimeController.cs:597) and places the clone at the marker.
-            let owner = slot.owner;
-            self.players[owner].extra_life = REVIVE_NONE;
-            let slot = &mut self.players[index];
-            slot.invulnerable &= !INVULNERABLE_REVIVE;
-            slot.base.position = target;
-            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
-            slot.respawn_spawn_ticks = data.player.spawn_anim_ticks + 1;
-            slot.obs_state = STATE_FALL;
+    /// The Updater key of the revival object player `index` waits on, once
+    /// appended: its ReviveEffect until Shoot, then its ReviveParticle.
+    fn revival_key(&self, index: usize) -> Option<UpdaterKey> {
+        let slot = &self.players[index];
+        if slot.revival_effect_ticks == 0 {
+            return None;
         }
+        let key = if slot.revival_particle.is_none() {
+            self.updater_key(slot.revival_effect_appended, 100_000_000 + slot.revival_effect_hierarchy)
+        } else {
+            self.updater_key(slot.revival_particle_appended, 100_000_000 + slot.revival_particle_hierarchy)
+        };
+        (key.0 <= self.tick).then_some(key)
+    }
+
+    /// Each ReviveEffect's and ReviveParticle's turn in Updater's walk, after
+    /// everything listed before it: a Poke Ball older than the particle has
+    /// tested the clone before ReSpawn makes it vulnerable.
+    fn revival_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for index in 0..self.players.len() {
+            let Some(key) = self.revival_key(index) else {
+                continue;
+            };
+            if self.updater_passed(key) {
+                continue;
+            }
+            self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
+            self.revival_turn(index, data);
+        }
+    }
+
+    /// The UpdateSim of player `index`'s revival object at its turn.
+    fn revival_turn(&mut self, index: usize, data: &data::RolloutData) {
+        // A clone retired since the walk listed it has no revival left.
+        if self.players[index].revival_effect_ticks == 0 {
+            return;
+        }
+        if self.players[index].revival_particle.is_none() {
+            self.revive_effect_step(index, data);
+        } else {
+            self.revive_particle_step(index, data);
+        }
+    }
+
+    /// The SpriteAnimator of player `index`'s ReviveEffect. The update that
+    /// ends the wisp animation calls Shoot, which sends a ReviveParticle from
+    /// the effect to each clone's marker in playersToRevive order
+    /// (ReviveEffect.cs:46-66). The clones it revives share the effect, so
+    /// this is their one turn.
+    fn revive_effect_step(&mut self, index: usize, data: &data::RolloutData) {
+        let effect = self.players[index].revival_effect_hierarchy;
+        let mut clones = [None; MAX_BODIES];
+        for (body, slot) in self.players.iter().enumerate() {
+            if slot.revival_effect_ticks > 0
+                && slot.revival_particle.is_none()
+                && slot.revival_effect_hierarchy == effect
+            {
+                clones[slot.revival_clone_id] = Some(body);
+            }
+        }
+        let tick = self.tick;
+        for body in clones.into_iter().flatten() {
+            let slot = &mut self.players[body];
+            slot.revival_effect_ticks -= 1;
+            if slot.revival_effect_ticks > 0 {
+                continue;
+            }
+            // Shoot measures the particle's distance to the marker where it
+            // stands now (ReviveParticle.cs:67).
+            let marker = slot.revival_target_marker.expect("live Revival effect marker");
+            let target = self.revival_marker_pool[marker].position;
+            let distance = (target - slot.revival_effect_position).length();
+            slot.revival_particle = Some((distance, Fix::ZERO));
+            slot.revival_effect_ticks = 1;
+            let particle = data.prefab("ReviveParticle 1");
+            let base = self.register_prefab(particle);
+            // InitRevive registers the ReviveParticle, the prefab's first
+            // updatable, again outside the prefab's window, under the same
+            // HierarchyNumber (ReviveParticle.cs:58-69).
+            self.updater_batch.push((100_000_000 + base + particle[0], base, false));
+            let slot = &mut self.players[body];
+            slot.revival_particle_appended = tick + 1;
+            slot.revival_particle_hierarchy = base;
+        }
+    }
+
+    /// Player `index`'s ReviveParticle. It registers in Awake and again in
+    /// InitRevive, so it updates twice a turn, on its player's
+    /// FixedDeltaTime, or on the plain one once the clone it revives is
+    /// destroyed. Arriving, it ends the marker and the clone ReSpawns there
+    /// (ReviveParticle.cs:76-110).
+    fn revive_particle_step(&mut self, index: usize, data: &data::RolloutData) {
+        let marker_index =
+            self.players[index].revival_target_marker.expect("live Revival effect marker");
+        let target = self.revival_marker_pool[marker_index].position;
+        let (distance, mut travelled) = self.players[index].revival_particle.expect("Revival particle");
+        let revives = self.players[index].base.alive;
+        let dt = if !revives || self.time_stop_protected[index] {
+            DT
+        } else {
+            DT * self.player_time_scale
+        };
+        let step = (data.revival.particle_speed * dt).abs();
+        let mut arrived = false;
+        for _ in 0..2 {
+            if travelled > distance {
+                break;
+            }
+            travelled += step;
+            if travelled >= distance {
+                arrived = true;
+                break;
+            }
+        }
+        if !arrived {
+            self.players[index].revival_particle = Some((distance, travelled));
+            return;
+        }
+        self.players[index].revival_target_marker = None;
+        self.end_revival_marker(marker_index);
+        let slot = &mut self.players[index];
+        slot.revival_effect_ticks = 0;
+        slot.revival_particle = None;
+        if !revives {
+            return;
+        }
+        // SlimeController.ReSpawn sets ExtraLife back to NoRevive
+        // (SlimeController.cs:597) and places the clone at the marker.
+        let owner = slot.owner;
+        self.players[owner].extra_life = REVIVE_NONE;
+        let slot = &mut self.players[index];
+        slot.invulnerable &= !INVULNERABLE_REVIVE;
+        slot.base.position = target;
+        slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+        slot.respawn_spawn_ticks = data.player.spawn_anim_ticks + 1;
+        slot.obs_state = STATE_FALL;
     }
 
     fn shockwaves(&mut self, meteor: bool) -> &mut [Shockwave] {
@@ -36727,12 +36819,15 @@ impl RolloutWorld {
             // along the normal (PlayerCollision.cs:140, PlayerPhysics.cs:366-370).
             slot.revival_effect_position = drop_position + lift;
             slot.revival_particle = None;
+            slot.revival_clone_id = 0;
             slot.respawn_ticks = 0;
             slot.respawn_spawn_ticks = 0;
             slot.obs_state = STATE_NOTHING;
             // SpawnClone makes a clone for every marker, each with a copy of
             // the dying slime's abilities (PlayerCollision.cs:145-152): the
             // dying slot takes the first, an extra body each later one.
+            let mut revived = [index; MAX_BODIES];
+            let mut revived_count = 1;
             for &marker in &markers[1..marker_count] {
                 let Some(body) = self.free_extra_body() else {
                     break;
@@ -36747,10 +36842,17 @@ impl RolloutWorld {
                 clone.clone_ability_hierarchy[..count].copy_from_slice(&ability_bases[..count]);
                 clone.revival_target_marker = Some(marker);
                 clone.revival_clone_position = self.revival_marker_pool[marker].position;
+                clone.revival_clone_id = revived_count;
                 self.players[body] = clone;
+                revived[revived_count] = body;
+                revived_count += 1;
             }
             self.player_kill(owner, killer, cause);
-            self.register_prefab(data::get().prefab("ReviveEffect"));
+            let effect = self.register_prefab(data::get().prefab("ReviveEffect"));
+            for &body in &revived[..revived_count] {
+                self.players[body].revival_effect_appended = self.tick + 1;
+                self.players[body].revival_effect_hierarchy = effect;
+            }
             // Player.RespawnPositions.Clear().
             for body in &mut self.players {
                 if body.owner == owner {
