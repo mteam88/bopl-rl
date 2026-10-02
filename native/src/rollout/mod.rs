@@ -3947,16 +3947,9 @@ impl PlayerSlot {
 
     fn slime_body_returns(&mut self) {
         let form = std::mem::replace(&mut self.base, std::mem::take(&mut self.slime));
+        // Only the Player object's fields cross; the slime's own PlayerPhysics
+        // and PlayerBody take what onExitAbility writes on them afterwards.
         carry_player_object(&mut self.base, &form);
-        // The slime goes on from the form's body wherever the exit writes
-        // nothing over it. ability_exit writes the pose, velocities, ground,
-        // grounded, grounded_speed, scale, radius, constants and box again;
-        // the refused kill keeps grounded_speed and scale, a kill all of it.
-        self.base.collider = form.collider; // leak: collider
-        self.base.synced = form.synced; // leak: synced
-        self.base.collider_rotation = form.collider_rotation; // leak: collider_rotation
-        self.base.collider_up = form.collider_up; // leak: collider_up
-        self.base.collider_basis = form.collider_basis; // leak: collider_basis
         self.forms[self.active_slot].body = form;
     }
 
