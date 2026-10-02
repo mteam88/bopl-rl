@@ -24947,10 +24947,13 @@ impl RolloutWorld {
                 if speed.y > Fix::ZERO
                     && let Some(rope) = body.rope.and_then(|rope| self.ropes.get_mut(rope))
                 {
+                    // Fix.One / (Fix)10L rounds to a raw value one above
+                    // (Fix)0.1.
+                    let time = Fix::ONE / Fix::from_int(10);
                     if body.rope_top {
-                        rope.time_air_start = Fix::from_f64(0.1);
+                        rope.time_air_start = time;
                     } else {
-                        rope.time_air_end = Fix::from_f64(0.1);
+                        rope.time_air_end = time;
                     }
                 }
                 body.apply_ragdoll(data.magnet.fire_ragdoll_duration, speed);
