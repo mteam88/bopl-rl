@@ -2180,6 +2180,9 @@ pub struct MagnetState {
     pub aim: Vec2,
     pub has_fired: bool,
     pub held: MagnetHeld,
+    /// The held object's hierarchy, which tells it from a later object in
+    /// its pool slot (`RolloutWorld::magnet_held_base`).
+    pub held_base: u32,
     pub held_position: Vec2,
     /// TryPickupNearbyItems contributes this cast-pass circle to MagnetGun's
     /// allocation-free StaticUpdate parry sweep.
@@ -23955,12 +23958,8 @@ impl RolloutWorld {
             .expect("valid Magnet gravity constants");
             // A held boulder's hitbox is off for the raycasts
             // (MagnetGun.cs:1216-1225).
-            let held_boulder = match slot.magnet.held {
-                MagnetHeld::Boulder(boulder) if slot.magnet.phase == 3 => {
-                    Some(self.macho_boulders[boulder].platform_index)
-                }
-                _ => None,
-            };
+            let magnet = &self.players[index].magnet;
+            let held_boulder = if magnet.phase == 3 { self.magnet_held_boulder(magnet) } else { None };
             let hidden = held_boulder.filter(|&platform| self.platforms[platform].active);
             if let Some(platform) = hidden {
                 self.platforms[platform].active = false;
@@ -24185,10 +24184,7 @@ impl RolloutWorld {
         // body.fixtrans.Scale, as Ability (hierarchy 3) left it last pass.
         let side = data.magnet.raycast_offset * slot.forms[slot.active_slot].scale;
         let distance = offset_x + Fix::from_int(1000);
-        let excluded_platform = match slot.magnet.held {
-            MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
-            _ => None,
-        };
+        let excluded_platform = self.magnet_held_boulder(&slot.magnet);
         // RaycastForWalls' three RaycastToClosestRoundedRect (MagnetGun.cs:966-968).
         let body_position = slot.base.position;
         let mut ray = |origin: Vec2| {
@@ -24391,8 +24387,10 @@ impl RolloutWorld {
             extra = data.magnet.boulder_extra_offset;
         }
         {
+            let base = self.magnet_held_base(held);
             let slot = &mut self.players[index];
             slot.magnet.held = held;
+            slot.magnet.held_base = base;
             slot.magnet.held_position = position;
             slot.magnet_extra_offsets[slot.active_slot] = extra;
             let divisor = if boulder_recoil {
@@ -24459,6 +24457,7 @@ impl RolloutWorld {
                 // itself through the slime's MagnetSteal holds it all the
                 // same (MagnetGun.cs:690).
                 self.players[index].magnet.held = held;
+                self.players[index].magnet.held_base = self.magnet_held_base(held);
             }
             MagnetHeld::Rock(i) => {
                 self.players[i].rock.body.angular_velocity = data.magnet.locked_angular_velocity;
@@ -24624,10 +24623,7 @@ impl RolloutWorld {
             target.normalized_safe(),
             data.magnet.held_lerp,
         );
-        let excluded_platform = match self.players[index].magnet.held {
-            MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
-            _ => None,
-        };
+        let excluded_platform = self.magnet_held_boulder(&self.players[index].magnet);
         // interpolationWallRaycast's RaycastToClosestRoundedRect (MagnetGun.cs:946).
         if raycast_walls
             && let Some((_, wall, _)) = self.raycast_to_closest_rounded_rect(
@@ -24770,9 +24766,39 @@ impl RolloutWorld {
                 .get(i)
                 .is_some_and(|v| v.active && v.registered && !self.blink_object_hidden(v.entity)),
         };
-        if !valid {
+        if !valid || self.magnet_held_base(held) != self.players[index].magnet.held_base {
             self.players[index].magnet.held = MagnetHeld::Nothing;
         }
+    }
+
+    /// The hierarchy of the object `held` names. Pools reuse a destroyed
+    /// object's slot, and a later object there is not the one MagnetGun
+    /// took: its reference reads IsDestroyed (MagnetGun.cs:908-930). A slime
+    /// is its body slot.
+    fn magnet_held_base(&self, held: MagnetHeld) -> u32 {
+        match held {
+            MagnetHeld::ThrownItem(i) => self.thrown_items[i].hierarchy_base,
+            MagnetHeld::Missile(i) => self.guided_missiles[i].hierarchy_base,
+            MagnetHeld::Arrow(i) => self.arrows[i].hierarchy_base,
+            MagnetHeld::Player(Slime::Clone(i)) => self.abilityless_clones[i].hierarchy_base,
+            MagnetHeld::BlackHole(i) => self.black_holes[i].hierarchy_base,
+            MagnetHeld::Boulder(i) => self.macho_boulders[i].hierarchy_base,
+            MagnetHeld::AbilityPickup(i) => self.ability_pickups[i].hierarchy_base,
+            MagnetHeld::PortalShot(i) => self.portal_shots[i].hierarchy_base,
+            MagnetHeld::RevivalMarker(i) => self.revival_marker_pool[i].hierarchy_base,
+            MagnetHeld::TeleportMarker(i) => self.teleport_marker_pool[i].hierarchy_base,
+            MagnetHeld::Player(Slime::Player(_)) | MagnetHeld::Rock(_) | MagnetHeld::Nothing => 0,
+        }
+    }
+
+    /// The platform of the Boulder the gun took, while it is not destroyed:
+    /// `heldBoulder != null && !heldBoulder.IsDestroyed` (MagnetGun.cs:1220).
+    fn magnet_held_boulder(&self, magnet: &MagnetState) -> Option<usize> {
+        let MagnetHeld::Boulder(boulder) = magnet.held else {
+            return None;
+        };
+        let boulder = &self.macho_boulders[boulder];
+        (boulder.active && boulder.hierarchy_base == magnet.held_base).then_some(boulder.platform_index)
     }
 
     fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
@@ -35550,13 +35576,10 @@ impl RolloutWorld {
     /// The boulder a locked Magnet holds: MagnetGun has its PlayerCollision
     /// ignore the grabbed collider until the lock ends.
     fn magnet_locked_platform(&self, slot: &PlayerSlot) -> Option<usize> {
-        match slot.magnet.held {
-            MagnetHeld::Boulder(boulder)
-                if slot.active == ActiveAbility::Magnet && slot.magnet.phase == 3 =>
-            {
-                Some(self.macho_boulders[boulder].platform_index)
-            }
-            _ => None,
+        if slot.active == ActiveAbility::Magnet && slot.magnet.phase == 3 {
+            self.magnet_held_boulder(&slot.magnet)
+        } else {
+            None
         }
     }
 
