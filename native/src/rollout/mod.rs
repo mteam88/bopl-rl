@@ -566,9 +566,6 @@ pub struct Arrow {
     pub velocity: Vec2,
     pub force: Vec2,
     pub angular_velocity: Fix,
-    /// Pass in which Arrow.UpdateSim already aligned the transform. Later
-    /// spawned updaters such as Gust may change velocity without rerunning it.
-    pub updater_tick: u32,
     /// Arrow.UpdateSim aligns the sprite before DetPhysics applies gravity.
     pub rotation: Fix,
     pub time_passed: Fix,
@@ -596,20 +593,14 @@ impl Arrow {
     }
 
     /// Arrow.UpdateSim on a body nothing holds: its up follows the velocity
-    /// (Arrow.cs:66-74), once per updater pass. A newer updatable that
-    /// pushes the arrow in the same pass, a Gust or the RopeAttachment of a
-    /// hook caught on it, runs after it and calls this first.
-    fn align_to_velocity(&mut self, tick: u32) {
-        if self.updater_tick == tick {
-            return;
-        }
+    /// (Arrow.cs:66-74).
+    fn align_to_velocity(&mut self) {
         let speed = self.velocity.length();
         let up = if speed == Fix::ZERO { Vec2::UP } else { self.velocity / speed };
         // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
         // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
         // arrow's FixTransform, so a straight shot reads 0, not 2pi.
         self.rotation = up.perp_cw().normalized_angle();
-        self.updater_tick = tick;
     }
 
     /// BoplBody.UpdateSim divides the inverse mass and inertia by a scale
@@ -2459,7 +2450,6 @@ pub struct AbilitylessClone {
     pub blink_tunnel_hierarchy: u32,
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
-    pub blink_reactivated_tick: Option<u32>,
     /// Black Hole pull from a hole registered after this clone: it lands
     /// after the clone's PlayerBody.UpdateSim has decayed externalVelocity.
     pub late_pull: Vec2,
@@ -4279,7 +4269,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 32 | 40)
+    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 40)
 }
 
 /// The place just after `key`.
@@ -7867,7 +7857,7 @@ impl RolloutWorld {
         self.abilityless_clones_tick(data, updater_dt);
         self.blink_clone_tunnels_tick(data, updater_dt);
         let physics_dt = DT * self.player_time_scale;
-        self.arrows_integrate(data, updater_dt, physics_dt);
+        self.arrows_integrate(data, physics_dt);
         self.ability_pickups_integrate(physics_dt);
         self.guided_missiles_integrate(data, physics_dt);
         self.thrown_items_integrate(data, updater_dt, physics_dt);
@@ -8514,6 +8504,11 @@ impl RolloutWorld {
                 push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 32, i);
             }
         }
+        for (i, arrow) in self.arrows.iter().enumerate() {
+            if arrow.active && arrow.registered {
+                push(self.updater_key(arrow.appended, 100_000_000 + arrow.hierarchy_base), 31, i);
+            }
+        }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
                 && !self.blink_object_hidden(missile.entity)
@@ -8570,6 +8565,7 @@ impl RolloutWorld {
                 28 => self.gold_mushroom_step(index / 3, index % 3, data),
                 29 => self.rope_parent_step(index),
                 30 => self.rope_end_attachment_step(index / 2, index % 2),
+                31 => self.arrow_turn(index, data, updater_dt),
                 32 => self.frozen_solid_step(index, updater_dt),
                 40 => self.portal_shot_step(index, data, updater_dt),
                 19 => {
@@ -20038,13 +20034,10 @@ impl RolloutWorld {
     /// SmokeCircle's updaters for one cloud: DestroyIfOutsideSceneBounds, the
     /// enter animation's radius, and FlammableSmoke's ignition.
     fn smoke_cloud_update(&mut self, cloud_index: usize, data: &data::RolloutData, updater_dt: Fix) {
-        let entity = self.smoke_clouds[cloud_index].entity;
-        // A QuantumTunnel always updates after the cloud it swallowed, so
-        // the pass that lets the cloud go has already passed it by.
-        if self.blink_object_hidden(entity)
-            || self.blink_object_released(entity)
-            || self.teleport_revealed_this_pass(entity)
-        {
+        // Updater skips an inactive cloud. The QuantumTunnel or
+        // TeleportedObjectEffect holding it is newer, so the pass that lets
+        // it go has already passed it by.
+        if !self.active_self(self.smoke_clouds[cloud_index].entity) {
             return;
         }
         let cloud = self.smoke_clouds[cloud_index];
@@ -21960,15 +21953,11 @@ impl RolloutWorld {
         }
         for target in 0..wave.arrow_count {
             let arrow_index = wave.arrow_indices[target];
-            let tick = self.tick;
             let Some(arrow) = self.arrows.get_mut(arrow_index) else {
                 continue;
             };
             if !arrow.active || !arrow.registered {
                 continue;
-            }
-            if dt > Fix::ZERO && arrow.magnet_hold_ticks < 0 {
-                arrow.align_to_velocity(tick);
             }
             let direction = arrow.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
@@ -26090,7 +26079,6 @@ impl RolloutWorld {
                 // The fresh body spins at the serialized StartAngularVelocity
                 // (BoplBody.cs:233), not the source's live spin.
                 angular_velocity: data.arrow.body.angular_velocity,
-                updater_tick: u32::MAX,
                 rotation: source.rotation,
                 time_passed: source.time_passed,
                 hurt_owner_after: -Fix::ONE,
@@ -26381,7 +26369,6 @@ impl RolloutWorld {
             blink_tunnel_hierarchy: 0,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_released: false,
-            blink_reactivated_tick: None,
             late_pull: Vec2::ZERO,
             ground_destroyed: None,
             grip: rope_abilities::RopeGrip::default(),
@@ -28561,7 +28548,6 @@ impl RolloutWorld {
         clone.blink_tunnel_appended = self.tick + 1;
         clone.blink_tunnel_age = Fix::ZERO;
         clone.blink_tunnel_released = false;
-        clone.blink_reactivated_tick = None;
         // The hidden slime's transform is its body's, position and rotation,
         // ahead of the collider row synced before this pass's move.
         let mut body = clone.base.clone();
@@ -28674,41 +28660,6 @@ impl RolloutWorld {
             self.platforms[platform_index].active = false;
             self.platforms_changed();
         }
-    }
-
-    /// A TeleportedObjectEffect reactivated this object during this pass,
-    /// after the object's own updaters were skipped.
-    fn teleport_revealed_this_pass(&self, entity: Option<usize>) -> bool {
-        let Some(entity) = entity else {
-            return false;
-        };
-        let entity_id = self.entities.get(entity).map_or(0, |row| row.id);
-        self.teleport_object_effects.iter().any(|effect| {
-            !effect.active
-                && effect.revealed_tick == Some(self.tick)
-                && effect.entity == entity
-                && effect.entity_id == entity_id
-        })
-    }
-
-    /// Whether the object's only hider is a TeleportIndicator that ran after
-    /// `hierarchy` on this pass, so the object's updater there already ran.
-    fn teleport_hid_after(&self, entity: Option<usize>, hierarchy: u32) -> bool {
-        let Some(entity) = entity else {
-            return false;
-        };
-        let entity_id = self.entities.get(entity).map_or(0, |row| row.id);
-        let same = |e: usize, id: u32| e == entity && id == entity_id;
-        !self
-            .blink_object_tunnels
-            .iter()
-            .any(|tunnel| tunnel.active && same(tunnel.entity, tunnel.entity_id))
-            && self.teleport_object_effects.iter().any(|effect| {
-                effect.active
-                    && same(effect.entity, effect.entity_id)
-                    && effect.appended > self.tick
-                    && effect.source_hierarchy > hierarchy
-            })
     }
 
     #[inline]
@@ -28967,7 +28918,6 @@ impl RolloutWorld {
         if self.abilityless_clones[clone_index].blink_tunnel_age > data.blink.player_duration {
             let clone = &mut self.abilityless_clones[clone_index];
             clone.blink_tunnel_active = false;
-            clone.blink_reactivated_tick = Some(self.tick);
             if let Some(entity) = clone.entity
                 && self.entities[entity].flags & (E_REMOVED | E_DESTROYED) == 0
             {
@@ -31439,7 +31389,6 @@ impl RolloutWorld {
             velocity,
             force: Vec2::ZERO,
             angular_velocity: Fix::ZERO,
-            updater_tick: u32::MAX,
             rotation,
             time_passed: Fix::ZERO,
             hurt_owner_after,
@@ -31795,79 +31744,77 @@ impl RolloutWorld {
         row.angular_velocity = missile.body.angular_velocity.raw();
     }
 
+    /// Arrow `i`'s updatables at its Updater turn (Updater.cs:298-303):
+    /// DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1), then
+    /// Arrow.UpdateSim (hierarchy 2) and BoplBody's hold countdown. Updater
+    /// skips them while the arrow's GameObject is inactive
+    /// (MonoUpdatable.cs:27-30). The TeleportIndicator, QuantumTunnel or
+    /// TeleportedObjectEffect holding it writes activeSelf at its own turn;
+    /// one newer than the arrow hides it after its turn, and on the pass one
+    /// lets it go the arrow's turn has gone by.
+    fn arrow_turn(&mut self, i: usize, data: &data::RolloutData, updater_dt: Fix) {
+        if !self.arrows[i].active || !self.arrows[i].registered || !self.active_self(self.arrows[i].entity) {
+            return;
+        }
+        // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
+        // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
+        // NeverDestroyAbove flag leaves top exits alive.
+        let position = self.arrows[i].position;
+        let floor = data.maps[self.map].lower_boundary();
+        if position.y < floor || position.x.abs() > Fix::from_f64(131.25) {
+            // Only the water exit has an effect: the two-updatable splash.
+            // In space the floor exit looks for an UpEffect Arrow lacks.
+            if position.y < floor && !data.maps[self.map].is_space()
+                && let Some(entity) = self.arrows[i].entity
+            {
+                self.queued_spawns.push((self.entities[entity].hierarchy, BoundsEffect::Splash));
+            }
+            self.destroy_arrow(i);
+            return;
+        }
+        let arrow = &mut self.arrows[i];
+        arrow.time_passed += updater_dt;
+        if arrow.scaled_tick != self.tick {
+            arrow.sync_mass();
+        }
+        if !arrow.can_hurt_owner
+            && arrow.hurt_owner_after > Fix::ZERO
+            && arrow.time_passed > arrow.hurt_owner_after
+        {
+            arrow.can_hurt_owner = true;
+        }
+        // Arrow.UpdateSim runs in the updater pass, before BoplBody's
+        // hold countdown and DetPhysics integration.
+        let being_held = arrow.magnet_hold_ticks >= 0;
+        if being_held {
+            arrow.magnet_hold_ticks -= 1;
+            if arrow.magnet_hold_ticks == 0 {
+                arrow.magnet_holder = None;
+                arrow.magnet_hold_ticks = -1;
+            }
+        }
+        // Arrow.UpdateSim runs in the updater pass, before DetPhysics
+        // integrates gravity and position. Preserve that authored phase
+        // for the policy-visible collider orientation.
+        if !being_held {
+            arrow.align_to_velocity();
+        }
+    }
+
     /// DetPhysics integrates every BoplBody before constructing contact
-    /// manifolds. Keep projectile time/gravity in that body phase; contacts
-    /// run after platform integration below.
-    fn arrows_integrate(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
+    /// manifolds, skipping the inactive ones.
+    fn arrows_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
         // Scene DetPhysics overrides gravityAccel to -40 on every map (the
         // -9.82 field default never applies).
         let gravity = Fix::from_f64(-40.0) * data.arrow.body.gravity_scale;
         for i in 0..self.arrows.len() {
-            // A Teleport marker newer than the arrow hides it after the
-            // arrow's own updaters ran; DetPhysics then skips it.
-            let hidden = self.blink_object_hidden(self.arrows[i].entity);
-            if hidden && !self.teleport_hid_after(self.arrows[i].entity, self.arrows[i].hierarchy_base)
-            {
-                continue;
-            }
             if !self.arrows[i].active || !self.arrows[i].registered {
                 if let Some(entity) = self.arrows[i].entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
                 continue;
             }
-            // A Blink tunnel re-enables its victim from its own later updater
-            // (QuantumTunnel.cs:163-166), as a TeleportedObjectEffect does: on
-            // the release pass the arrow's updaters already passed it by, and
-            // only DetPhysics moves it.
-            if !self.blink_object_released(self.arrows[i].entity)
-                && !self.teleport_revealed_this_pass(self.arrows[i].entity)
-            {
-                // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
-                // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
-                // NeverDestroyAbove flag leaves top exits alive.
-                let position = self.arrows[i].position;
-                let floor = data.maps[self.map].lower_boundary();
-                if position.y < floor || position.x.abs() > Fix::from_f64(131.25) {
-                    // Only the water exit has an effect: the two-updatable splash.
-                    // In space the floor exit looks for an UpEffect Arrow lacks.
-                    if position.y < floor && !data.maps[self.map].is_space()
-                        && let Some(entity) = self.arrows[i].entity
-                    {
-                        self.queued_spawns.push((self.entities[entity].hierarchy, BoundsEffect::Splash));
-                    }
-                    self.destroy_arrow(i);
-                    continue;
-                }
-                let arrow = &mut self.arrows[i];
-                arrow.time_passed += updater_dt;
-                if arrow.scaled_tick != self.tick {
-                    arrow.sync_mass();
-                }
-                if !arrow.can_hurt_owner
-                    && arrow.hurt_owner_after > Fix::ZERO
-                    && arrow.time_passed > arrow.hurt_owner_after
-                {
-                    arrow.can_hurt_owner = true;
-                }
-                // Arrow.UpdateSim runs in the updater pass, before BoplBody's
-                // hold countdown and DetPhysics integration.
-                let being_held = arrow.magnet_hold_ticks >= 0;
-                if being_held {
-                    arrow.magnet_hold_ticks -= 1;
-                    if arrow.magnet_hold_ticks == 0 {
-                        arrow.magnet_holder = None;
-                        arrow.magnet_hold_ticks = -1;
-                    }
-                }
-                // Arrow.UpdateSim runs in the updater pass, before DetPhysics
-                // integrates gravity and position. Preserve that authored phase
-                // for the policy-visible collider orientation.
-                if !being_held {
-                    arrow.align_to_velocity(self.tick);
-                }
-            }
-            if hidden {
+            if !self.active_self(self.arrows[i].entity) {
                 continue;
             }
             let arrow = &mut self.arrows[i];
@@ -32595,8 +32542,7 @@ impl RolloutWorld {
         // The payload waits in the hand until Grenade.hasBeenThrown flips,
         // which is when ThrowItem2 initializes its collider: the arming clock
         // starts at the throw, not at SpawnGrenade (BananaPeel.cs:66-77).
-        let entity = self.thrown_items[item_index].entity;
-        if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
+        if !self.active_self(self.thrown_items[item_index].entity) {
             return;
         }
         // Until Grenade.hasBeenThrown the whole UpdateSim returns: a held tack
@@ -32761,9 +32707,7 @@ impl RolloutWorld {
         updater_order(&mut order, &self.thrown_items, |item| self.updater_key(item.appended, 100_000_000 + item.hierarchy_base));
         for &item_index in &order {
             let item = &self.thrown_items[item_index];
-            if self.updater_passed(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base))
-                || self.teleport_revealed_this_pass(item.entity)
-            {
+            if self.updater_passed(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base)) {
                 continue;
             }
             let ability = self.thrown_items[item_index].ability;
@@ -33031,8 +32975,7 @@ impl RolloutWorld {
     ) {
         // A tunnel's release comes after this updater's turn: a grenade's
         // fuse stays paused through the pass that reveals it.
-        let entity = self.thrown_items[item_index].entity;
-        if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
+        if !self.active_self(self.thrown_items[item_index].entity) {
             return;
         }
         if !self.thrown_items[item_index].active {
@@ -33105,8 +33048,7 @@ impl RolloutWorld {
     /// DestroyIfOutsideSceneBounds.UpdateSim (DestroyIfOutsideSceneBounds.cs:53-115).
     fn destroy_if_outside_update(&mut self, item_index: usize, data: &data::RolloutData) {
         // A tunnel's release comes after this updater's turn.
-        let entity = self.thrown_items[item_index].entity;
-        if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
+        if !self.active_self(self.thrown_items[item_index].entity) {
             return;
         }
         if !self.thrown_items[item_index].active {
@@ -35205,10 +35147,7 @@ impl RolloutWorld {
     fn abilityless_clone_update(&mut self, clone_index: usize) {
         if !self.abilityless_clones[clone_index].active
             || self.abilityless_clones[clone_index].appended > self.tick
-            || self.abilityless_clones[clone_index].blink_tunnel_active
-            || self.abilityless_clones[clone_index].blink_reactivated_tick == Some(self.tick)
-            || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
-            || self.teleport_revealed_this_pass(self.abilityless_clones[clone_index].entity)
+            || !self.active_self(self.abilityless_clones[clone_index].entity)
         {
             return;
         }

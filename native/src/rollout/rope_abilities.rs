@@ -1615,7 +1615,6 @@ impl RolloutWorld {
             let Some(parent) = self.ropes[index].attach[0].parent else {
                 return;
             };
-            let hierarchy = self.ropes[index].hierarchy;
             let Some(position) = parent_position(
                 &self.players,
                 &self.thrown_items,
@@ -1667,12 +1666,8 @@ impl RolloutWorld {
                 if let Some(body) = body {
                     body.apply_impulse(force, arm);
                 } else if let RopeParent::Arrow(arrow, _) = parent {
-                    // An arrow keeps its BoplBody's velocities on itself. One
-                    // fired before the hook was cast has already aligned.
+                    // An arrow keeps its BoplBody's velocities on itself.
                     let arrow = &mut self.arrows[arrow];
-                    if arrow.hierarchy_base < hierarchy && arrow.magnet_hold_ticks < 0 {
-                        arrow.align_to_velocity(self.tick);
-                    }
                     arrow.velocity += force * arrow.inverse_mass;
                     arrow.angular_velocity += arrow.inverse_inertia * arm.cross(force);
                 }
