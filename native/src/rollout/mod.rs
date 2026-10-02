@@ -13050,8 +13050,6 @@ impl RolloutWorld {
         // AttachToGround zeroes both velocities and aligns the body.
         let platform = &self.platforms[platform_index];
         let slot = &mut self.players[index];
-        slot.meteor.phase = 3;
-        slot.meteor.dash_updates = 0;
         slot.base.position = landing;
         slot.base.grounded = true;
         slot.base.ground = Some(platform.id);
