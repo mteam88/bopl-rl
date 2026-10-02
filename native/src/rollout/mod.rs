@@ -2258,6 +2258,28 @@ impl SlimeMut<'_> {
         rotation
     }
 
+    /// SlimeController.UpdateSim's check ahead of OldUpdate
+    /// (SlimeController.cs:1061-1065): a grounded slime whose attachedGround
+    /// is null or destroyed (`lost`) is levelled and UnGround(false)ed, and
+    /// OnNoLongerGrounded sets State.fall whatever the state, ending a
+    /// ragdoll. True when it did.
+    fn lose_destroyed_ground(&mut self, lost: Option<DestroyedGround>, platforms: &[Platform], tick: u32) -> bool {
+        if !self.base.grounded || lost.is_none() && self.base.ground.is_some() {
+            return false;
+        }
+        *self.ground_destroyed = lost;
+        self.base.set_rotation(Fix::ZERO);
+        if *self.obs_state == STATE_BITING {
+            // gap: as at a portal, currentState turns to fall while the
+            // SpriteAnimator still chews.
+            unground_physics(self.base, self.ground_destroyed, platforms, tick, false);
+        } else {
+            self.unground(platforms, tick, false);
+        }
+        self.base.ground = None;
+        true
+    }
+
     /// SlimeController.ApplyRagDoll (SlimeController.cs:1012-1036): the speed
     /// with its horizontal part slowed becomes selfImposedVelocity, and the
     /// body faces the speed as given.
@@ -2303,7 +2325,10 @@ impl SlimeMut<'_> {
 
     /// SlimeController.attachToGround, raised by the OnAttachedToGround of
     /// the raycasts that just ran on the slime's own PlayerPhysics.
+    /// They replaced attachedGround, so a record of the old one's
+    /// destruction is stale.
     fn attach_to_ground(&mut self) {
+        *self.ground_destroyed = None;
         attach_to_ground(self.base, self.obs_state, self.state_ticks, self.facing_right);
     }
 }
@@ -4342,9 +4367,9 @@ enum RagdollPass {
 /// (SlimeController.cs:1050-1059): timeInRagdoll takes FixedDeltaTime and,
 /// past ragdollDuration, magnetHolder is forgotten, selfImposedVelocity moves
 /// into externalVelocity and EnterFall straightens the body
-/// (SlimeController.cs:263-272). Only an OnAttachedToGround ends it early,
-/// through attachToGround: a slime held grounded or held still by
-/// skipNextUpdate rides it out.
+/// (SlimeController.cs:263-272). Only an OnAttachedToGround (through
+/// attachToGround) or an OnNoLongerGrounded ends it early: a slime held
+/// grounded or held still by skipNextUpdate rides it out.
 fn ragdoll_pass(
     ragdoll: &mut RagdollState,
     magnet_holder: &mut Option<MagnetGun>,
@@ -10245,23 +10270,9 @@ impl RolloutWorld {
             let tick = self.tick;
             let slot = &mut self.players[index];
             // SlimeController's destroyed-ground check still runs ahead of
-            // OldUpdate: it levels the slime, UnGround(false) lifts it off the
-            // dead surface, and OnNoLongerGrounded sets State.fall
-            // (SlimeController.cs:1061-1065).
-            if let Some(lost) = slot.ground_destroyed.take()
-                && slot.base.grounded
-            {
-                slot.base.set_rotation(Fix::ZERO);
-                slot.base.unground(lost.attached(tick), false);
-                slot.base.ground = None;
-                if matches!(
-                    slot.obs_state,
-                    STATE_IDLE | STATE_RUN | STATE_LAND | STATE_STOP | STATE_TURN
-                ) {
-                    slot.obs_state = STATE_FALL;
-                    slot.state_ticks = 0;
-                }
-            }
+            // OldUpdate.
+            let lost = slot.ground_destroyed.take();
+            slot.slime_mut().lose_destroyed_ground(lost, &self.platforms, tick);
             // OldUpdate publishes the body position (SlimeController.cs:712)
             // and reads the ground frame for its state switch.
             slot.reported_position = slot.base.position;
@@ -10360,88 +10371,58 @@ impl RolloutWorld {
         } else {
             std::mem::take(&mut self.players[index].ground_destroyed)
         };
+        // PlayerPhysics.UpdateSim (PlayerPhysics.cs:116-131) applies gravity
+        // and the landing raycasts before SlimeController runs; a grounded
+        // body only spends skipNextUpdate, so a Magnet hold does not cost a
+        // later jump its first gravity. A ragdoll's pass already ran it.
+        // OldUpdate then publishes body.position (SlimeController.cs:712): on
+        // a landing pass, the AttachToGround position.
+        if !in_ability && !ragdoll_ended {
+            // Its raycasts' attachToGround enters State.land at once
+            // (PlayerPhysics.cs:471-478, SlimeController.cs:1117-1134).
+            if self.slot_physics(index, |slot, world| slot.base.gravity_step(world)) {
+                self.players[index].slime_mut().attach_to_ground();
+            }
+        }
         // The check is gated on isGrounded (SlimeController.cs:1063): a
         // rewind that ended on the pass the ground went away already lifted
-        // the slime off it, so the record is stale.
-        // attachedGround is already null when a SyncPhysicsTo airborne arm
-        // dropped a destroyed ground, and UnGround has nothing to lift off.
-        let null_ground = self.players[index].active == ActiveAbility::None
-            && self.players[index].base.ground.is_none();
-        if (lost.is_some() && !finds_it_later || null_ground)
-            && self.players[index].base.grounded
-        {
+        // the slime off it, so the record is stale. attachedGround is
+        // already null when a SyncPhysicsTo airborne arm dropped a destroyed
+        // ground, and UnGround has nothing to lift off.
+        if self.players[index].active == ActiveAbility::None {
+            let tick = self.tick;
+            self.players[index].slime_mut().lose_destroyed_ground(lost, &self.platforms, tick);
+        } else if lost.is_some() && !finds_it_later && self.players[index].base.grounded {
             let tick = self.tick;
             let slot = &mut self.players[index];
-            // Ordinary SlimeController explicitly zeros rotation before
-            // UnGround(false). PlayerPhysics already skipped gravity earlier
-            // in this pass while `isGrounded` was still true. BowTransform,
-            // by contrast, owns this check and applies gravity after it.
-            if slot.active == ActiveAbility::None {
-                slot.base.set_rotation(Fix::ZERO);
-                slot.base.skip_next_gravity = true;
-                // UnGround raises OnNoLongerGrounded, which sets State.fall
-                // at once (SlimeController.cs:1061-1065, 956-958), so a Move
-                // that lands this pass restarts the land animation.
-                if matches!(
-                    slot.obs_state,
-                    STATE_IDLE | STATE_RUN | STATE_LAND | STATE_STOP | STATE_TURN
-                ) {
-                    slot.obs_state = STATE_FALL;
-                    slot.state_ticks = 0;
-                }
-            }
-            if slot.active == ActiveAbility::None {
-                let attached = lost.as_ref().and_then(|lost| lost.attached(tick));
-                slot.base.unground(attached, false);
-            } else {
-                // A form that finds it in its UpdateSim's Move takes Move's
-                // UnGround(), which nulls the rotation (PlayerPhysics.cs:216-219;
-                // Spike.cs:165, PlantObjectOnPlatform.cs:195, GunTransform.cs:147,
-                // ControlPlatform.cs:137, ThrowItem.cs:417).
-                let null_rotation = matches!(
-                    slot.active,
-                    ActiveAbility::Spike
-                        | ActiveAbility::Engine
-                        | ActiveAbility::Tesla
-                        | ActiveAbility::Freeze
-                        | ActiveAbility::Blink
-                        | ActiveAbility::GrowthRay
-                        | ActiveAbility::ShrinkRay
-                        | ActiveAbility::Duplicator
-                        | ActiveAbility::Platform
-                        | ActiveAbility::Mine
-                );
-                slot.ground_destroyed = lost;
-                UngroundBody::Form(slot).unground(&self.platforms, tick, null_rotation);
-            }
+            // A form that finds it in its UpdateSim's Move takes Move's
+            // UnGround(), which nulls the rotation (PlayerPhysics.cs:216-219;
+            // Spike.cs:165, PlantObjectOnPlatform.cs:195, GunTransform.cs:147,
+            // ControlPlatform.cs:137, ThrowItem.cs:417).
+            let null_rotation = matches!(
+                slot.active,
+                ActiveAbility::Spike
+                    | ActiveAbility::Engine
+                    | ActiveAbility::Tesla
+                    | ActiveAbility::Freeze
+                    | ActiveAbility::Blink
+                    | ActiveAbility::GrowthRay
+                    | ActiveAbility::ShrinkRay
+                    | ActiveAbility::Duplicator
+                    | ActiveAbility::Platform
+                    | ActiveAbility::Mine
+            );
+            slot.ground_destroyed = lost;
+            UngroundBody::Form(slot).unground(&self.platforms, tick, null_rotation);
             slot.base.ground = None;
         }
         if !in_ability {
             let slot = &mut self.players[index];
-            // PlayerPhysics.UpdateSim (PlayerPhysics.cs:116-131) applies
-            // gravity and the landing raycasts before SlimeController runs.
-            // SlimeController.OldUpdate then publishes body.position
-            // (SlimeController.cs:712): on a landing tick that is the
-            // AttachToGround position, before Move slides along the surface.
-            if !slot.base.grounded && !ragdoll_ended {
-                // Its raycasts' attachToGround enters State.land at once
-                // (PlayerPhysics.cs:471-478, SlimeController.cs:1117-1134).
-                if self.slot_physics(index, |slot, world| slot.base.gravity_step(world)) {
-                    self.players[index].slime_mut().attach_to_ground();
-                }
-            } else if !ragdoll_ended {
-                // skipNextUpdate is spent on the next pass even on the
-                // ground (PlayerPhysics.cs:118-121), so a Magnet hold does
-                // not cost a later jump its first gravity.
-                slot.base.skip_next_gravity = false;
-            }
-            let slot = &mut self.players[index];
-            // Everything above is PlayerPhysics.UpdateSim; everything below is
-            // SlimeController.UpdateSim, which runs OldUpdate in full before
-            // it ever calls PlayerPhysics.Move (SlimeController.cs:1067 vs
-            // 1084). `slime_tail` reads OldUpdate's switch against that Move
-            // at the end of this turn, so the ground frame OldUpdate actually
-            // read is kept for it.
+            // SlimeController.UpdateSim runs OldUpdate in full before it ever
+            // calls PlayerPhysics.Move (SlimeController.cs:1067 vs 1084).
+            // `slime_tail` reads OldUpdate's switch against that Move at the
+            // end of this turn, so the ground frame OldUpdate actually read
+            // is kept for it.
             slot.base.capture_pre_move(&self.platforms);
             // Player.UpdatePlayer published before SlimeController discovers
             // that an attached Blink wall was disabled. Preserve that value
@@ -29332,6 +29313,14 @@ impl RolloutWorld {
                 return false;
             }
         }
+        // SlimeController.UpdateSim's destroyed-ground check comes before
+        // OldUpdate's ragdoll return, and its OnNoLongerGrounded ends the
+        // ragdoll.
+        let slot = &mut self.players[index];
+        let lost = slot.ground_destroyed.take();
+        if slot.slime_mut().lose_destroyed_ground(lost, &self.platforms, self.tick) {
+            return false;
+        }
         // OldUpdate runs its whole cooldown loop, the rope abilities'
         // UpdateCooldowns included, before its ragdoll-state early return
         // suppresses PlayerPhysics.Move.
@@ -35148,26 +35137,6 @@ impl RolloutWorld {
         }
         let packet = self.scratch.clone_actions[owner];
         let jump_pressed = self.scratch.clone_jump_pressed[owner];
-        let clone = &mut self.abilityless_clones[clone_index];
-        if let Some(lost) = std::mem::take(&mut clone.ground_destroyed) {
-            // PlayerPhysics skipped gravity while still grounded. The
-            // clone's SlimeController zeros its rotation and UnGrounds like
-            // a slime's, lifting off a ground destroyed earlier this pass
-            // (SlimeController.cs:1061-1065).
-            clone.base.set_rotation(Fix::ZERO);
-            clone.base.skip_next_gravity = true;
-            clone.base.unground(lost.attached(self.tick), false);
-            clone.base.ground = None;
-            // UnGround raises OnNoLongerGrounded, which sets State.fall
-            // before OldUpdate (SlimeController.cs:956-958).
-            if matches!(
-                clone.obs_state,
-                STATE_IDLE | STATE_RUN | STATE_LAND | STATE_STOP | STATE_TURN
-            ) {
-                clone.obs_state = STATE_FALL;
-                clone.state_ticks = 0;
-            }
-        }
         let stopped =
             self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
         let hierarchy = self.abilityless_clones[clone_index].hierarchy_base;
@@ -35190,6 +35159,26 @@ impl RolloutWorld {
         if landed {
             self.abilityless_clones[clone_index].slime_mut().attach_to_ground();
         }
+        // A ragdoll that goes on makes OldUpdate return before Move
+        // (SlimeController.cs:787), so only PlayerBody moves the clone.
+        let mut ragdolled = false;
+        if !stopped && self.abilityless_clones[clone_index].obs_state == STATE_RAGDOLL {
+            let clone = &mut self.abilityless_clones[clone_index];
+            match ragdoll_pass(&mut clone.ragdoll, &mut clone.magnet_holder, &mut clone.base) {
+                RagdollPass::Ragdolled => ragdolled = true,
+                RagdollPass::FellOut => {
+                    self.clone_physics(clone_index, |clone, walls| clone.slime_mut().enter_fall(walls));
+                }
+            }
+        }
+        // Then its destroyed-ground check, ahead of OldUpdate, which may end
+        // the ragdoll.
+        let tick = self.tick;
+        let clone = &mut self.abilityless_clones[clone_index];
+        let lost = std::mem::take(&mut clone.ground_destroyed);
+        if clone.slime_mut().lose_destroyed_ground(lost, &self.platforms, tick) {
+            ragdolled = false;
+        }
         // OldUpdate's Player.SetPosition: with the slime destroyed or
         // disabled, the first clone to update takes the player's position.
         let call = PositionCall::Clone(clone_index, self.abilityless_clones[clone_index].base.position);
@@ -35208,18 +35197,6 @@ impl RolloutWorld {
             self.players[owner].reported_position =
                 self.abilityless_clones[clone_index].base.position;
             self.players[owner].reported_tick = self.tick;
-        }
-        // A ragdoll that goes on makes OldUpdate return before Move
-        // (SlimeController.cs:787), so only PlayerBody moves the clone.
-        let mut ragdolled = false;
-        if !stopped && self.abilityless_clones[clone_index].obs_state == STATE_RAGDOLL {
-            let clone = &mut self.abilityless_clones[clone_index];
-            match ragdoll_pass(&mut clone.ragdoll, &mut clone.magnet_holder, &mut clone.base) {
-                RagdollPass::Ragdolled => ragdolled = true,
-                RagdollPass::FellOut => {
-                    self.clone_physics(clone_index, |clone, walls| clone.slime_mut().enter_fall(walls));
-                }
-            }
         }
         if stopped {
             self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
