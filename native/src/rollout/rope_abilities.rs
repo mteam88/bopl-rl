@@ -165,12 +165,9 @@ pub enum RopeParent {
     Engine(usize, u32),
 }
 
-/// The SpikeAttack FixTransform's pose: SyncGameObject's copy of the box
-/// less the offset it synced with, and its right vector.
-fn spike_transform(spike: &SpawnedSpike, dynamics: &[PlatformDynamics]) -> (Vec2, Vec2) {
-    let right = Vec2::angle(dynamics[spike.platform_index].body.orientation + spike.relative_rotation);
-    let root = spike.transform_center - spike.transform_offset.complex_mul(right);
-    (root, right)
+/// The SpikeAttack FixTransform's pose: its position and right vector.
+fn spike_transform(spike: &SpawnedSpike) -> (Vec2, Vec2) {
+    (spike.transform_position, Vec2::angle(spike.transform_rotation))
 }
 
 /// Where a live parent's collider centre is, or None once it is gone.
@@ -178,10 +175,9 @@ fn parent_position(
     players: &[PlayerSlot],
     items: &[ThrownItem],
     shots: &[PortalShotState],
-    (spikes, nodes, dynamics, arrows, engines): (
+    (spikes, nodes, arrows, engines): (
         &[SpawnedSpike],
         &[SpawnedTeslaNode],
-        &[PlatformDynamics],
         &[Arrow],
         &[SpawnedEngine],
     ),
@@ -203,7 +199,7 @@ fn parent_position(
                 return None;
             }
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
-            let (root, right) = spike_transform(spike, dynamics);
+            let (root, right) = spike_transform(spike);
             Some(root + right.perp() * offset.y * spike.scale + right * offset.x * spike.scale)
         }
         RopeParent::Node(index, born) => {
@@ -1553,7 +1549,7 @@ impl RolloutWorld {
                 &self.players,
                 &self.thrown_items,
                 &self.portal_shots,
-                (&self.spike_attacks, &self.tesla_nodes, &self.platform_dynamics, &self.arrows, &self.engines),
+                (&self.spike_attacks, &self.tesla_nodes, &self.arrows, &self.engines),
                 parent,
                 self.ropes[index].parent_offset,
             )
@@ -1575,7 +1571,7 @@ impl RolloutWorld {
                 // (DPhysicsBox.cs:436-451, DPhysicsCircle.cs:377-393).
                 let centre = match parent {
                     RopeParent::Spike(spike, _) => {
-                        spike_transform(&self.spike_attacks[spike], &self.platform_dynamics).0
+                        spike_transform(&self.spike_attacks[spike]).0
                     }
                     RopeParent::Node(node, _) => self.tesla_nodes[node].transform_position(),
                     RopeParent::Engine(engine, _) => self.engines[engine].transform_position(),
@@ -1982,7 +1978,7 @@ impl RolloutWorld {
                 if !self.spike_attack_box(spike).overlaps(position) {
                     return;
                 }
-                let (root, _) = spike_transform(&spike, &self.platform_dynamics);
+                let (root, _) = spike_transform(&spike);
                 let rotation =
                     self.platform_dynamics[spike.platform_index].body.orientation + spike.relative_rotation;
                 offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
@@ -2163,7 +2159,6 @@ impl RolloutWorld {
         let spikes = (
             &self.spike_attacks[..],
             &self.tesla_nodes[..],
-            &self.platform_dynamics[..],
             &self.arrows[..],
             &self.engines[..],
         );
@@ -2230,8 +2225,8 @@ impl RolloutWorld {
                 }
                 // Likewise an arrow that stuck in Simulate (Arrow.OnCollide
                 // DestroyFixes its FixTransform, RopeAttachment.cs:174).
-                Some(RopeParent::Arrow(arrow, id)) if spikes.3[arrow].id == id => {
-                    Some(spikes.3[arrow].position)
+                Some(RopeParent::Arrow(arrow, id)) if spikes.2[arrow].id == id => {
+                    Some(spikes.2[arrow].position)
                 }
                 parent => parent.and_then(|parent| {
                     parent_position(players, items, shots, spikes, parent, rope.parent_offset)
