@@ -153,6 +153,11 @@ pub struct Player {
     /// differ by a whole tick of surface rotation.
     #[serde(default)]
     pub(crate) landed_upside_down: Option<bool>,
+    /// The last PlayerPhysics.Move found the body airborne and cast its
+    /// landing raycasts (PlayerPhysics.cs:229-238). Anything in OldUpdate
+    /// that ungrounds the body (Jump(), a cast) comes before Move.
+    #[serde(default)]
+    pub(crate) move_airborne: bool,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -1079,6 +1084,7 @@ impl Player {
     /// slime body the ability has already copied; that body is deactivated,
     /// so only its observed velocity (and a landing) change.
     pub(crate) fn move_only(&mut self, input: Vec2, walls: &mut impl Walls) {
+        self.move_airborne = !self.grounded;
         if self.grounded {
             self.move_grounded(input, walls);
         } else {
