@@ -3630,9 +3630,14 @@ pub struct PlayerSlot {
     pub stock_indicator_hierarchy: [u32; 3],
     pub revival_target_marker: Option<usize>,
     /// Where SpawnClone put the pending Revival clone: the marker's
-    /// GetPos() in the killing pass (PlayerCollision.cs:150).
+    /// GetPos() in the killing pass (PlayerCollision.cs:150), or the exit of
+    /// a Portal that took it later in that pass.
     pub revival_clone_position: Vec2,
     pub revival_effect_ticks: u32,
+    /// The waiting Revival clone's hurtBox.enabled: its Init's
+    /// BeforeSpawnInit enables it when a Portal had UnGrounded the clone out
+    /// of State.nothing in its SpawnClone pass (SlimeController.cs:516-525).
+    pub revival_hurtbox: bool,
     /// ReviveEffect's position, where its particle starts.
     pub revival_effect_position: Vec2,
     /// ReviveParticle's distanceToTravel and distanceTravelled after Shoot.
@@ -6322,6 +6327,7 @@ impl RolloutWorld {
                 revival_target_marker: None,
                 revival_clone_position: Vec2::ZERO,
                 revival_effect_ticks: 0,
+                revival_hurtbox: false,
                 revival_effect_position: Vec2::ZERO,
                 revival_particle: None,
                 revival_effect_appended: 0,
@@ -9600,7 +9606,12 @@ impl RolloutWorld {
                 if player_id >= 8 {
                     continue;
                 }
-                if !Self::portal_inside(endpoint, base.position, data) {
+                let pending = matches!(slime, Slime::Player(index) if self.players[index].revival_clone_pending);
+                let position = match slime {
+                    Slime::Player(index) if pending => self.players[index].revival_clone_position,
+                    _ => base.position,
+                };
+                if !Self::portal_inside(endpoint, position, data) {
                     self.portals[endpoint_index].player_inside[player_id] = false;
                     continue;
                 }
@@ -9616,6 +9627,20 @@ impl RolloutWorld {
                 };
                 self.portals[linked].player_inside[player_id] = true;
                 let exit = self.portals[linked];
+                let exit_position = exit.position + exit.normal * data.portal_gun.exit_offset;
+                if let Slime::Player(index) = slime
+                    && pending
+                {
+                    // The clone takes its Init next pass, whose BeforeSpawnInit
+                    // zeroes the velocity given here: the exit, UnGround's
+                    // State.fall and skipNextUpdate are what carry over.
+                    let slot = &mut self.players[index];
+                    slot.revival_clone_position = exit_position;
+                    slot.obs_state = STATE_FALL;
+                    slot.state_ticks = 0;
+                    slot.base.skip_next_gravity = true;
+                    continue;
+                }
                 let mut body = slime.of(&mut self.players, &mut self.abilityless_clones);
                 let vin = body.base.velocity + body.base.external_velocity;
                 let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
@@ -9628,7 +9653,7 @@ impl RolloutWorld {
                 } else {
                     body.unground(&self.platforms, self.tick, false);
                 }
-                body.base.position = exit.position + exit.normal * data.portal_gun.exit_offset;
+                body.base.position = exit_position;
                 body.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
                 body.base.external_velocity = Vec2::ZERO;
                 body.base.skip_next_gravity = true;
@@ -9655,7 +9680,16 @@ impl RolloutWorld {
     fn slime_controllers(&self) -> Vec<Slime> {
         let row = |entity: Option<usize>| entity.and_then(|e| self.entities.get(e)).map_or(0, |row| row.hierarchy);
         let mut slimes: Vec<(u32, Slime)> = (0..self.players.len())
-            .map(|index| (row(Some(self.players[index].body_entity)), Slime::Player(index)))
+            .map(|index| {
+                // A pending Revival clone is the newest, its row not yet pushed.
+                let slot = &self.players[index];
+                let hierarchy = if slot.revival_clone_pending {
+                    100_000_000 + slot.clone_player_hierarchy + 6
+                } else {
+                    row(Some(slot.body_entity))
+                };
+                (hierarchy, Slime::Player(index))
+            })
             .chain(self.abilityless_clones.iter().enumerate().map(|(index, clone)| (row(clone.entity), Slime::Clone(index))))
             .collect();
         slimes.sort_by_key(|&(hierarchy, _)| std::cmp::Reverse(hierarchy));
@@ -9706,9 +9740,12 @@ impl RolloutWorld {
     /// its spawn animation goes through too.
     fn portal_finds(&self, slime: Slime) -> bool {
         let (found, owner) = match slime {
+            // A Revival death's clone is an active SlimeController from its
+            // SpawnClone on, though it registers only on the next pass.
             Slime::Player(index) => {
                 let slot = &self.players[index];
-                (self.slime_active(index) && !fix_destroyed(&self.entities, Some(slot.body_entity)), slot.owner)
+                let live = self.slime_active(index) && !fix_destroyed(&self.entities, Some(slot.body_entity));
+                (live || slot.revival_clone_pending, slot.owner)
             }
             // A clone is IsDestroyed once it is no longer active.
             Slime::Clone(index) => {
@@ -9786,7 +9823,7 @@ impl RolloutWorld {
             && slot.respawn_ticks == 0
             && !slot.revival_clone_pending
             && !slot.stock_clone_pending
-            && slot.revival_effect_ticks == 0
+            && (slot.revival_effect_ticks == 0 || slot.revival_hurtbox)
             && !slot.teleport_effect_active
             && !slot.blink_tunnel_active
     }
@@ -20809,7 +20846,6 @@ impl RolloutWorld {
         // PlayerPhysics has the slime's constants, not those of the form
         // the dead slime was in (PlayerCollision.cs:249).
         slot.base.constants = data.player.constants.clone();
-        slot.base.skip_next_gravity = false;
         slot.body_collider_scale = Fix::ONE;
         self.entity_inverse_extents[slot.body_entity] = Vec2::new(
             Fix::ONE / data.player.hurtbox_extents.x,
@@ -20821,7 +20857,13 @@ impl RolloutWorld {
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.reported_position = position;
         slot.reported_tick = self.tick;
-        slot.obs_state = STATE_NOTHING;
+        // Init's BeforeSpawnInit: a clone a Portal UnGrounded out of
+        // State.nothing gets its hurtbox and starts the spawn animation
+        // (SlimeController.cs:516-533).
+        slot.revival_hurtbox = slot.obs_state != STATE_NOTHING;
+        if slot.revival_hurtbox {
+            slot.respawn_spawn_ticks = data.player.spawn_anim_ticks;
+        }
         slot.empty_prefab_facing();
         slot.timers.fill(Fix::from_f32(-1.5));
         slot.leave_form(&mut self.entities);
@@ -20850,8 +20892,6 @@ impl RolloutWorld {
         slot.magnet_holder = None;
         slot.spare_timer = Fix::from_f32(-1.5);
         slot.freeze_form_exit_tick = u32::MAX;
-        // The clone's own PlayerPhysics has no skipNextUpdate pending.
-        slot.base.skip_next_gravity = false;
         slot.late_obs_tick = u32::MAX;
         slot.missile = MissileFormState::default();
         slot.throw_item = ThrowItemState::default();
@@ -28071,7 +28111,7 @@ impl RolloutWorld {
         }
         if slot.active == ActiveAbility::None {
             // A slime choosing where to respawn has its box disabled.
-            let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
+            let choosing_respawn = slot.respawn_ticks > 0 || (slot.revival_effect_ticks > 0 && !slot.revival_hurtbox);
             return (!slot.base.dash.active && !choosing_respawn).then_some(DetCollider::Box(slot.base.synced));
         }
         let entity = Self::hurtbox_entity(slot);
@@ -36641,6 +36681,9 @@ impl RolloutWorld {
             slot.base.simulated = false;
             slot.has_spawned = false;
             slot.base.physics_enabled = false;
+            // The fresh PlayerPhysics has no skipNextUpdate pending.
+            slot.base.skip_next_gravity = false;
+            slot.revival_hurtbox = false;
             // SpawnClone for the first marker.
             self.players[owner].bodies_alive += 1;
             self.players[owner].extra_life = REVIVE_BEING;
@@ -37027,6 +37070,14 @@ impl RolloutWorld {
             // SlimeController.cs:713). A Portal that teleports the parked
             // slime UnGrounds it into State.fall (Portal.cs:247,
             // SlimeController.cs:956-958), and from then on its cooldowns run.
+            if slot.obs_state != STATE_NOTHING {
+                self.advance_slime_cooldowns(index);
+            }
+            return;
+        }
+        // So does a Revival clone's while it waits for its ReviveParticle,
+        // short of a spawn animation BeforeSpawnInit started.
+        if waits_for_particle && slot.respawn_spawn_ticks == 0 {
             if slot.obs_state != STATE_NOTHING {
                 self.advance_slime_cooldowns(index);
             }
@@ -38044,7 +38095,7 @@ impl RolloutWorld {
             };
             let slot = &self.players[index];
             let alive = slot.base.alive && slot.unspawned == 0;
-            let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
+            let choosing_respawn = slot.respawn_ticks > 0 || (slot.revival_effect_ticks > 0 && !slot.revival_hurtbox);
             let teleporting = slot.teleport_effect_active || slot.blink_tunnel_active;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
