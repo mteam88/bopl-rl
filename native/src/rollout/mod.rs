@@ -27139,6 +27139,10 @@ impl RolloutWorld {
                 missile.position += missile.duplicate_shake_offset;
             }
         }
+        // An attached child's shake moves only its FixTransform: a composite
+        // places its colliders from relativePos, and Simulate's
+        // SyncGameObject puts the transform back (DetPhysics.cs:1324-1326,
+        // 2467-2493, 1652-1656).
         for spike_index in (0..self.spike_attacks.len()).rev() {
             if !self.spike_attacks[spike_index].active
                 || self.spike_attacks[spike_index].macho_carried
@@ -27155,9 +27159,8 @@ impl RolloutWorld {
                         / Fix::from_int(60);
                 let old = self.spike_attacks[spike_index].duplicate_shake_offset;
                 let new = shake(SPIKE, spike_index) * progress * Fix::from_f32(0.25);
-                let platform = self.spike_attacks[spike_index].platform_index;
-                let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
-                self.spike_attacks[spike_index].relative_center += (new - old).complex_mul(inverse);
+                let child = &mut self.spike_attacks[spike_index];
+                child.transform_position = child.transform_position - old + new;
                 self.spike_attacks[spike_index].duplicate_shake_offset = new;
             }
         }
@@ -27174,9 +27177,8 @@ impl RolloutWorld {
                         / Fix::from_int(60);
                 let old = self.engines[engine_index].duplicate_shake_offset;
                 let new = shake(ENGINE, engine_index) * progress * Fix::from_f32(0.25);
-                let platform = self.engines[engine_index].platform_index;
-                let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
-                self.engines[engine_index].relative_center += (new - old).complex_mul(inverse);
+                let child = &mut self.engines[engine_index];
+                child.transform_position = child.transform_position - old + new;
                 self.engines[engine_index].duplicate_shake_offset = new;
             }
         }
@@ -27196,9 +27198,8 @@ impl RolloutWorld {
                         / Fix::from_int(60);
                 let old = self.tesla_nodes[node_index].duplicate_shake_offset;
                 let new = shake(TESLA, node_index) * progress * Fix::from_f32(0.25);
-                let platform = self.tesla_nodes[node_index].platform_index;
-                let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
-                self.tesla_nodes[node_index].relative_center += (new - old).complex_mul(inverse);
+                let child = &mut self.tesla_nodes[node_index];
+                child.transform_position = child.transform_position - old + new;
                 self.tesla_nodes[node_index].duplicate_shake_offset = new;
             }
         }
