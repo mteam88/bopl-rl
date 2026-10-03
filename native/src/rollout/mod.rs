@@ -34067,10 +34067,13 @@ impl RolloutWorld {
         let key = self.scratch.turn_key[index];
         self.run_spawned_before(data, self.scratch.turn_dt, key);
         let packet = self.scratch.clone_actions[self.players[index].owner];
-        // A stock clone spawned earlier in this pass first updates on the
-        // next one, so the destroyed slime's Player.Position stands.
-        let stock_clone_spawned =
-            self.players[index].stock_death.is_some_and(|(tick, _)| tick == self.tick);
+        // A stock or Revival clone spawned earlier in this pass first updates
+        // on the next one, so the destroyed slime's Player.Position stands
+        // (PlayerCollision.cs:140-181). A Revival clone registers at the
+        // start of the next pass, so a pending one was spawned in this one.
+        let clone_spawned =
+            self.players[index].stock_death.is_some_and(|(tick, _)| tick == self.tick)
+                || self.players[index].revival_clone_pending;
         self.players[index].base.fixed_delta_time = self.fixed_delta_time(index, DT);
         // SlimeController and these forms run as ever: only their FixedDeltaTime
         // steps are zero and their SpriteAnimators hold.
@@ -34185,7 +34188,7 @@ impl RolloutWorld {
             }
             // Ability.UpdateSim publishes Player.Position with no time-stop
             // gate (Ability.cs:136).
-            if !stock_clone_spawned {
+            if !clone_spawned {
                 self.publish_ability_position(index);
                 self.record_position_call(index);
             }
@@ -34207,18 +34210,18 @@ impl RolloutWorld {
         ) && !slot.teleport_effect_active
             && !slot.blink_tunnel_active
             && slot.freeze_form_exit_tick != self.tick;
-        if slot.base.alive && !stock_clone_spawned && !shown_gun_form {
+        if slot.base.alive && !clone_spawned && !shown_gun_form {
             self.publish_ability_position(index);
         }
-        if !stock_clone_spawned {
+        if !clone_spawned {
             self.record_position_call(index);
         }
         let action = packet.aim_action();
         let movement_input = self.players[index].last_movement_input;
         let jump_pressed = self.scratch.clone_jump_pressed[index];
-        // An older updater's stock kill (a Tack's slip) destroyed the
-        // slime before its turn, so none of its updatables run.
-        if stock_clone_spawned {
+        // An older updater's stock or Revival kill (a Tack's slip) destroyed
+        // the slime before its turn, so none of its updatables run.
+        if clone_spawned {
             return;
         }
         let in_form = {
@@ -39248,9 +39251,10 @@ impl RolloutWorld {
                 position
             } else if !slot.base.alive
                 || slot.reported_tick.checked_add(1) == Some(tick)
-                // A stock death before the slime's own turn (an older
-                // updater's kill) leaves the last published position.
+                // A stock or Revival death before the slime's own turn (an
+                // older updater's kill) leaves the last published position.
                 || slot.stock_death.is_some_and(|(set, _)| set.checked_add(1) == Some(tick))
+                || slot.revival_clone_pending
             {
                 slot.reported_position
             } else {
