@@ -29994,7 +29994,12 @@ impl RolloutWorld {
         // The source's BoplBody rescale this pass is not the copy's.
         dynamics.unscaled_inverse_mass = None;
         dynamics.scale = copy_scale;
-        dynamics.start_radius = effect_radius / effect_scale;
+        // Only a plain copy has its radius written before Initialize; a
+        // ResizablePlatform copy keeps the serialized startRadius it cloned
+        // (DuplicatePlatformEffect.cs:329-331, 362-374).
+        if !dynamics.body_resizable {
+            dynamics.start_radius = effect_radius / effect_scale;
+        }
         if dynamics.attached_children != 0 {
             // The effect unparents the source's terrain children around
             // DuplicateObject (DuplicatePlatformEffect.cs:298-316), so the copy
