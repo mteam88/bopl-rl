@@ -14298,10 +14298,14 @@ impl RolloutWorld {
     }
 
     /// Deactivate's return to NonLethalTerrain, which it skips for a node
-    /// DestroyFix took this pass (SimpleSparkNode.cs:159-167, 177-185).
+    /// DestroyFix took this pass (SimpleSparkNode.cs:159-167, 177-185). A
+    /// node MachoThrow2 carries takes it too, out of the hierarchy.
     fn tesla_node_unlit(&mut self, node_index: usize) {
         if !fix_destroyed(&self.entities, self.tesla_nodes[node_index].entity) {
             self.tesla_nodes[node_index].lethal = false;
+            if let Some(entity) = self.tesla_nodes[node_index].entity {
+                self.entities[entity].layer = data::get().tesla.node_layer;
+            }
         }
     }
 
@@ -18315,26 +18319,14 @@ impl RolloutWorld {
             self.players[owner].macho_throw.picked_engine = Some(attachable_index);
             self.rebuild_platform_attachment_body(old_platform, false);
         } else if kind == 2 {
+            // The pickup only hides the node; its partner's next UpdateSim
+            // finds it out of the hierarchy and breaks the connection
+            // (MachoThrow2.cs:504-516, SimpleSparkNode.cs:233-240).
             let old_platform = self.tesla_nodes[attachable_index].platform_index;
-            let line_owner = if self.tesla_nodes[attachable_index].child.is_some() {
-                Some(attachable_index)
-            } else {
-                self.tesla_nodes[attachable_index].parent
-            };
-            if let Some(line_owner) = line_owner
-                && line_owner < self.tesla_nodes.len()
-                && self.tesla_nodes[line_owner].connected
-            {
-                self.disconnect_tesla_node(line_owner, false);
-            }
             self.tesla_nodes[attachable_index].macho_carried = true;
             self.tesla_nodes[attachable_index].platform_index = usize::MAX;
             if let Some(entity) = self.tesla_nodes[attachable_index].entity {
                 self.entities[entity].flags &= !(E_ACTIVE | E_COMPOSITE);
-                // SimpleSparkNode.Deactivate puts both nodes back on
-                // NonLethalTerrain, the inactive one too (SimpleSparkNode.cs:
-                // 152-184).
-                self.entities[entity].layer = data.tesla.node_layer;
             }
             self.players[owner].macho_throw.picked_tesla = Some(attachable_index);
             self.rebuild_platform_attachment_body(old_platform, false);
