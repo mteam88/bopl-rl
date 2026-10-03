@@ -768,33 +768,27 @@ impl RolloutWorld {
         self.remove_destroyed_colliders();
         let position = self.players[player].base.position;
         let player_query = Circle { center: position, radius };
-        let mut nearby_player = None;
         // A slime in its spawn animation already has its hurtbox enabled. The
         // cast reads each slime's current collider where DetPhysics holds it:
         // an ability form's own box or circle, not the slime body's.
-        for candidate in 0..self.players.len() {
-            if candidate != player
-                && self.hittable(candidate)
-                && let Some(DetCollider::Box(collider)) = self.hurtbox_collider(candidate)
-                && crate::physics::contact::circle_box(player_query, collider).is_some()
-            {
-                // CircleCastClosestPlayers retains the final matching box.
-                nearby_player = Some(RopeTarget::Player(candidate));
-            }
-        }
-        // The abilityless clones' boxes registered after every slime's, and
-        // the cast skips only the caster's own instance: the caster's own
-        // clones are in reach.
-        for candidate in self.player_layer_clones() {
-            if crate::physics::contact::circle_box(
-                player_query,
-                self.abilityless_clones[candidate].base.synced,
-            )
-            .is_some()
-            {
-                nearby_player = Some(RopeTarget::Clone(candidate));
-            }
-        }
+        let slimes = (0..self.players.len())
+            .filter(|&candidate| candidate != player && self.hittable(candidate))
+            .filter_map(|candidate| Some((Self::hurtbox_entity(&self.players[candidate]), candidate, self.hurtbox_collider(candidate)?)));
+        // The boxes are walked in registration order, the slimes' and the
+        // abilityless clones' alike, and the last in reach is kept. The cast
+        // skips only the caster's own instance: its own clones are in reach.
+        let slime_boxes = slimes.clone().filter_map(|(entity, candidate, collider)| match collider {
+            DetCollider::Box(collider) => Some((entity, RopeTarget::Player(candidate), collider)),
+            DetCollider::Circle(_) => None,
+        });
+        let clone_boxes = self.player_layer_clones().into_iter().map(|candidate| {
+            let clone = &self.abilityless_clones[candidate];
+            (clone.entity.unwrap(), RopeTarget::Clone(candidate), clone.base.synced)
+        });
+        let nearby_box = (slime_boxes.chain(clone_boxes))
+            .filter(|&(_, _, collider)| crate::physics::contact::circle_box(player_query, collider).is_some())
+            .max_by_key(|&(entity, _, _)| entity)
+            .map(|(_, target, _)| target);
         // Circles follow the boxes with the cast radius scaled by 1.5, so a
         // circle form in reach (a Rock ball, a spell, a platform transform)
         // wins over any box.
@@ -802,16 +796,14 @@ impl RolloutWorld {
             center: position,
             radius: radius * Fix::from_f64(1.5),
         };
-        for candidate in 0..self.players.len() {
-            if candidate != player
-                && self.hittable(candidate)
-                && let Some(DetCollider::Circle(collider)) = self.hurtbox_collider(candidate)
-                && crate::physics::contact::circle_circle(circle_query, collider).is_some()
-            {
-                nearby_player = Some(RopeTarget::Player(candidate));
-            }
-        }
-        nearby_player
+        (slimes.filter_map(|(entity, candidate, collider)| match collider {
+            DetCollider::Circle(collider) => Some((entity, candidate, collider)),
+            DetCollider::Box(_) => None,
+        }))
+        .filter(|&(_, _, collider)| crate::physics::contact::circle_circle(circle_query, collider).is_some())
+        .max_by_key(|&(entity, _, _)| entity)
+        .map(|(_, candidate, _)| RopeTarget::Player(candidate))
+        .or(nearby_box)
     }
 
     pub(super) fn web_cooldowns_tick(&mut self, player: usize, action: Action) {
