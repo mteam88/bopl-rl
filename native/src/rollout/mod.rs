@@ -24285,9 +24285,11 @@ impl RolloutWorld {
                 let marker = self.revival_marker_pool[i];
                 (marker.position, marker.body.velocity, marker.scale, false)
             }
+            // AddScale sets TeleportIndicator's own scale, never its
+            // FixTransform's (TeleportIndicator.cs:69-79).
             MagnetHeld::TeleportMarker(i) => {
                 let marker = self.teleport_marker_pool[i];
-                (marker.position, marker.body.velocity, marker.scale, false)
+                (marker.position, marker.body.velocity, Fix::ONE, false)
             }
             MagnetHeld::Nothing => return,
         };
