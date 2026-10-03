@@ -34910,7 +34910,15 @@ impl RolloutWorld {
         if stopped {
             self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
         } else if ragdolled {
-            self.abilityless_clones[clone_index].base.integrate();
+            // Its DestroyIfOutsideSceneBounds does not look at the state
+            // either: a ragdoll past the bounds drowns ahead of PlayerBody.
+            let clone = &mut self.abilityless_clones[clone_index];
+            if clone.base.outside_bounds() {
+                clone.base.alive = false;
+                clone.base.out_of_bounds = true;
+            } else {
+                clone.base.integrate();
+            }
         } else if self.abilityless_clones[clone_index].obs_state == STATE_BITING {
             self.clone_biting_tick(clone_index);
         } else {
