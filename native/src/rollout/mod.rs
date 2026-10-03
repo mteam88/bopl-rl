@@ -39046,8 +39046,9 @@ impl RolloutWorld {
             if (slot.teleport_effect_active || slot.blink_tunnel_active) && !in_ability {
                 // The inactive slime's RewindRecorder is skipped by the
                 // Updater, so a rewind in progress keeps suppressInput set
-                // (RewindRecorder.cs:150, 342-352).
-                if slot.rewind.rewinding {
+                // (RewindRecorder.cs:150, 342-352), as does a respawn that
+                // has not reached Spawn (SlimeController.cs:519, 574, 626).
+                if respawning || slot.rewind.rewinding {
                     flags |= S_SUPPRESS_INPUT;
                 }
             } else if respawning || slot.rewind.rewinding {
