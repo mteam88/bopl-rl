@@ -646,6 +646,24 @@ impl RolloutWorld {
         let rope = &mut self.ropes[index];
         rope.owner = owner;
         rope.number = self.next_rope_number;
+        rope.physics.enabled = true;
+        // Past maxRopesPerPlayer, counting this one, the owner's lowest
+        // numbered rope is disabled; slot 0 if none is under 10000
+        // (Rope.cs:112-132).
+        let id = player_id(&self.players, owner);
+        let mine = |rope: &RolloutRope| rope.physics.enabled && player_id(&self.players, rope.owner) == id;
+        let count = self.ropes.iter().filter(|rope| mine(rope)).count();
+        if count > data::get().ropes.max_ropes_per_player {
+            let oldest = (self.ropes.iter().enumerate())
+                .filter(|(_, rope)| mine(rope) && rope.number < 10_000)
+                .min_by_key(|(_, rope)| rope.number)
+                .map_or(0, |(i, _)| i);
+            let rope = &mut self.ropes[oldest];
+            rope.disabled_this_frame = true;
+            rope.physics.enabled = false;
+            rope.number = 0;
+        }
+        let rope = &mut self.ropes[index];
         rope.hierarchy = hierarchy;
         rope.appended = self.tick + 1;
         rope.hook_hierarchy = 0;
@@ -673,7 +691,6 @@ impl RolloutWorld {
         rope.segment_ids = segment_ids;
         let body = &mut rope.physics;
         body.count = SEGMENTS;
-        body.enabled = true;
         body.force_start = Vec2::ZERO;
         body.force_end = Vec2::ZERO;
         body.mass_start = Fix::ONE;
