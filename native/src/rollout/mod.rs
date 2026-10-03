@@ -26530,6 +26530,12 @@ impl RolloutWorld {
             + source.collider_offset.complex_mul(relative_right);
         let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("simple_SparkNode"), data.copy_orders("simple_SparkNode")), 1);
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
+        // duplicateBoplBody unscales the source's live radius into the copy's
+        // startRadius and its BoplBody.Scale rescales it from one; Initialize's
+        // `hitbox.Scale = startScale` then multiplies by `(1 / s) * s`
+        // (ShootDuplicator.cs:430, 680-694, SimpleSparkNode.cs:107).
+        let radius = source.radius / source.scale * source.scale
+            * ((Fix::ONE / source.scale) * source.scale);
         let center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         // ManualInit registers the circle at the copy's FixTransform plus the
@@ -26546,7 +26552,7 @@ impl RolloutWorld {
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
             x: registered.x.raw(),
             y: registered.y.raw(),
-            radius: (data.tesla.node_radius * source.scale).raw(),
+            radius: radius.raw(),
             rotation: rotation.raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
@@ -26573,7 +26579,7 @@ impl RolloutWorld {
             surface_offset,
             hitbox_offset: data.tesla.hitbox_offset_y * source.scale,
             scale: source.scale,
-            radius: data.tesla.node_radius * source.scale,
+            radius,
             // The copy takes the source's FixTransform.offset
             // (ShootDuplicator.cs:471).
             collider_offset: source.collider_offset,
