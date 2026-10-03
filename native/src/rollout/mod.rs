@@ -13416,22 +13416,12 @@ impl RolloutWorld {
         let form_jump_speed = ability
             .form_jump_speed
             .expect("Gold Mushroom form jump speed");
-        // The kick uses the jumpStrength of whichever PlayerPhysics holds the
-        // player: the slime's, or the form's own, which is lower for every
-        // form but Throw (SuperStarEffect.UpdateSim). A form with no
-        // PlayerPhysics gets no kick.
-        let form = self.players[index].active.ability_id();
-        let jump_strength = if form == ABILITY_NULL {
-            Some(data.player.constants.jump_strength)
-        } else {
-            data.abilities[form as usize].form_jump_strength
-        };
         let slime_id = self
             .entities
             .get(self.players[index].body_entity)
             .map_or(0, |row| row.id);
-        let slot = &mut self.players[index];
         {
+            let slot = &mut self.players[index];
             let effect = &mut slot.gold_mushroom[effect_slot];
             if !effect.active {
                 return;
@@ -13446,41 +13436,70 @@ impl RolloutWorld {
                 return;
             }
             effect.time += DT;
-            // The kick goes to the slime or to its active form; a Teleport or
-            // a Blink tunnel deactivates whichever holds the player, so there
-            // is nothing to kick (SuperStarEffect.UpdateSim).
-            let hidden = slot.teleport_effect_active || slot.blink_tunnel_active;
+        }
+        // The kick goes to the caster slime while it is active. Otherwise
+        // FindActiveForm takes the first active Ability of the player in
+        // FindObjectsOfType's order, newest instance first, whichever body it
+        // stands in for: a Teleport or a Blink tunnel deactivates it, and a
+        // stock replacement is neither that slime nor a form
+        // (SuperStarEffect.cs:51-62, 75-117).
+        let shown = |slot: &PlayerSlot| !slot.teleport_effect_active && !slot.blink_tunnel_active;
+        let caster = &self.players[index];
+        let target = if caster.active == ActiveAbility::None
+            && caster.gold_mushroom[effect_slot].slime_id == slime_id
+            && !caster.stock_clone_pending
+            && !caster.revival_clone_pending
+            && shown(caster)
+        {
+            Some(index)
+        } else {
+            (0..self.players.len())
+                .filter(|&body| {
+                    let slot = &self.players[body];
+                    slot.owner == caster.owner
+                        && slot.base.alive
+                        && slot.active != ActiveAbility::None
+                        && shown(slot)
+                })
+                .max_by_key(|&body| {
+                    let slot = &self.players[body];
+                    self.entities.get(slot.form_entities[slot.active_slot]).map_or(0, |row| row.id)
+                })
+        };
+        if let Some(target) = target
+            && jump_pressed
+        {
+            let slot = &mut self.players[target];
+            // The kick uses the jumpStrength of whichever PlayerPhysics holds
+            // the player: the slime's, or the form's own, which is lower for
+            // every form but Throw. A form with no PlayerPhysics gets no kick.
+            let form = slot.active.ability_id();
+            let jump_strength = if form == ABILITY_NULL {
+                Some(data.player.constants.jump_strength)
+            } else {
+                data.abilities[form as usize].form_jump_strength
+            };
             match slot.active {
                 // A Rock has only a BoplBody: any jump press, grounded or not,
                 // sets its vertical speed to formJumpSpeed.
-                ActiveAbility::Rock => {
-                    if jump_pressed && !hidden {
-                        slot.rock.body.velocity.y = form_jump_speed;
-                    }
-                }
-                // A Drill has a PlayerBody but no PlayerPhysics or BoplBody,
-                // so nothing is kicked.
+                ActiveAbility::Rock => slot.rock.body.velocity.y = form_jump_speed,
+                // A Drill has a PlayerBody but neither a PlayerPhysics nor a
+                // BoplBody, so nothing is kicked; nor is a Platform form,
+                // which has no form jumpStrength either.
                 ActiveAbility::Drill => {}
-                // The caster slime was destroyed by a stock death; its
-                // replacement is neither that slime nor an Ability form, even
-                // before it registers its own body.
-                ActiveAbility::None
-                    if effect.slime_id != slime_id
-                        || slot.stock_clone_pending
-                        || slot.revival_clone_pending => {}
                 _ => {
-                    // A Platform form, like a Drill, has a PlayerBody but
-                    // neither a PlayerPhysics nor a BoplBody.
                     if let Some(jump_strength) = jump_strength
-                        && jump_pressed
                         && !slot.base.grounded
                         && slot.rope.is_none()
-                        && !hidden
                     {
                         slot.base.velocity.y = jump_strength * air_jump;
                     }
                 }
             }
+        }
+        {
+            let slot = &mut self.players[index];
+            let effect = &mut slot.gold_mushroom[effect_slot];
             if effect.time >= duration {
                 effect.active = false;
                 // OnStarEnded goes through the SuperStar on the caster slime,
