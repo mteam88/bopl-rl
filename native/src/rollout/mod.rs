@@ -31427,9 +31427,15 @@ impl RolloutWorld {
             if !self.guided_missiles[index].active || !self.guided_missiles[index].registered {
                 continue;
             }
-            // A hidden Spark takes neither its updaters nor DetPhysics, but
-            // RlObservation still exports its body.
+            // A hidden Spark takes neither its updaters nor DetPhysics'
+            // integration, but Simulate's syncs still run both ways: its body
+            // takes the FixTransform rotation SparkShot steers, which
+            // SyncGameObject writes back through the rotation setter
+            // (DetPhysics.cs:3172-3190), and RlObservation exports that body.
             if self.blink_object_hidden(self.guided_missiles[index].entity) {
+                let missile = &mut self.guided_missiles[index];
+                missile.sync_body_to_transform();
+                missile.transform.set_rotation(missile.body.orientation);
                 self.sync_guided_missile_entity(index);
                 continue;
             }
