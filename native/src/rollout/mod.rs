@@ -30154,6 +30154,12 @@ impl RolloutWorld {
         {
             self.vector_fields.push(self.platforms.len() - 1);
         }
+        // A ResizablePlatform copy ends on ResizePlatform with the shape
+        // ScaleEffect measured, which sets its mass, inertia and shape anew
+        // (DuplicatePlatformEffect.cs:374).
+        if dynamics.body_resizable {
+            self.reshape_platform(self.platforms.len() - 1, effect_extents, effect_radius);
+        }
         self.platforms_changed();
     }
 
