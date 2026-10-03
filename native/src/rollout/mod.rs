@@ -38282,12 +38282,13 @@ impl RolloutWorld {
                     circle.rotation = slot.rock.body.orientation.raw();
                     circle.angular_velocity = slot.rock.body.angular_velocity.raw();
                     circle.inverse_mass = slot.rock.body.inverse_mass.raw();
-                } else {
+                } else if let Some(s) = slot.form_entities.iter().position(|&e| e == rock_e) {
                     // DetPhysics keeps syncing the deactivated FixTransform:
                     // BounceBall.ExitAbility zeroed its rotation, a
                     // FreezeRayGun calling Ability.ExitAbility directly kept it
-                    // (FreezeRayGun.cs:128).
-                    circle.rotation = slot.forms[slot.entity_slot(rock_e)].pose.orientation.rotation().raw();
+                    // (FreezeRayGun.cs:128). A Rock a pickup took the slot of
+                    // keeps its row as it was.
+                    circle.rotation = slot.forms[s].pose.orientation.rotation().raw();
                 }
             }
             // The Rock in another slot, left the pass before, likewise.
