@@ -30042,9 +30042,12 @@ impl RolloutWorld {
         // source until its Init clears it next pass (AnimateVelocity.cs:74-93).
         // DuplicatePlatformEffect writes the source's rotation from when the
         // ray hit into the copy's FixTransform, where AnimateVelocity.Init
-        // homes it next pass.
+        // homes it next pass. A slime landing on the copy this pass already
+        // reads that basis through its groundBody.
         dynamics.home_rotation = rotation;
         dynamics.transform_rotation = Some(rotation);
+        platform.surface.right = Vec2::angle(rotation);
+        platform.surface.up = platform.surface.right.perp();
         dynamics.shake_time = Fix::ZERO;
         dynamics.shake_duration = Fix::ZERO;
         dynamics.shake_amount = Fix::ZERO;
