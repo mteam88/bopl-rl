@@ -23738,8 +23738,7 @@ impl RolloutWorld {
         // Ability.UpdateSim, hierarchy 3. PlayerPhysics at hierarchy 4 only
         // updates scale for this prefab because ApplyGravity is disabled.
         self.magnet_ability_update_scale(index, data);
-        self.players[index].reported_position = self.players[index].base.position;
-        self.players[index].reported_tick = self.tick;
+        self.publish_ability_position(index);
 
         // MagnetGun's DestroyIfOutsideSceneBounds precedes PlayerBody.
         if self.ability_boundary_kill(index) {
@@ -34187,8 +34186,9 @@ impl RolloutWorld {
         // SlimeController is absent after destruction and disabled during
         // TeleportedObjectEffect, so neither state may publish a new
         // Player.Position through Player.SetPosition. A shown gun form's
-        // Ability.UpdateSim follows its GunTransform, which may hide the
-        // form first (a self-Blink), so the gun ticks publish themselves.
+        // Ability.UpdateSim follows its GunTransform or MagnetGun, which may
+        // hide the form first (a self-Blink) or exit it (a Magnet's landing),
+        // so the gun ticks publish themselves.
         let slot = &self.players[index];
         let shown_gun_form = matches!(
             slot.active,
@@ -34197,6 +34197,7 @@ impl RolloutWorld {
                 | ActiveAbility::GrowthRay
                 | ActiveAbility::ShrinkRay
                 | ActiveAbility::Duplicator
+                | ActiveAbility::Magnet
         ) && !slot.teleport_effect_active
             && !slot.blink_tunnel_active
             && slot.freeze_form_exit_tick != self.tick;
