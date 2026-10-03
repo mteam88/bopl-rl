@@ -30921,16 +30921,12 @@ impl RolloutWorld {
         }
     }
 
-    /// Remove a platform from the world (RemovePlatform / scene-bounds
-    /// destruction). Riders retain Unity's destroyed ground reference until
-    /// their own next updater pass.
-    fn remove_platform(&mut self, index: usize, deferred: bool) {
+    /// Every body grounded on platform `index` finds its attachedGround
+    /// IsDestroyed. Every lost-ground check is gated on isGrounded; an
+    /// airborne body keeps its stale attachedGround.
+    fn strand_riders(&mut self, index: usize, pass: Option<u32>) {
         let id = self.platforms[index].id;
-        let entity = self.platform_entities[index];
-        let pass = (self.entities[entity].flags & E_DESTROYED == 0).then_some(self.tick);
         for slot in &mut self.players {
-            // Every lost-ground check is gated on isGrounded; an airborne
-            // body keeps its stale attachedGround.
             if slot.base.alive && slot.base.grounded && slot.base.ground == Some(id) {
                 let surface = self.platforms[index].surface.clone();
                 slot.ground_destroyed = Some(DestroyedGround { surface, pass });
@@ -30942,6 +30938,15 @@ impl RolloutWorld {
                 clone.ground_destroyed = Some(DestroyedGround { surface, pass });
             }
         }
+    }
+
+    /// Remove a platform from the world (RemovePlatform / scene-bounds
+    /// destruction). Riders retain Unity's destroyed ground reference until
+    /// their own next updater pass.
+    fn remove_platform(&mut self, index: usize, deferred: bool) {
+        let entity = self.platform_entities[index];
+        let pass = (self.entities[entity].flags & E_DESTROYED == 0).then_some(self.tick);
+        self.strand_riders(index, pass);
         self.entities[entity].flags = E_REMOVED;
         self.destroy_fix_row(entity);
         // DestroyRoundedRect drops every child its composite holds, one
@@ -33961,9 +33966,11 @@ impl RolloutWorld {
             // carries out once the Updater is done.
             if spawn.removal_time >= end {
                 spawn.destroy_pending = true;
-                // DestroyFix marks the Tesla nodes on it IsDestroyed at once,
-                // so a younger one skips its UpdateSim this pass
-                // (ResizablePlatform.cs:125-131, Updater.cs:89-100).
+                // DestroyFix marks it and the Tesla nodes on it IsDestroyed at
+                // once: a younger rider's Move UnGrounds off it and a younger
+                // node skips its UpdateSim this pass (ResizablePlatform.cs:125-131,
+                // Updater.cs:89-100, PlayerPhysics.cs:216-219).
+                self.strand_riders(i, Some(self.tick));
                 self.mark_wall_nodes_destroyed(i);
                 // A newer RopeAttachment on it sees IsDestroyed this pass.
                 let hierarchy = self.platform_turn_key(i).2 - 100_000_000;
