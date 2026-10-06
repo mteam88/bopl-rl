@@ -155,6 +155,17 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     minsd/maxsd, which give the same value for every input (NaN still
     maps to 1). The hash is unchanged. Interleaved, the full writer is 1.4%
     faster and the lite writer 4.5%.
+18. **A ray group meets the circles 8 rays at a time.** The circle test (each
+    entity and slime as a disc) ran ray by ray with two data-dependent
+    skips per (ray, circle). bopl4_circles_avx512 puts 8 of the group's rays
+    in the lanes and walks the circles in order. Each (ray, circle) gets the
+    same IEEE operations, the skips become negated compares (so a NaN goes
+    on as before), and each lane keeps the strict `d < best` in circle
+    order. It records the winning circle, and the class and closing speed
+    are read from it after the loop as before. writer_bench's vector-vs-scalar
+    check (now covering the circles too) finds 0 mismatches in 8192 rows for
+    both loadouts, and the hash is unchanged. Interleaved on the test games,
+    the full writer goes from 12.25 to 11.07 us (-9.6%).
 
 
 ## Cold caches in the trainer

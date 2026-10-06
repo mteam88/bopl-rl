@@ -372,7 +372,7 @@ __attribute__((target("avx512f"))) static void bopl4_march_avx512(const Bopl4Wal
 #endif
 #endif
 /* The scalar march: bot_raycast's steps, one ray after another (the CPUs
- * without AVX-512, and the reference writer_bench checks the vector march
+ * without AVX-512, and the reference writer_bench checks the vector march and circles
  * against, row for row, through bopl4_march_scalar_only). */
 static void bopl4_march_scalar(const BotView *view, const double *ox, const double *oy, int n, const double *dx, const double *dy,
                                double max, const double *limit, double *out) {
@@ -462,7 +462,7 @@ static inline int bopl4_sector(double dx, double dy) {
 /* Classes: 0 wall, 1 lethal wall, 2 water / blast plane, 3 hostile projectile
  * or object, 4 opponent body, 5 own object; out[7] the hit's closing speed
  * along the ray for classes 3-5. The surfaces other than walls are closed
- * form (bopl4_ray_other); the walls' march comes from bopl4_march. */
+ * form (bopl4_ray_planes, bopl4_ray_circles); the walls' march comes from bopl4_march. */
 /* The circles relative to a group's origin, taken once for its rays:
  * centre offset, its squared length, and the squared radius. */
 typedef struct { double px[BOPL4_ENTITIES+BOPL4_SLIMES], py[BOPL4_ENTITIES+BOPL4_SLIMES],
@@ -473,9 +473,10 @@ static void bopl4_circles_from(const Bopl4Terrain *t, double x, double y, Bopl4C
         c->px[i]=px; c->py[i]=py; c->pp[i]=px*px+py*py; c->r2[i]=t->cr[i]*t->cr[i];
     }
 }
-static double bopl4_ray_other(const Bopl4Terrain *t, const Bopl4Circles *c, double x, double y, double dx, double dy, double svx, double svy,
-                              int *class, double *closing) {
-    double best=BOPL4_RAY_LENGTH; *class=-1; *closing=0;
+/* The planes: water's top (rays going up into it from below are not cut),
+ * and the blast bounds. */
+static double bopl4_ray_planes(const Bopl4Terrain *t, double x, double y, double dx, double dy, int *class) {
+    double best=BOPL4_RAY_LENGTH; *class=-1;
     if (t->has_water && dy<-1e-9) {
         double d=(t->water_top-y)/dy;
         if (d>=0 && d<best) { best=d; *class=2; }
@@ -483,6 +484,12 @@ static double bopl4_ray_other(const Bopl4Terrain *t, const Bopl4Circles *c, doub
     if (dy>1e-9) { double d=(BOT_BLAST_Y-y)/dy; if (d>=0 && d<best) { best=d; *class=2; } }
     if (dx>1e-9) { double d=(BOT_BLAST_X-x)/dx; if (d>=0 && d<best) { best=d; *class=2; } }
     if (dx<-1e-9) { double d=(-BOT_BLAST_X-x)/dx; if (d>=0 && d<best) { best=d; *class=2; } }
+    return best;
+}
+/* The circles after the planes, in order, each taking the ray on a strict
+ * `d < best`. */
+static double bopl4_ray_circles(const Bopl4Terrain *t, const Bopl4Circles *c, double dx, double dy, double svx, double svy,
+                                double best, int *class, double *closing) {
     for (int i=0; i<t->circle_count; i++) {
         double along=c->px[i]*dx+c->py[i]*dy;
         if (along<0) continue;
@@ -494,6 +501,48 @@ static double bopl4_ray_other(const Bopl4Terrain *t, const Bopl4Circles *c, doub
     }
     return best;
 }
+#if BOT_SDF_AVX512
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#endif
+/* bopl4_ray_circles for a group's rays, 8 in the lanes and the circles in
+ * the loop: per (ray, circle) the same IEEE operations on the same operands
+ * (the two skips as negated compares, so a NaN goes on as it does there), and
+ * per lane the same strict `d < best` taken in circle order, so each ray ends
+ * on the same circle. win[i] is that circle, or -1 when the planes' best
+ * stands; the caller reads its class and closing speed as the scalar loop
+ * does. */
+__attribute__((target("avx512f"))) static void bopl4_circles_avx512(const Bopl4Circles *c, int count, int n,
+        const double *dx, const double *dy, double *best, int *win) {
+    __m512d zero=_mm512_setzero_pd();
+    for (int base=0; base<n; base+=8) {
+        __mmask8 m=n-base>=8?(__mmask8)0xFF:(__mmask8)((1u<<(n-base))-1u);
+        __m512d vdx=_mm512_maskz_loadu_pd(m, dx+base), vdy=_mm512_maskz_loadu_pd(m, dy+base);
+        __m512d vbest=_mm512_maskz_loadu_pd(m, best+base);
+        __m512i vwin=_mm512_set1_epi64(-1);
+        for (int i=0; i<count; i++) {
+            __m512d along=_mm512_add_pd(_mm512_mul_pd(_mm512_set1_pd(c->px[i]), vdx), _mm512_mul_pd(_mm512_set1_pd(c->py[i]), vdy));
+            __mmask8 ok=_mm512_mask_cmp_pd_mask(m, along, zero, _CMP_NLT_UQ);
+            __m512d perp2=_mm512_sub_pd(_mm512_set1_pd(c->pp[i]), _mm512_mul_pd(along, along)), r2=_mm512_set1_pd(c->r2[i]);
+            ok=_mm512_mask_cmp_pd_mask(ok, perp2, r2, _CMP_NGT_UQ);
+            if (!ok) continue;
+            __m512d d=_mm512_sub_pd(along, _mm512_sqrt_pd(_mm512_sub_pd(r2, perp2)));
+            d=_mm512_mask_mov_pd(d, _mm512_cmp_pd_mask(d, zero, _CMP_LT_OQ), zero);
+            __mmask8 take=_mm512_mask_cmp_pd_mask(ok, d, vbest, _CMP_LT_OQ);
+            vbest=_mm512_mask_mov_pd(vbest, take, d);
+            vwin=_mm512_mask_mov_epi64(vwin, take, _mm512_set1_epi64(i));
+        }
+        _mm512_mask_storeu_pd(best+base, m, vbest);
+        _mm512_mask_cvtepi64_storeu_epi32(win+base, m, vwin);
+    }
+}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+#endif
 /* Finish a ray given the other surfaces' best and the walls' marched distance. */
 static void bopl4_ray_finish(const Bopl4Terrain *t, double x, double y, double dx, double dy,
                              double best, int class, double closing, double wall_d, float *out) {
@@ -519,9 +568,20 @@ static void bopl4_cast_group(const Bopl4Terrain *t, double x, double y, double s
     int class[BOPL4_MARCH];
     Bopl4Circles circles;
     bopl4_circles_from(t, x, y, &circles);
+    for (int i=0; i<n; i++) { best[i]=bopl4_ray_planes(t, x, y, dx[i], dy[i], &class[i]); closing[i]=0; }
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512>0 && !bopl4_march_scalar_only) {
+        int win[BOPL4_MARCH];
+        bopl4_circles_avx512(&circles, t->circle_count, n, dx, dy, best, win);
+        for (int i=0; i<n; i++) if (win[i]>=0) {
+            int w=win[i];
+            class[i]=3+t->cclass[w]; closing[i]=-((t->cvx[w]-svx)*dx[i]+(t->cvy[w]-svy)*dy[i]);
+        }
+    } else
+#endif
+    for (int i=0; i<n; i++) best[i]=bopl4_ray_circles(t, &circles, dx[i], dy[i], svx, svy, best[i], &class[i], &closing[i]);
     for (int i=0; i<n; i++) {
         ox[i]=x; oy[i]=y;
-        best[i]=bopl4_ray_other(t, &circles, x, y, dx[i], dy[i], svx, svy, &class[i], &closing[i]);
         limit[i]=best[i]+1.0;
         wall[i]=BOPL4_RAY_LENGTH;
     }
