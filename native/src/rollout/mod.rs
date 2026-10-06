@@ -8748,7 +8748,8 @@ impl RolloutWorld {
         // place) before the cursor's, is out without searching for its place.
         let live = |appended: u32| appended <= tick && appended <= before.0 && appended >= cursor.0;
         for i in 0..self.platforms.len() {
-            if self.platform_pass(i) != PlatformPass::Authored {
+            // A platform's key leads with its `appended` too (updater_member_key).
+            if self.platform_pass(i) != PlatformPass::Authored && live(self.platform_dynamics[i].appended) {
                 push(self.platform_turn_key(i), 0, i);
             }
         }
@@ -8760,8 +8761,8 @@ impl RolloutWorld {
             }
         }
         for (i, item) in self.thrown_items.iter().enumerate() {
-            if self.thrown_item_listed(item) {
-                if live(item.appended) {
+            if live(item.appended) {
+                if self.thrown_item_listed(item) {
                     push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 2, i);
                 }
             }
@@ -8892,7 +8893,7 @@ impl RolloutWorld {
                 }
             }
         }
-        for (kind, waves) in [(25, &self.gust_waves[..]), (26, &self.meteor_waves[..])] {
+        for (kind, waves) in [(25, self.gust_wave_slots()), (26, &self.meteor_waves[..])] {
             for (i, wave) in waves.iter().enumerate() {
                 if wave.active {
                     if live(wave.appended) {
@@ -19580,7 +19581,7 @@ impl RolloutWorld {
                 pending.push((offset, PendingObject::ShakablePlatform, index));
             }
         }
-        for (index, wave) in self.gust_waves.iter().enumerate() {
+        for (index, wave) in self.gust_wave_slots().iter().enumerate() {
             if pending_since(wave.active, wave.registered, wave.appended) {
                 pending.push((spawned(wave.hierarchy_base), PendingObject::GustWave, index));
             }
@@ -21784,6 +21785,13 @@ impl RolloutWorld {
         }
     }
 
+    /// The gust slots a body can have filled: player `i`'s waves are
+    /// `3 i..3 i + 3`, and `players` only grows within a game (reset clears
+    /// both), so every slot past these is still empty.
+    fn gust_wave_slots(&self) -> &[Shockwave] {
+        &self.gust_waves[..self.players.len() * 3]
+    }
+
     fn wave_targets(&mut self, meteor: bool) -> &mut [WaveTargets] {
         if meteor {
             &mut self.meteor_targets
@@ -21994,7 +22002,7 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.wave_order);
         order.clear();
         for meteor in [false, true] {
-            let waves: &[Shockwave] = if meteor { &self.meteor_waves } else { &self.gust_waves };
+            let waves: &[Shockwave] = if meteor { &self.meteor_waves } else { self.gust_wave_slots() };
             for (index, wave) in waves.iter().enumerate() {
                 if wave.active && wave.registered && hierarchy.contains(&wave.hierarchy_base) {
                     order.push((self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), meteor, index));

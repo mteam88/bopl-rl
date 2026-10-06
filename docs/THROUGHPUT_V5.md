@@ -140,6 +140,16 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     pool, and a Shockwave is about 100 bytes. The gate and the hash are
     unchanged. Sim instructions are flat (-0.06%) and sim time is -0.9%
     (interleaved, 200 test games).
+16. **run_spawned_before skips pool members it would drop before keying
+    them.** It takes about 5 walks per tick. Each walk scanned all 36 gust
+    slots, though only `3 * players.len()` can hold a wave: `players` only
+    grows within a game, and reset clears both. It also computed every
+    spawned platform's Updater key and every thrown item's batch lookup
+    before the `appended` prefilter that rejects them. Both now come after
+    the prefilter, and the gust scans (here, in register_pending_objects
+    and in shockwaves_update) cover only the fillable slots. The gate and
+    the hash are unchanged, and the sim retires 2.8% fewer instructions on
+    the test games.
 
 ## Measured and not kept
 
@@ -148,6 +158,12 @@ sim was the C#-order Updater scheduler from the fidelity merge.
   more than 0.05 from every wall) was not built. 58% of rays end without a
   hit, but they average 6 steps each (the sky, not grazing the floor; only
   1% hit the 32-step cap), so it nets about 10% of the march.
+
+- A 4-lane (AVX-512VL, ymm) march in place of the 8-lane one: 4.47 of 8
+  lanes are live per iteration, and Zen 4 runs zmm as two 256-bit halves.
+  It was exact but 5% slower on the full writer: the march is bound by the
+  per-step latency chain (t, point, SDF, sqrt, min, t), not by lane
+  throughput, so fewer lanes only means more steps.
 
 ## Open
 
