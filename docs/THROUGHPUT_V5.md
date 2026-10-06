@@ -90,6 +90,12 @@ sim was the C#-order Updater scheduler from the fidelity merge.
    kept per march, and the full writer is 8-10% faster.
    Culling cannot get tighter: the first step's disk around the origin binds
    for every direction.
+8. **The scheduler caches each pass's batch, and the sweep reads pool rows'
+   colliders directly.** `updater_pass_batch` did two binary searches per
+   call; a cached range is reused when its edges still split the
+   pass-sorted list at that pass. `take_sweep` resolved every row through
+   `current_bounds`, which searches the pools; only pool-owned rows need
+   that now. The gate is clean, and the sim is 7% faster.
 
 ## Measured and not kept
 

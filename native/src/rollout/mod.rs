@@ -4781,6 +4781,8 @@ struct PlatformScratch {
     /// belongs to: every updatable below the key has had its turn, run or
     /// skipped as disabled, and is not visited again until the next pass.
     updater_cursor: (u32, UpdaterKey),
+    /// `updater_pass_batch`'s last ranges, (pass, start, end), by pass & 7.
+    pass_batches: [std::cell::Cell<(u32, u32, u32)>; 8],
     /// This pass's walk over the players: their order, each player's turn
     /// hierarchy, the walk's length (zero outside it) and the next turn to
     /// take.
@@ -8566,9 +8568,27 @@ impl RolloutWorld {
     /// The updatables Updater appended on pass `pass`, in list order: the
     /// batch as `append_updater_batch`'s sort left it.
     fn updater_pass_batch(&self, pass: u32) -> &[(u32, u32, u32, bool)] {
-        let start = self.updater_list.partition_point(|entry| entry.0 < pass);
-        let end = self.updater_list.partition_point(|entry| entry.0 <= pass);
-        &self.updater_list[start..end]
+        // The list is sorted by pass, so a cached range is this pass's batch
+        // exactly when its four edges still split the list there; anything
+        // that moved them (an append, a removal, a reset) fails the check.
+        let list = &self.updater_list;
+        let slot = &self.scratch.pass_batches[(pass & 7) as usize];
+        let (cached, start, end) = slot.get();
+        let (start, end) = (start as usize, end as usize);
+        if cached == pass
+            && start <= end
+            && end <= list.len()
+            && (start == 0 || list[start - 1].0 < pass)
+            && (start == list.len() || list[start].0 >= pass)
+            && (end == 0 || list[end - 1].0 <= pass)
+            && (end == list.len() || list[end].0 > pass)
+        {
+            return &list[start..end];
+        }
+        let start = list.partition_point(|entry| entry.0 < pass);
+        let end = list.partition_point(|entry| entry.0 <= pass);
+        slot.set((pass, start as u32, end as u32));
+        &list[start..end]
     }
 
     /// The place of the first updatable registered by `owner` (a prefab's

@@ -37,6 +37,8 @@ pub(super) struct SweepBounds {
     duplicated_rocks: Vec<[Vec2; 2]>,
     pickups: Vec<[Vec2; 2]>,
     rows: Vec<[Vec2; 2]>,
+    /// take_sweep's rows some pool could own.
+    owned: Vec<bool>,
 }
 
 /// A box that overlaps nothing, for a collider out of the sweep.
@@ -92,7 +94,38 @@ impl RolloutWorld {
             self.current_bounds(Swept::DuplicatedRock(i), data)
         });
         fill(&mut sweep.pickups, self.ability_pickups.len(), &|i| self.current_bounds(Swept::Pickup(i), data));
-        fill(&mut sweep.rows, self.entities.len(), &|i| self.current_bounds(Swept::Row(i), data));
+        // `detphysics_collider` looks a row up in each pool that can own one
+        // and falls back to `row_collider`; a row no pool names takes the
+        // fallback directly. Nothing moves while the boxes are taken, so one
+        // pass over the pools marks every row they could answer for.
+        let owned = &mut sweep.owned;
+        owned.clear();
+        owned.resize(self.entities.len(), false);
+        let mut mark = |entity: Option<usize>| {
+            if let Some(flag) = entity.and_then(|entity| owned.get_mut(entity)) {
+                *flag = true;
+            }
+        };
+        for node in &self.tesla_nodes {
+            mark(node.entity);
+            mark(node.line_entity);
+        }
+        self.engines.iter().for_each(|engine| mark(engine.entity));
+        self.spike_attacks.iter().for_each(|spike| mark(spike.entity));
+        self.abilityless_clones.iter().for_each(|clone| mark(clone.entity));
+        self.ability_pickups.iter().for_each(|pickup| mark(pickup.entity));
+        self.arrows.iter().for_each(|arrow| mark(arrow.entity));
+        self.thrown_items.iter().for_each(|item| mark(item.entity));
+        self.players.iter().for_each(|slot| mark(Some(Self::hurtbox_entity(slot))));
+        let owned = &sweep.owned;
+        sweep.rows.clear();
+        sweep.rows.extend((0..self.entities.len()).map(|i| {
+            if owned[i] {
+                self.current_bounds(Swept::Row(i), data)
+            } else {
+                self.row_collider(i).map_or_else(|| self.row_shape_bounds(i), collider_bounds)
+            }
+        }));
     }
 
     /// The collider's bounding box where it is now.
@@ -168,20 +201,25 @@ impl RolloutWorld {
             Swept::Row(entity) => {
                 // A slime's, form's or clone's collider is where DetPhysics
                 // last synced it, which an explicit sync since the export moves.
-                if let Some(collider) = self.detphysics_collider(entity) {
-                    return collider_bounds(collider);
+                match self.detphysics_collider(entity) {
+                    Some(collider) => collider_bounds(collider),
+                    None => self.row_shape_bounds(entity),
                 }
-                let row = self.entities[entity];
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                if row.kind == 0 {
-                    let radius = Fix::from_raw(row.radius);
-                    return bounds(center, Vec2::new(radius, radius));
-                }
-                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                bounds(center, box_half(right, up))
             }
         }
+    }
+
+    /// A row's box from its own shape, for a row with no DetPhysics collider.
+    fn row_shape_bounds(&self, entity: usize) -> [Vec2; 2] {
+        let row = self.entities[entity];
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        if row.kind == 0 {
+            let radius = Fix::from_raw(row.radius);
+            return bounds(center, Vec2::new(radius, radius));
+        }
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+        bounds(center, box_half(right, up))
     }
 
     /// The collider's bounding box in this pass's SortAndSweep; None for one
