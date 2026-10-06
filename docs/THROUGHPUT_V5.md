@@ -80,9 +80,24 @@ sim was the C#-order Updater scheduler from the fidelity merge.
    This gave 22% on the held-out games, and the hash is unchanged. It needs
    `rustup component add llvm-tools`.
 
+7. **The full writer's march skips walls no ray of a group can reach.**
+   `bopl4_terrain_anchor` takes each wall's SDF at the body once per row.
+   `bopl4_march` keeps a wall only if its body SDF is at most
+   max_i(min(max, limit_i) + |O_i - B|) + 0.1. A culled wall is never a hit, and
+   when it would be the minimum the ray ends on the next check either way
+   (the proof is at `bopl4_march`). The 400-game hash is unchanged and
+   writer_bench's march-check passes. Of the 12.5 walls a map has, 6.5 are
+   kept per march, and the full writer is 8-10% faster.
+   Culling cannot get tighter: the first step's disk around the origin binds
+   for every direction.
+
 ## Measured and not kept
 
 - `overflow-checks = false`: 2%. The checks stay as a safety net.
+- A no-hit certificate (skipping the march for a ray whose segment stays
+  more than 0.05 from every wall) was not built. 58% of rays end without a
+  hit, but they average 6 steps each (the sky, not grazing the floor; only
+  1% hit the 32-step cap), so it nets about 10% of the march.
 
 ## Open
 
