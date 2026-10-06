@@ -104,10 +104,18 @@ sim was the C#-order Updater scheduler from the fidelity merge.
    rest (61 vs 24 us per decision) and carry 25% of the corpus's sim time.
    The sim is 29% faster on Smoke games and 10% faster over the held-out
    games.
+10. **A Smoke cloud's early turn runs that cloud alone.** Every cloud's
+    prefab base is unique (`register_prefab` advances by SmokeCircle's five
+    rows), so the turn `run_spawned_before` queued for cloud i is cloud i's.
+    It no longer filters and keys every cloud to find it. About 32 such turns
+    run per tick with 34 clouds alive. Smoke games retire 8% fewer sim
+    instructions, and the held-out games 3% fewer.
 
 ## Measured and not kept
 
 - `overflow-checks = false`: 2%. The checks stay as a safety net.
+- Memoizing `updater_owner_position` under a list version: 0.6-0.8% of
+  sim instructions. The batches it scans are short.
 - A no-hit certificate (skipping the march for a ray whose segment stays
   more than 0.05 from every wall) was not built. 58% of rays end without a
   hit, but they average 6 steps each (the sky, not grazing the floor; only

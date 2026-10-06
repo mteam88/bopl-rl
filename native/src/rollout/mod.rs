@@ -8902,7 +8902,7 @@ impl RolloutWorld {
                 5 => self.ability_pickups_tick_before(hierarchy - 99_999_999, data, updater_dt),
                 6 => self.engines_tick(data, updater_dt, turn),
                 8 => self.rope_turn(index),
-                9 => self.smoke_clouds_update_early(data, updater_dt, turn),
+                9 => self.smoke_cloud_turn(index, hierarchy, data, updater_dt),
                 10 => self.scale_changer_step(index, data, updater_dt),
                 11 => self.duplicate_platform_effects_tick(
                     data,
@@ -20101,30 +20101,21 @@ impl RolloutWorld {
         }
     }
 
-    /// Updates, ahead of `smoke_tick`, the live clouds whose prefab rows fall
-    /// in `spawned`.
-    fn smoke_clouds_update_early(&mut self, data: &data::RolloutData, updater_dt: Fix, spawned: std::ops::Range<u32>) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        // Only a cloud whose prefab rows are in `spawned` can run: the rest
-        // need no place in the order (a cloud's rows are fixed at its spawn).
-        updater_order_where(
-            &mut order,
-            &self.smoke_clouds,
-            |cloud| spawned.contains(&(100_000_000 + cloud.hierarchy_base)),
-            |cloud| self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base),
-        );
-        for &cloud_index in &order {
-            let cloud = &self.smoke_clouds[cloud_index];
-            let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
-            if spawned.contains(&(100_000_000 + cloud.hierarchy_base))
-                && cloud.active
-                && !self.updater_passed(key)
-            {
-                self.updater_take_turn(key);
-                self.smoke_cloud_update(cloud_index, data, updater_dt);
-            }
+    /// Cloud `cloud_index`'s turn ahead of `smoke_tick`, queued at prefab
+    /// row `hierarchy`. Every cloud's prefab base is its own (register_prefab
+    /// advances the numbering by SmokeCircle's five rows), so the cloud whose
+    /// rows start there is this one, unless a spawn since the queue was built
+    /// reused its slot.
+    fn smoke_cloud_turn(&mut self, cloud_index: usize, hierarchy: u32, data: &data::RolloutData, updater_dt: Fix) {
+        let cloud = &self.smoke_clouds[cloud_index];
+        if 100_000_000 + cloud.hierarchy_base != hierarchy || !cloud.active {
+            return;
         }
-        self.scratch.item_order = order;
+        let key = self.updater_key(cloud.appended, hierarchy);
+        if !self.updater_passed(key) {
+            self.updater_take_turn(key);
+            self.smoke_cloud_update(cloud_index, data, updater_dt);
+        }
     }
 
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
