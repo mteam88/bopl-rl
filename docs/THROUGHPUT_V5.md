@@ -117,6 +117,10 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     Smoke games retire 7.5% fewer sim instructions, and the held-out games
     3% fewer. (A first try hashed `owner.rotate_left(7)`. Bases step by 5,
     so it used 2 of the 256 slots and measured 0.7%.)
+12. **The writer bins dynamic entities into octants without atan2.** It
+    reads the octant off the signs and whichever of |dx| and |dy| is larger,
+    and takes the old atan2 path within 1e-6 (relative) of an octant edge.
+    The 400-game hash is unchanged, and the writer is 4-8% faster.
 
 ## Measured and not kept
 

@@ -442,6 +442,23 @@ static void bopl4_march(const Bopl4Terrain *t, const double *ox, const double *o
 #endif
     bopl4_march_scalar(&t->view, ox, oy, n, dx, dy, max, limit, out);
 }
+/* The eighth of the circle (atan2(dy, dx)+pi)*8/(2 pi) falls in, clamped to
+ * 0-7. Away from the octant edges (the axes and diagonals) it is read off the
+ * signs and which of |dx|, |dy| is larger: there the float atan2 is ~1e-16
+ * from the exact angle and the edges are 1e-6 away, so the two agree. Near an
+ * edge it takes the atan2 path as written. */
+static inline int bopl4_sector(double dx, double dy) {
+    double ax=fabs(dx), ay=fabs(dy), big=fmax(ax, ay);
+    if (fmin(ax, ay)<=1e-6*big || fabs(ax-ay)<=1e-6*big) {
+        double angle=atan2(dy, dx)+3.14159265358979323846;
+        int sector=(int)(angle*(8.0/6.28318530717958647692));
+        if (sector<0) sector=0; else if (sector>7) sector=7;
+        return sector;
+    }
+    int steep=ay>ax;
+    if (dy<0) return dx<0 ? (steep?1:0) : (steep?2:3);
+    return dx>0 ? (steep?5:4) : (steep?6:7);
+}
 /* Classes: 0 wall, 1 lethal wall, 2 water / blast plane, 3 hostile projectile
  * or object, 4 opponent body, 5 own object; out[7] the hit's closing speed
  * along the ray for classes 3-5. The surfaces other than walls are closed
@@ -692,10 +709,7 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
             if (entity->inverse_mass>0) {
                 n_nonstatic++;
                 double dx=bopl_fix(entity->x)-self_x, dy=bopl_fix(entity->y)-self_y;
-                double angle=atan2(dy, dx)+3.14159265358979323846;
-                int sector=(int)(angle*(8.0/6.28318530717958647692));
-                if (sector<0) sector=0; else if (sector>7) sector=7;
-                sectors[sector]++;
+                sectors[bopl4_sector(dx, dy)]++;
             }
             if (entity->flags&BOPL_ENTITY_PICKUP) n_pickup++;
             if (!time_stop_known && state->header.player_time_scale==0
