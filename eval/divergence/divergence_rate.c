@@ -71,6 +71,9 @@
  *   DR_VISIBLE_ALIGNED  1 = index-align the visible lens like replay_ab.c
  *                       instead of compacting it.
  *   DR_PROGRESS  print a progress line to stderr every N games (default 0)
+ *   DR_HOLD      1 = random play draws each decision's hold index uniformly
+ *                from BOPL_HOLD_LENGTHS, as the bots do through the latch, so
+ *                held casts and charges get played (default 0 = hold index 0)
  */
 #include "bopl_rl.h"
 #include "divergence_compare.h"
@@ -140,6 +143,7 @@ typedef struct {
     BoplBot bots[DR_MAX_PLAYERS];
     DrLatch latch[DR_MAX_PLAYERS];
     uint64_t rng;
+    int hold;                      /* DR_HOLD */
 } DrDriver;
 
 /* One decision for every player, already latched. `pilot` is the state the
@@ -148,7 +152,7 @@ typedef struct {
  * candidate is being scored. */
 static void dr_decide(DrDriver *d, BoplRl *pilot, const BoplRlState *state, int players,
                       BoplRlAction *actions) {
-    for (int i = 0; i < players; i++) {
+    for (int i = 0; i < players && i < DR_MAX_PLAYERS; i++) {
         uint16_t buttons; uint8_t aim; int hold;
         if (d->bot_kind) {
             uint8_t out[3];
@@ -158,13 +162,13 @@ static void dr_decide(DrDriver *d, BoplRl *pilot, const BoplRlState *state, int 
             aim = out[0]; buttons = out[1]; hold = out[2];
         } else {
             /* writer_bench.c:135's shape: an aim byte, the jump and three
-             * ability bits, and some WASD. Hold index 0, so every decision is
-             * fresh and the latch never pins: random play should not be given
-             * the bots' charge discipline. */
+             * ability bits, and some WASD. Hold index 0 by default, so every
+             * decision is fresh and the latch never pins; DR_HOLD=1 draws it
+             * uniformly so held casts and charges get played. */
             uint32_t r = dr_rand(&d->rng);
             aim = (uint8_t)(1 + (r >> 16) % 255);
             buttons = (uint16_t)((r & 15) | ((r >> 4) & (64 | 128 | 256 | 512)));
-            hold = 0;
+            hold = d->hold ? (int)(dr_rand(&d->rng) % BOPL_ACT_HOLD) : 0;
         }
         actions[i].angle = aim;
         actions[i].reserved = 0;
@@ -385,6 +389,7 @@ int main(int argc, char **argv) {
     /* Action source. */
     DrDriver driver;
     memset(&driver, 0, sizeof driver);
+    driver.hold = (int)dr_envl("DR_HOLD", 0);
     char cell_label[64];
     snprintf(cell_label, sizeof cell_label, "%s", cell);
     if (!strncmp(cell, "bot:", 4)) {
@@ -438,11 +443,12 @@ int main(int argc, char **argv) {
     printf("{\"record\":\"run\",\"cell\":\"%s\",\"oracle\":\"%s\",\"q32\":\"%s\",\"f64\":\"%s\","
            "\"oracle_hash\":\"%s\",\"rust_hash\":\"%s\",\"games\":%u,\"first\":%u,\"seed\":%u,"
            "\"ticks\":%u,\"players\":%d,\"stocks\":%u,\"tol\":%" PRId64 ",\"pool\":\"%s\",\"pool_n\":%d,"
-           "\"maps\":%u,\"map_count\":%u,\"visible_aligned\":%d,\"fresh\":%d,\"ignore\":\"%s\"}\n",
+           "\"maps\":%u,\"map_count\":%u,\"visible_aligned\":%d,\"fresh\":%d,\"ignore\":\"%s\","
+           "\"hold\":%d}\n",
            cell_label, argv[1], argv[2], argv[3], bopl_rl_source_hash(world[0]),
            bopl_rl_source_hash(world[1]), games, first, base_seed, horizon, players, stocks,
            tolerance, pool_spec, pool_n, map_n, map_count, dr_visible_aligned, dr_fresh,
-           dr_ignore_list);
+           dr_ignore_list, driver.hold);
     fflush(stdout);
 
     unsigned failed = 0;
@@ -465,6 +471,8 @@ int main(int argc, char **argv) {
                 config.player[p].abilities[s] = pool_fixed ? (uint32_t)pool[s]
                                                            : (uint32_t)pool[dr_rand(&draw) % (uint32_t)pool_n];
         driver.rng = draw ^ 0xD1B54A32D192ED03ull;
+        /* The environment clears its latch on every reset (bopl_puffer.h:996). */
+        memset(driver.latch, 0, sizeof driver.latch);
 
         /* DR_FRESH=1 reopens the two Rust handles before every game. The port
          * carries state across bopl_rl_reset: after certain episodes a later

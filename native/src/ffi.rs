@@ -141,7 +141,7 @@ pub unsafe extern "C" fn bopl_observe(
                 y: p.position.y.raw(),
                 vx: velocity.x.raw(),
                 vy: velocity.y.raw(),
-                rotation: p.rotation.raw(),
+                rotation: p.rotation().raw(),
                 local: p.local.raw(),
                 grounded_speed: p.grounded_speed.raw(),
                 cooldown: p.cooldown.raw(),

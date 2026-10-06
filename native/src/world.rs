@@ -3,10 +3,12 @@
 use crate::{
     fixed::Fix,
     geometry::{OrientedBox, RoundedRect},
+    orientation::Orientation,
     surface::Surface,
     vector::Vec2,
 };
 use serde::{Deserialize, Serialize};
+use std::cell::{Cell, RefCell};
 
 mod dash;
 
@@ -34,7 +36,7 @@ pub struct Platform {
     pub collider: RoundedRect,
     pub ice: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MovementConstants {
     pub max_speed: Fix,
     pub accel: Fix,
@@ -49,14 +51,30 @@ pub struct MovementConstants {
     pub jump_teleport: Fix,
     pub friction: Fix,
     pub ice_friction: Fix,
+    /// PlayerPhysics.cannotBeUngroundedByRopes: on for the Throw and Roll
+    /// forms', so a grounded rope end's pull never UnGrounds that body
+    /// (PlayerPhysics.cs:156).
+    #[serde(default)]
+    pub cannot_be_ungrounded_by_ropes: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+
+fn default_fixed_delta_time() -> Fix {
+    DT
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Player {
     pub alive: bool,
+    /// Set with `alive = false` when a boundary component destroyed the body.
+    /// The death is attributed later in the pass, after an ungrounding exit
+    /// may already have moved the body back inside the bounds.
+    #[serde(default)]
+    pub out_of_bounds: bool,
     pub id: u32,
     pub position: Vec2,
-    pub rotation: Fix,
-    pub up: Vec2,
+    /// The body FixTransform's rotation and up, only ever set together.
+    #[serde(flatten)]
+    pub orientation: Orientation,
     pub velocity: Vec2,
     pub external_velocity: Vec2,
     pub radius: Fix,
@@ -67,6 +85,10 @@ pub struct Player {
     /// body and can lead this value by one updater phase.
     #[serde(skip, default = "default_scale")]
     pub scale: Fix,
+    /// PlayerPhysics.prevScal: the scale `radius` last followed. UpdateScale
+    /// multiplies the radius by `scale / prevScal` (PlayerPhysics.cs:106-123).
+    #[serde(skip, default = "default_scale")]
+    pub(crate) physics_scale: Fix,
     pub grounded: bool,
     pub ground: Option<u32>,
     pub local: Fix,
@@ -77,17 +99,34 @@ pub struct Player {
     /// later for the ordinary slime.
     #[serde(default)]
     pub(crate) skip_next_gravity: bool,
-    /// PlayerPhysics.jumpedThisFrame: set by Jump, cleared once the tick's
-    /// state machine has seen it.
+    /// GameTime.FixedDeltaTime(playerIdHolder, simDeltaTime) for the body's
+    /// player, taken at its turn: zero while a Time Stop freezes that player.
+    /// PlayerPhysics and PlayerBody scale only these steps by it.
+    #[serde(default = "default_fixed_delta_time")]
+    pub(crate) fixed_delta_time: Fix,
+    /// The slime's PlayerPhysics.jumpedThisFrame: set by its Jump, cleared
+    /// once the tick's state machine has seen it.
     #[serde(default)]
     pub(crate) jumped_this_frame: bool,
+    /// The slime's PlayerBody.simulated: Awake and BeforeSpawnInit clear it,
+    /// Spawn sets it, PrepareToRevive clears it again
+    /// (SlimeController.cs:499-591, 625). PlayerBody.IsEnabled reads it, so
+    /// an unsimulated body takes no UpdateSim or LateUpdateSim turn.
+    #[serde(default = "default_true")]
+    pub(crate) simulated: bool,
+    /// The slime's PlayerPhysics.enabled: BeforeSpawnInit and PrepareToRevive
+    /// clear it, Spawn sets it (SlimeController.cs:518, 569, 624), and a
+    /// RewindRecorder clears it for its playback and then restores it
+    /// (RewindRecorder.cs:149-151, 355).
+    #[serde(default = "default_true")]
+    pub(crate) physics_enabled: bool,
     /// SlimeController.OldUpdate returns as soon as it has entered an ability
-    /// (SlimeController.cs:824-831), so neither the jump block at 867-871 nor
-    /// the `prevInput` store at 889 runs on a cast pass. Set for the instant
+    /// (SlimeController.cs:824-831), so neither the state switch, the jump
+    /// block at 867-871 nor the `prevInput` store at 889 runs on a cast pass. Set for the instant
     /// abilities, which keep the ordinary slime body; the form abilities are
     /// already held out of both by `PlayerSlot::active`. Scoped to one pass:
     /// `player_tick` clears it, the cast sets it, and the movement below plus
-    /// `RolloutWorld::update_obs_state` read it without consuming it.
+    /// `RolloutWorld::slime_tail` read it without consuming it.
     #[serde(default)]
     pub(crate) instant_cast_this_pass: bool,
     /// `SlimeController.wasUpsideDown`: `Jump()` records the sign of the
@@ -106,12 +145,19 @@ pub struct Player {
     pub(crate) pre_move_up: Vec2,
     #[serde(default)]
     pub(crate) pre_move_grounded: bool,
-    /// `attachToGround` flips the sprite from the normal at the instant of
-    /// attachment (SlimeController.cs:1126-1134). That normal is not the
-    /// end-of-tick `up`: on a steep or rotating surface the two differ by a
-    /// whole tick of surface rotation. `None` when nothing attached this pass.
+    /// PlayerPhysics.OnAttachedToGround since this body's pass began: a
+    /// landing ray's CollideWithGround (PlayerPhysics.cs:471-478), which a
+    /// direct AttachToGround does not raise. `attachToGround` flips the
+    /// sprite from the normal at that instant (SlimeController.cs:1126-1134),
+    /// not the end-of-tick `up`: on a steep or rotating surface the two
+    /// differ by a whole tick of surface rotation.
     #[serde(default)]
-    pub(crate) attach_upside_down: Option<bool>,
+    pub(crate) landed_upside_down: Option<bool>,
+    /// The last PlayerPhysics.Move found the body airborne and cast its
+    /// landing raycasts (PlayerPhysics.cs:229-238). Anything in OldUpdate
+    /// that ungrounds the body (Jump(), a cast) comes before Move.
+    #[serde(default)]
+    pub(crate) move_airborne: bool,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -119,22 +165,28 @@ pub struct Player {
     /// orientation of the tick's UpdateSim phase; a grounded body moves again
     /// in LateUpdateSim, so this lags the live position by one phase).
     pub collider: OrientedBox,
+    /// The box as DetPhysics holds it for mid-pass queries: moved only by
+    /// its Simulate sync and by explicit syncs (UpdatePhysicsPositions,
+    /// SyncPhysicsTo), not by `move_collider`.
+    #[serde(default)]
+    pub synced: OrientedBox,
     #[serde(default)]
     pub collider_rotation: Fix,
-    /// `Box.inverseExtents` of the Player-layer hurtbox as
-    /// `DPhysicsBox.Scale` has accumulated it. The setter rescales the
-    /// stored reciprocal by `(One / oldScale) * newScale`
-    /// (DPhysicsBox.cs:203-219) instead of rebuilding it from the authored
-    /// extents, and `SlimeController.UpdateSim` assigns `hurtBox.Scale`
-    /// every pass (SlimeController.cs:206), so even a constant scale walks
-    /// the value by raw units. Zero until the first assignment, which is
-    /// the standalone movement slice's unscaled case.
-    #[serde(skip, default)]
-    pub collider_inverse_extents: Vec2,
+    /// FixTransform.up as `collider` last took it. A form box applies its
+    /// offset with FixTransform.right itself, which the angle round trip to
+    /// `collider_rotation` can miss by a few Q32 units.
+    #[serde(default)]
+    pub collider_up: Vec2,
     /// `Vec2::angle(collider_rotation)`, kept so an unchanged rotation does
     /// not pay for the sine table again (zero until the first sync).
     #[serde(default)]
     pub collider_basis: Vec2,
+    /// The live PlayerPhysics' SyncRotationToPlatform: its Move and
+    /// LateUpdateSim turn a grounded body to the surface only when it is set
+    /// (PlayerPhysics.cs:143, 221, 268); AttachToGround and SyncPhysicsTo
+    /// align it regardless (PlayerPhysics.cs:508, 569).
+    #[serde(default = "default_true")]
+    pub sync_rotation_to_platform: bool,
     /// `(up, rotation)` as `align` last derived them: a step along a flat
     /// stretch of surface keeps the same normal, so the arc-cosine is not
     /// paid again for the same input (the value is identical either way).
@@ -172,6 +224,10 @@ pub struct DashState {
     /// picks up the ray-corrected body on the next.
     #[serde(default)]
     pub exit_position: Vec2,
+    /// Dash's own PlayerPhysics radius, which follows the form's scale
+    /// history rather than the slime's. Set before every entry.
+    #[serde(default)]
+    pub radius: Fix,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
@@ -198,11 +254,8 @@ impl Action {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct World {
     pub tick: u64,
-    pub platforms: Vec<Platform>,
+    pub platforms: Platforms,
     pub players: Vec<Player>,
-    /// Raycast broad phase over `platforms`, rebuilt at every step.
-    #[serde(skip)]
-    pub bounds: PlatformBounds,
 }
 
 impl World {
@@ -235,16 +288,9 @@ impl World {
         if actions.iter().any(|a| a.buttons & !3 != 0) {
             return Err("this slice supports jump and dash only".into());
         }
-        // The platforms of this slice never move; the cache only has to exist.
-        if self.bounds.len() != self.platforms.len() {
-            self.bounds.rebuild(&self.platforms);
-        }
-        let terrain = Terrain {
-            platforms: &self.platforms,
-            bounds: &self.bounds,
-        };
+        let mut terrain = self.platforms.terrain();
         for (index, action) in actions.iter().enumerate() {
-            self.players[index].step(*action, terrain);
+            self.players[index].step(*action, &mut terrain);
             let caster = &self.players[index];
             if caster.dash.active && caster.dash.time == DT {
                 let origin = caster.position;
@@ -287,7 +333,7 @@ impl World {
             }
         }
         for player in &mut self.players {
-            player.sync_collider();
+            player.sync_collider(player.authored_inverse_extents());
             player.late_step(&self.platforms);
         }
         self.tick += 1;
@@ -298,13 +344,38 @@ impl World {
 /// The raycast broad phase: every platform's axis-aligned bounds
 /// (`RoundedRect::bounds`, already widened by `Bounds::may_reach`'s 1e-6
 /// margin) in lanes of eight, so a query is a few vector compares instead of
-/// re-deriving the bounds from each 150-byte `Platform`. Platforms move only
-/// in the physics stage, so the owner rebuilds this once per change
-/// (`RolloutWorld::rebuild_bounds`).
-#[derive(Clone, Debug, Default)]
+/// re-deriving the bounds from each 150-byte `Platform`. Marked stale by
+/// `invalidate`, it rebuilds itself from the platforms of the next query.
+#[derive(Debug)]
 pub struct PlatformBounds {
-    chunks: Vec<BoundsChunk>,
-    len: usize,
+    chunks: RefCell<Vec<BoundsChunk>>,
+    len: Cell<usize>,
+    stale: Cell<bool>,
+}
+
+impl Default for PlatformBounds {
+    fn default() -> Self {
+        Self {
+            chunks: RefCell::new(Vec::new()),
+            len: Cell::new(0),
+            stale: Cell::new(true),
+        }
+    }
+}
+
+impl Clone for PlatformBounds {
+    fn clone(&self) -> Self {
+        Self {
+            chunks: RefCell::new(self.chunks.borrow().clone()),
+            len: self.len.clone(),
+            stale: self.stale.clone(),
+        }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.chunks.get_mut().clone_from(&source.chunks.borrow());
+        self.len.set(source.len.get());
+        self.stale.set(source.stale.get());
+    }
 }
 
 const BOUNDS_LANES: usize = 8;
@@ -369,20 +440,100 @@ impl BoundsChunk {
     }
 }
 
+/// The platforms and their raycast broad phase. DetPhysics' casts read every
+/// collider where it stands, so reads go through `Deref` while any mutable
+/// access marks the broad phase stale; the next query rebuilds it. No query
+/// can see a collider's old bounds.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(from = "Vec<Platform>", into = "Vec<Platform>")]
+pub struct Platforms {
+    list: Vec<Platform>,
+    bounds: PlatformBounds,
+}
+
+impl Clone for Platforms {
+    fn clone(&self) -> Self {
+        Self {
+            list: self.list.clone(),
+            bounds: self.bounds.clone(),
+        }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.list.clone_from(&source.list);
+        self.bounds.clone_from(&source.bounds);
+    }
+}
+
+impl From<Vec<Platform>> for Platforms {
+    fn from(list: Vec<Platform>) -> Self {
+        Self {
+            list,
+            bounds: PlatformBounds::default(),
+        }
+    }
+}
+
+impl From<Platforms> for Vec<Platform> {
+    fn from(platforms: Platforms) -> Self {
+        platforms.list
+    }
+}
+
+impl std::ops::Deref for Platforms {
+    type Target = Vec<Platform>;
+    fn deref(&self) -> &Vec<Platform> {
+        &self.list
+    }
+}
+
+impl<'a> IntoIterator for &'a Platforms {
+    type Item = &'a Platform;
+    type IntoIter = std::slice::Iter<'a, Platform>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.list.iter()
+    }
+}
+
+impl std::ops::DerefMut for Platforms {
+    fn deref_mut(&mut self) -> &mut Vec<Platform> {
+        self.bounds.invalidate();
+        &mut self.list
+    }
+}
+
+impl Platforms {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Vec::with_capacity(capacity).into()
+    }
+    pub fn terrain(&self) -> Terrain<'_> {
+        Terrain {
+            platforms: &self.list,
+            bounds: &self.bounds,
+        }
+    }
+}
+
 impl PlatformBounds {
-    pub fn rebuild(&mut self, platforms: &[Platform]) {
+    fn invalidate(&mut self) {
+        *self.stale.get_mut() = true;
+    }
+    fn refresh(&self, platforms: &[Platform]) {
+        if !self.stale.get() && self.len.get() == platforms.len() {
+            return;
+        }
         assert!(
             platforms.len() <= 64,
             "platform count exceeds the candidate mask"
         );
         let margin = Fix::from_f64(1e-6);
-        self.len = platforms.len();
-        self.chunks.clear();
-        self.chunks
-            .resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
+        self.len.set(platforms.len());
+        self.stale.set(false);
+        let mut chunks = self.chunks.borrow_mut();
+        chunks.clear();
+        chunks.resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
         for (index, platform) in platforms.iter().enumerate() {
             let bounds = platform.collider.bounds();
-            let chunk = &mut self.chunks[index / BOUNDS_LANES];
+            let chunk = &mut chunks[index / BOUNDS_LANES];
             let lane = index % BOUNDS_LANES;
             chunk.max_x[lane] = (bounds.max.x + margin).to_f64();
             chunk.min_x[lane] = (bounds.min.x - margin).to_f64();
@@ -390,18 +541,13 @@ impl PlatformBounds {
             chunk.min_y[lane] = (bounds.min.y - margin).to_f64();
         }
     }
-    pub fn len(&self) -> usize {
-        self.len
-    }
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-    /// Bit `i` set when platform `i`'s bounds meet the axis-aligned box
+    /// Bit `i` set when `platforms[i]`'s bounds meet the axis-aligned box
     /// `[lo, hi]` (`Bounds::may_reach` for a segment with those extents).
-    pub fn candidates(&self, lo: Vec2, hi: Vec2) -> u64 {
+    fn candidates(&self, platforms: &[Platform], lo: Vec2, hi: Vec2) -> u64 {
+        self.refresh(platforms);
         let (lo_x, hi_x, lo_y, hi_y) = (lo.x.to_f64(), hi.x.to_f64(), lo.y.to_f64(), hi.y.to_f64());
         let mut mask = 0u64;
-        for (index, chunk) in self.chunks.iter().enumerate() {
+        for (index, chunk) in self.chunks.borrow().iter().enumerate() {
             mask |= chunk.candidates(lo_x, hi_x, lo_y, hi_y) << (index * BOUNDS_LANES);
         }
         mask
@@ -429,8 +575,8 @@ impl SegmentBox {
         self.add(origin);
         self.add(end);
     }
-    pub(crate) fn candidates(self, bounds: &PlatformBounds) -> u64 {
-        bounds.candidates(self.lo, self.hi)
+    pub(crate) fn candidates(self, terrain: Terrain) -> u64 {
+        terrain.candidates(self.lo, self.hi)
     }
 }
 
@@ -439,7 +585,15 @@ impl SegmentBox {
 #[derive(Clone, Copy)]
 pub struct Terrain<'a> {
     pub platforms: &'a [Platform],
-    pub bounds: &'a PlatformBounds,
+    bounds: &'a PlatformBounds,
+}
+
+impl<'a> Terrain<'a> {
+    /// Bit `i` set when `platforms[i]`'s bounds meet the axis-aligned box
+    /// `[lo, hi]`.
+    pub fn candidates(self, lo: Vec2, hi: Vec2) -> u64 {
+        self.bounds.candidates(self.platforms, lo, hi)
+    }
 }
 
 pub(crate) fn closest(
@@ -454,7 +608,7 @@ pub(crate) fn closest(
     segment.add_segment(origin, end);
     closest_among(
         terrain,
-        segment.candidates(terrain.bounds),
+        segment.candidates(terrain),
         origin,
         direction,
         distance,
@@ -476,11 +630,6 @@ pub(crate) fn closest_among(
     exclude: Option<u32>,
 ) -> Option<(usize, Fix, Vec2)> {
     let platforms = terrain.platforms;
-    assert_eq!(
-        terrain.bounds.len(),
-        platforms.len(),
-        "stale platform bounds"
-    );
     let mut nearest = Fix::MAX;
     let mut result = None;
     while candidates != 0 {
@@ -500,36 +649,49 @@ pub(crate) fn closest_among(
     }
     result
 }
-/// Candidate platforms for the three collision rays `collision_cast` and
-/// `movement_limit` issue from `position` along `velocity`: every ray origin
-/// lies within `radius * sqrt(2)` of the centre (the front ray at `radius`,
-/// `movement_limit`'s corner rays at the diagonal), and every ray runs
-/// `|velocity| * dt`, so the box around the centre segment grown by
-/// `1.5 * radius` covers them all. Conservative like the per-ray test, so
-/// the hits are the same.
-fn ray_group_candidates(
-    terrain: Terrain,
-    position: Vec2,
-    velocity: Vec2,
-    radius: Fix,
-    dt: Fix,
-) -> u64 {
-    let travel = velocity * dt;
-    let end = position + travel;
-    let spread = radius * Fix::from_f64(1.5);
-    let grow = Vec2::new(spread, spread);
-    let mut segment = SegmentBox::empty();
-    segment.add(position - grow);
-    segment.add(position + grow);
-    segment.add(end - grow);
-    segment.add(end + grow);
-    segment.candidates(terrain.bounds)
+/// What player physics moves over and queries: the platforms, and
+/// DetPhysics.RaycastToClosestRoundedRect, which PlayerPhysics.checkForWall
+/// and StickyRoundedRectangle.maxMovementAllowed call (PlayerPhysics.cs:511-513,
+/// StickyRoundedRectangle.cs:441-451).
+pub(crate) trait Walls {
+    fn platforms(&self) -> &[Platform];
+    /// The nearest active platform but `excluded` the ray meets within
+    /// `distance`: its index, near distance and hit point.
+    fn raycast_to_closest_rounded_rect(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        distance: Fix,
+        excluded: Option<usize>,
+    ) -> Option<(usize, Fix, Vec2)>;
+}
+
+/// Platforms with no destroyed collider to purge: the legacy World's, or a
+/// copy of the rollout's.
+impl Walls for Terrain<'_> {
+    fn platforms(&self) -> &[Platform] {
+        self.platforms
+    }
+    fn raycast_to_closest_rounded_rect(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        distance: Fix,
+        excluded: Option<usize>,
+    ) -> Option<(usize, Fix, Vec2)> {
+        closest(*self, origin, direction, distance, excluded.map(|index| self.platforms[index].id))
+    }
 }
 
 impl Player {
     pub(crate) fn platform<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
         self.platform_indexed(platforms)
             .map(|(_, platform)| platform)
+    }
+    /// PlayerPhysics.attachedGround, which only a destroyed ground clears: a
+    /// deactivated one is still named, and its surface still read.
+    pub(crate) fn attached_ground<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
+        platforms.iter().find(|p| Some(p.id) == self.ground)
     }
     fn platform_indexed<'a>(&self, platforms: &'a [Platform]) -> Option<(usize, &'a Platform)> {
         platforms
@@ -548,26 +710,48 @@ impl Player {
             }
         }
     }
+    pub fn rotation(&self) -> Fix {
+        self.orientation.rotation()
+    }
+    pub fn up(&self) -> Vec2 {
+        self.orientation.up()
+    }
+    pub fn right(&self) -> Vec2 {
+        self.orientation.right()
+    }
+    /// `body.rotation = value` (FixTransform.cs:42-47).
+    pub fn set_rotation(&mut self, rotation: Fix) {
+        self.orientation.set_rotation(rotation);
+    }
+    /// `body.up = value` (FixTransform.cs:55-60).
+    pub fn set_up(&mut self, up: Vec2) {
+        self.orientation.set_up(up);
+    }
+    /// `body.right = value` (FixTransform.cs:68-73).
+    pub fn set_right(&mut self, right: Vec2) {
+        self.orientation.set_right(right);
+    }
     pub(crate) fn align(&mut self, platform: &Platform) {
         self.align_to(platform.surface.normal(self.position));
     }
     /// `align` with the surface normal already evaluated.
-    fn align_to(&mut self, up: Vec2) {
-        self.up = up;
-        match self.aligned {
-            Some((cached_up, rotation)) if cached_up == up => self.rotation = rotation,
+    pub(crate) fn align_to(&mut self, up: Vec2) {
+        let rotation = match self.aligned {
+            Some((cached_up, rotation)) if cached_up == up => rotation,
             _ => {
-                self.rotation = up.perp_cw().normalized_angle();
-                self.aligned = Some((up, self.rotation));
+                let rotation = up.perp_cw().normalized_angle();
+                self.aligned = Some((up, rotation));
+                rotation
             }
-        }
+        };
+        self.orientation.set_up_with_angle(up, rotation);
     }
     fn ground_state(&self) -> crate::player_ground::State {
         crate::player_ground::State {
             position: self.position,
-            rotation: self.rotation,
-            up: self.up,
-            right: self.up.perp_cw(),
+            rotation: self.rotation(),
+            up: self.up(),
+            right: self.right(),
             velocity: self.velocity,
             external_velocity: self.external_velocity,
             radius: self.radius,
@@ -579,8 +763,8 @@ impl Player {
     }
     fn apply_ground_state(&mut self, motion: crate::player_ground::State) {
         self.position = motion.position;
-        self.rotation = motion.rotation;
-        self.up = motion.up;
+        // The pair player_ground's own setter mirrors built.
+        self.orientation.set_up_with_angle(motion.up, motion.rotation);
         self.velocity = motion.velocity;
         self.external_velocity = motion.external_velocity;
         self.grounded = motion.grounded;
@@ -594,44 +778,49 @@ impl Player {
             .attach(platform.id, &platform.surface, position)
             .expect("valid attachment");
         self.apply_ground_state(motion);
-        // SlimeController subscribes attachToGround to OnAttachedToGround
-        // (SlimeController.cs:472) and reads `attachedGround.currentNormal(body)`
-        // inside that callback (SlimeController.cs:1131). PlayerPhysics has
-        // already snapped the body onto the surface by then
-        // (player_physics.rs attaches before it notifies), so the normal it
-        // sees is the post-attach one - exactly the `up` just stored, and not
-        // the normal at the raw raycast point nor the end-of-tick one.
-        self.attach_upside_down = Some(self.up.y < Fix::ZERO);
     }
-    pub(crate) fn collision_rays(&mut self, terrain: Terrain) {
+    /// VelocityBasedRaycasts over FixedDeltaTime. Returns whether a ray hit
+    /// and attached the body.
+    pub(crate) fn collision_rays(&mut self, walls: &mut impl Walls) -> bool {
+        self.collision_rays_over(walls, self.fixed_delta_time)
+    }
+    /// VelocityBasedRaycasts with the caller's time step, which scales the
+    /// rays' length. Returns whether a ray hit and attached the body.
+    pub(crate) fn collision_rays_over(&mut self, walls: &mut impl Walls, dt: Fix) -> bool {
         let velocity = self.velocity + self.external_velocity;
-        // One broad phase over the box covering all three rays, then only
-        // the candidates are raycast per ray. When the mask is empty the rays are still issued
-        // so `collision_cast` keeps its exact control flow, but cost nothing.
-        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT);
-        // No platform near any of the rays: every query would return None and
-        // `collision_cast` would only have spent a square root and divisions
-        // building rays that hit nothing.
-        if candidates == 0 {
-            return;
-        }
+        // PlayerPhysics.checkForWall, once per ray (PlayerPhysics.cs:410-446).
         if let Some((index, position)) = crate::player_physics::collision_cast(
             self.position,
             velocity,
             self.radius,
-            DT,
+            dt,
             &mut |origin, direction, distance| {
-                closest_among(terrain, candidates, origin, direction, distance, None)
+                walls
+                    .raycast_to_closest_rounded_rect(origin, direction, distance, None)
                     .map(|(index, _, point)| (index, point))
             },
         ) {
-            self.attach(&terrain.platforms[index], position);
+            self.attach(&walls.platforms()[index], position);
+            // CollideWithGround raises OnAttachedToGround after
+            // AttachToGround, so attachToGround reads
+            // `attachedGround.currentNormal(body)` (SlimeController.cs:1131)
+            // at the post-attach pose: the `up` just stored, not the normal
+            // at the raw ray point nor the end-of-tick one.
+            self.landed_upside_down = Some(self.up().y < Fix::ZERO);
+            return true;
         }
+        false
     }
 
-    fn jump(&mut self, platforms: &[Platform]) {
+    /// SlimeController.Jump (SlimeController.cs:897-901) on the slime's own
+    /// PlayerPhysics, whose jumpedThisFrame the state switch reads
+    /// (PlayerPhysics.cs:330-332). A form jumps on its own PlayerPhysics
+    /// (Roll.cs:534-544, Machoman.cs:97) and leaves the slime's flag alone.
+    pub(crate) fn jump(&mut self, platforms: &[Platform]) {
         self.record_upside_down_jump(platforms);
-        self.jump_with_strength(platforms, self.constants.jump_strength);
+        let retained = self.attached_ground(platforms).map(|p| &p.surface);
+        self.jump_off(retained, retained, self.constants.jump_strength);
+        self.jumped_this_frame = true;
     }
     /// `SlimeController.Jump` reads the normal of the ground it is leaving and
     /// stores it in `wasUpsideDown` before calling PlayerPhysics.Jump
@@ -646,19 +835,17 @@ impl Player {
             .map_or(Vec2::UP, |p| p.surface.normal(self.position));
         self.was_upside_down = normal.y < Fix::ZERO;
     }
-    pub(crate) fn jump_with_strength(&mut self, platforms: &[Platform], strength: Fix) {
-        // PlayerPhysics.Jump uses world up while airborne and only reads the
-        // attached platform when grounded (PlayerPhysics.cs:333). Roll can
-        // charge in the air, so an attached platform is not required here.
-        // The retained attachedGround is read whether or not it is still
-        // active (Blink/Teleport can deactivate it under a grounded player
-        // before Move ungrounds them), as in move_grounded_scaled; a ground
-        // that no longer exists at all jumps off world up.
-        let platform = self
-            .grounded
-            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
-            .flatten();
-        let normal = platform.map_or(Vec2::UP, |p| p.surface.normal(self.position));
+    /// PlayerPhysics.Jump (PlayerPhysics.cs:330-346). Airborne it jumps off
+    /// world up; grounded it reads currentNormal off `ground`, the
+    /// attachedGround it holds with no null test: a platform active or not,
+    /// or a destroyed one whose last pose the dead object keeps. Its UnGround
+    /// lifts the body only off a non-null attachedGround, `attached`, which
+    /// a destroyed ground stays until its pass's drain (PlayerPhysics.cs:
+    /// 366-370), and an airborne body off the ground it last left.
+    pub(crate) fn jump_off(&mut self, ground: Option<&Surface>, attached: Option<&Surface>, strength: Fix) {
+        let normal = ground
+            .filter(|_| self.grounded)
+            .map_or(Vec2::UP, |surface| surface.normal(self.position));
         let amount = ((normal.y + Fix::ONE) / self.constants.jump_normal_scale)
             .min(Fix::ONE)
             .max(Fix::ZERO);
@@ -666,44 +853,43 @@ impl Player {
         self.velocity =
             normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum + up * strength;
         self.position += self.velocity * self.constants.jump_teleport;
-        self.jumped_this_frame = true;
-        let mut motion = self.ground_state();
-        motion.unground(platform.map(|p| &p.surface), true);
-        self.apply_ground_state(motion);
+        self.unground(attached, true);
     }
-    fn move_grounded(&mut self, input: Vec2, terrain: Terrain) {
-        self.move_grounded_scaled(input, Fix::ONE, terrain);
+    /// PlayerPhysics.Move's ground input direction: -1, 0 or 1 along the
+    /// surface tangent.
+    pub(crate) fn ground_input_sign(&mut self, input: Vec2, normal: Vec2) -> Fix {
+        let alignment = self.normalized_input(input).dot(normal.perp_cw());
+        let into_ground = normal.dot(input);
+        if alignment.abs() >= Fix::from_f32(0.2)
+            || (into_ground <= Fix::ZERO && alignment.abs() >= Fix::from_f32(0.01))
+        {
+            Fix::from_int(alignment.sign())
+        } else {
+            Fix::ZERO
+        }
     }
-    fn move_grounded_scaled(&mut self, input: Vec2, speed_scale: Fix, terrain: Terrain) {
+    fn move_grounded(&mut self, input: Vec2, walls: &mut impl Walls) {
+        self.move_grounded_scaled(input, Fix::ONE, walls);
+    }
+    fn move_grounded_scaled(&mut self, input: Vec2, speed_scale: Fix, walls: &mut impl Walls) {
         // PlayerPhysics.Move computes ground input against the retained
         // attachedGround reference before testing activeSelf. Blink therefore
         // leaves one legal pass where the platform is present but inactive.
-        let Some((platform_index, platform)) = terrain
-            .platforms
+        let Some((platform_index, platform)) = walls
+            .platforms()
             .iter()
             .enumerate()
             .find(|(_, p)| Some(p.id) == self.ground)
         else {
             // SlimeController.UpdateSim handles a destroyed retained ground
             // before calling Move: it zeros rotation, then UnGround(false).
-            self.rotation = Fix::ZERO;
-            self.up = Vec2::UP;
-            let mut motion = self.ground_state();
-            motion.unground(None, false);
-            self.apply_ground_state(motion);
+            self.set_rotation(Fix::ZERO);
+            self.unground(None, false);
             return;
         };
         let normal = platform.surface.normal(self.position);
         let forward = normal.perp_cw();
-        let alignment = self.normalized_input(input).dot(forward);
-        let into_ground = normal.dot(input);
-        let sign = if alignment.abs() >= Fix::from_f32(0.2)
-            || (into_ground <= Fix::ZERO && alignment.abs() >= Fix::from_f32(0.01))
-        {
-            Fix::from_int(alignment.sign())
-        } else {
-            Fix::ZERO
-        };
+        let sign = self.ground_input_sign(input, normal);
         if sign == Fix::ZERO {
             self.grounded_speed *= if platform.ice {
                 self.constants.ice_friction
@@ -715,125 +901,181 @@ impl Player {
                 self.grounded_speed,
                 sign * self.constants.max_speed,
                 self.constants.accel,
-                DT,
+                self.fixed_delta_time,
             );
         }
         if !platform.active {
-            let mut motion = self.ground_state();
-            motion.unground(Some(&platform.surface), true);
-            self.apply_ground_state(motion);
+            self.unground(Some(&platform.surface), true);
             return;
         }
         // The position has not moved since `normal` was evaluated above.
-        self.align_to(normal);
+        if self.sync_rotation_to_platform {
+            self.align_to(normal);
+        }
         let speed = (self.grounded_speed + self.external_velocity.dot(forward)) * speed_scale;
-        let velocity = forward * speed;
-        // The own platform is excluded from the blocking test; with no other
-        // platform near the rays `movement_limit` would return its unblocked
-        // sentinel without any query, so skip building the rays.
-        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT)
-            & !(1u64 << platform_index);
-        let allowed = if candidates == 0 {
-            crate::platform_motion::MOVEMENT_UNBLOCKED
-        } else {
-            crate::platform_motion::movement_limit(
-                self.position,
-                self.radius,
-                velocity,
-                DT,
-                &mut |origin, direction, distance| {
-                    closest_among(
-                        terrain,
-                        candidates,
-                        origin,
-                        direction,
-                        distance,
-                        Some(platform.id),
-                    )
-                    .map(|(_, near, _)| ((), near))
-                },
-            )
-            .0
-        };
-        let allowed = allowed.min(speed.abs()) * Fix::from_int(speed.sign());
-        self.local = platform
-            .surface
-            .move_unblocked(self.local, self.radius, allowed, DT);
+        self.move_along_surface(platform_index, forward, speed, walls);
     }
-    pub(crate) fn gravity_step(&mut self, terrain: Terrain) {
-        if std::mem::take(&mut self.skip_next_gravity) {
+    /// PlayerPhysics.MoveAlongCurrentPlatForm (PlayerPhysics.cs:323-328): the
+    /// body slides along its ground by only the external velocity's component
+    /// along the surface, and that external velocity is spent.
+    pub(crate) fn move_along_current_platform(&mut self, walls: &mut impl Walls) {
+        let Some(platform_index) = walls.platforms().iter().position(|p| Some(p.id) == self.ground) else {
             return;
-        }
-        if !self.grounded {
-            crate::player_physics::apply_gravity(
-                &mut self.velocity,
-                self.constants.gravity_accel,
-                self.constants.gravity_modifier,
-                self.constants.gravity_max_fall_speed,
-                self.space,
-            )
-            .expect("valid movement gravity constants");
-            self.collision_rays(terrain);
-        }
+        };
+        let forward = walls.platforms()[platform_index].surface.normal(self.position).perp_cw();
+        let speed = self.external_velocity.dot(forward);
+        self.external_velocity = Vec2::ZERO;
+        self.move_along_surface(platform_index, forward, speed, walls);
     }
-    pub(crate) fn step(&mut self, action: Action, terrain: Terrain) {
-        self.step_with_input(action, action.direction(), terrain);
+    /// StickyRoundedRectangle.moveAlongSurface: the surface local advances by
+    /// `speed`, cut short by the nearest other platform ahead.
+    fn move_along_surface(&mut self, platform_index: usize, forward: Vec2, speed: Fix, walls: &mut impl Walls) {
+        let velocity = forward * speed;
+        let dt = self.fixed_delta_time;
+        // maxMovementAllowed disables the own rounded rect around its three
+        // raycasts (StickyRoundedRectangle.cs:441-468).
+        let allowed = crate::platform_motion::movement_limit(
+            self.position,
+            self.radius,
+            velocity,
+            dt,
+            &mut |origin, direction, distance| {
+                walls
+                    .raycast_to_closest_rounded_rect(origin, direction, distance, Some(platform_index))
+                    .map(|(_, near, _)| ((), near))
+            },
+        )
+        .0;
+        let allowed = allowed.min(speed.abs()) * Fix::from_int(speed.sign());
+        self.local = walls.platforms()[platform_index]
+            .surface
+            .move_unblocked(self.local, self.radius, allowed, dt);
+    }
+    /// PlayerPhysics.UpdateSim's gravity and landing raycasts
+    /// (PlayerPhysics.cs:116-131). Returns whether a ray attached the body,
+    /// which raises OnAttachedToGround.
+    pub(crate) fn gravity_step(&mut self, walls: &mut impl Walls) -> bool {
+        if std::mem::take(&mut self.skip_next_gravity) || self.grounded {
+            return false;
+        }
+        crate::player_physics::apply_gravity(
+            &mut self.velocity,
+            self.constants.gravity_accel,
+            self.constants.gravity_modifier,
+            self.constants.gravity_max_fall_speed,
+            self.space,
+        )
+        .expect("valid movement gravity constants");
+        self.collision_rays(walls)
+    }
+    pub(crate) fn step(&mut self, action: Action, walls: &mut impl Walls) {
+        self.step_with_input(action, action.direction(), walls);
     }
 
     /// Run the ordinary slime movement with `input` while keeping `action`'s
     /// joystick direction available to abilities such as Dash. Gamepad input
     /// uses the same vector for both; keyboard players use W/A/S/D for motion
     /// and the joystick byte independently for ability aim.
-    pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, terrain: Terrain) {
+    pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, walls: &mut impl Walls) {
+        let dash_inverse_extents = Some(self.authored_inverse_extents_of(true));
+        if self.step_unintegrated(action, input, walls, dash_inverse_extents) {
+            self.integrate();
+        }
+    }
+    /// `step_with_input` short of PlayerBody's integration. A Dash it enters
+    /// takes `dash_inverse_extents` for its box's inverseExtents.
+    pub(crate) fn step_unintegrated(
+        &mut self,
+        action: Action,
+        input: Vec2,
+        walls: &mut impl Walls,
+        dash_inverse_extents: Option<Vec2>,
+    ) -> bool {
         self.begin_pass();
         if !self.dash.active {
-            self.gravity_step(terrain);
+            self.gravity_step(walls);
+            self.dash.radius = self.radius;
         }
-        self.capture_pre_move();
-        self.move_step(action, input, terrain);
+        self.capture_pre_move(walls.platforms());
+        self.move_unintegrated(action, input, walls, dash_inverse_extents)
     }
     /// Start of this body's updater pass, before PlayerPhysics.UpdateSim.
-    /// `attach_upside_down` records whichever of this pass's two raycast
+    /// `landed_upside_down` records whichever of this pass's two raycast
     /// phases fires attachToGround, so it has to be cleared ahead of both.
     pub(crate) fn begin_pass(&mut self) {
-        self.attach_upside_down = None;
+        self.landed_upside_down = None;
     }
     /// The boundary between PlayerPhysics.UpdateSim and SlimeController's
     /// OldUpdate. Everything OldUpdate reads about the ground is sampled here,
     /// because Move does not run until SlimeController.cs:1084 - long after
     /// OldUpdate has finished with it.
-    pub(crate) fn capture_pre_move(&mut self) {
-        self.pre_move_up = self.up;
+    ///
+    /// InputGroundAlignment and `fix2` take the attached ground's normal at
+    /// the body (StickyRoundedRectangle.currentNormal), not the slime's own
+    /// `up`, which lags a platform that tilted under it since the last align.
+    pub(crate) fn capture_pre_move(&mut self, platforms: &[Platform]) {
+        self.pre_move_up = self
+            .grounded
+            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
+            .flatten()
+            .map_or(self.up(), |p| p.surface.normal(self.position));
         self.pre_move_grounded = self.grounded;
     }
     /// SlimeController.UpdateSim after PlayerPhysics.UpdateSim has applied
     /// gravity: dash entry/continuation, jump, ground or air movement, then
     /// PlayerBody's integration.
-    pub(crate) fn move_step(&mut self, action: Action, input: Vec2, terrain: Terrain) {
+    pub(crate) fn move_step(
+        &mut self,
+        action: Action,
+        input: Vec2,
+        walls: &mut impl Walls,
+        dash_inverse_extents: Option<Vec2>,
+    ) {
+        if self.move_unintegrated(action, input, walls, dash_inverse_extents) {
+            self.integrate();
+        }
+    }
+    /// `move_step` short of PlayerBody's integration. False when Dash took
+    /// the pass or the body left the level, and there is nothing to integrate.
+    /// Only a caller that lets the dash button through can enter a Dash, and
+    /// it passes that box's inverseExtents.
+    pub(crate) fn move_unintegrated(
+        &mut self,
+        action: Action,
+        input: Vec2,
+        walls: &mut impl Walls,
+        dash_inverse_extents: Option<Vec2>,
+    ) -> bool {
         let jump = action.buttons & 1 != 0;
         let cast = self.instant_cast_this_pass;
         if self.dash.active {
             self.previous_jump = jump;
-            self.dash_step(action, terrain);
-            return;
+            self.dash_step(action, walls);
+            return false;
         }
         self.cooldown += DT;
         if action.buttons & 2 != 0 && self.cooldown > Fix::from_int(4) {
-            self.enter_dash(action, input, terrain);
+            let dash_inverse_extents = dash_inverse_extents.expect("a Dash entry with its box's inverseExtents");
+            self.enter_dash(action, input, walls, dash_inverse_extents);
             self.previous_jump = jump;
-            self.dash_step(action, terrain);
-            return;
+            self.dash_step(action, walls);
+            return false;
         }
         if jump && !self.previous_jump && self.grounded && !cast {
-            self.jump(terrain.platforms);
+            self.jump(walls.platforms());
         }
         self.previous_jump = jump;
-        self.move_only(input, terrain);
+        self.move_only(input, walls);
         if self.outside_bounds() {
             self.alive = false;
-            return;
+            self.out_of_bounds = true;
+            return false;
         }
-        self.position += (self.velocity + self.external_velocity) * DT;
+        true
+    }
+    /// PlayerBody.LateUpdateSim without a rope.
+    pub(crate) fn integrate(&mut self) {
+        self.position += (self.velocity + self.external_velocity) * self.fixed_delta_time;
         self.external_velocity *= Fix::from_f64(0.95);
     }
     /// PlayerPhysics.Move (PlayerPhysics.cs:230-260) without PlayerBody's
@@ -841,9 +1083,10 @@ impl Player {
     /// OldUpdate entered an ability (SlimeController.cs:1067-1084), on the
     /// slime body the ability has already copied; that body is deactivated,
     /// so only its observed velocity (and a landing) change.
-    pub(crate) fn move_only(&mut self, input: Vec2, terrain: Terrain) {
+    pub(crate) fn move_only(&mut self, input: Vec2, walls: &mut impl Walls) {
+        self.move_airborne = !self.grounded;
         if self.grounded {
-            self.move_grounded(input, terrain);
+            self.move_grounded(input, walls);
         } else {
             crate::player_physics::air_movement(
                 &mut self.velocity,
@@ -852,14 +1095,14 @@ impl Player {
                 self.constants.max_speed,
             )
             .expect("valid movement air constants");
-            self.collision_rays(terrain);
+            self.collision_rays(walls);
         }
     }
     /// PlayerPhysics.MachoMove: normal player acceleration with a reduced
     /// distance around a rounded platform corner.
-    pub(crate) fn macho_move(&mut self, input: Vec2, roundedness: Fix, terrain: Terrain) {
+    pub(crate) fn macho_move(&mut self, input: Vec2, roundedness: Fix, walls: &mut impl Walls) {
         if self.grounded {
-            self.move_grounded_scaled(input, roundedness, terrain);
+            self.move_grounded_scaled(input, roundedness, walls);
         } else {
             crate::player_physics::air_movement(
                 &mut self.velocity,
@@ -868,7 +1111,7 @@ impl Player {
                 self.constants.max_speed,
             )
             .expect("valid MachoThrow air constants");
-            self.collision_rays(terrain);
+            self.collision_rays(walls);
         }
     }
     pub(crate) fn outside_bounds(&self) -> bool {
@@ -888,7 +1131,7 @@ impl Player {
     pub(crate) fn push_from(&mut self, other: Vec2, lower_id: bool) {
         let Some(direction) = crate::player_collision::overlap_push_direction(
             self.position,
-            self.up,
+            self.up(),
             self.radius,
             other,
             if lower_id { -1 } else { 0 },
@@ -897,24 +1140,34 @@ impl Player {
         };
         self.external_velocity += direction * Fix::from_raw(21_474_836) * Fix::from_int(35);
     }
-    pub(crate) fn sync_collider(&mut self) {
-        // The Dash body is its own DPhysicsBox and its `OnScaleChanged` is
-        // empty (Dash.cs:70-72), so only the slime hurtbox carries the
-        // accumulated reciprocal.
-        let inv = if !self.dash.active && self.collider_inverse_extents != Vec2::ZERO {
-            self.collider_inverse_extents
+    /// A DetPhysics sync of the hurtbox to the body.
+    pub(crate) fn sync_collider(&mut self, inverse_extents: Vec2) {
+        self.move_collider(inverse_extents);
+        self.synced = self.collider;
+    }
+    /// The standalone slice's hurtbox inverseExtents: the authored box, the
+    /// Dash body's while it dashes, at the body's scale.
+    pub(crate) fn authored_inverse_extents(&self) -> Vec2 {
+        self.authored_inverse_extents_of(self.dash.active)
+    }
+    fn authored_inverse_extents_of(&self, dash: bool) -> Vec2 {
+        let extents = if dash {
+            Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
         } else {
-            let extents = if self.dash.active {
-                Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
-            } else {
-                Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
-            } * self.scale;
-            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
-        };
-        if self.rotation != self.collider_rotation || self.collider_basis == Vec2::ZERO {
-            self.collider_basis = Vec2::angle(self.rotation);
-            self.collider_rotation = self.rotation;
+            Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
+        } * self.scale;
+        Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
+    }
+    /// Moves the exported box onto the body without DetPhysics seeing it
+    /// until its next sync. `inv` is the inverseExtents of the box the body
+    /// currently has: the slime hurtbox's, or the Dash body's own while it
+    /// dashes (Dash.cs:70-72).
+    pub(crate) fn move_collider(&mut self, inv: Vec2) {
+        if self.rotation() != self.collider_rotation || self.collider_basis == Vec2::ZERO {
+            self.collider_basis = Vec2::angle(self.rotation());
+            self.collider_rotation = self.rotation();
         }
+        self.collider_up = self.up();
         let basis = self.collider_basis;
         self.collider = OrientedBox {
             center: self.position,
@@ -923,35 +1176,28 @@ impl Player {
             inverse_extents: inv,
         };
     }
-    /// Detach from the ground without the jump impulse (PlayerPhysics.UnGround).
-    pub(crate) fn force_unground(&mut self, platforms: &[Platform]) {
-        if let Some(platform) = self.platform(platforms) {
-            let surface = platform.surface.clone();
-            let mut motion = self.ground_state();
-            motion.unground(Some(&surface), false);
-            self.apply_ground_state(motion);
-        }
+    /// PlayerPhysics.UnGround's body half (PlayerPhysics.cs:362-376): lift off
+    /// `surface`, the retained attachedGround the caller resolved, and keep
+    /// `ground`. Its OnNoLongerGrounded subscribers are the caller's; returns
+    /// the rotation they are handed.
+    pub(crate) fn unground(&mut self, surface: Option<&Surface>, null_rotation: bool) -> Fix {
+        let mut motion = self.ground_state();
+        let rotation = motion.unground(surface, null_rotation);
+        self.apply_ground_state(motion);
+        rotation
     }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
-        if self.alive && self.grounded && !self.dash.active {
-            let platform = self.platform(platforms).unwrap();
+        // A grounded body whose attachedGround is null or destroyed stays put;
+        // a deactivated one is still followed (PlayerPhysics.LateUpdateSim).
+        if self.alive
+            && self.grounded
+            && !self.dash.active
+            && let Some(platform) = self.attached_ground(platforms)
+        {
             self.position = platform.surface.position(self.local, self.radius);
-            self.align(platform);
-        }
-    }
-
-    pub(crate) fn late_step_with_shape_radius(
-        &mut self,
-        platforms: &[Platform],
-        shape_radius: Fix,
-    ) {
-        if self.alive && self.grounded && !self.dash.active {
-            let platform = self.platform(platforms).unwrap();
-            self.position =
-                platform
-                    .surface
-                    .position_with_shape_radius(self.local, self.radius, shape_radius);
-            self.align(platform);
+            if self.sync_rotation_to_platform {
+                self.align(platform);
+            }
         }
     }
 }

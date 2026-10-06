@@ -52,10 +52,7 @@ def component(entry, type_name, all_matches=False):
 
 
 def updater_count(prefab):
-    return sum(
-        "hierarchyNumber" in c.get("properties", {})
-        for c in prefab["data"]["components"]
-    )
+    return registering_count(prefab)
 
 
 # Updater registration is opt-in per class. Updater never sweeps the scene for
@@ -135,6 +132,71 @@ def registering_count(prefab):
     return visit(prefab["data"])
 
 
+EXECUTION_ORDER = json.loads((ROOT.parent / "sim" / "Export" / "execution-order.json").read_text())
+
+
+def registrations(prefab, copy=False, exclude=(), orders=False):
+    # The prefab's updatables in the order Updater.RegisterUpdatable sees them
+    # when it is instantiated, as their local HierarchyNumbers: Awake runs over
+    # the active behaviours collected depth-first, stable-sorted by script
+    # execution order (UnityShim World.CollectActiveBehaviours and
+    # ScriptExecutionOrder.SortStable). An inactive root still registers:
+    # InstantiateFixed(GameObject) switches it on and off again inside the
+    # prefab window (FixTransform.cs:131-141). SlimeController.Awake registers
+    # itself and then AddComponents the RewindRecorder, whose own Awake
+    # registers it at once with HierarchyNumber 8 (SlimeController.cs:459-466,
+    # RewindRecorder.cs:91-94).
+    #
+    # `copy`: what ShootDuplicator.DuplicateObject instantiates from a live
+    # instance. It first renumbers the source's MonoUpdatables 1.. in
+    # HierarchyNumber order (ShootDuplicator.cs:709-717), and a slime's live
+    # RewindRecorder sits last on its GameObject, so the copy collects it with
+    # the rest and its Awake runs in execution order. `exclude`: components
+    # gone from the live source (GrowOnStart destroys itself). `orders`: each
+    # one's script execution order instead, which places the children a
+    # copy adds (its landed arrows) among them.
+    batch = []
+
+    def collect(game_object, root=False):
+        if not root and not game_object.get("active", True):
+            return
+        components = [c for c in game_object.get("components", []) if c["type"] not in exclude]
+        if copy and any(c["type"] == "SlimeController" for c in components):
+            components.append({"type": "RewindRecorder", "properties": {"hierarchyNumber": 8}})
+        batch.extend(components)
+        for child in game_object.get("children", []):
+            collect(child)
+
+    collect(prefab["data"], root=True)
+    number = {id(c): c["properties"]["hierarchyNumber"] for c in batch if "hierarchyNumber" in c.get("properties", {})}
+    if copy:
+        ranked = sorted(number, key=number.get)
+        number = {key: rank + 1 for rank, key in enumerate(ranked)}
+    order = sorted(range(len(batch)), key=lambda i: (EXECUTION_ORDER.get(batch[i]["type"], 0), i))
+    out = []
+    for i in order:
+        c = batch[i]
+        if id(c) in number and registers_with_updater(c["type"]):
+            order = EXECUTION_ORDER.get(c["type"], 0)
+            out.append(order if orders else number[id(c)])
+            if c["type"] == "SlimeController" and not copy:
+                out.append(order if orders else 8)
+    return out
+
+
+def updater_order(node):
+    # The node's own components that register with the Updater, in
+    # hierarchyNumber order: the order its UpdateSims run within the prefab's
+    # block of updatables.
+    return [
+        typ for _, typ in sorted(
+            (c["properties"]["hierarchyNumber"], c["type"])
+            for c in node.get("components", [])
+            if "hierarchyNumber" in c.get("properties", {}) and registers_with_updater(c["type"])
+        )
+    ]
+
+
 def node_component(node, type_name):
     for c in node.get("components", []):
         if c["type"] == type_name:
@@ -146,6 +208,18 @@ def walk(nodes):
     for n in nodes:
         yield n
         yield from walk(n.get("children", [])) 
+
+
+def collider_child_count(prefab):
+    # Arrow.OnCollide parents a landed arrow to the hit collider's own
+    # FixTransform and counts that transform's children (Arrow.cs:100-104):
+    # the authored children of the one GameObject holding the prefab's collider.
+    holders = [
+        n for n in [prefab["data"], *walk(prefab["data"].get("children", []))]
+        if any(c["type"] in ("DPhysicsBox", "DPhysicsCircle") for c in n.get("components", []))
+    ]
+    assert len(holders) == 1, prefab.get("path")
+    return len(holders[0].get("children", []))
 
 
 def raw(props, key):
@@ -199,6 +273,26 @@ def physics_body(props):
         "rotational_drag": fix(props, "rotationalDrag01"),
         "start_velocity": vec2(props, "StartVelocity"),
         "start_angular_velocity": fix(props, "StartAngularVelocity"),
+    }
+
+
+def player_physics(props):
+    """PlayerPhysics' serialized movement constants, radius and
+    cannotBeUngroundedByRopes."""
+    return {
+        "max_speed": fix(props, "maxSpeed"),
+        "jump_strength": fix(props, "jumpStrength"),
+        "accel": fix(props, "accel"),
+        "radius": fix(props, "radius"),
+        "gravity_accel": fix(props, "gravity_accel"),
+        "gravity_max_fall_speed": fix(props, "gravity_maxFallSpeed"),
+        "gravity_modifier": fix(props, "gravity_modifier"),
+        "jump_extra_x": fix(props, "jumpExtraXStrength"),
+        "jump_momentum": fix(props, "jumpKeptMomentum"),
+        "jump_normal_scale": fix(props, "jumpNormalScaleFactor"),
+        "jump_teleport": fix(props, "extraJumpTeleportMultiplier"),
+        "air_accel": fix(props, "airAccel"),
+        "cannot_unground_by_ropes": props["cannotBeUngroundedByRopes"],
     }
 
 
@@ -260,21 +354,35 @@ def extract_map(metadata):
                 "extents": vec2(rr, "startExtents"),
                 "radius": fix(rr, "startRadius") if "startRadius.m_rawValue" in rr else fix(rr, "radius"),
                 "min_scale": fix(rr, "MinScale"),
+                "max_scale": fix(rr, "MaxScale"),
                 "platform_type": srr["platformType"],
                 "grow_scale": fix(grow, "scaleUp") if grow is not None else ONE,
                 "layer": node.get("layer"),
                 "hierarchy": rr["hierarchyNumber"],
+                "updaters": updater_order(node),
+                # Arrow.OnCollide's childCount > 80 counts the platform's own
+                # authored children too (Arrow.cs:104).
+                "child_count": len(node.get("children", [])),
+                # What DuplicateObject instantiates: GrowOnStart.Init destroys
+                # itself before any Duplicator can copy the platform.
                 "updatable_count": sum(
-                    "hierarchyNumber" in c.get("properties", {})
+                    "hierarchyNumber" in c.get("properties", {}) and c["type"] != "GrowOnStart"
                     for descendant in walk([node])
                     for c in descendant.get("components", [])
                 ),
+                # The scene's own numbers in registration order, and a copy's
+                # (registrations above).
+                "registrations": registrations({"data": node}, exclude=("GrowOnStart",)),
+                "copy_registrations": registrations({"data": node}, copy=True, exclude=("GrowOnStart",)),
+                "registration_orders": registrations({"data": node}, exclude=("GrowOnStart",), orders=True),
+                "copy_registration_orders": registrations({"data": node}, copy=True, exclude=("GrowOnStart",), orders=True),
                 "duplicate_collider_hierarchy": 1 + [
                     typ for _, typ in sorted(
                         (c["properties"]["hierarchyNumber"], c["type"])
                         for descendant in walk([node])
                         for c in descendant.get("components", [])
                         if "hierarchyNumber" in c.get("properties", {})
+                        and c["type"] != "GrowOnStart"
                     )
                 ].index("DPhysicsRoundedRect"),
                 "animate_velocity": {
@@ -399,6 +507,7 @@ def main():
             "air_accel": fix(phys, "airAccel"),
         }.items()},
         "hurtbox_extents": vec2(box, "startExtents"),
+        "sync_rotation_to_platform": phys["SyncRotationToPlatform"],
         "spawn_anim_ticks": sum(abs(d) for d in slime_anims["spawn"]),
         # SlimeController.ReSpawnFast uses SpeedUpAnimation(anim, 4): C#
         # integer division per frame, with every duration clamped to >= 1.
@@ -462,6 +571,8 @@ def main():
         "layer": arrow["data"].get("layer"),
         "radius": fix(arrow_circle, "startRadius") if "startRadius.m_rawValue" in arrow_circle else fix(arrow_circle, "radius"),
         "collider_hierarchy": arrow_circle["hierarchyNumber"],
+        "arrow_hierarchy": component(arrow, "Arrow")["hierarchyNumber"],
+        "arrow_execution_order": EXECUTION_ORDER.get("Arrow", 0),
         "updatable_count": updater_count(arrow),
         "body": {k[:-len(".m_rawValue")]: v for k, v in arrow_body.items()
                  if k.endswith("m_rawValue")},
@@ -526,6 +637,8 @@ def main():
         "layer": rp["data"].get("layer"),
         "extents": vec2(rp_rr, "startExtents"),
         "radius": fix(rp_rr, "startRadius") if "startRadius.m_rawValue" in rp_rr else fix(rp_rr, "radius"),
+        "min_scale": fix(rp_rr, "MinScale"),
+        "max_scale": fix(rp_rr, "MaxScale"),
         "animate_velocity": {
             "speed": fix(rp_av, "speed"),
             "mu": fix(rp_av, "mu"),
@@ -540,6 +653,7 @@ def main():
         "body": physics_body(rp_body),
         "collider_hierarchy": rp_rr["hierarchyNumber"],
         "updatable_count": registering_count(rp),
+        "updaters": updater_order(rp["data"]),
         "mass_per_area": fix(rp_res, "MassPerArea"),
         "remove_curve": curve(rp_res, "RemoveAnimation"),
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
@@ -646,9 +760,9 @@ def main():
         },
         "death_effect_updatable_count": updater_count(death_effect),
         "effect_updatable_count": updater_count(revival_effect),
-        # ReviveParticle registers itself in Awake and InitRevive in addition
-        # to its SpriteAnimator, consuming three updater hierarchy entries.
-        "particle_updatable_count": updater_count(particle) + 1,
+        # ReviveParticle registers itself again in InitRevive, after
+        # EndRegisterPrefab, so that second entry does not advance prefabsAdded.
+        "particle_updatable_count": updater_count(particle),
         "effect_wisp_ticks": sum(abs(t) for t in animations(guid_of(effect_config["animData"]))["wisp"]),
         "particle_speed": fix(particle_config, "speed"),
     }
@@ -694,6 +808,7 @@ def main():
         "spawn_offset": fix(portal_gun, "spawnOffset"),
         "shot_layer": portal_shot_prefab["data"].get("layer"),
         "shot_updatable_count": updater_count(portal_shot_prefab),
+        "shot_child_count": collider_child_count(portal_shot_prefab),
         "shot_collider_hierarchy": portal_shot_circle["hierarchyNumber"],
         "shot_radius": fix(portal_shot_circle, "startRadius"),
         "shot_body": physics_body(portal_shot_body),
@@ -759,6 +874,7 @@ def main():
         "item": {
             "layer": grenade_item["data"].get("layer"),
             "updatable_count": updater_count(grenade_item),
+            "child_count": collider_child_count(grenade_item),
             "collider_hierarchy": grenade_circle["hierarchyNumber"],
             "radius": fix(grenade_circle, "startRadius"),
             "body": physics_body(grenade_body),
@@ -833,6 +949,7 @@ def main():
                 for c in node.get("components", [])
             ),
             "collider_hierarchy": spark_box["hierarchyNumber"],
+            "child_count": collider_child_count(spark),
             "extents": vec2(spark_box, "startExtents"),
             "body": physics_body(spark_body),
             "minimum_forward_speed": fix(spark_missile, "minimumForwardsSpeed"),
@@ -913,6 +1030,7 @@ def main():
         "item": {
             "layer": mine_item["data"].get("layer"),
             "updatable_count": updater_count(mine_item),
+            "child_count": collider_child_count(mine_item),
             "collider_hierarchy": mine_circle["hierarchyNumber"],
             "radius": fix(mine_circle, "startRadius"),
             "body": physics_body(mine_body),
@@ -1013,6 +1131,7 @@ def main():
             "layer": boulder["data"].get("layer"),
             "updatable_count": updater_count(boulder),
             "collider_hierarchy": boulder_rr["hierarchyNumber"],
+            "updaters": updater_order(boulder["data"]),
             "extents": vec2(boulder_rr, "startExtents"),
             "radius": fix(boulder_rr, "startRadius"),
             "min_scale": fix(boulder_rr, "MinScale"),
@@ -1067,7 +1186,11 @@ def main():
     rock = component(rock_ability, "BounceBall")
     rock_circle = component(rock_ability, "DPhysicsCircle")
     rock_body = component(rock_ability, "BoplBody")
+    _, rock_no_player = find_prefab("Assets/GameObject/Rock_noPlayer.prefab")
     out["prefabs"]["rock"] = {
+        "child_count": collider_child_count(rock_ability),
+        # ShootDuplicator.bounceBallPrefab, the Duplicator's copy of a Rock.
+        "no_player_child_count": collider_child_count(rock_no_player),
         "radius": fix(rock_circle, "startRadius"),
         "collider_hierarchy": rock_circle["hierarchyNumber"],
         "body": physics_body(rock_body),
@@ -1386,6 +1509,7 @@ def main():
         "platform_shake_duration": fix(duplicator, "PlatformShakeDuration"),
         "platform_shake": fix(duplicator, "platformShake"),
         "platform_overlap_force": fix(platform_effect, "platformOverlapForce"),
+        "platform_scale_loss_speed": fix(platform_effect, "scaleLossSpeed"),
         "platform_effect_updatable_count": updater_count(platform_effect_prefab),
     }
 
@@ -1503,6 +1627,7 @@ def main():
         "item": {
             "layer": tack_item["data"].get("layer"),
             "updatable_count": updater_count(tack_item),
+            "child_count": collider_child_count(tack_item),
             "collider_hierarchy": tack_circle["hierarchyNumber"],
             "radius": fix(tack_circle, "startRadius"),
             "body": physics_body(tack_body),
@@ -1561,6 +1686,7 @@ def main():
         "item": {
             "layer": poke_item["data"].get("layer"),
             "updatable_count": updater_count(poke_item),
+            "child_count": collider_child_count(poke_item),
             "collider_hierarchy": poke_circle["hierarchyNumber"],
             "radius": fix(poke_circle, "startRadius"),
             "body": physics_body(poke_body),
@@ -1620,6 +1746,7 @@ def main():
         "item": {
             "layer": mjolnir_item["data"].get("layer"),
             "updatable_count": updater_count(mjolnir_item),
+            "child_count": collider_child_count(mjolnir_item),
             "collider_hierarchy": mjolnir_circle["hierarchyNumber"],
             "radius": fix(mjolnir_circle, "startRadius"),
             "body": physics_body(mjolnir_body),
@@ -1695,6 +1822,7 @@ def main():
         "item": {
             "layer": smoke_item["data"].get("layer"),
             "updatable_count": updater_count(smoke_item),
+            "child_count": collider_child_count(smoke_item),
             "collider_hierarchy": smoke_circle["hierarchyNumber"],
             "radius": fix(smoke_circle, "startRadius"),
             "body": physics_body(smoke_body),
@@ -1727,9 +1855,10 @@ def main():
         },
         "explosion": {
             "layer": smoke_explosion["data"].get("layer"),
-            "updatable_count": updater_count(smoke_explosion),
+            "updatable_count": registering_count(smoke_explosion),
             "collider_hierarchy": smoke_explosion_box["hierarchyNumber"],
             "extents": vec2(smoke_explosion_box, "startExtents"),
+            "collider_offset": vec2(component(smoke_explosion, "FixTransform"), "offset"),
             "animation_ticks": sum(abs(d) for d in smoke_explosion_anims[next(iter(smoke_explosion_anims))]),
         },
     }
@@ -1779,6 +1908,7 @@ def main():
         "attack": {
             "layer": spike_attack["data"].get("layer"),
             "updatable_count": updater_count(spike_attack),
+            "child_count": collider_child_count(spike_attack),
             "collider_hierarchy": spike_attack_box["hierarchyNumber"],
             "extents": vec2(spike_attack_box, "startExtents"),
             "collider_offset": vec2(spike_attack_fix, "offset"),
@@ -1815,6 +1945,7 @@ def main():
         "rocket": {
             "layer": rocket["data"].get("layer"),
             "updatable_count": updater_count(rocket),
+            "child_count": collider_child_count(rocket),
             "collider_hierarchy": rocket_box["hierarchyNumber"],
             "extents": vec2(rocket_box, "startExtents"),
             "collider_offset": vec2(rocket_fix, "offset"),
@@ -1857,6 +1988,7 @@ def main():
             # SpriteAnimator receives hierarchy 5 even though the normalized
             # runtime inventory does not classify it as an updatable here.
             "updatable_count": hierarchy_span(spark),
+            "child_count": collider_child_count(spark),
             "collider_hierarchy": spark_circle["hierarchyNumber"],
             "radius": fix(spark_circle, "startRadius"),
             "collider_offset": vec2(spark_fix, "offset"),
@@ -1911,6 +2043,8 @@ def main():
         },
         "enter_ground_ticks": sum(abs(t) for t in beam_anims["enterFrame1"])
                               + sum(abs(t) for t in beam_anims["enter"]),
+        # Beam.OnLeftFirstFrame runs an extra UpdateSim(0) at this boundary.
+        "enter_first_frame_ticks": sum(abs(t) for t in beam_anims["enterFrame1"]),
         "enter_air_ticks": sum(abs(t) for t in beam_anims["enterAir"]),
         # SpriteAnimator's passed-sprite counter becomes visible to Beam's
         # LateUpdateSim two updater positions after each cumulative boundary.
@@ -1987,8 +2121,10 @@ def main():
         "platform_heaviness": fix(attachment, "platformHeavinessScaling"),
         "platform_pull": fix(attachment, "platformPullStr"),
         "boulder_pull": fix(attachment, "boulderPullStr"),
+        "break_stretch": fix(attachment, "stretchBeforeBreak"),
         "platform_break_stretch": fix(attachment, "stretchBeforeBreak_platform"),
         "non_platform_mass": fix(attachment, "nonPlatformMass"),
+        "extra_swing_force": fix(slime_ctl, "extraSwingForce"),
         "web_max_length": fix(web, "maxWebLength"),
         "web_shorten": fix(web, "ropeShorten"),
         "web_cooldown": fix(web, "cooldown"),
@@ -2007,6 +2143,7 @@ def main():
         "hook_layer": hook_prefab["data"]["layer"],
         "hook_radius": fix(hook_circle, "startRadius"),
         "hook_collider_hierarchy": hook_circle["hierarchyNumber"],
+        "hook_component_hierarchy": hook["hierarchyNumber"],
         "hook_updatable_count": hierarchy_span(hook_prefab),
         "hook_segments_affected": hook["segmentsAffectedBySpeed"],
         "hook_speed_falloff": fix(hook, "segmentSpeedFalloff01"),
@@ -2057,6 +2194,27 @@ def main():
         effect_duration = None
         air_jump_strength = None
         form_jump_speed = None
+        effect_updatable_count = None
+        # SuperStarEffect kicks a form through its own PlayerPhysics, so only
+        # a form with both a PlayerBody and a PlayerPhysics has a jumpStrength
+        # to kick with.
+        types = {c["type"] for c in components}
+        form_jump_strength = (fix(component(prefab, "PlayerPhysics"), "jumpStrength")
+                              if {"PlayerBody", "PlayerPhysics"} <= types else None)
+        # PlayerPhysics.SyncRotationToPlatform: whether its Move and
+        # LateUpdateSim turn a grounded body to the surface (PlayerPhysics.cs:
+        # 143, 221, 268). None for a form with no PlayerPhysics.
+        sync_rotation_to_platform = (component(prefab, "PlayerPhysics")["SyncRotationToPlatform"]
+                                     if "PlayerPhysics" in types else None)
+        # PlayerBody.simulated as the prefab authors it: Push.prefab's is off,
+        # so its PlayerBody never takes a turn (PlayerBody.cs:107-112). None
+        # for a form with no PlayerBody.
+        body_simulated = (component(prefab, "PlayerBody")["simulated"]
+                          if "PlayerBody" in types else None)
+        # The form's own PlayerPhysics, whose serialized constants its body
+        # runs on from Awake. None for a form with no PlayerPhysics.
+        physics = (player_physics(component(prefab, "PlayerPhysics"))
+                   if "PlayerPhysics" in types else None)
         if item["name"] == "Gold mushroom":
             star = next(c for c in components if c["type"] == "SuperStar")
             effect = ASSETS[guid_of(star["properties"]["effectPrefab"])]
@@ -2064,6 +2222,7 @@ def main():
             effect_duration = fix(effect_props, "duration")
             air_jump_strength = fix(effect_props, "airJumpStrength")
             form_jump_speed = fix(effect_props, "formJumpSpeed")
+            effect_updatable_count = registering_count(effect)
         ability_catalog.append({
             "id": expected_id,
             "name": item["name"],
@@ -2087,6 +2246,12 @@ def main():
             "effect_duration": effect_duration,
             "air_jump_strength": air_jump_strength,
             "form_jump_speed": form_jump_speed,
+            "form_jump_strength": form_jump_strength,
+            "sync_rotation_to_platform": sync_rotation_to_platform,
+            "body_simulated": body_simulated,
+            "physics": physics,
+            "effect_updatable_count": effect_updatable_count,
+            "effect_prefab": effect["path"] if item["name"] == "Gold mushroom" else None,
         })
     out["abilities"] = ability_catalog
 
@@ -2113,6 +2278,23 @@ def main():
         else:
             print(f"UNMATCHED center {p['name']} {key}", file=sys.stderr)
     print(f"Level1 platform cross-check: {matched}/{len(mine)} matched")
+
+    # Physics2D's layer collision matrix, which DetPhysics' SortAndSweep asks
+    # through GetIgnoreLayerCollision (DetPhysics.cs:2183, 2252): bit b of row
+    # a is set when layers a and b collide.
+    with open(ROOT.parent / "sim" / "Export" / "settings.json") as fh:
+        out["collision_matrix"] = json.load(fh)["collisionMatrix"]
+
+    # Every prefab's updatables in registration order, by asset name: what
+    # each instantiation hands Updater's next append batch.
+    prefabs = [entry for entry in sorted(ASSETS.values(), key=lambda entry: entry.get("path", ""))
+               if entry.get("path", "").endswith(".prefab") and registrations(entry)]
+    out["registrations"] = {Path(entry["path"]).stem: registrations(entry) for entry in prefabs}
+    out["copy_registrations"] = {Path(entry["path"]).stem: registrations(entry, copy=True) for entry in prefabs}
+    out["registration_orders"] = {Path(entry["path"]).stem: registrations(entry, orders=True) for entry in prefabs}
+    out["copy_registration_orders"] = {
+        Path(entry["path"]).stem: registrations(entry, copy=True, orders=True) for entry in prefabs
+    }
 
     target = ROOT / "data" / "rollout.json"
     with open(target, "w") as fh:

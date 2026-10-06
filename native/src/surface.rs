@@ -12,14 +12,18 @@ pub struct Surface {
     pub right: Vec2,
     pub up: Vec2,
     pub extents: Vec2,
+    /// The DPhysics shape's live radius.
     pub radius: Fix,
+    /// The radius StickyRoundedRectangle.UpdateBounds last read. Its cached
+    /// segment lengths use it, like `extents`, until the next UpdateBounds.
+    pub bounds_radius: Fix,
 }
 
 impl Surface {
     fn segments(&self) -> [Fix; 8] {
         let width = self.extents.x * Fix::from_int(2);
         let height = self.extents.y * Fix::from_int(2);
-        let corner = self.radius * Fix::HALF_PI;
+        let corner = self.bounds_radius * Fix::HALF_PI;
         [width, corner, height, corner, width, corner, height, corner]
     }
     pub fn circumference(&self) -> Fix {
@@ -80,26 +84,13 @@ impl Surface {
         None
     }
     pub fn position(&self, local: Fix, player_radius: Fix) -> Vec2 {
-        self.position_with_shape_radius(local, player_radius, self.radius)
-    }
-
-    /// StickyRoundedRectangle caches its segment lengths in `UpdateBounds`,
-    /// but PositionFromLocalPlayerPos reads the DPhysics shape's live radius.
-    /// A MachoThrow scale write therefore changes the radial offset during
-    /// the same late pass while perimeter lookup still uses cached segments.
-    pub fn position_with_shape_radius(
-        &self,
-        local: Fix,
-        player_radius: Fix,
-        shape_radius: Fix,
-    ) -> Vec2 {
         let Some((zone, progress)) = self.perimeter_zone(local, player_radius) else {
             return Vec2::ZERO;
         };
         let center = self.center;
         let right = self.right;
         let up = self.up;
-        let radius = shape_radius + player_radius;
+        let radius = self.radius + player_radius;
         let x = self.extents.x;
         let y = self.extents.y;
         match zone {

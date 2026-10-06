@@ -35,6 +35,19 @@ pub struct Contact {
 }
 
 impl Body {
+    /// DetPhysics.Simulate integrates a CompositeBody inline: unlike
+    /// IntegrateBody, it takes the step from the velocity before drag.
+    pub fn integrate_composite(&mut self, dt: Fix, gravity: Fix) -> Vec2 {
+        let drag = self.air_drag;
+        self.air_drag = Fix::ONE;
+        let shift = self.integrate(dt, gravity);
+        self.air_drag = drag;
+        if dt != Fix::ZERO {
+            self.velocity *= drag;
+        }
+        shift
+    }
+
     pub fn integrate(&mut self, dt: Fix, gravity: Fix) -> Vec2 {
         self.velocity += dt * Vec2::new(Fix::ZERO, gravity * self.gravity_scale)
             + DT * self.force * self.inverse_mass;

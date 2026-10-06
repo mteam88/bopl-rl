@@ -57,6 +57,7 @@ fn evaluate(query: Query) -> Result<Value, String> {
         up: basis.perp(),
         extents: extent,
         radius: Fix::from_raw(query.radius),
+        bounds_radius: Fix::from_raw(query.radius),
     };
     let point_result = |result: Result<Vec2, bopl_sim::fixed::MathError>| match result {
         Ok(point) => json!([point.x.raw(), point.y.raw()]),

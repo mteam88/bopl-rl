@@ -36,6 +36,30 @@ impl OrientedBox {
             inverse_extents,
         }
     }
+    /// DPhysicsBox/DPhysicsRoundedRect.CalcExtents: the collider's current
+    /// half-extents, scale included, read back as `One / inverseExtents` per
+    /// axis (DPhysicsBox.cs:244-254, DPhysicsRoundedRect.cs:351-361). The round
+    /// trip is not the identity in Q32.32, so a stored extent is not a
+    /// substitute.
+    pub fn calc_extents(self) -> Vec2 {
+        Vec2::new(
+            Fix::ONE / self.inverse_extents.x,
+            Fix::ONE / self.inverse_extents.y,
+        )
+    }
+    /// DPhysicsRoundedRect.CalcExtents fed back through SetExtents, as
+    /// ResizablePlatform.UpdateSim does on every pass: Box.UpdateExtents
+    /// (Box.cs:37-44) rescales the existing axes by `One / (One / e)`.
+    /// Returns the box and the extents it was resized to.
+    pub fn reset_extents(mut self) -> (Self, Vec2) {
+        let extents = self.calc_extents();
+        self.right *= self.inverse_extents.x;
+        self.up *= self.inverse_extents.y;
+        self.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        self.right *= extents.x;
+        self.up *= extents.y;
+        (self, extents)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -51,6 +75,12 @@ pub struct RayHit {
 }
 
 impl Circle {
+    /// DetPhysics' sort-and-sweep pairing of two circles' bounding boxes.
+    pub fn bounds_overlap(self, other: Circle) -> bool {
+        let reach = self.radius + other.radius;
+        (self.center.x - other.center.x).abs() < reach
+            && (self.center.y - other.center.y).abs() < reach
+    }
     pub fn overlaps(self, point: Vec2) -> bool {
         (self.center - point).length_squared() < self.radius * self.radius
     }
@@ -254,6 +284,10 @@ fn edge_hits(b: OrientedBox, radius: Fix, origin: Vec2, direction: Vec2) -> Edge
 }
 
 impl RoundedRect {
+    /// DPhysicsRoundedRect.CalcExtents (DPhysicsRoundedRect.cs:351-361).
+    pub fn calc_extents(self) -> Vec2 {
+        self.inner.calc_extents()
+    }
     /// Conservative axis-aligned bounds of the rounded rectangle: the box's
     /// projected half extents plus the corner radius on each axis.
     pub fn bounds(self) -> Bounds {
