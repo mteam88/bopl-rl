@@ -4785,6 +4785,14 @@ struct PlatformScratch {
     updater_cursor: (u32, UpdaterKey),
     /// `updater_pass_batch`'s last ranges, (pass, start, end), by pass & 7.
     pass_batches: [std::cell::Cell<(u32, u32, u32)>; 8],
+    /// Bumped whenever Updater's list changes; a cached place is good only
+    /// at the version it was found in.
+    updater_version: u64,
+    /// `updater_owner_position`'s and `updater_member_key`'s answers,
+    /// (version, pass, owner or member, place or u32::MAX for none), by a
+    /// hash of pass and owner or member.
+    owner_positions: Vec<std::cell::Cell<(u64, u32, u32, u32)>>,
+    member_positions: Vec<std::cell::Cell<(u64, u32, u32, u32)>>,
     /// This pass's walk over the players: their order, each player's turn
     /// hierarchy, the walk's length (zero outside it) and the next turn to
     /// take.
@@ -4852,6 +4860,9 @@ impl PlatformScratch {
             rope_active: Vec::with_capacity(64),
             duplicate_shake_order: Vec::with_capacity(64),
             duplicate_shake_offsets: Vec::with_capacity(64),
+            updater_version: 1,
+            owner_positions: vec![std::cell::Cell::new((0, 0, 0, 0)); 256],
+            member_positions: vec![std::cell::Cell::new((0, 0, 0, 0)); 256],
             ..PlatformScratch::default()
         }
     }
@@ -5302,6 +5313,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy = src.next_spawn_hierarchy;
         self.updater_batch.clone_from(&src.updater_batch);
         self.updater_list.clone_from(&src.updater_list);
+        self.scratch.updater_version += 1;
         self.entities.clone_from(&src.entities);
         self.entity_inverse_extents.clone_from(&src.entity_inverse_extents);
         self.state_entities.clone_from(&src.state_entities);
@@ -5616,6 +5628,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy = hierarchy_cursor;
         self.updater_batch.clear();
         self.updater_list.clear();
+        self.scratch.updater_version += 1;
         let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
         let mut circle_entity = [usize::MAX; MAX_BODIES];
         let mut roll_entity = [usize::MAX; MAX_BODIES];
@@ -8563,6 +8576,7 @@ impl RolloutWorld {
         dotnet_sort::introspective_sort(&mut batch, |x, y| x.0.cmp(&y.0));
         let pass = self.tick;
         self.updater_list.extend(batch.iter().map(|&(number, owner, _)| (pass, number, owner, false)));
+        self.scratch.updater_version += 1;
         batch.clear();
         self.updater_batch = batch;
     }
@@ -8597,9 +8611,35 @@ impl RolloutWorld {
     /// base, or a chooser's `chooser_owner`) in pass `pass`'s sorted batch.
     /// A pass whose batch is not modeled (the scene's) places it by `number`.
     fn updater_owner_position(&self, pass: u32, owner: u32, number: u32) -> u32 {
+        let position = self.updater_batch_place(&self.scratch.owner_positions, pass, owner, |entry| entry.2 == owner);
+        position.unwrap_or(number)
+    }
+
+    /// The place in pass `pass`'s batch of the first entry `found` picks,
+    /// `id` naming what it looks for. The place depends on the list alone,
+    /// so one found at the list's current version stands.
+    fn updater_batch_place(
+        &self,
+        cache: &[std::cell::Cell<(u64, u32, u32, u32)>],
+        pass: u32,
+        id: u32,
+        found: impl Fn(&(u32, u32, u32, bool)) -> bool,
+    ) -> Option<u32> {
+        let version = self.scratch.updater_version;
+        let hash = (pass.wrapping_mul(0x9E37_79B1) ^ id.wrapping_mul(0x85EB_CA77)) >> 24;
+        let slot = cache.get(hash as usize);
+        if let Some(slot) = slot {
+            let (cached, cached_pass, cached_id, position) = slot.get();
+            if cached == version && cached_pass == pass && cached_id == id {
+                return (position != u32::MAX).then_some(position);
+            }
+        }
         let batch = self.updater_pass_batch(pass);
-        let position = batch.iter().position(|entry| entry.2 == owner);
-        position.map_or(number, |position| position as u32)
+        let position = batch.iter().position(found).map_or(u32::MAX, |position| position as u32);
+        if let Some(slot) = slot {
+            slot.set((version, pass, id, position));
+        }
+        (position != u32::MAX).then_some(position)
     }
 
     /// The key of the object whose prefab registered its updatables at
@@ -8613,9 +8653,8 @@ impl RolloutWorld {
     /// The key of the updatable numbered `hierarchy` appended on pass
     /// `appended`: its place in that pass's sorted batch.
     fn updater_member_key(&self, appended: u32, hierarchy: u32) -> UpdaterKey {
-        let batch = self.updater_pass_batch(appended);
-        let position = batch.iter().position(|entry| entry.1 == hierarchy);
-        (appended, position.map_or(hierarchy, |position| position as u32), hierarchy)
+        let position = self.updater_batch_place(&self.scratch.member_positions, appended, hierarchy, |entry| entry.1 == hierarchy);
+        (appended, position.unwrap_or(hierarchy), hierarchy)
     }
 
     /// Player `player`'s StockRespawnChooser's key.
@@ -14596,6 +14635,7 @@ impl RolloutWorld {
     /// (Updater.cs:284-296, 329-336).
     fn remove_destroyed_updatables(&mut self) {
         self.updater_list.retain(|entry| !entry.3);
+        self.scratch.updater_version += 1;
     }
 
     /// The frame's closing DestroyImmediate takes every object DestroyFix

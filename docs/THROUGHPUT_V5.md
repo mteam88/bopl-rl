@@ -110,12 +110,17 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     It no longer filters and keys every cloud to find it. About 32 such turns
     run per tick with 34 clouds alive. Smoke games retire 8% fewer sim
     instructions, and the held-out games 3% fewer.
+11. **Updater places are memoized under a list version.** A key's place
+    in its pass's batch depends on the list alone, so `updater_owner_position`
+    and `updater_member_key` cache it by (pass, owner or member) in 256-slot
+    tables. The version bumps on every append, removal, reset or fork.
+    Smoke games retire 7.5% fewer sim instructions, and the held-out games
+    3% fewer. (A first try hashed `owner.rotate_left(7)`. Bases step by 5,
+    so it used 2 of the 256 slots and measured 0.7%.)
 
 ## Measured and not kept
 
 - `overflow-checks = false`: 2%. The checks stay as a safety net.
-- Memoizing `updater_owner_position` under a list version: 0.6-0.8% of
-  sim instructions. The batches it scans are short.
 - A no-hit certificate (skipping the march for a ray whose segment stays
   more than 0.05 from every wall) was not built. 58% of rays end without a
   hit, but they average 6 steps each (the sky, not grazing the floor; only
