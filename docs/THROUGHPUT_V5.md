@@ -166,6 +166,13 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     check (now covering the circles too) finds 0 mismatches in 8192 rows for
     both loadouts, and the hash is unchanged. Interleaved on the test games,
     the full writer goes from 12.25 to 11.07 us (-9.6%).
+19. **The drop and ceiling casts ride in the fan's march.** bopl4_terrain
+    marched its two vertical casts alone, 2 of 8 lanes for ~10 steps (11%
+    of all march iterations). The march now takes a per-ray max, and the
+    fan's first group carries the two casts. A ray's march does not depend
+    on the others in its call, and the culling reach only grows. The hash
+    and writer_bench's rows hash are unchanged. Full writer: 11.07 to
+    10.49 us (-5.2%).
 
 
 ## Cold caches in the trainer
@@ -194,6 +201,15 @@ sites, with no single structure to repack.
   It was exact but 5% slower on the full writer: the march is bound by the
   per-step latency chain (t, point, SDF, sqrt, min, t), not by lane
   throughput, so fewer lanes only means more steps.
+- Skipping a wall's sqrt when its lower bound max(qx, qy) - radius is
+  above every live lane's smallest upper bound (exact, and only 31% of
+  (wall, step) pairs need the sqrt): 22% slower on the full writer. The
+  bound pass lengthens each step's dependent chain.
+- Two independent 8-lane chains in one march loop (exact): 12% slower. It
+  spills (54 stack references against 12), and a 16-wide drain wastes
+  more lanes. A microbenchmark of the 5-wall step on this core: 74 TSC
+  ticks independent and 107 dependent, 41 and 55 without the sqrt. The
+  zmm sqrt (~14 ticks each) sets the floor.
 
 ## Open
 

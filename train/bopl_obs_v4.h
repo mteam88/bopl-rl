@@ -273,11 +273,11 @@ static double bot_raycast_below(const BotView *view, double x, double y, double 
 #define BOPL4_MARCH_BODY(SDF) \
     double t[BOPL4_MARCH]; \
     uint64_t live=0; \
-    for (int i=0; i<n; i++) { t[i]=0; out[i]=max; live|=1ull<<i; } \
+    for (int i=0; i<n; i++) { t[i]=0; out[i]=max[i]; live|=1ull<<i; } \
     for (int iter=0; iter<32 && live; iter++) { \
         for (int i=0; i<n; i++) { \
             if (!(live&(1ull<<i))) continue; \
-            if (!(t[i]<max)) { live&=~(1ull<<i); continue; }               /* the loop condition t < max: out stays max */ \
+            if (!(t[i]<max[i])) { live&=~(1ull<<i); continue; }            /* the loop condition t < max: out stays max */ \
             if (t[i]>=limit[i]) { out[i]=limit[i]; live&=~(1ull<<i); continue; } \
             double d=SDF(view, ox[i]+dx[i]*t[i], oy[i]+dy[i]*t[i]); \
             if (d<0.05) { out[i]=t[i]; live&=~(1ull<<i); continue; } \
@@ -308,9 +308,9 @@ static double bot_raycast_below(const BotView *view, double x, double y, double 
  * the floor takes all 32 steps, one into the sky 5) march side by side;
  * the sample points of a ray do not depend on which lane it runs in. */
 __attribute__((target("avx512f"))) static void bopl4_march_avx512(const Bopl4Walls *tr, const double *ox, const double *oy, int n,
-        const double *dx, const double *dy, double max, const double *limit, double *out) {
-    __m512d vmax=_mm512_set1_pd(max), zero=_mm512_setzero_pd(), hit_at=_mm512_set1_pd(0.05), far=_mm512_set1_pd(1e9);
-    __m512d vox=zero, voy=zero, vdx=zero, vdy=zero, vlimit=zero, t=zero, vout=vmax;
+        const double *dx, const double *dy, const double *max, const double *limit, double *out) {
+    __m512d zero=_mm512_setzero_pd(), hit_at=_mm512_set1_pd(0.05), far=_mm512_set1_pd(1e9);
+    __m512d vox=zero, voy=zero, vdx=zero, vdy=zero, vlimit=zero, vmax=zero, t=zero, vout=zero;
     __m512i steps=_mm512_setzero_si512(), cap=_mm512_set1_epi64(32), one=_mm512_set1_epi64(1);
     int slot[8], next=0;
     __mmask8 live=0;
@@ -321,7 +321,7 @@ __attribute__((target("avx512f"))) static void bopl4_march_avx512(const Bopl4Wal
             slot[l]=next;
             vox=_mm512_mask_mov_pd(vox, m, _mm512_set1_pd(ox[next])); voy=_mm512_mask_mov_pd(voy, m, _mm512_set1_pd(oy[next]));
             vdx=_mm512_mask_mov_pd(vdx, m, _mm512_set1_pd(dx[next])); vdy=_mm512_mask_mov_pd(vdy, m, _mm512_set1_pd(dy[next]));
-            vlimit=_mm512_mask_mov_pd(vlimit, m, _mm512_set1_pd(limit[next]));
+            vlimit=_mm512_mask_mov_pd(vlimit, m, _mm512_set1_pd(limit[next])); vmax=_mm512_mask_mov_pd(vmax, m, _mm512_set1_pd(max[next]));
             t=_mm512_mask_mov_pd(t, m, zero); vout=_mm512_mask_mov_pd(vout, m, vmax);
             steps=_mm512_mask_mov_epi64(steps, m, _mm512_setzero_si512());
             live|=m;
@@ -375,7 +375,7 @@ __attribute__((target("avx512f"))) static void bopl4_march_avx512(const Bopl4Wal
  * without AVX-512, and the reference writer_bench checks the vector march and circles
  * against, row for row, through bopl4_march_scalar_only). */
 static void bopl4_march_scalar(const BotView *view, const double *ox, const double *oy, int n, const double *dx, const double *dy,
-                               double max, const double *limit, double *out) {
+                               const double *max, const double *limit, double *out) {
     BOPL4_MARCH_BODY(bot_sdf_scalar)
 }
 static __thread int bopl4_march_scalar_only=0;
@@ -410,7 +410,7 @@ static void bopl4_terrain_anchor(Bopl4Terrain *t, double x, double y) {
  * with limit just above it) or passes limit == max. Whenever the culled wall
  * is not the minimum the minimum is unchanged. */
 static void bopl4_march(const Bopl4Terrain *t, const double *ox, const double *oy, int n, const double *dx, const double *dy,
-                        double max, const double *limit, double *out) {
+                        const double *max, const double *limit, double *out) {
 #if BOT_SDF_AVX512
     if (bot_cpu_avx512>0 && !bopl4_march_scalar_only) {
         const Bopl4Walls *v=&t->walls;
@@ -418,7 +418,7 @@ static void bopl4_march(const Bopl4Terrain *t, const double *ox, const double *o
         if (t->anchored) {
             double reach=0;
             for (int i=0; i<n; i++) {
-                double ex=ox[i]-t->bx, ey=oy[i]-t->by, r=(limit[i]<max?limit[i]:max)+sqrt(ex*ex+ey*ey);
+                double ex=ox[i]-t->bx, ey=oy[i]-t->by, r=(limit[i]<max[i]?limit[i]:max[i])+sqrt(ex*ex+ey*ey);
                 if (r>reach) reach=r;
             }
             reach+=0.1;
@@ -563,8 +563,9 @@ static void bopl4_ray_finish(const Bopl4Terrain *t, double x, double y, double d
  * closed-form surfaces per ray, then the wall marches together, each cut off
  * once it passes the ray's nearest other surface. */
 static void bopl4_cast_group(const Bopl4Terrain *t, double x, double y, double svx, double svy, int n,
-                             const double *dx, const double *dy, float *const *out) {
-    double best[BOPL4_MARCH], closing[BOPL4_MARCH], limit[BOPL4_MARCH], wall[BOPL4_MARCH], ox[BOPL4_MARCH], oy[BOPL4_MARCH];
+                             const double *dx, const double *dy, float *const *out, double *probes) {
+    double best[BOPL4_MARCH+2], closing[BOPL4_MARCH], limit[BOPL4_MARCH+2], wall[BOPL4_MARCH+2], ox[BOPL4_MARCH+2], oy[BOPL4_MARCH+2];
+    double mx[BOPL4_MARCH+2], my[BOPL4_MARCH+2], max[BOPL4_MARCH+2];
     int class[BOPL4_MARCH];
     Bopl4Circles circles;
     bopl4_circles_from(t, x, y, &circles);
@@ -581,23 +582,35 @@ static void bopl4_cast_group(const Bopl4Terrain *t, double x, double y, double s
 #endif
     for (int i=0; i<n; i++) best[i]=bopl4_ray_circles(t, &circles, dx[i], dy[i], svx, svy, best[i], &class[i], &closing[i]);
     for (int i=0; i<n; i++) {
-        ox[i]=x; oy[i]=y;
-        limit[i]=best[i]+1.0;
+        ox[i]=x; oy[i]=y; mx[i]=dx[i]; my[i]=dy[i];
+        limit[i]=best[i]+1.0; max[i]=BOPL4_RAY_LENGTH;
         wall[i]=BOPL4_RAY_LENGTH;
     }
-    if (t->view.wall_count) bopl4_march(t, ox, oy, n, dx, dy, BOPL4_RAY_LENGTH, limit, wall);
+    int marched=n;
+    if (probes) {
+        /* bopl4_terrain's drop and ceiling casts ride along (the same casts:
+         * a ray's march does not depend on the others in its call). */
+        for (int i=0; i<2; i++, marched++) {
+            ox[marched]=x; oy[marched]=y; mx[marched]=0; my[marched]=i?1:-1;
+            limit[marched]=32.0; max[marched]=32.0; wall[marched]=32.0;
+        }
+    }
+    if (t->view.wall_count) bopl4_march(t, ox, oy, marched, mx, my, max, limit, wall);
+    if (probes) { probes[0]=wall[n]; probes[1]=wall[n+1]; }
     for (int i=0; i<n; i++) bopl4_ray_finish(t, x, y, dx[i], dy[i], best[i], class[i], closing[i], wall[i], out[i]);
 }
-/* `count` rays of the fan (indices k[]) from (x, y), in groups of BOPL4_MARCH. */
-static void bopl4_rays(const Bopl4Terrain *t, double x, double y, double svx, double svy, const int *k, int count, float *obs) {
-    for (int start=0; start<count; start+=BOPL4_MARCH) {
+/* `count` rays of the fan (indices k[]) from (x, y), in groups of BOPL4_MARCH;
+ * the first also casts bopl4_terrain's drop and ceiling into probes[2]. */
+static void bopl4_rays(const Bopl4Terrain *t, double x, double y, double svx, double svy, const int *k, int count, float *obs,
+                       double *probes) {
+    for (int start=0; start==0 || start<count; start+=BOPL4_MARCH) {
         int n=count-start<BOPL4_MARCH?count-start:BOPL4_MARCH;
         double dx[BOPL4_MARCH], dy[BOPL4_MARCH]; float *out[BOPL4_MARCH];
         for (int i=0; i<n; i++) {
             bopl4_ray_direction(k[start+i], &dx[i], &dy[i]);
             out[i]=obs+BOPL4_OBS_RAY_OFFSET+(size_t)k[start+i]*BOPL4_RAY_FEATURES;
         }
-        bopl4_cast_group(t, x, y, svx, svy, n, dx, dy, out);
+        bopl4_cast_group(t, x, y, svx, svy, n, dx, dy, out, start==0?probes:NULL);
     }
 }
 /* Layout v4.1 (BOPL4_ABLATE_AIM): in ray slot BOPL4_AIM_RAY the aim ray, cast
@@ -623,7 +636,7 @@ static void bopl4_aim_rays(const Bopl4Terrain *t, double x, double y, double svx
         double ex=enemy->x-x, ey=enemy->y-y, len=sqrt(ex*ex+ey*ey);
         if (len>1e-9) { dx[n]=ex/len; dy[n]=ey/len; out[n++]=los; }
     }
-    if (n) bopl4_cast_group(t, x, y, svx, svy, n, dx, dy, out);
+    if (n) bopl4_cast_group(t, x, y, svx, svy, n, dx, dy, out, NULL);
 }
 static double bopl4_drop(const Bopl4Terrain *t, double x, double y, double cap) {
     double d=t->view.wall_count?bot_raycast(&t->view, x, y, 0, -1, cap):cap;
@@ -647,20 +660,17 @@ static void bopl4_dash_direction(int k, double *dx, double *dy) {
     }
     *dx=table[k][0]; *dy=table[k][1];
 }
-/* The egocentric terrain block (BOPL4_TERRAIN) at body position (x, y).
+/* The egocentric terrain block (BOPL4_TERRAIN) at body position (x, y), with
+ * the drop and ceiling casts (straight down and up, 32 units) already made
+ * by bopl4_rays.
  * Every raycast here is one of bot_raycast's, marched in bopl4_march groups
  * where the casts are independent; "exceeds" tests march with the limit just
  * above the threshold (out > threshold then decides: a cut-off march has
  * t > threshold, a finished one its exact result), and probes the original
  * stopped before are evaluated without changing what it wrote. */
-static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out) {
+static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, const double *drop_ceiling, float *out) {
     const BotView *view=&t->view;
-    double drop=32.0, ceiling=32.0;
-    if (view->wall_count) {
-        double ox[2]={x, x}, oy[2]={y, y}, dx[2]={0, 0}, dy[2]={-1, 1}, limit[2]={32.0, 32.0}, d[2];
-        bopl4_march(t, ox, oy, 2, dx, dy, 32.0, limit, d);
-        drop=d[0]; ceiling=d[1];
-    }
+    double drop=drop_ceiling[0], ceiling=drop_ceiling[1];
     if (t->has_water && y>t->water_top && y-t->water_top<drop) drop=y-t->water_top;
     out[0]=(float)(drop/32.0); out[1]=(float)(ceiling/32.0);
     /* Edges: walk left/right in 1.5-unit steps to one dash length; the edge
@@ -681,21 +691,21 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
             if (32.0>threshold) first_drop[0]=first_drop[1]=1;
         } else {
             double above=nextafter(threshold, HUGE_VAL);
-            double ox[BOPL4_MARCH], oy[BOPL4_MARCH], dx[BOPL4_MARCH], dy[BOPL4_MARCH], limit[BOPL4_MARCH], d[BOPL4_MARCH];
+            double ox[BOPL4_MARCH], oy[BOPL4_MARCH], dx[BOPL4_MARCH], dy[BOPL4_MARCH], limit[BOPL4_MARCH], cap[BOPL4_MARCH], d[BOPL4_MARCH];
             int side_of[BOPL4_MARCH], k_of[BOPL4_MARCH], n=0;
             for (int side=0; side<2; side++) {
                 double sign=side?1.0:-1.0;
                 for (int k=1; k<first_wall[side]; k++) {
-                    ox[n]=x+sign*1.5*k; oy[n]=y; dx[n]=0; dy[n]=-1; limit[n]=above; side_of[n]=side; k_of[n]=k; n++;
+                    ox[n]=x+sign*1.5*k; oy[n]=y; dx[n]=0; dy[n]=-1; limit[n]=above; cap[n]=32.0; side_of[n]=side; k_of[n]=k; n++;
                     if (n==BOPL4_MARCH || (side==1 && k==first_wall[1]-1)) {
-                        bopl4_march(t, ox, oy, n, dx, dy, 32.0, limit, d);
+                        bopl4_march(t, ox, oy, n, dx, dy, cap, limit, d);
                         for (int i=0; i<n; i++) if (d[i]>threshold && k_of[i]<first_drop[side_of[i]]) first_drop[side_of[i]]=k_of[i];
                         n=0;
                     }
                 }
             }
             if (n) {
-                bopl4_march(t, ox, oy, n, dx, dy, 32.0, limit, d);
+                bopl4_march(t, ox, oy, n, dx, dy, cap, limit, d);
                 for (int i=0; i<n; i++) if (d[i]>threshold && k_of[i]<first_drop[side_of[i]]) first_drop[side_of[i]]=k_of[i];
             }
         }
@@ -719,18 +729,18 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
         int n=16-start<BOPL4_MARCH?16-start:BOPL4_MARCH;
         double ox[BOPL4_MARCH], oy[BOPL4_MARCH], dx[BOPL4_MARCH], dy[BOPL4_MARCH], limit[BOPL4_MARCH], d[BOPL4_MARCH];
         for (int i=0; i<n; i++) { bopl4_dash_direction(start+i, &dx[i], &dy[i]); ox[i]=x; oy[i]=y; limit[i]=BOPL4_DASH_LENGTH; d[i]=BOPL4_DASH_LENGTH; }
-        if (view->wall_count) bopl4_march(t, ox, oy, n, dx, dy, BOPL4_DASH_LENGTH, limit, d);
-        double ex[BOPL4_MARCH], ey[BOPL4_MARCH], zero[BOPL4_MARCH], down[BOPL4_MARCH], above[BOPL4_MARCH], fall[BOPL4_MARCH];
+        if (view->wall_count) bopl4_march(t, ox, oy, n, dx, dy, limit, limit, d);
+        double ex[BOPL4_MARCH], ey[BOPL4_MARCH], zero[BOPL4_MARCH], down[BOPL4_MARCH], above[BOPL4_MARCH], cap[BOPL4_MARCH], fall[BOPL4_MARCH];
         int m=0;
         for (int i=0; i<n; i++) {
             double px=x+dx[i]*(d[i]-0.5), py=y+dy[i]*(d[i]-0.5);
             if (t->has_water && py<=t->water_top) continue;
             if (t->has_water && py>t->water_top && !(py-t->water_top>4.0)) { landing=1; continue; }   /* water within 4: a landing */
             if (!view->wall_count) continue;                                                        /* 8 > 4: no landing */
-            ex[m]=px; ey[m]=py; zero[m]=0; down[m]=-1; above[m]=nextafter(4.0, HUGE_VAL); m++;
+            ex[m]=px; ey[m]=py; zero[m]=0; down[m]=-1; above[m]=nextafter(4.0, HUGE_VAL); cap[m]=8.0; m++;
         }
         if (m && !landing) {
-            bopl4_march(t, ex, ey, m, zero, down, 8.0, above, fall);
+            bopl4_march(t, ex, ey, m, zero, down, cap, above, fall);
             for (int i=0; i<m; i++) if (!(fall[i]>4.0)) landing=1;
         }
     }
@@ -881,13 +891,14 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
         int rays16=bopl4_ablation()&BOPL4_ABLATE_RAYS16;   /* every other of the 32, none of the down fan */
         bopl4_terrain_fill(&terrain, state, nearest, count, nearby_slimes, slime_count, self);
         bopl4_terrain_anchor(&terrain, self_x, self_y);
-        bopl4_terrain(&terrain, self_x, self_y, obs+BOPL4_OBS_TERRAIN_OFFSET);
         int wanted[BOPL4_RAYS], n_wanted=0;
         for (int k=0; k<BOPL4_RAYS; k++) {
             if (rays16 && (k>=BOPL4_RAYS_AROUND || (k&1))) { memset(obs+BOPL4_OBS_RAY_OFFSET+(size_t)k*BOPL4_RAY_FEATURES, 0, BOPL4_RAY_FEATURES*sizeof(float)); continue; }
             wanted[n_wanted++]=k;
         }
-        bopl4_rays(&terrain, self_x, self_y, self_vx, self_vy, wanted, n_wanted, obs);
+        double drop_ceiling[2];
+        bopl4_rays(&terrain, self_x, self_y, self_vx, self_vy, wanted, n_wanted, obs, drop_ceiling);
+        bopl4_terrain(&terrain, self_x, self_y, drop_ceiling, obs+BOPL4_OBS_TERRAIN_OFFSET);
         if (bopl4_ablation()&BOPL4_ABLATE_AIM) bopl4_aim_rays(&terrain, self_x, self_y, self_vx, self_vy, env->applied[a], &enemy, obs);
     }
 
