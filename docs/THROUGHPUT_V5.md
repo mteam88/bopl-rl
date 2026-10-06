@@ -96,6 +96,14 @@ sim was the C#-order Updater scheduler from the fidelity merge.
    pass-sorted list at that pass. `take_sweep` resolved every row through
    `current_bounds`, which searches the pools; only pool-owned rows need
    that now. The gate is clean, and the sim is 7% faster.
+9. **The physics groups take each part's rank, layer, composite and swept
+   bounds once.** The Circle/Circle, Box/Box and Circle/Box pair loops
+   recomputed them per pair, and the stable sort per comparison. That is
+   O(n^2) in a group's parts, and a Smoke cast (ability 13) fills the
+   Circle/Circle group with clouds. Kits with Smoke cost 2.5x the sim of the
+   rest (61 vs 24 us per decision) and carry 25% of the corpus's sim time.
+   The sim is 29% faster on Smoke games and 10% faster over the held-out
+   games.
 
 ## Measured and not kept
 

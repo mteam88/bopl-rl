@@ -261,14 +261,6 @@ impl RolloutWorld {
         list.copied()
     }
 
-    /// Whether SortAndSweep paired the two colliders this pass.
-    pub(super) fn swept_pair(&self, a: Swept, b: Swept) -> bool {
-        match (self.swept_bounds(a), self.swept_bounds(b)) {
-            (Some(a), Some(b)) => swept_meet(a, b),
-            _ => false,
-        }
-    }
-
     /// The collider's low edge on the sweep axis, where SortAndSweep ranks it.
     pub(super) fn swept_min(&self, collider: Swept) -> Fix {
         let low = self.swept_bounds(collider).map_or(Vec2::ZERO, |b| b[0]);

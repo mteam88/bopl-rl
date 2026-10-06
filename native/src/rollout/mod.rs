@@ -4747,6 +4747,8 @@ struct PlatformScratch {
     updater_hierarchy: u32,
     /// The Circle/Box group's colliders, circles first, and its manifolds.
     cb_parts: Vec<Part>,
+    /// A group's parts as its pair loop reads them.
+    group_parts: Vec<circle_box::GroupPart>,
     /// The beam pool's slots DetPhysics simulated this pass: those live with
     /// an active box before UpdateBeams.
     beam_contacts: usize,

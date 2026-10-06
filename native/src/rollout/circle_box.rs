@@ -6,6 +6,27 @@
 use super::*;
 use super::rope_abilities::HookTarget;
 
+/// A part as a group's pair loop reads it, taken once per part rather than
+/// once per pair: nothing the loop reads moves until every manifold is built.
+#[derive(Clone, Copy)]
+pub(super) struct GroupPart {
+    part: Part,
+    rank: SweepRank,
+    layer: u32,
+    composite: Option<usize>,
+    bounds: Option<[Vec2; 2]>,
+}
+
+impl GroupPart {
+    /// Whether the group builds this pair's manifold: not SameCompositeAs,
+    /// on layers the collision matrix pairs, and paired by SortAndSweep.
+    fn pairs(&self, other: &GroupPart, data: &data::RolloutData) -> bool {
+        !self.composite.is_some_and(|c| Some(c) == other.composite)
+            && data.layers_collide(self.layer, other.layer)
+            && matches!((self.bounds, other.bounds), (Some(a), Some(b)) if super::sweep::swept_meet(a, b))
+    }
+}
+
 /// A DetPhysics collider, by the collection that owns it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Part {
@@ -345,6 +366,21 @@ impl RolloutWorld {
     /// Its place in SortAndSweep's order.
     pub(super) fn part_rank(&self, part: Part) -> SweepRank {
         sweep_rank(&self.entities, self.swept_min(Swept::Part(part)), self.part_entity(part))
+    }
+
+    /// The part as the pair loops read it: `part_rank`, `part_layer`,
+    /// `part_composite` and its swept bounds.
+    fn group_part(&self, part: Part, data: &data::RolloutData) -> GroupPart {
+        let bounds = self.swept_bounds(Swept::Part(part));
+        let low = bounds.map_or(Vec2::ZERO, |b| b[0]);
+        let min = if self.sweep_x() { low.x } else { low.y };
+        GroupPart {
+            part,
+            rank: sweep_rank(&self.entities, min, self.part_entity(part)),
+            layer: self.part_layer(part, data),
+            composite: self.part_composite(part),
+            bounds,
+        }
     }
 
     /// A wall's place in SortAndSweep's order, from the collider the
@@ -869,24 +905,24 @@ impl RolloutWorld {
         }
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
-        for &circle in &parts[..circles] {
-            let circle_rank = self.part_rank(circle);
-            for &part in &parts[circles..] {
+        let mut group = std::mem::take(&mut self.scratch.group_parts);
+        group.clear();
+        group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+        let (circle_parts, box_parts) = group.split_at(circles);
+        for circle in circle_parts {
+            for part in box_parts {
                 // SameCompositeAs: a node never meets its own platform's
                 // children; an item, shot or missile has no composite.
-                if self.part_composite(circle).is_some_and(|c| Some(c) == self.part_composite(part))
-                    || !data.layers_collide(self.part_layer(circle, data), self.part_layer(part, data))
-                    || !self.swept_pair(Swept::Part(circle), Swept::Part(part))
-                {
+                if !circle.pairs(part, data) {
                     continue;
                 }
-                let rank = self.part_rank(part);
-                if let Some(contact) = self.part_collider(circle).contact(self.part_collider(part)) {
-                    let (later, earlier) = sweep_pair(circle_rank, rank);
-                    contacts.push(((GROUP_CB, later, earlier), circle, part, contact));
+                if let Some(contact) = self.part_collider(circle.part).contact(self.part_collider(part.part)) {
+                    let (later, earlier) = sweep_pair(circle.rank, part.rank);
+                    contacts.push(((GROUP_CB, later, earlier), circle.part, part.part, contact));
                 }
             }
         }
+        self.scratch.group_parts = group;
         contacts.sort_by_key(|&(key, ..)| key);
         // PrepareCollisionCallBacks: the circle is A, so its OnCollide queues
         // first, then the box's.
@@ -1153,27 +1189,30 @@ impl RolloutWorld {
             }
         }
         self.push_blasts(&mut parts, true);
-        parts.sort_by_key(|&part| self.part_rank(part));
+        let mut group = std::mem::take(&mut self.scratch.group_parts);
+        group.clear();
+        group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+        group.sort_by_key(|part| part.rank);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
-        for (k, &current) in parts.iter().enumerate() {
-            for &prior in &parts[..k] {
+        for (k, current) in group.iter().enumerate() {
+            for prior in &group[..k] {
                 // A hook's pair with a hole is grapple_hook_pairs'.
-                if matches!((prior, current), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
+                if matches!((prior.part, current.part), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
                     continue;
                 }
                 // SameCompositeAs: nodes of one platform share its composite.
-                if self.part_composite(prior).is_some_and(|c| Some(c) == self.part_composite(current))
-                    || !data.layers_collide(self.part_layer(prior, data), self.part_layer(current, data))
-                    || !self.swept_pair(Swept::Part(prior), Swept::Part(current))
-                {
+                if !prior.pairs(current, data) {
                     continue;
                 }
-                if let Some(contact) = self.part_collider(prior).contact(self.part_collider(current)) {
-                    contacts.push((prior, current, contact));
+                if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
+                    contacts.push((prior.part, current.part, contact));
                 }
             }
         }
+        parts.clear();
+        parts.extend(group.iter().map(|part| part.part));
+        self.scratch.group_parts = group;
         // PrepareCollisionCallBacks queues every pair's callbacks before the
         // first ResolveCollision (DetPhysics.cs:3068-3071), the
         // earlier-sorted side's first.
@@ -1231,22 +1270,25 @@ impl RolloutWorld {
         if !self.part_destroyed(Part::Water) {
             parts.push(Part::Water);
         }
-        parts.sort_by_key(|&part| self.part_rank(part));
+        let mut group = std::mem::take(&mut self.scratch.group_parts);
+        group.clear();
+        group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+        group.sort_by_key(|part| part.rank);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
-        for (k, &current) in parts.iter().enumerate() {
-            for &prior in &parts[..k] {
-                if self.part_composite(prior).is_some_and(|c| Some(c) == self.part_composite(current))
-                    || !data.layers_collide(self.part_layer(prior, data), self.part_layer(current, data))
-                    || !self.swept_pair(Swept::Part(prior), Swept::Part(current))
-                {
+        for (k, current) in group.iter().enumerate() {
+            for prior in &group[..k] {
+                if !prior.pairs(current, data) {
                     continue;
                 }
-                if let Some(contact) = self.part_collider(prior).contact(self.part_collider(current)) {
-                    contacts.push((prior, current, contact));
+                if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
+                    contacts.push((prior.part, current.part, contact));
                 }
             }
         }
+        parts.clear();
+        parts.extend(group.iter().map(|part| part.part));
+        self.scratch.group_parts = group;
         for &(a, b, contact) in &contacts {
             let (later, earlier) = sweep_pair(self.part_rank(a), self.part_rank(b));
             self.queue_collide((GROUP_BB, later, earlier), a, b, contact);
