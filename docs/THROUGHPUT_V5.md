@@ -121,6 +121,11 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     reads the octant off the signs and whichever of |dx| and |dy| is larger,
     and takes the old atan2 path within 1e-6 (relative) of an octant edge.
     The 400-game hash is unchanged, and the writer is 4-8% faster.
+13. **A ray group takes its circles' offsets once.** Every ray of a group
+    leaves the body. Each circle's offset, squared length and squared
+    radius are now computed per group, not per ray, using the same
+    expressions; the C build has no FMA, so nothing contracts. The hash is
+    unchanged, and the writer retires about 3.5% fewer instructions.
 
 ## Measured and not kept
 

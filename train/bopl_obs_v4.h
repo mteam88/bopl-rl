@@ -463,7 +463,17 @@ static inline int bopl4_sector(double dx, double dy) {
  * or object, 4 opponent body, 5 own object; out[7] the hit's closing speed
  * along the ray for classes 3-5. The surfaces other than walls are closed
  * form (bopl4_ray_other); the walls' march comes from bopl4_march. */
-static double bopl4_ray_other(const Bopl4Terrain *t, double x, double y, double dx, double dy, double svx, double svy,
+/* The circles relative to a group's origin, taken once for its rays:
+ * centre offset, its squared length, and the squared radius. */
+typedef struct { double px[BOPL4_ENTITIES+BOPL4_SLIMES], py[BOPL4_ENTITIES+BOPL4_SLIMES],
+                 pp[BOPL4_ENTITIES+BOPL4_SLIMES], r2[BOPL4_ENTITIES+BOPL4_SLIMES]; } Bopl4Circles;
+static void bopl4_circles_from(const Bopl4Terrain *t, double x, double y, Bopl4Circles *c) {
+    for (int i=0; i<t->circle_count; i++) {
+        double px=t->cx[i]-x, py=t->cy[i]-y;
+        c->px[i]=px; c->py[i]=py; c->pp[i]=px*px+py*py; c->r2[i]=t->cr[i]*t->cr[i];
+    }
+}
+static double bopl4_ray_other(const Bopl4Terrain *t, const Bopl4Circles *c, double x, double y, double dx, double dy, double svx, double svy,
                               int *class, double *closing) {
     double best=BOPL4_RAY_LENGTH; *class=-1; *closing=0;
     if (t->has_water && dy<-1e-9) {
@@ -474,9 +484,9 @@ static double bopl4_ray_other(const Bopl4Terrain *t, double x, double y, double 
     if (dx>1e-9) { double d=(BOT_BLAST_X-x)/dx; if (d>=0 && d<best) { best=d; *class=2; } }
     if (dx<-1e-9) { double d=(-BOT_BLAST_X-x)/dx; if (d>=0 && d<best) { best=d; *class=2; } }
     for (int i=0; i<t->circle_count; i++) {
-        double px=t->cx[i]-x, py=t->cy[i]-y, along=px*dx+py*dy;
+        double along=c->px[i]*dx+c->py[i]*dy;
         if (along<0) continue;
-        double perp2=px*px+py*py-along*along, r2=t->cr[i]*t->cr[i];
+        double perp2=c->pp[i]-along*along, r2=c->r2[i];
         if (perp2>r2) continue;
         double d=along-sqrt(r2-perp2);
         if (d<0) d=0;
@@ -507,9 +517,11 @@ static void bopl4_cast_group(const Bopl4Terrain *t, double x, double y, double s
                              const double *dx, const double *dy, float *const *out) {
     double best[BOPL4_MARCH], closing[BOPL4_MARCH], limit[BOPL4_MARCH], wall[BOPL4_MARCH], ox[BOPL4_MARCH], oy[BOPL4_MARCH];
     int class[BOPL4_MARCH];
+    Bopl4Circles circles;
+    bopl4_circles_from(t, x, y, &circles);
     for (int i=0; i<n; i++) {
         ox[i]=x; oy[i]=y;
-        best[i]=bopl4_ray_other(t, x, y, dx[i], dy[i], svx, svy, &class[i], &closing[i]);
+        best[i]=bopl4_ray_other(t, &circles, x, y, dx[i], dy[i], svx, svy, &class[i], &closing[i]);
         limit[i]=best[i]+1.0;
         wall[i]=BOPL4_RAY_LENGTH;
     }
