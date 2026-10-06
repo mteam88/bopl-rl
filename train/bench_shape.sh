@@ -23,6 +23,14 @@
 #   BOPL_BENCH_PROF=1 sets BOPL_ENV_PROF=2 BOPL_GPU_PROF=1 for the run (both
 #     arms of an A/B share it; 0 for rows comparable across runs).
 #   OUT=<dir> (default native/artifacts/rl/bench-shape in this checkout).
+#   BOPL_BENCH_WORKLOAD=shape (default: the recipe above from random init, maps
+#     0-2, kit 2,4,14, scripted banks) or spec: the specialist workload, i.e. a
+#     reflinked copy of the trained generalist-111 run (Matthew's 15 kits cross-
+#     paired, the 111 training maps, 3-minute games, self-play pool, full v4
+#     writer) resumed for <updates> updates with its own recorded flags. A trained
+#     policy, not a random one: the state distribution (entities alive, episode
+#     length) sets the sim and writer cost, and it moved sps 2x over that run.
+#     BOPL_BENCH_SPEC_RUN overrides the run directory resumed.
 # Results: $OUT/<label>/ (run dir, log) and $OUT/results.jsonl (appended).
 #
 # A/B mode: BOPL_BENCH_AB="KEY=VALUE KEY=VALUE" [BOPL_BENCH_AB_ARGS="--flag v"]
@@ -63,6 +71,35 @@ case "$ENCODER" in
             --v4-set-inner 64 --v4-ffn-dim 0 --v4-critic-dim 384) ;;
   *) echo "BOPL_BENCH_ENCODER must be set or v4" >&2; exit 2 ;;
 esac
+WORKLOAD=${BOPL_BENCH_WORKLOAD:-shape}
+case "$WORKLOAD" in
+  shape) ;;
+  spec)
+    SPEC_RUN=${BOPL_BENCH_SPEC_RUN:-$R/native/artifacts/rl/sweeps/generalist-111/000}
+    # The run's own flags, as the sweep driver launched it (minus --output and --steps).
+    mapfile -t SPEC_ARGS < <(native/artifacts/rl/venv/bin/python - "$SPEC_RUN" <<'PY'
+import sys
+from pathlib import Path
+sys.path[:0] = ['train/sweep', 'train']
+import json, sweep_config
+run = Path(sys.argv[1])
+recorded = json.loads((run / 'config.json').read_text())
+spec = sweep_config.load(Path('train/sweep/configs') / f'{run.parent.name}.toml')
+args = spec.trial_arguments(spec.defaults(), run, seed=73)
+skip = {'--output', '--steps'}
+out = []
+for flag, value in zip(args[::2], args[1::2]):
+    if flag == '--loadout-set':   # resume compares the absolute path the run recorded
+        value = recorded['loadouts']['set_file']
+    if flag not in skip:
+        out += [flag, str(value)]
+print('\n'.join(out))
+PY
+)
+    SPEC_LEARNER=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['counts']['learner_steps'])" "$SPEC_RUN/pool/state.json")
+    ;;
+  *) echo "BOPL_BENCH_WORKLOAD must be shape or spec" >&2; exit 2 ;;
+esac
 PROF_ENV=()
 [ "$PROF" = 1 ] && PROF_ENV=(BOPL_ENV_PROF=2 BOPL_GPU_PROF=1)
 
@@ -72,6 +109,22 @@ run_one() {
   local label=$1 ab_env=$2; shift 2
   local dir="$OUT/$label" unit rc
   rm -rf "$dir"
+  local train_args=()
+  if [ "$WORKLOAD" = spec ]; then
+    mkdir -p "$dir"
+    cp -r --reflink=always "$SPEC_RUN"/config.json "$SPEC_RUN"/pool "$SPEC_RUN"/checkpoints "$dir"/
+    train_args=(--resume --no-eval --no-in-run-rating "${SPEC_ARGS[@]}" --output "$dir"
+                --steps $(( SPEC_LEARNER + UPDATES * WORKERS * 3 / 2 * HORIZON )))
+  else
+    train_args=(--output "$dir" --banks 4 --buffers "$BUFFERS" --checkpoint-every 1000000000 --cudagraphs 1
+      "${ENCODER_ARGS[@]}" --entropy 0.008 --entropy-floor 0.001 --entropy-free-rows 1
+      --entropy-half-life 200000000 --entropy-head-scale 0.15,1.5,1 --episode-ticks 7200
+      --no-eval --horizon "$HORIZON" --layers 1 --learner-passes "$PASSES" --minibatch-div "$MINIBATCH_DIV"
+      --learning-rate 0.00125 --reward-kill 0.27 --reward-timeout -1
+      --scripted-bots evasive-v2 --scripted-level hard
+      --scripted-opponents mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard
+      --seed 73 --steps "$STEPS" --training-maps 0,1,2 --workers "$WORKERS")
+  fi
   unit="bopl-bench-$(echo "$label" | tr -c 'a-zA-Z0-9\n' '-')-$$"
   echo "$(date -u '+%F %T UTC') $label: waiting for GPU bench lock" >&2
   exec 9>/tmp/bopl-gpu-bench.lock
@@ -83,20 +136,13 @@ run_one() {
     BOPL_OMP_THREADS=${BOPL_OMP_THREADS:-12} OMP_WAIT_POLICY=${OMP_WAIT_POLICY:-passive} "${PROF_ENV[@]}" $ab_env \
   systemd-run --user --scope --collect --quiet -p MemoryMax=20G --unit "$unit" -- \
     nice -n 5 native/artifacts/rl/venv/bin/python train/train.py \
-    --output "$dir" --banks 4 --buffers "$BUFFERS" --checkpoint-every 1000000000 --cudagraphs 1 \
-    "${ENCODER_ARGS[@]}" --entropy 0.008 --entropy-floor 0.001 --entropy-free-rows 1 \
-    --entropy-half-life 200000000 --entropy-head-scale 0.15,1.5,1 --episode-ticks 7200 \
-    --no-eval --horizon "$HORIZON" --layers 1 --learner-passes "$PASSES" --minibatch-div "$MINIBATCH_DIV" \
-    --learning-rate 0.00125 --reward-kill 0.27 --reward-timeout -1 \
-    --scripted-bots evasive-v2 --scripted-level hard \
-    --scripted-opponents mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard \
-    --seed 73 --steps "$STEPS" --training-maps 0,1,2 --workers "$WORKERS" "${EXTRA_ARGS[@]}" "$@" > "$dir.log" 2>&1
+    "${train_args[@]}" "${EXTRA_ARGS[@]}" "$@" > "$dir.log" 2>&1
   rc=$?
   set -e
   flock -u 9
   if [ $rc -ne 0 ]; then
     echo "{\"label\": \"$label\", \"failed\": true, \"rc\": $rc}" | tee -a "$OUT/results.jsonl"
-    tail -n 30 "$dir.log" >&2
+    tail -n 30 "$dir.log" | cut -c1-400 >&2
     return $rc
   fi
   python3 - "$dir" "$label" "$WORKERS" "$BUFFERS" "$PASSES" "$HORIZON" "$ENCODER" "$ab_env" <<'PY' | tee -a "$OUT/results.jsonl"

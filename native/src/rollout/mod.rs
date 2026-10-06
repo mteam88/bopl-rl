@@ -4757,6 +4757,10 @@ struct PlatformScratch {
     /// manifolds in sweep order: (key, part, wall, contact).
     wall_parts: Vec<Part>,
     wall_contacts: Vec<(CallbackKey, Part, usize, Contact)>,
+    /// Per wall, what every part of the group asks of it: whether it
+    /// collides, its layer, and the bounds SortAndSweep took (None: no
+    /// callback collider this pass, so every part's bounds meet it).
+    wall_sides: Vec<(bool, u32, Option<[Vec2; 2]>)>,
     item_order: Vec<usize>,
     cc_contacts: Vec<(Part, Part, Contact)>,
     /// Each arrow's StickTo contacts in the Circle/Circle and Circle/Box

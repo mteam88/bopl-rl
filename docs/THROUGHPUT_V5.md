@@ -126,6 +126,11 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     radius are now computed per group, not per ray, using the same
     expressions; the C build has no FMA, so nothing contracts. The hash is
     unchanged, and the writer retires about 3.5% fewer instructions.
+14. **A wall group asks each wall's side once per pass.** wall_group used to
+    look up each wall's collides flag, layer and swept bounds once per
+    (part, wall) pair. It now looks them up once per wall and reuses them
+    for every part. The gate and the hash are unchanged, and the sim retires
+    0.6% fewer instructions on the test games.
 
 ## Measured and not kept
 
@@ -137,9 +142,11 @@ sim was the C#-order Updater scheduler from the fidelity merge.
 
 ## Open
 
-- Measure end-to-end trainer sps once the GPU is back; it faulted at
-  14:57 on 2026-10-06 and needs a reboot. The env step is now 3.4-4.2x
-  cheaper, so the GPU chain and the 8-vs-11 env threads in sweeps
-  (driver.py) are next.
+- End-to-end (`BOPL_BENCH_WORKLOAD=spec train/bench_shape.sh`, after the
+  2026-10-06 reboot, load ~24 from other agents): 302k sps, 227k learner.
+  Still env-bound: per buffer step eval_env 1.33 ms against eval_gpu
+  0.29 ms. In the pool, c_step is 71.7 us (sim 43.5, finish 26.3), about
+  1.9x env_bench's single-core numbers, because SMT runs 11 threads on
+  6 cores and the box was loaded.
 - With the full writer, the writer is now 38% of the env step.
   Full vs lite for the specialists is Matthew's call.

@@ -947,6 +947,16 @@ impl RolloutWorld {
     pub(super) fn wall_group(&mut self, group: u8, parts: &[Part], walls: &[RoundedRect], data: &data::RolloutData) {
         let mut contacts = std::mem::take(&mut self.scratch.wall_contacts);
         contacts.clear();
+        // Nothing below moves until every manifold is built, so each wall's
+        // side of the pair tests is taken once, not once per part.
+        let mut sides = std::mem::take(&mut self.scratch.wall_sides);
+        sides.clear();
+        if !parts.is_empty() {
+            sides.extend((0..self.platforms.len()).map(|wall| {
+                let entity = self.platform_entities[wall];
+                (self.collides(entity), self.entities[entity].layer, self.wall_swept_bounds(wall))
+            }));
+        }
         for &part in parts {
             let collider = self.part_collider(part);
             // SortAndSweep pairs on the bounds it took before any group
@@ -955,19 +965,18 @@ impl RolloutWorld {
             let Some(bounds) = self.swept_bounds(Swept::Part(part)) else { continue };
             let rank = self.part_rank(part);
             let layer = self.part_layer(part, data);
-            for wall in 0..self.platforms.len() {
+            let composite = self.part_composite(part);
+            for (wall, &(collides, wall_layer, wall_bounds)) in sides.iter().enumerate() {
                 // SameCompositeAs: a child never meets its own platform. A wall
                 // meets parts only while DetPhysics.IsActive, which a wall
                 // destroyed before this pass also fails, having left in
                 // RemoveDestroyedColliders (DetPhysics.cs:1658-1665, 2731).
                 // SortAndSweep pairs only layers the Physics2D matrix lets
                 // collide (DetPhysics.cs:2183).
-                let entity = self.platform_entities[wall];
-                let row = &self.entities[entity];
-                if !self.collides(entity)
-                    || !data.layers_collide(layer, row.layer)
-                    || self.part_composite(part) == Some(wall)
-                    || !self.wall_swept(wall, bounds)
+                if !collides
+                    || !data.layers_collide(layer, wall_layer)
+                    || composite == Some(wall)
+                    || !wall_bounds.is_none_or(|wall_bounds| sweep::swept_meet(bounds, wall_bounds))
                 {
                     continue;
                 }
@@ -987,6 +996,7 @@ impl RolloutWorld {
                 }
             }
         }
+        self.scratch.wall_sides = sides;
         contacts.sort_by_key(|&(key, ..)| key);
         for &(key, part, wall, contact) in &contacts {
             // collision.layer is the wall's own layer (DetPhysics.cs:2405-2437).
@@ -1066,14 +1076,14 @@ impl RolloutWorld {
         self.scratch.wall_contacts = contacts;
     }
 
-    /// Whether SortAndSweep paired a part's bounds with the wall it bounded
-    /// before this pass's RoundedRect/RoundedRect corrections.
-    fn wall_swept(&self, wall: usize, bounds: [Vec2; 2]) -> bool {
+    /// The bounds SortAndSweep took of a wall, before this pass's
+    /// RoundedRect/RoundedRect corrections; None if it bounded none this pass.
+    fn wall_swept_bounds(&self, wall: usize) -> Option<[Vec2; 2]> {
         self.scratch
             .callback_colliders
             .get(wall)
             .filter(|_| self.scratch.callback_tick == Some(self.tick))
-            .is_none_or(|&swept| sweep::swept_meet(bounds, Collider::RoundedRect(swept).bounds()))
+            .map(|&swept| Collider::RoundedRect(swept).bounds())
     }
 
     /// ResolveCollision on the part's body, a composite child's
