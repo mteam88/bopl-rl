@@ -2917,20 +2917,6 @@ pub struct Shockwave {
     /// MeteorSmash multiplies platformForce and defaultForce by its charge.
     pub force_scale: Fix,
     pub time: Fix,
-    pub target_count: usize,
-    pub platform_ids: [u32; 50],
-    pub item_count: usize,
-    pub item_hits: [WaveHit; 50],
-    pub arrow_count: usize,
-    pub arrow_hits: [WaveHit; 50],
-    pub missile_count: usize,
-    pub missile_hits: [WaveHit; 50],
-    pub portal_shot_count: usize,
-    pub portal_shot_hits: [WaveHit; 50],
-    pub smoke_count: usize,
-    pub smoke_hits: [WaveHit; 50],
-    pub black_hole_count: usize,
-    pub black_hole_hits: [WaveHit; 50],
     /// The spawned prefab's first Updater slot.
     pub hierarchy_base: u32,
 }
@@ -2947,6 +2933,35 @@ impl Default for Shockwave {
             ignored_platform: None,
             force_scale: Fix::ONE,
             time: Fix::ZERO,
+            hierarchy_base: 0,
+        }
+    }
+}
+
+/// What a Shockwave captured at Init and keeps pushing: the platforms and
+/// pooled bodies in its CircleCastAll buffer. It is kept beside its wave
+/// (`RolloutWorld::gust_targets`, `meteor_targets`), not in it, so the scans
+/// of the wave pools each pass read a wave's ~100 bytes, not 5 KB.
+#[derive(Clone, Copy)]
+pub struct WaveTargets {
+    pub target_count: usize,
+    pub platform_ids: [u32; 50],
+    pub item_count: usize,
+    pub item_hits: [WaveHit; 50],
+    pub arrow_count: usize,
+    pub arrow_hits: [WaveHit; 50],
+    pub missile_count: usize,
+    pub missile_hits: [WaveHit; 50],
+    pub portal_shot_count: usize,
+    pub portal_shot_hits: [WaveHit; 50],
+    pub smoke_count: usize,
+    pub smoke_hits: [WaveHit; 50],
+    pub black_hole_count: usize,
+    pub black_hole_hits: [WaveHit; 50],
+}
+impl Default for WaveTargets {
+    fn default() -> Self {
+        Self {
             target_count: 0,
             platform_ids: [0; 50],
             item_count: 0,
@@ -2961,7 +2976,6 @@ impl Default for Shockwave {
             smoke_hits: [WaveHit::default(); 50],
             black_hole_count: 0,
             black_hole_hits: [WaveHit::default(); 50],
-            hierarchy_base: 0,
         }
     }
 }
@@ -4963,6 +4977,8 @@ pub struct RolloutWorld {
     pub destroyed_tesla_lines: Vec<DestroyedTeslaLine>,
     pub meteor_smears: Vec<MeteorSmear>,
     pub meteor_waves: Vec<Shockwave>,
+    /// Each meteor wave's targets, index for index.
+    pub meteor_targets: Vec<WaveTargets>,
     pub frozen_solids: Vec<FrozenSolidState>,
     pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
@@ -4973,6 +4989,8 @@ pub struct RolloutWorld {
     /// Push-controlled). They read the mass the shrink leaves.
     pub late_platform_pulls: Vec<(usize, Vec2, Fix, Fix, bool)>,
     pub gust_waves: [Shockwave; MAX_BODIES * 3],
+    /// Each gust wave's targets, index for index.
+    pub gust_targets: [WaveTargets; MAX_BODIES * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
     pub teleport_marker_pool: Vec<TeleportMarker>,
     pub portal_shots: Vec<PortalShotState>,
@@ -5153,6 +5171,7 @@ impl RolloutWorld {
             destroyed_tesla_lines: Vec::with_capacity(32),
             meteor_smears: Vec::with_capacity(16),
             meteor_waves: Vec::with_capacity(16),
+            meteor_targets: Vec::with_capacity(16),
             frozen_solids: Vec::with_capacity(32),
             scale_changers: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
@@ -5160,6 +5179,7 @@ impl RolloutWorld {
             spawned: Vec::with_capacity(64),
             late_platform_pulls: Vec::new(),
             gust_waves: [Shockwave::default(); MAX_BODIES * 3],
+            gust_targets: [WaveTargets::default(); MAX_BODIES * 3],
             revival_marker_pool: Vec::with_capacity(64),
             teleport_marker_pool: Vec::with_capacity(64),
             portal_shots: Vec::with_capacity(32),
@@ -5267,12 +5287,14 @@ impl RolloutWorld {
             .clone_from(&src.destroyed_tesla_lines);
         self.meteor_smears.clone_from(&src.meteor_smears);
         self.meteor_waves.clone_from(&src.meteor_waves);
+        self.meteor_targets.clone_from(&src.meteor_targets);
         self.frozen_solids.clone_from(&src.frozen_solids);
         self.scale_changers.clone_from(&src.scale_changers);
         self.player_time_scale = src.player_time_scale;
         self.time_stop_protected = src.time_stop_protected;
         self.spawned.clone_from(&src.spawned);
         self.gust_waves = src.gust_waves;
+        self.gust_targets = src.gust_targets;
         self.revival_marker_pool
             .clone_from(&src.revival_marker_pool);
         self.teleport_marker_pool
@@ -5379,6 +5401,7 @@ impl RolloutWorld {
             destroyed_tesla_lines: _,
             meteor_smears: _,
             meteor_waves: _,
+            meteor_targets: _,
             frozen_solids: _,
             scale_changers: _,
             player_time_scale: _,
@@ -5386,6 +5409,7 @@ impl RolloutWorld {
             spawned: _,
             late_platform_pulls: _,
             gust_waves: _,
+            gust_targets: _,
             revival_marker_pool: _,
             teleport_marker_pool: _,
             portal_shots: _,
@@ -5516,6 +5540,7 @@ impl RolloutWorld {
         self.destroyed_tesla_lines.clear();
         self.meteor_smears.clear();
         self.meteor_waves.clear();
+        self.meteor_targets.clear();
         self.frozen_solids.clear();
         self.scale_changers.clear();
         self.ability_spawner_enabled =
@@ -5528,6 +5553,7 @@ impl RolloutWorld {
         for wave in &mut self.gust_waves {
             wave.reset();
         }
+        self.gust_targets = [WaveTargets::default(); MAX_BODIES * 3];
         self.revival_marker_pool.clear();
         self.teleport_marker_pool.clear();
         self.portal_shots.clear();
@@ -13050,6 +13076,7 @@ impl RolloutWorld {
             force_scale,
             ..Shockwave::default()
         });
+        self.meteor_targets.push(WaveTargets::default());
     }
 
     fn push_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
@@ -13875,6 +13902,7 @@ impl RolloutWorld {
                 owner: index,
                 ..Shockwave::default()
             };
+            self.gust_targets[wave] = WaveTargets::default();
             slot.gust.phase = 1;
             slot.gust.ticks = 0;
         } else if gust.phase == 1 && gust.ticks > data.gust.exit_ticks {
@@ -21756,10 +21784,19 @@ impl RolloutWorld {
         }
     }
 
+    fn wave_targets(&mut self, meteor: bool) -> &mut [WaveTargets] {
+        if meteor {
+            &mut self.meteor_targets
+        } else {
+            &mut self.gust_targets
+        }
+    }
+
     /// Shockwave.Init, in Updater's Init walk: it captures its targets and
     /// performs the curve's first time-zero impulse at once.
     fn shockwave_init(&mut self, meteor: bool, wave_index: usize, data: &data::RolloutData) {
         let mut wave = self.shockwaves(meteor)[wave_index];
+        let mut targets = self.wave_targets(meteor)[wave_index];
         wave.registered = true;
         let config = wave.config(data);
         let query = Circle {
@@ -21782,8 +21819,8 @@ impl RolloutWorld {
                 && retained.contains(&self.platform_entities[platform_index])
                 && Some(platform.id) != wave.ignored_platform
             {
-                wave.platform_ids[wave.target_count] = platform.id;
-                wave.target_count += 1;
+                targets.platform_ids[targets.target_count] = platform.id;
+                targets.target_count += 1;
             }
         }
         // CircleCastAll captures non-player rigid bodies once in Init and
@@ -21794,8 +21831,8 @@ impl RolloutWorld {
             if !item.active || item.entity.is_none_or(|entity| !retained.contains(&entity)) {
                 continue;
             }
-            wave.item_hits[wave.item_count] = WaveHit { index: item_index, base: item.hierarchy_base };
-            wave.item_count += 1;
+            targets.item_hits[targets.item_count] = WaveHit { index: item_index, base: item.hierarchy_base };
+            targets.item_count += 1;
         }
         for (arrow_index, arrow) in self.arrows.iter().enumerate() {
             if !arrow.active
@@ -21806,8 +21843,8 @@ impl RolloutWorld {
             {
                 continue;
             }
-            wave.arrow_hits[wave.arrow_count] = WaveHit { index: arrow_index, base: arrow.hierarchy_base };
-            wave.arrow_count += 1;
+            targets.arrow_hits[targets.arrow_count] = WaveHit { index: arrow_index, base: arrow.hierarchy_base };
+            targets.arrow_count += 1;
         }
         for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
             if !missile.active
@@ -21818,8 +21855,8 @@ impl RolloutWorld {
             {
                 continue;
             }
-            wave.missile_hits[wave.missile_count] = WaveHit { index: missile_index, base: missile.hierarchy_base };
-            wave.missile_count += 1;
+            targets.missile_hits[targets.missile_count] = WaveHit { index: missile_index, base: missile.hierarchy_base };
+            targets.missile_count += 1;
         }
         // Layer 10 (`spell`) is in AirWave_Shockwave's serialized mask.
         // PortalShot is the only live rigid spell collider in the source
@@ -21831,8 +21868,8 @@ impl RolloutWorld {
             {
                 continue;
             }
-            wave.portal_shot_hits[wave.portal_shot_count] = WaveHit { index: shot_index, base: shot.hierarchy_base };
-            wave.portal_shot_count += 1;
+            targets.portal_shot_hits[targets.portal_shot_count] = WaveHit { index: shot_index, base: shot.hierarchy_base };
+            targets.portal_shot_count += 1;
         }
         for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
             if !cloud.active
@@ -21844,8 +21881,8 @@ impl RolloutWorld {
                 continue;
             }
             // The cast already tested the cloud's live, animated radius.
-            wave.smoke_hits[wave.smoke_count] = WaveHit { index: cloud_index, base: cloud.hierarchy_base };
-            wave.smoke_count += 1;
+            targets.smoke_hits[targets.smoke_count] = WaveHit { index: cloud_index, base: cloud.hierarchy_base };
+            targets.smoke_count += 1;
         }
         // RigidBodyAffector bypasses IPhysicsCollider and calls
         // BlackHole.AddForce during every curve sample.
@@ -21853,8 +21890,8 @@ impl RolloutWorld {
             if !hole.active || hole.entity.is_none_or(|entity| !retained.contains(&entity)) {
                 continue;
             }
-            wave.black_hole_hits[wave.black_hole_count] = WaveHit { index: hole_index, base: hole.hierarchy_base };
-            wave.black_hole_count += 1;
+            targets.black_hole_hits[targets.black_hole_count] = WaveHit { index: hole_index, base: hole.hierarchy_base };
+            targets.black_hole_count += 1;
         }
         // Non-attachable LethalTerrain bodies are activation-only hits:
         // Shockwave applies the BoplBody fallback force immediately and
@@ -21946,6 +21983,7 @@ impl RolloutWorld {
             };
             clone.base.external_velocity += force * Fix::from_int(35);
         }
+        self.wave_targets(meteor)[wave_index] = targets;
         self.shockwaves(meteor)[wave_index] = wave;
         self.shockwave_apply(meteor, wave_index, Fix::ZERO, false, data);
     }
@@ -22008,12 +22046,13 @@ impl RolloutWorld {
             self.destroy_fix(wave.hierarchy_base, None, None);
             return;
         }
+        let targets = self.wave_targets(meteor)[wave_index];
         let mut applied = false;
-        for target in 0..wave.target_count {
+        for target in 0..targets.target_count {
             let Some(platform_index) = self
                 .platforms
                 .iter()
-                .position(|platform| platform.id == wave.platform_ids[target])
+                .position(|platform| platform.id == targets.platform_ids[target])
             else {
                 continue;
             };
@@ -22040,8 +22079,8 @@ impl RolloutWorld {
                 .apply_impulse(impulse, arm);
             applied = true;
         }
-        for target in 0..wave.item_count {
-            let hit = wave.item_hits[target];
+        for target in 0..targets.item_count {
+            let hit = targets.item_hits[target];
             let item_index = hit.index;
             let Some(item) = self.thrown_items.get(item_index) else {
                 continue;
@@ -22076,8 +22115,8 @@ impl RolloutWorld {
                 item.body.apply_impulse(impulse, Vec2::ZERO);
             }
         }
-        for target in 0..wave.arrow_count {
-            let hit = wave.arrow_hits[target];
+        for target in 0..targets.arrow_count {
+            let hit = targets.arrow_hits[target];
             let Some(arrow) = self.arrows.get_mut(hit.index) else {
                 continue;
             };
@@ -22093,8 +22132,8 @@ impl RolloutWorld {
                 * Fix::from_int(60);
             arrow.velocity += impulse * arrow.inverse_mass;
         }
-        for target in 0..wave.missile_count {
-            let hit = wave.missile_hits[target];
+        for target in 0..targets.missile_count {
+            let hit = targets.missile_hits[target];
             let Some(missile) = self.guided_missiles.get_mut(hit.index) else {
                 continue;
             };
@@ -22110,8 +22149,8 @@ impl RolloutWorld {
                 * Fix::from_int(60);
             missile.body.apply_impulse(impulse, Vec2::ZERO);
         }
-        for target in 0..wave.portal_shot_count {
-            let hit = wave.portal_shot_hits[target];
+        for target in 0..targets.portal_shot_count {
+            let hit = targets.portal_shot_hits[target];
             let Some(shot) = self.portal_shots.get_mut(hit.index) else {
                 continue;
             };
@@ -22127,8 +22166,8 @@ impl RolloutWorld {
                 * Fix::from_int(60);
             shot.body.apply_impulse(impulse, Vec2::ZERO);
         }
-        for target in 0..wave.smoke_count {
-            let hit = wave.smoke_hits[target];
+        for target in 0..targets.smoke_count {
+            let hit = targets.smoke_hits[target];
             let Some(cloud) = self.smoke_clouds.get_mut(hit.index) else {
                 continue;
             };
@@ -22144,8 +22183,8 @@ impl RolloutWorld {
                 * Fix::from_int(60);
             cloud.body.apply_impulse(impulse, Vec2::ZERO);
         }
-        for target in 0..wave.black_hole_count {
-            let hit = wave.black_hole_hits[target];
+        for target in 0..targets.black_hole_count {
+            let hit = targets.black_hole_hits[target];
             let Some(hole) = self.black_holes.get_mut(hit.index) else {
                 continue;
             };
@@ -41421,7 +41460,7 @@ mod tests {
 
         world.shockwave_init(false, 0, data::get());
 
-        assert_eq!(world.gust_waves[0].smoke_count, 1);
+        assert_eq!(world.gust_targets[0].smoke_count, 1);
         assert!(world.smoke_clouds[0].body.velocity.x > Fix::ZERO);
     }
 
@@ -41491,7 +41530,7 @@ mod tests {
 
         world.shockwave_init(false, 0, data::get());
 
-        assert_eq!(world.gust_waves[0].target_count, 0);
+        assert_eq!(world.gust_targets[0].target_count, 0);
     }
 
     #[test]
@@ -41512,7 +41551,7 @@ mod tests {
         world.shockwave_init(false, 0, data::get());
 
         assert!(
-            world.gust_waves[0].platform_ids[..world.gust_waves[0].target_count]
+            world.gust_targets[0].platform_ids[..world.gust_targets[0].target_count]
                 .contains(&world.platforms[platform].id)
         );
     }

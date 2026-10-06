@@ -131,6 +131,15 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     (part, wall) pair. It now looks them up once per wall and reuses them
     for every part. The gate and the hash are unchanged, and the sim retires
     0.6% fewer instructions on the test games.
+15. **A Shockwave's captured targets live beside it, not in it.** Each
+    Shockwave carried its 50-entry CircleCastAll lists inline, making it
+    5.1 KB. Each pass scans the 36 gust slots and the meteor waves about 7
+    times (run_spawned_before, register_pending_objects,
+    shockwaves_update), so every check of `active` touched a separate
+    cache line 5 KB apart. The lists now live in a parallel WaveTargets
+    pool, and a Shockwave is about 100 bytes. The gate and the hash are
+    unchanged. Sim instructions are flat (-0.06%) and sim time is -0.9%
+    (interleaved, 200 test games).
 
 ## Measured and not kept
 
