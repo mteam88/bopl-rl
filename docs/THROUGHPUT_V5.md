@@ -150,6 +150,25 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     and in shockwaves_update) cover only the fillable slots. The gate and
     the hash are unchanged, and the sim retires 2.8% fewer instructions on
     the test games.
+17. **bopl_clip is two selects.** Its first `if` compiled to a branch whose
+    direction depends on the data. As `v<1?v:1` then `v>-1?v:-1` it becomes
+    minsd/maxsd, which give the same value for every input (NaN still
+    maps to 1). The hash is unchanged. Interleaved, the full writer is 1.4%
+    faster and the lite writer 4.5%.
+
+
+## Cold caches in the trainer
+
+`BOPL_ENV_BENCH_EVICT_KB` makes env_bench sweep a buffer that size between
+decisions, outside the timers, as the env pool does when a thread steps
+other worlds. On v7c-pgo with 100 test games, the L2 sweeps cost sim
++16% at 4 MB and +18% at 32 MB, and the full writer +6%. A 128 MB sweep
+also flushes L3, and costs the sim +70% and the full writer +27%. With all
+12 threads busy (no sweep), the sim takes 28.9 us and the writer 17.7 us,
+1.77x and 1.5x solo. The trainer's 35.8 us sim is about the 12-busy figure
+times the L2-cold factor, so worlds mostly stay in the X3D's L3. IBS
+sampling of the 128 MB case spreads the L3 and DRAM misses over dozens of
+sites, with no single structure to repack.
 
 ## Measured and not kept
 

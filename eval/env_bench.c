@@ -145,6 +145,12 @@ int main(int argc, char **argv) {
     env_init(full, world, scratch_full, pack_out, masks_full, 0);
     BoplStateCopy delayed[2]={0}, sample={0};
 
+    /* BOPL_ENV_BENCH_EVICT_KB: between decisions, outside the timers, sweep
+     * a buffer this large through the cache, as the trainer's env threads do
+     * when they step the pool's other worlds between two of this one's. */
+    const char *evict_env=getenv("BOPL_ENV_BENCH_EVICT_KB");
+    size_t evict_bytes=evict_env?(size_t)atol(evict_env)*1024:0;
+    unsigned char *evict=evict_bytes?calloc(1, evict_bytes):NULL;
     double total[PHASES]={0}; uint64_t total_decisions=0, total_ticks=0, total_split=0, corpus_hash=0;
     double wall=seconds();
     for (int g=0; g<n; g++) {
@@ -164,6 +170,7 @@ int main(int argc, char **argv) {
         uint32_t tick=1;   /* the replay's first post-warmup tick */
         while (!(state->header.flags&BOPL_RL_TERMINAL) && warmup+tick-1<replay.tick_count) {
             BoplRlAction actions[PLAYERS];
+            for (size_t b=0; b<evict_bytes; b+=64) evict[b]++;
             const BoplRlAction *first=&replay.actions[(size_t)(warmup+tick-1)*PLAYERS];
             memcpy(actions, first, sizeof(actions));
             for (uint32_t k=1; k<4 && warmup+tick-1+k<replay.tick_count; k++)

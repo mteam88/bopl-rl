@@ -281,10 +281,13 @@ typedef struct {
 } BoplPuffer;
 
 /* fmax(-1, fmin(1, value)) without the libm calls (gcc will not inline them
- * for their NaN rules): the same result for every input, NaN included (1). */
+ * for their NaN rules): the same result for every input, NaN included (1).
+ * Written as selects so it compiles to minsd/maxsd, whose operand order gives
+ * exactly these results (value == +-1 takes the other arm, the same bits),
+ * where an if compiled to a data-dependent branch. */
 static inline float bopl_clip(double value) {
-    if (!(value<=1.0)) value=1.0;
-    if (value<-1.0) value=-1.0;
+    value=value<1.0?value:1.0;
+    value=value>-1.0?value:-1.0;
     return (float)value;
 }
 static double bopl_fix(int64_t value) { return value/4294967296.0; }
