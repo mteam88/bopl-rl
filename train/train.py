@@ -421,7 +421,7 @@ def main():
     frozen = opponents(a.evaluation_opponents)
     baseline_identity = checkpoint_identity(a.evaluation_baseline) if a.evaluation_baseline else None
     # BOPL_RL_BACKEND=rust rolls out on the Rust sim (native/src/rollout,
-    # built by `cargo build --release`); anything else keeps the .NET/Unity
+    # built by native/tools/pgo_build.sh); anything else keeps the .NET/Unity
     # game resolution. The Rust backend needs no spare world (resets are
     # microseconds) and hosts every world in one runtime.
     # An explicit --game names a staged build of the sim (a map-catalogue
@@ -430,7 +430,7 @@ def main():
     if os.environ.get('BOPL_RL_BACKEND', '').lower() == 'rust':
         game = (a.game or ROOT/'native/target/release/libbopl_sim.so').resolve()
         if not game.exists():
-            raise SystemExit(f'BOPL_RL_BACKEND=rust: {game} is missing; run cargo build --release in native/')
+            raise SystemExit(f'BOPL_RL_BACKEND=rust: {game} is missing; run native/tools/pgo_build.sh')
         os.environ.setdefault('BOPL_RL_INPROC_SPARE', '0')
         os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', str(1 << 20))
     else:

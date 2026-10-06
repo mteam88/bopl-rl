@@ -4537,9 +4537,23 @@ fn chooser_owner(player: usize) -> u32 {
 
 /// `pool`'s indices in Updater order.
 fn updater_order<T>(order: &mut Vec<usize>, pool: &[T], key: impl Fn(&T) -> UpdaterKey) {
-    order.clear();
-    order.extend(0..pool.len());
-    order.sort_unstable_by_key(|&index| (key(&pool[index]), index));
+    updater_order_where(order, pool, |_| true, key);
+}
+
+/// The indices of `pool`'s members that `keep` admits, in Updater order.
+/// Each key is taken once (`updater_key` searches Updater's list), then the
+/// (key, slot) pairs, all distinct, sort to the order sorting by key gives.
+fn updater_order_where<T>(order: &mut Vec<usize>, pool: &[T], keep: impl Fn(&T) -> bool, key: impl Fn(&T) -> UpdaterKey) {
+    thread_local! {
+        static KEYED: std::cell::RefCell<Vec<(UpdaterKey, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    KEYED.with_borrow_mut(|keyed| {
+        keyed.clear();
+        keyed.extend(pool.iter().enumerate().filter(|(_, member)| keep(member)).map(|(index, member)| (key(member), index)));
+        keyed.sort_unstable();
+        order.clear();
+        order.extend(keyed.iter().map(|&(_, index)| index));
+    });
 }
 
 /// Where DetPhysics queues a collision callback: by the contact group that
@@ -7725,6 +7739,13 @@ impl RolloutWorld {
     }
 
     pub fn step(&mut self, actions: &[CAction], repeat: u32) -> Result<(), String> {
+        self.step_unobserved(actions, repeat)?;
+        self.observe_main();
+        Ok(())
+    }
+
+    /// `step` without the observation it publishes at the end.
+    fn step_unobserved(&mut self, actions: &[CAction], repeat: u32) -> Result<(), String> {
         if !self.valid {
             return Err("No episode in progress".into());
         }
@@ -7752,7 +7773,6 @@ impl RolloutWorld {
                 break;
             }
         }
-        self.observe_main();
         Ok(())
     }
 
@@ -7765,7 +7785,12 @@ impl RolloutWorld {
         if first < 1 || second < 1 || first > 16 || second > 16 || first > 16 - second {
             return Err("Sampled step phases too long".into());
         }
-        self.step(actions, first)?;
+        // The main observation is published once, at the end: the sample
+        // numbers the same rows in the same order the first-phase one would.
+        self.step_unobserved(actions, first)?;
+        if self.terminal {
+            self.observe_main();
+        }
         self.observe_sample();
         self.sample_valid = true;
         if !self.terminal {
@@ -8627,6 +8652,10 @@ impl RolloutWorld {
                 queue.push((key, kind, index));
             }
         };
+        // An Updater key leads with the pass it was appended on: one appended
+        // after this pass or `before`'s, or (every kind here keeps Updater's
+        // place) before the cursor's, is out without searching for its place.
+        let live = |appended: u32| appended <= tick && appended <= before.0 && appended >= cursor.0;
         for i in 0..self.platforms.len() {
             if self.platform_pass(i) != PlatformPass::Authored {
                 push(self.platform_turn_key(i), 0, i);
@@ -8634,29 +8663,41 @@ impl RolloutWorld {
         }
         for (i, hole) in self.black_holes.iter().enumerate() {
             if hole.active {
-                push(self.updater_key(hole.appended, 100_000_000 + hole.hierarchy_base), 1, i);
+                if live(hole.appended) {
+                    push(self.updater_key(hole.appended, 100_000_000 + hole.hierarchy_base), 1, i);
+                }
             }
         }
         for (i, item) in self.thrown_items.iter().enumerate() {
             if self.thrown_item_listed(item) {
-                push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 2, i);
+                if live(item.appended) {
+                    push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 2, i);
+                }
             }
         }
         for (i, portal) in self.portals.iter().enumerate() {
             if portal.active {
-                push(self.updater_key(portal.appended, 100_000_000 + portal.hierarchy_base), 4, i);
+                if live(portal.appended) {
+                    push(self.updater_key(portal.appended, 100_000_000 + portal.hierarchy_base), 4, i);
+                }
             }
         }
         for (i, pickup) in self.ability_pickups.iter().enumerate() {
-            push(self.updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base), 5, i);
+            if live(pickup.appended) {
+                push(self.updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base), 5, i);
+            }
         }
         for (i, engine) in self.engines.iter().enumerate() {
             if engine.active {
-                push(self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base), 6, i);
+                if live(engine.appended) {
+                    push(self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base), 6, i);
+                }
             }
         }
         for (i, node) in self.tesla_nodes.iter().enumerate() {
-            push(self.updater_key(node.appended, 100_000_000 + node.hierarchy_base), 16, i);
+            if live(node.appended) {
+                push(self.updater_key(node.appended, 100_000_000 + node.hierarchy_base), 16, i);
+            }
         }
         for (i, rope) in self.ropes.iter().enumerate() {
             if rope.physics.enabled {
@@ -8675,69 +8716,97 @@ impl RolloutWorld {
         }
         for (i, shot) in self.portal_shots.iter().enumerate() {
             if shot.active {
-                push(self.updater_key(shot.appended, 100_000_000 + shot.hierarchy_base), 40, i);
+                if live(shot.appended) {
+                    push(self.updater_key(shot.appended, 100_000_000 + shot.hierarchy_base), 40, i);
+                }
             }
         }
         for (i, cloud) in self.smoke_clouds.iter().enumerate() {
             if cloud.active {
-                push(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), 9, i);
+                if live(cloud.appended) {
+                    push(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), 9, i);
+                }
             }
         }
         for (i, effect) in self.scale_changers.iter().enumerate() {
             if effect.active {
-                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 10, i);
+                if live(effect.appended) {
+                    push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 10, i);
+                }
             }
         }
         for (i, effect) in self.duplicate_platform_effects.iter().enumerate() {
             if effect.active {
-                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 11, i);
+                if live(effect.appended) {
+                    push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 11, i);
+                }
             }
         }
         for (i, marker) in self.teleport_marker_pool.iter().enumerate() {
             if marker.active && marker.registered {
-                push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 12, i);
+                if live(marker.appended) {
+                    push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 12, i);
+                }
             }
         }
         for (i, state) in self.platform_dynamics.iter().enumerate() {
             if state.blink_tunnel_active {
-                push(self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy), 13, i);
+                if live(state.blink_tunnel_appended) {
+                    push(self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy), 13, i);
+                }
             }
         }
         for (i, tunnel) in self.blink_object_tunnels.iter().enumerate() {
             if tunnel.active {
-                push(self.updater_key(tunnel.appended, 100_000_000 + tunnel.hierarchy), 17, i);
+                if live(tunnel.appended) {
+                    push(self.updater_key(tunnel.appended, 100_000_000 + tunnel.hierarchy), 17, i);
+                }
             }
         }
         for (i, slot) in self.players.iter().enumerate() {
             if slot.blink_tunnel_active {
-                push(self.updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy), 20, i);
+                if live(slot.blink_tunnel_appended) {
+                    push(self.updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy), 20, i);
+                }
             }
             if slot.teleport_effect_active {
-                push(self.updater_key(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy), 21, i);
+                if live(slot.teleport_effect_appended) {
+                    push(self.updater_key(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy), 21, i);
+                }
             }
         }
         for (i, effect) in self.teleport_object_effects.iter().enumerate() {
             if effect.active {
-                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy), 22, i);
+                if live(effect.appended) {
+                    push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy), 22, i);
+                }
             }
         }
         for (i, clone) in self.abilityless_clones.iter().enumerate() {
             if clone.active {
-                push(self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base), 14, i);
+                if live(clone.appended) {
+                    push(self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base), 14, i);
+                }
             }
             if clone.blink_tunnel_active {
-                push(self.updater_key(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy), 23, i);
+                if live(clone.blink_tunnel_appended) {
+                    push(self.updater_key(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy), 23, i);
+                }
             }
         }
         for (i, spike) in self.spike_attacks.iter().enumerate() {
             if spike.active && !spike.macho_carried {
-                push(self.updater_key(spike.appended, 100_000_000 + spike.hierarchy_base), 24, i);
+                if live(spike.appended) {
+                    push(self.updater_key(spike.appended, 100_000_000 + spike.hierarchy_base), 24, i);
+                }
             }
         }
         for (kind, waves) in [(25, &self.gust_waves[..]), (26, &self.meteor_waves[..])] {
             for (i, wave) in waves.iter().enumerate() {
                 if wave.active {
-                    push(self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), kind, i);
+                    if live(wave.appended) {
+                        push(self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), kind, i);
+                    }
                 }
             }
         }
@@ -8747,30 +8816,40 @@ impl RolloutWorld {
             }
             for (s, effect) in slot.gold_mushroom.iter().enumerate() {
                 if effect.active {
-                    push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 28, i * 3 + s);
+                    if live(effect.appended) {
+                        push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 28, i * 3 + s);
+                    }
                 }
             }
         }
         for (i, effect) in self.frozen_solids.iter().enumerate() {
             if effect.active {
-                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 32, i);
+                if live(effect.appended) {
+                    push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 32, i);
+                }
             }
         }
         for (i, arrow) in self.arrows.iter().enumerate() {
             if arrow.active && arrow.registered {
-                push(self.updater_key(arrow.appended, 100_000_000 + arrow.hierarchy_base), 31, i);
+                if live(arrow.appended) {
+                    push(self.updater_key(arrow.appended, 100_000_000 + arrow.hierarchy_base), 31, i);
+                }
             }
         }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
                 && !self.blink_object_hidden(missile.entity)
             {
-                push(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base), 19, i);
+                if live(missile.appended) {
+                    push(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base), 19, i);
+                }
             }
         }
         for (i, marker) in self.revival_marker_pool.iter().enumerate() {
             if marker.active && marker.registered {
-                push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 41, i);
+                if live(marker.appended) {
+                    push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 41, i);
+                }
             }
         }
         for i in 0..self.players.len() {
@@ -20004,7 +20083,14 @@ impl RolloutWorld {
     /// in `spawned`.
     fn smoke_clouds_update_early(&mut self, data: &data::RolloutData, updater_dt: Fix, spawned: std::ops::Range<u32>) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.smoke_clouds, |cloud| self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
+        // Only a cloud whose prefab rows are in `spawned` can run: the rest
+        // need no place in the order (a cloud's rows are fixed at its spawn).
+        updater_order_where(
+            &mut order,
+            &self.smoke_clouds,
+            |cloud| spawned.contains(&(100_000_000 + cloud.hierarchy_base)),
+            |cloud| self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base),
+        );
         for &cloud_index in &order {
             let cloud = &self.smoke_clouds[cloud_index];
             let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
@@ -31711,6 +31797,10 @@ impl RolloutWorld {
     /// any query may run it: a dropped platform keeps its storage, hidden and
     /// marked removed, until the next pass compacts it.
     fn remove_destroyed_colliders(&mut self) {
+        // Most queries find nothing to drop: one scan instead of four.
+        if !self.entities.iter().any(|row| row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED) {
+            return;
+        }
         let mut hidden = false;
         for kind in [0u32, 2, 1] {
             for entity in 0..self.entities.len() {

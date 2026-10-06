@@ -227,9 +227,10 @@ divergence-controls: $(OUT)/divergence_rate rust-q32 $(RUST_ROLLOUT)
 divergence-report:
 	$(PYTHON) eval/divergence/divergence_summary.py $(abspath $(DIVERGENCE_OUT))
 
-# The f64 build the library actually trains in; the q32 one is `rust-q32`.
+# The f64 build the library actually trains in, profile-guided; the q32 one
+# is `rust-q32`.
 $(RUST_ROLLOUT):
-	cargo build --release --manifest-path native/Cargo.toml
+	native/tools/pgo_build.sh
 
 $(OUT)/divergence_rate: eval/divergence/divergence_rate.c eval/divergence/divergence_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h
 	mkdir -p $(OUT)
@@ -242,6 +243,13 @@ writer-bench: $(OUT)/writer_bench
 $(OUT)/writer_bench: eval/writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/writer_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
+
+# The trainer's c_step phases timed over a replay corpus (eval/env_bench.c).
+env-bench: $(OUT)/env_bench
+
+$(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
 $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
@@ -298,7 +306,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward check-routing
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench agent agent-mac check-reward check-routing
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.

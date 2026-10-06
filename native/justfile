@@ -1,9 +1,10 @@
 set working-directory := ".."
 unity_editor := env("UNITY_EDITOR", "Unity")
 
-# Standalone library and probes. Unity is only needed for live reference checks.
+# Standalone library and probes, profile-guided (tools/pgo_build.sh). Unity
+# is only needed for live reference checks.
 build:
-    cargo build --release --manifest-path native/Cargo.toml
+    native/tools/pgo_build.sh
 
 # The golden verification compares raw Q32.32 values against Unity captures,
 # so it needs the bit-exact reference arithmetic. The default build stores
@@ -130,7 +131,7 @@ verify: build-q32 check
     python3 native/tools/verify_gust.py --clones --golden
     python3 native/tools/verify_gust.py --custom --golden
     python3 native/tools/verify_gust.py --interactions --golden
-    cargo build --release --manifest-path native/Cargo.toml
+    native/tools/pgo_build.sh
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
