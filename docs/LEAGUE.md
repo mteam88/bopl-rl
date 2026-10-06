@@ -230,43 +230,55 @@ antisymmetric `A`, so it is not a readout; `rate` prints it only as an identity.
 The scalar that carries information is RPP between two *different* populations —
 here, the learned members against the scripted/random anchors.
 
-## State of the league, measured 2026-09-24
+## State of the league, measured 2026-10-06
 
-The rating condition `simf0ab99a8.own-kit.mapall-124.t10800.d9`: 58 members
-(18 v4 and 4 v3 mains, 8 specialists, 27 scripted bots, random), every pair
-played, 24 games each, 39,672 games in 4.6 h. 543 games (1.4%) were draws; with
-3-minute games the old flood of timeout draws is gone.
+The rating condition `sim32b8446a.own-kit.mapall-124.t10800.d9`, the sim after
+the sim-fidelity merge (1e08217c): 58 members (18 v4 and 4 v3 mains, 8
+specialists, 27 scripted bots, random), every pair played, 24 games each, 39,672
+games in 121 min. 540 games (1.4%) were draws.
 
 ```
 member                  Elo   95%            member                  Elo   95%
-dash-bow-platform       494  [462, 525]      grapple-beam-rock       428  [400, 461]
-v4-full-2240m           493  [461, 526]      evasive-v2-hard         373  [342, 406]
-v4-aim-only-2313m       488  [460, 521]      v3b-041-final           355  [325, 389]
-v4-full-2313m           483  [453, 517]      drill-throw-magnet      327  [297, 359]
-v4-lite-1920m           478  [448, 508]      dash-missile-platform   267  [238, 299]
-search-medium           459  [432, 492]      roll-grenade-smoke      257  [223, 293]
-search-hard             440  [411, 473]      teleport-mine-tesla     228  [198, 260]
-                                             duplicator-blink-bh     221  [190, 253]
-                                             web-mjolnir-freeze      184  [150, 215]
+v4-full-2240m           495  [464, 527]      search-easy             435  [406, 467]
+dash-bow-platform       480  [450, 512]      evasive-v2-hard         371  [341, 404]
+v4-full-2313m           479  [449, 511]      v3b-041-final           355  [326, 387]
+v4-aim-only-2313m       476  [444, 506]      drill-throw-magnet      320  [286, 354]
+search-medium           466  [437, 497]      dash-missile-platform   280  [252, 310]
+v4-lite-1920m           465  [436, 497]      roll-grenade-smoke      248  [220, 276]
+grapple-beam-rock       444  [411, 477]      teleport-mine-tesla     212  [184, 242]
+search-hard             442  [408, 473]      duplicator-blink-bh     209  [182, 239]
+                                             web-mjolnir-freeze      192  [159, 226]
                                              random                    0
 ```
 
-(`league rate` prints all 58.) Four things in it.
+(`league rate` prints all 58.) Against the same round robin on the previous sim
+(`simf0ab99a8`, 2026-09-24) the mean move is 5 Elo and the largest 16, all
+inside the intervals: the fidelity fixes did not reorder the league. Four things
+in it.
 
-- **The v4 mains and the search bots are one band.** From `dash-bow-platform`
-  at 494 down to `search-hard` at 440 the intervals overlap throughout: the best
+- **The v4 mains and the search bots are one band.** From `v4-full-2240m` at
+  495 down to `search-easy` at 435 the intervals overlap throughout: the best
   trained policies are level with the search bots, not past them.
 - **Every other specialist is below the v4 mains, most well below.** They were
   trained on maps 0-2 only, and here they play all 124. `dash-bow-platform`
-  tops the table on the v4 mains' own kit, which says the kit, not the
+  sits among the v4 mains on their own kit, which says the kit, not the
   training, sets most of the gap. `drill-throw-magnet`, first by 65 Elo when
-  rated on maps 0-2, is 327 here: its strength was largely those three maps.
-- **The Nash equilibrium is two members**, `v4-aim-only-2313m` (0.385) and
-  `grapple-beam-rock` (0.615). Two members that beat different things; growing
-  the league means adding something that beats both.
+  rated on maps 0-2, is 320 here: its strength was largely those three maps.
+- **The Nash equilibrium is five members**: `grapple-beam-rock` (0.423),
+  `dash-bow-platform` (0.204), `search-easy` (0.183), `v4-aim-only-2313m`
+  (0.148) and `search-hard` (0.042). On the previous sim it was two,
+  `v4-aim-only-2313m` and `grapple-beam-rock`. RPP of the learned members
+  against the 28 scripted and random anchors is +0.166 (their equilibrium beats
+  the anchors' at 0.666; 0.689 on the previous sim).
 - **A checkpoint rated by `league candidate` lands where the round robin puts
-  it.** `drill-throw-magnet`'s checkpoint, rated as a candidate on 114 games,
-  refits to 327 [268, 383] against its member rating of 327.
+  it.** Checked on the previous sim: `drill-throw-magnet`'s checkpoint, rated as
+  a candidate on 114 games, refit to 327 [268, 383] against its member rating
+  of 327.
+
+`league play` sends pairs to the workers 40 at a time (`PLAY_BATCH`). Played one
+pair at a time, each pair ended with its longest game running alone, and the
+same round robin took 4.6 h on 9 workers. Games are fixed by their seeds, so
+batching changes no result.
 
 Map 114 (`espace 1`) is a hazard, not a defect: a moon orbits each spawn planet
 and its first pass, about half a second in, crushes a player that stays on top of

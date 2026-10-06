@@ -129,6 +129,9 @@ def command_add(args):
 
 # ---- play --------------------------------------------------------------------
 
+PLAY_BATCH = 40  # pairs per call to the workers
+
+
 def command_play(args):
     """Play every informative pair and append the counts to payoff.jsonl.
 
@@ -169,25 +172,30 @@ def command_play(args):
     # Rows are keyed by member id, never by name: payoff.jsonl is append-only and
     # outlives its members, so a reused name would inherit the old agent's record.
     started, played, opponents = time.time(), 0, {}
+    # Pairs go to the workers in batches: played one at a time, every pair ended
+    # with its longest game running alone and 9 workers averaged 1-3 busy cores.
+    # Games are fixed by their seeds, so batching changes no result.
+    pairs = list(schedule.items())
     with registry.PAYOFF.open('a') as handle:
-        for number, ((a, b), tasks) in enumerate(schedule.items(), 1):
-            ia, ib = rows[a]['id'], rows[b]['id']
-            results = games.play(built, tasks, args.workers, args.seed_base)
+        for start in range(0, len(pairs), PLAY_BATCH):
+            batch = pairs[start:start + PLAY_BATCH]
+            results = games.play(built, [t for _, tasks in batch for t in tasks], args.workers, args.seed_base)
             # wins, losses and draws all come from tally(), which counts each
             # game's own outcome. Never `games - wins`: that silently turns every
             # trade and every timeout into a loss for one side.
-            record = elo_ladder.tally(results).get((ia, ib), [0, 0, 0])
-            row_a, row_b, wins, losses, draws = registry.canonical(ia, ib, *record)
-            handle.write(json.dumps(dict(a=row_a, b=row_b, condition=key, wins=wins,
-                                         losses=losses, draws=draws)) + '\n')
+            records = elo_ladder.tally(results)
+            for (a, b), tasks in batch:
+                ia, ib = rows[a]['id'], rows[b]['id']
+                row_a, row_b, wins, losses, draws = registry.canonical(ia, ib, *records.get((ia, ib), [0, 0, 0]))
+                handle.write(json.dumps(dict(a=row_a, b=row_b, condition=key, wins=wins,
+                                             losses=losses, draws=draws)) + '\n')
+                opponents[a] = opponents.get(a, 0) + wins + losses + draws
+                opponents[b] = opponents.get(b, 0) + wins + losses + draws
             handle.flush()
             played += len(results)
-            opponents[a] = opponents.get(a, 0) + len(results)
-            opponents[b] = opponents.get(b, 0) + len(results)
-            if number % 10 == 0 or number == len(schedule):
-                rate = played / max(1e-9, time.time() - started)
-                print(f'  [{number}/{len(schedule)}] {played} games, {rate:.1f} games/s,'
-                      f' {(total-played)/max(rate,1e-9)/60:.0f} min left', flush=True)
+            rate = played / max(1e-9, time.time() - started)
+            print(f'  [{start + len(batch)}/{len(pairs)}] {played} games, {rate:.1f} games/s,'
+                  f' {(total-played)/max(rate,1e-9)/60:.0f} min left', flush=True)
     shares = {n: c / max(1, sum(opponents.values())) for n, c in opponents.items()}
     print(f'played {played} games in {(time.time()-started)/60:.1f} min')
     print('realized opponent share: top '
