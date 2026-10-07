@@ -512,6 +512,7 @@ __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float*
     const float* slot = packed + (long)r * BOPL4_PACK_P;
     float* out = dense + (long)r * BOPL_OBS_STRIDE;
     const unsigned* hdr = (const unsigned*)slot;
+    if (hdr[0] == BOPL4_PACK_MODE_STATE) return;   /* bopl4_rays_rows writes the whole row */
     if (hdr[0] == BOPL4_PACK_MODE_DENSE || hdr[0] == BOPL4_PACK_MODE_DENSE_SCENE) {
         const float4* src = (const float4*)(host_rows + (long)r * BOPL_OBS_STRIDE);
         float4* dst = (float4*)out;

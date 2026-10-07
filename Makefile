@@ -252,6 +252,21 @@ $(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train
 	mkdir -p $(OUT)
 	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
+# The GPU v4 row writer (pack mode 4, train/bopl_rays_v4.cu) against the CPU
+# writer bit for bit over a replay corpus (eval/encode_check.c). The writer
+# objects are built as train/build.py builds the trainer's: clang with
+# -march=znver4 -ffp-contract=off for the host, nvcc -fmad=false for the kernel.
+CUDA_HOME ?= native/artifacts/rl/venv/lib/python3.11/site-packages/nvidia/cu13
+encode-check: $(OUT)/encode_check
+
+$(OUT)/encode_check: eval/encode_check.c eval/env_bench.c train/bopl_rays_v4.cu train/bopl_rows_v4.h train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_layout.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+	mkdir -p $(OUT)
+	$(CUDA_HOME)/bin/nvcc -O3 -std=c++17 -arch=sm_120 -fmad=false -ccbin g++-15 $(INCLUDES) -c train/bopl_rays_v4.cu -o $(OUT)/encode_check_rays.o
+	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function $(INCLUDES) -I$(CUDA_HOME)/include -c eval/encode_check.c -o $(OUT)/encode_check.o
+	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 $(INCLUDES) -c $(ABI)/bopl_rl.c -o $(OUT)/encode_check_rl.o
+	g++-15 $(OUT)/encode_check.o $(OUT)/encode_check_rl.o $(OUT)/encode_check_rays.o \
+	  $(abspath $(CUDA_HOME))/lib/libcudart.so.13 -Wl,-rpath,$(abspath $(CUDA_HOME))/lib -lm -lpthread -ldl -o $@
+
 $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared $(INCLUDES) train/eval_binding.c $(ABI)/bopl_rl.c -lm -o $@
@@ -307,7 +322,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench agent agent-mac check-reward check-routing
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench encode-check agent agent-mac check-reward check-routing
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.

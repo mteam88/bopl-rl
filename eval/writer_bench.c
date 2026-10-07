@@ -246,7 +246,7 @@ int main(int argc, char **argv) {
             t=seconds();
             for (int i=0; i<1000000; i++) {
                 double dx=(random_u32(&s)%2000)/10.0-100, dy=(random_u32(&s)%2000)/10.0-100, vx=(random_u32(&s)%200)-100, vy=(random_u32(&s)%200)-100;
-                bopl4_relation(out, dx, dy, vx, vy, 0.5, ballistic); sink+=out[8];
+                bopl4_relation(out, dx, dy, vx, vy, 0.5, ballistic, 0); sink+=out[8];
             }
             ns[ballistic]=(seconds()-t)*1e3;
         }

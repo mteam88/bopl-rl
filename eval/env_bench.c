@@ -119,6 +119,7 @@ static void env_init(BoplPuffer *env, BoplRl *world, float *scratch, float *pack
     for (int i=0; i<PLAYERS; i++) { env->layout[i]=BOPL4_LAYOUT_VERSION; bopl_set_ablate_of(env, i, ablate); env->mask_ptr[i]=masks[i]; }
 }
 
+#ifndef ENV_BENCH_NO_MAIN   /* eval/encode_check.c reuses the decoder */
 int main(int argc, char **argv) {
     if (argc<3 || argc>6) { fprintf(stderr, "env_bench <libbopl_sim.so> <corpus_dir> [max_games] [warmup] [limit]\n"); return 2; }
     int max_games=argc>3?atoi(argv[3]):0;
@@ -204,7 +205,7 @@ int main(int argc, char **argv) {
             hash=mix_words(mix_words(hash, scratch_lite, sizeof(scratch_lite)), scratch_full, sizeof(scratch_full));
             {
                 double a=seconds();
-                bopl4_defer=1; bopl4_pending_count=0; bopl_encode(train, old, 0); bopl4_defer=0;
+                bopl4_defer=1; bopl4_pending_count=0; bopl4_state_count=0; bopl_encode(train, old, 0); bopl4_defer=0;
                 bopl_pack_rows(train);
                 t[P_TRAIN]+=seconds()-a;
                 hash=mix_words(hash, pack_train, sizeof(pack_train));
@@ -244,3 +245,4 @@ int main(int argc, char **argv) {
     bopl_rl_close(world);
     return 0;
 }
+#endif

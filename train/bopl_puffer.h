@@ -4,6 +4,7 @@
 #include "bopl_layout.h"
 #include "bopl_layout_v4.h"
 #include "bopl_obs_pack.h"
+#include "bopl_rows_v4.h"
 #include "bopl_bots.h"
 #include <math.h>
 #include <stdint.h>
@@ -284,17 +285,6 @@ typedef struct {
     char error[512];
 } BoplPuffer;
 
-/* fmax(-1, fmin(1, value)) without the libm calls (gcc will not inline them
- * for their NaN rules): the same result for every input, NaN included (1).
- * Written as selects so it compiles to minsd/maxsd, whose operand order gives
- * exactly these results (value == +-1 takes the other arm, the same bits),
- * where an if compiled to a data-dependent branch. */
-static inline float bopl_clip(double value) {
-    value=value<1.0?value:1.0;
-    value=value>-1.0?value:-1.0;
-    return (float)value;
-}
-static double bopl_fix(int64_t value) { return value/4294967296.0; }
 static uint32_t bopl_random(BoplPuffer *env) {
     uint32_t x=env->rng; x^=x<<13; x^=x>>17; x^=x<<5; return env->rng=x;
 }
@@ -308,98 +298,6 @@ static uint32_t bopl_bot_seed(const BoplPuffer *env, int player) {
     uint32_t x=(env->config.seed^0x9E3779B9u)*2654435761u+(uint32_t)(player+1)*0x85EBCA6Bu;
     x^=x>>16; x*=0x7FEB352Du; x^=x>>15; x*=0x846CA68Bu; x^=x>>16;
     return x;
-}
-static int bopl_ally(const BoplRlState *state, uint32_t owner, const BoplRlPlayer *self) {
-    for (uint32_t i=0; i<state->header.player_count; i++)
-        if (state->players[i].id==owner) return state->players[i].team==self->team;
-    return 0;
-}
-/* Stable bounded nearest-neighbor selection. Overflow is an explicit feature
- * and metric; the C game state itself retains all entities. */
-static void bopl_nearest(uint32_t *indices, double *distances, int *count, int capacity, uint32_t index, double distance) {
-    int position=*count;
-    if (position==capacity && distance>=distances[position-1]) return;
-    if (position<capacity) (*count)++; else position--;
-    while (position>0 && distance<distances[position-1]) {
-        distances[position]=distances[position-1]; indices[position]=indices[position-1]; position--;
-    }
-    distances[position]=distance; indices[position]=index;
-}
-static const BoplRlPlayer *bopl_player_by_id(const BoplRlState *state, uint32_t id) {
-    for (uint32_t i=0; i<state->header.player_count; i++)
-        if (state->players[i].id==id) return &state->players[i];
-    return NULL;
-}
-/* Unity's Invisibility fade is EaseInOut(0,1,1,0): a smoothstep from opaque
- * to transparent. During the final invisible second it fades back in using
- * 5-timeSpentInvisible, exactly like SetAlphaBasedOnPlayerInvisibiltyTime. */
-static double bopl_invisibility_alpha(const BoplRlPlayer *player) {
-    double remaining=5.0-bopl_fix(player->invisible_time);
-    double t=remaining<=1.0?remaining:bopl_fix(player->ability_time);
-    if (t<0.0) t=0.0; else if (t>1.0) t=1.0;
-    return 1.0-3.0*t*t+2.0*t*t*t;
-}
-static int bopl_spatial_hidden(const BoplRlState *state, uint32_t owner, uint32_t self) {
-    if (!owner || owner==self) return 0;
-    const BoplRlPlayer *player=bopl_player_by_id(state, owner);
-    return player && (player->flags&4) && bopl_invisibility_alpha(player)<0.2;
-}
-static int bopl_entity_visible(const BoplRlState *state, const BoplRlEntity *entity, uint32_t self) {
-    if (!(entity->flags&BOPL_ENTITY_ACTIVE) || (entity->flags&BOPL_ENTITY_DESTROYED)) return 0;
-    /* Only the invisible player's Player-layer body/hurtbox hierarchy hides.
-     * Independent owned objects remain visible, including disabled smoke. */
-    if (entity->layer==8 && bopl_spatial_hidden(state, entity->owner, self)
-        && !(entity->flags&(BOPL_ENTITY_PICKUP|BOPL_ENTITY_PROJECTILE|BOPL_ENTITY_SPARK_NODE
-                            |BOPL_ENTITY_FLAMMABLE_SMOKE|BOPL_ENTITY_EXPLOSIVE))) return 0;
-    return 1;
-}
-static int bopl_slime_inventory(const BoplRlSlime *slime) {
-    int count=0;
-    for (int slot=0; slot<3; slot++)
-        if ((slime->ability_flags[slot]&1) && slime->abilities[slot]>0
-            && slime->abilities[slot]<=BOPL_ABILITY_COUNT) count++;
-    return count;
-}
-static const BoplRlSlime *bopl_controlling_slime(const BoplRlState *state,
-                                                  uint32_t owner, double x, double y) {
-    const BoplRlSlime *best=NULL; double best_distance=0.0; int preferred=0;
-    for (uint32_t i=0; i<state->header.slime_count; i++) {
-        const BoplRlSlime *slime=&state->slimes[i];
-        if (slime->owner!=owner || !bopl_slime_inventory(slime)) continue;
-        int candidate_preferred=(slime->flags&BOPL_SLIME_SUPPRESS_INPUT)==0;
-        double dx=bopl_fix(slime->x)-x, dy=bopl_fix(slime->y)-y, distance=dx*dx+dy*dy;
-        if (!best || candidate_preferred>preferred
-            || (candidate_preferred==preferred && distance<best_distance)) {
-            best=slime; best_distance=distance; preferred=candidate_preferred;
-        }
-    }
-    return best;
-}
-static int bopl_rope_group_end(const BoplRlState *state, uint32_t begin) {
-    const BoplRlEntity *first=&state->entities[begin];
-    uint32_t end=begin+1, hierarchy=first->hierarchy;
-    while (end<state->header.entity_count) {
-        const BoplRlEntity *next=&state->entities[end];
-        if (next->kind!=3 || next->owner!=first->owner || next->hierarchy<=hierarchy) break;
-        hierarchy=next->hierarchy; end++;
-    }
-    return (int)end;
-}
-static int bopl_rope_span_kept(int ordinal, int count) {
-    if (count<=3) return 1;
-    return ordinal==0 || ordinal==(count-1)/2 || ordinal==count-1;
-}
-static double bopl_surface_distance(const BoplRlEntity *entity, double x, double y) {
-    double px=bopl_fix(entity->x), py=bopl_fix(entity->y), radius=bopl_fix(entity->radius);
-    if (entity->kind==3 || entity->kind==4) {
-        double sx=bopl_fix(entity->right_x), sy=bopl_fix(entity->right_y);
-        double length=sx*sx+sy*sy, t=length>0?((x-px)*sx+(y-py)*sy)/length:0.0;
-        if (t<0.0) t=0.0; else if (t>1.0) t=1.0;
-        double dx=x-(px+t*sx), dy=y-(py+t*sy);
-        return sqrt(dx*dx+dy*dy)-radius;
-    }
-    double dx=px-x, dy=py-y;
-    return sqrt(dx*dx+dy*dy)-radius;
 }
 /* The vector slot player p is routed through this match. */
 static int bopl_slot(const BoplPuffer *env, int player) {
@@ -506,21 +404,44 @@ static void bopl_written_zeroed(BoplPuffer *env, float *row) {
     }
     env->written[w].players=env->written[w].slots=env->written[w].entities=env->written[w].slimes=0;
 }
-/* The GPU writes the terrain block and rays (bopl_rays_v4.h) of the rows a
- * packed transport ships: while bopl_step_finish writes an env's rows
- * (bopl4_defer), the v4 writer leaves them out and keeps each row's scene
- * here, and bopl_pack_rows ships the scene (mode 2, or 3 with the dense row).
- * Rows outside the pack range get them written on the CPU. Per thread: an env's rows are written and packed on
- * the thread that steps it. BOPL_RAYS_CHECK=1 (train.py --dump-rows) writes
- * them on the CPU as well, so the transport check compares the GPU's. */
-static __thread int bopl4_defer, bopl4_pending_count;
+/* The GPU writes the v4 rows a packed transport ships (bopl_obs_pack.h).
+ * While bopl_step_finish writes an env's rows (bopl4_defer), a row whose
+ * state fits its slot is not encoded here at all: bopl4_encode_state ships
+ * the state (pack mode 4) and the GPU writes every feature from it
+ * (bopl_rays_v4.cu, from the source both writers share, bopl_rows_v4.h);
+ * the host keeps the own-action and critic blocks and the overflow
+ * telemetry (bopl4_state_rows). A row whose state does not fit is encoded
+ * here without its terrain block and rays: the writer keeps the row's scene
+ * (bopl4_pending) and bopl_pack_rows ships it (mode 2, or 3 with the dense
+ * row). Rows outside the pack range are written whole on the CPU. Per
+ * thread: an env's rows are written and packed on the thread that steps it.
+ * BOPL_RAYS_CHECK=1 (train.py --dump-rows) writes every row on the CPU as
+ * well, so the transport check compares the GPU's. */
+static __thread int bopl4_defer, bopl4_pending_count, bopl4_state_count;
 static __thread struct { const float *row; Bopl4Scene scene; } bopl4_pending[BOPL_MAX_PLAYERS];
+/* The rows shipped as state this step: the row, its slot, and the critic
+ * block's undelayed enemy offsets (bopl4_privileged; enemy 0 = none). */
+static __thread struct { const float *row; float *slot; int enemy; double enemy_dx, enemy_dy; } bopl4_state_rows[BOPL_MAX_PLAYERS];
 static int bopl4_rays_check=-1;
+static int bopl4_check_rows(void) {
+    if (bopl4_rays_check<0) { const char *v=getenv("BOPL_RAYS_CHECK"); bopl4_rays_check=v&&v[0]=='1'; }
+    return bopl4_rays_check;
+}
 static Bopl4Scene *bopl4_pending_scene(const float *row) {
     for (int i=0; i<bopl4_pending_count; i++) if (bopl4_pending[i].row==row) return &bopl4_pending[i].scene;
     if (bopl4_pending_count==BOPL_MAX_PLAYERS) return NULL;
     bopl4_pending[bopl4_pending_count].row=row;
     return &bopl4_pending[bopl4_pending_count++].scene;
+}
+static int bopl4_state_row(const float *row) {
+    for (int i=0; i<bopl4_state_count; i++) if (bopl4_state_rows[i].row==row) return i;
+    return -1;
+}
+/* The packed slot of observation row `obs`, or NULL outside the env's live range. */
+static float *bopl4_pack_slot(const BoplPuffer *env, const float *obs) {
+    if (!env->pack_out || (uintptr_t)obs<(uintptr_t)env->pack_base) return NULL;
+    long g=(long)(((uintptr_t)obs-(uintptr_t)env->pack_base)/(BOPL_OBS_STRIDE*sizeof(float)));
+    return g<env->pack_row_begin || g>=env->pack_row_end ? NULL : env->pack_out+g*BOPL4_PACK_P;
 }
 static const Bopl4Dirs *bopl4_dirs(void) {
     static __thread Bopl4Dirs dirs;
@@ -534,15 +455,26 @@ static const Bopl4Dirs *bopl4_dirs(void) {
  * a writer record, as a v3 row, or when it does not fit. Rows outside the
  * range get their terrain and rays written here. */
 static void bopl_pack_rows(BoplPuffer *env) {
-    if (bopl4_rays_check<0) { const char *v=getenv("BOPL_RAYS_CHECK"); bopl4_rays_check=v&&v[0]=='1'; }
+    int check=bopl4_check_rows();
     for (int a=0; a<env->players; a++) {
         float *obs=bopl_obs_row(env, a);
+        int state_row=bopl4_state_row(obs);
+        if (state_row>=0) {
+            /* Mode 4: the head and state went in at the encode; now the blocks the host wrote since. */
+            float *slot=bopl4_state_rows[state_row].slot;
+            Bopl4StateHead *head=(Bopl4StateHead*)slot;
+            memcpy(slot+BOPL4_STATE_FIXED_OFFSET, obs+BOPL4_OBS_PREVIOUS_OFFSET, BOPL4_PREVIOUS*sizeof(float));
+            memcpy(slot+BOPL4_STATE_FIXED_OFFSET+BOPL4_PREVIOUS, obs+BOPL4_OBS_PRIVILEGED_OFFSET, BOPL4_PRIVILEGED*sizeof(float));
+            if (bopl4_state_rows[state_row].enemy) {
+                head->flags|=BOPL4_STATE_ENEMY;
+                head->enemy_dx=bopl4_state_rows[state_row].enemy_dx; head->enemy_dy=bopl4_state_rows[state_row].enemy_dy;
+            }
+            continue;
+        }
         Bopl4Scene *scene=NULL;
         for (int i=0; i<bopl4_pending_count; i++) if (bopl4_pending[i].row==obs) { scene=&bopl4_pending[i].scene; break; }
-        long g=-1;
-        if ((uintptr_t)obs>=(uintptr_t)env->pack_base)
-            g=(long)(((uintptr_t)obs-(uintptr_t)env->pack_base)/(BOPL_OBS_STRIDE*sizeof(float)));
-        if (g<env->pack_row_begin || g>=env->pack_row_end) {
+        float *slot=bopl4_pack_slot(env, obs);
+        if (!slot) {
             if (scene) bopl4f_write(scene, bopl4_dirs(), obs+BOPL4_OBS_TERRAIN_OFFSET);
             continue;
         }
@@ -552,44 +484,20 @@ static void bopl_pack_rows(BoplPuffer *env) {
                 counts[0]=env->written[i].players; counts[1]=env->written[i].slots;
                 counts[2]=env->written[i].entities; counts[3]=env->written[i].slimes; break;
             }
-        float *slot=env->pack_out+g*BOPL4_PACK_P;
         if (scene) {
-            if (bopl4_rays_check) bopl4f_write(scene, bopl4_dirs(), obs+BOPL4_OBS_TERRAIN_OFFSET);
+            if (check) bopl4f_write(scene, bopl4_dirs(), obs+BOPL4_OBS_TERRAIN_OFFSET);
             if (!bopl_pack_row_scene(obs, counts, scene, slot)) bopl_pack_row_dense_scene(scene, slot);
             continue;
         }
         bopl_pack_row(obs, counts, slot);
     }
-    bopl4_pending_count=0;
+    bopl4_pending_count=0; bopl4_state_count=0;
 }
 /* Zero slots [count, previous) of a block of `features`-float slots: with a
  * record, the slots from the previous encode's count on are already zero. */
 static void bopl_zero_tail(float *block, int features, int count, int previous, int capacity) {
     int end=previous<0?capacity:previous;
     if (count<end) memset(block+(size_t)count*features, 0, (size_t)(end-count)*features*sizeof(float));
-}
-static void bopl_player_features(float *out, const BoplRlState *state,
-                                 const BoplRlPlayer *player, const BoplRlPlayer *self,
-                                 double self_x, double self_y) {
-    memset(out, 0, BOPL_PLAYER_FEATURES*sizeof(float));
-    int hidden=bopl_spatial_hidden(state, player->id, self->id), bodies=0;
-    for (uint32_t i=0; i<state->header.slime_count; i++)
-        if (state->slimes[i].owner==player->id) bodies++;
-    out[0]=1; out[1]=player->id==self->id; out[2]=player->team==self->team;
-    out[3]=(player->flags&1)!=0; out[4]=(player->flags&2)!=0;
-    out[5]=bopl_clip(player->alive_bodies/6.0); out[6]=bopl_clip(player->stocks/10.0);
-    out[7]=bopl_clip(player->kills/10.0); out[8]=bopl_clip(player->deaths/10.0);
-    if (!hidden) {
-        out[9]=bopl_clip((bopl_fix(player->x)-self_x)/64.0);
-        out[10]=bopl_clip((bopl_fix(player->y)-self_y)/64.0);
-        out[11]=bopl_clip(bopl_fix(player->scale)/3.0);
-        out[16]=1;
-    }
-    out[12]=(player->flags&4)!=0; out[13]=(player->flags&8)!=0;
-    out[14]=(player->flags&16)!=0; out[15]=(player->flags&(32|64))!=0;
-    out[17]=bopl_clip(bopl_fix(player->invisible_time)/5.0);
-    out[18]=bopl_clip(bopl_fix(player->ability_time)/5.0);
-    out[19]=bopl_clip(bodies/(double)BOPL_OBS_SLIMES);
 }
 /* Encode `state` into player a's layout-v3 row (bopl_obs_row), writing the row
  * exactly once: every feature is stored, the unused entity/slime slots and
@@ -819,13 +727,104 @@ static void bopl4_previous_history(float *previous, BoplRlAction *history, BoplR
     history[1]=history[0]; history[0]=applied;
 }
 #include "bopl_obs_v4.h"
+/* The overflow telemetry of player a's v4 row from `state` (what
+ * bopl_encode_v4_row counts) without the row: the visible entities after rope
+ * thinning, the visible slimes and their slots. Only for states of at most
+ * BOPL4_ENTITIES entities, so every visible entity is kept. */
+static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a) {
+    const BoplRlPlayer *self=&state->players[a];
+    uint32_t kept[BOPL4_ENTITIES]; int count=0, source_counts[BOPL_ABILITY_COUNT]={0};
+    for (uint32_t i=0; i<state->header.entity_count;) {
+        int end=(state->entities[i].kind==3)?bopl_rope_group_end(state, i):(int)i+1;
+        int group=end-(int)i;
+        for (int j=0; j<group; j++) {
+            const BoplRlEntity *entity=&state->entities[i+j];
+            if (entity->kind==3 && !bopl_rope_span_kept(j, group)) continue;
+            if (!bopl_entity_visible(state, entity, self->id)) continue;
+            kept[count++]=i+(uint32_t)j;
+            uint32_t source=entity->reserved[0];
+            if (source>0 && source<=BOPL_ABILITY_COUNT) source_counts[source-1]++;
+        }
+        i=(uint32_t)end;
+    }
+    /* A hidden slime's slots still count when it is the primary enemy's
+     * body (the observer's own is never hidden). */
+    int visible_slimes=0, visible_slots=0, enemy_known=0;
+    const BoplRlSlime *enemy_controller=NULL;
+    for (uint32_t i=0; i<state->header.slime_count; i++) {
+        const BoplRlSlime *slime=&state->slimes[i];
+        int hidden=bopl_spatial_hidden(state, slime->owner, self->id);
+        if (hidden) {
+            if (!enemy_known) {
+                double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
+                Bopl4Enemy enemy=bopl4_primary_enemy(state, self, self_x, self_y);
+                enemy_controller=enemy.player?bopl_controlling_slime(state, enemy.player->id, enemy.x, enemy.y):NULL;
+                enemy_known=1;
+            }
+            if (slime!=enemy_controller) continue;
+        } else visible_slimes++;
+        for (int slot=0; slot<3; slot++) {
+            uint32_t id=slime->abilities[slot], flags=slime->ability_flags[slot];
+            if ((flags&1) && id!=0 && id<=BOPL_ABILITY_COUNT) visible_slots++;
+        }
+    }
+    bopl_note_overflow(env, count, count, visible_slimes, visible_slots);
+    bopl_note_entity_rows(env, state, kept, count, source_counts);
+}
+/* Ship player a's v4 row as its state (pack mode 4, bopl_rows_v4.h
+ * Bopl4StateHead) when bopl_step_finish writes the env's rows, the row is in
+ * the pack range and the state fits the slot: the GPU writes the row. Here:
+ * the overflow telemetry, the slot's head and state, and the row's
+ * own-action block cleared for the tail. Returns 0 to encode on the CPU. */
+static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, int count_overflow) {
+    if (!bopl4_defer || bopl4_state_count==BOPL_MAX_PLAYERS) return 0;
+    float *obs=bopl_obs_row(env, a), *slot=bopl4_pack_slot(env, obs);
+    uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
+    if (!slot || entities>BOPL4_ENTITIES || slimes>BOPL4_SLIMES || bopl4_state_words(entities, slimes)>BOPL4_PACK_P) return 0;
+    if (bopl4_check_rows()) {
+        /* The CPU's row as well, for the transport check (rays included). */
+        bopl4_defer=0; bopl_encode_v4_row(env, state, a, count_overflow); bopl4_defer=1;
+    } else if (count_overflow) bopl4_count_row(env, state, a);
+    bopl_written_forget_row(env, obs);   /* the host row is not written */
+    memset(obs+BOPL4_OBS_PREVIOUS_OFFSET, 0, BOPL4_PREVIOUS*sizeof(float));
+    int ablation=bopl_ablate_of(env, a);
+    Bopl4StateHead *head=(Bopl4StateHead*)slot;
+    memset(head, 0, sizeof(*head));
+    head->mode=BOPL4_PACK_MODE_STATE; head->player=(uint32_t)a;
+    head->ablation=(uint32_t)(ablation>=0?ablation:bopl4_ablation_default());
+    head->flags=bopl_map_selected(BOPL_SPACE_MAPS, env->config.map)?BOPL4_STATE_SPACE:0;
+    if (env->applied[a].angle) {
+        pthread_once(&bopl_aim_table_once, bopl_aim_table_init);
+        head->flags|=BOPL4_STATE_AIMED;
+        head->aim_dx=bopl_aim_table[env->applied[a].angle][0]; head->aim_dy=bopl_aim_table[env->applied[a].angle][1];
+    }
+    head->max_episode_ticks=env->config.max_episode_ticks;
+    head->words=(uint32_t)bopl4_state_words(entities, slimes); head->entity_count=entities; head->slime_count=slimes;
+    char *out=(char*)(slot+BOPL4_STATE_OFFSET);
+    memcpy(out, &state->header, sizeof(state->header)); out+=sizeof(state->header);
+    memcpy(out, state->players, sizeof(state->players)); out+=sizeof(state->players);
+    memcpy(out, state->entities, (size_t)entities*sizeof(BoplRlEntity)); out+=(size_t)entities*sizeof(BoplRlEntity);
+    memcpy(out, state->slimes, (size_t)slimes*sizeof(BoplRlSlime)); out+=(size_t)slimes*sizeof(BoplRlSlime);
+    float *trig=(float*)out;
+    for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &trig[2*i], &trig[2*i+1]);
+    unsigned char *sectors=(unsigned char*)(trig+2*slimes);
+    double self_x=bopl_fix(state->players[a].x), self_y=bopl_fix(state->players[a].y);
+    for (uint32_t i=0; i<entities; i++) {
+        const BoplRlEntity *entity=&state->entities[i];
+        sectors[i]=entity->inverse_mass>0?(unsigned char)bopl4_sector(bopl_fix(entity->x)-self_x, bopl_fix(entity->y)-self_y):0;
+    }
+    int k=bopl4_state_count++;
+    bopl4_state_rows[k].row=obs; bopl4_state_rows[k].slot=slot; bopl4_state_rows[k].enemy=0;
+    return 1;
+}
 static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
     for (int a=0; a<env->players; a++) {
         if (!state) {
             float *obs=bopl_obs_row(env, a);
             memset(obs, 0, bopl_obs_size_of(env, a)*sizeof(float)); bopl_written_zeroed(env, obs);
-        } else if (bopl_layout_of(env, a)==4) bopl_encode_v4_row(env, state, a, count_overflow);
-        else bopl_encode_v3_row(env, state, a, count_overflow);
+        } else if (bopl_layout_of(env, a)==4) {
+            if (!bopl4_encode_state(env, state, a, count_overflow)) bopl_encode_v4_row(env, state, a, count_overflow);
+        } else bopl_encode_v3_row(env, state, a, count_overflow);
     }
 }
 /* The critic-only block of every v4 row from the undelayed state `now`
@@ -1396,7 +1395,7 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
     bopl_encode_privileged(env, state, actions);
 }
 static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
-    bopl4_defer=env->pack_out!=NULL; bopl4_pending_count=0;
+    bopl4_defer=env->pack_out!=NULL; bopl4_pending_count=0; bopl4_state_count=0;
     bopl_step_finish_from(env, phase, bopl_rl_state(env->world));
     bopl4_defer=0;
     if (env->pack_out) bopl_pack_rows(env);   /* the rows are final for this step */

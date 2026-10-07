@@ -38,6 +38,7 @@ enum {
     BOPL4_PACK_MODE_DENSE=1,                /* slot holds the header only; read the dense host row */
     BOPL4_PACK_MODE_SCENE=2,                /* mode 0 without the terrain and rays, then the scene (hdr[5]: its offset) */
     BOPL4_PACK_MODE_DENSE_SCENE=3,          /* mode 1, the scene after the header (hdr[5]) */
+    BOPL4_PACK_MODE_STATE=4,                /* the row's delayed state; the GPU writes the row (bopl_rows_v4.h Bopl4StateHead) */
     BOPL4_PACK_HEADER=8,                    /* words: mode, 4 counts, 3 spare */
     BOPL4_PACK_FIXED=BOPL4_FLAT+BOPL4_PRIVILEGED,             /* 540 */
     BOPL4_PACK_ROWS_OFFSET=BOPL4_PACK_HEADER+BOPL4_PACK_FIXED, /* 548 */
