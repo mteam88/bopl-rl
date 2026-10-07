@@ -31,6 +31,8 @@
 #     policy, not a random one: the state distribution (entities alive, episode
 #     length) sets the sim and writer cost, and it moved sps 2x over that run.
 #     BOPL_BENCH_SPEC_RUN overrides the run directory resumed.
+#   BOPL_BENCH_WRAP="<cmd args>" prefixes the train.py command (e.g. an nsys
+#     profile command line).
 # Results: $OUT/<label>/ (run dir, log) and $OUT/results.jsonl (appended).
 #
 # A/B mode: BOPL_BENCH_AB="KEY=VALUE KEY=VALUE" [BOPL_BENCH_AB_ARGS="--flag v"]
@@ -135,7 +137,7 @@ run_one() {
   env BOPL_RL_BACKEND=rust PYTHONPATH="$PUF" \
     BOPL_OMP_THREADS=${BOPL_OMP_THREADS:-12} OMP_WAIT_POLICY=${OMP_WAIT_POLICY:-passive} "${PROF_ENV[@]}" $ab_env \
   systemd-run --user --scope --collect --quiet -p MemoryMax=20G --unit "$unit" -- \
-    nice -n 5 native/artifacts/rl/venv/bin/python train/train.py \
+    nice -n 5 ${BOPL_BENCH_WRAP:-} native/artifacts/rl/venv/bin/python train/train.py \
     "${train_args[@]}" "${EXTRA_ARGS[@]}" "$@" > "$dir.log" 2>&1
   rc=$?
   set -e

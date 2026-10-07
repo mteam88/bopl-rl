@@ -11,6 +11,10 @@
  *   tail     previous action + v4 history + action mask, both players
  *   priv     bopl_encode_privileged from the undelayed state
  *   pack     bopl_pack_rows of the lite rows
+ *   train    the trainer's full-writer finish: the full encode deferred
+ *            (bopl4_defer, as bopl_step_finish sets it) + bopl_pack_rows,
+ *            which ships each row's ray scene (pack mode 2) for the GPU
+ *            writer (bopl_rays_v4.cu) instead of casting the rays
  * lite and full each write into their own env (their own written-row records)
  * and swap order every decision. The replay's per-tick inputs are held for a
  * decision (the trainer's repeat 4); groups whose ticks disagree are counted.
@@ -18,7 +22,7 @@
  * then a summary over the corpus and per-map / per-kit aggregates go to the
  * python side. load1 travels with every line. Every game's hash folds each
  * decision's sampled and final states (replay_ab.c's strict state hash) and
- * both writers' rows: equal hashes between two builds = the exact gate.
+ * both writers' rows and the train phase's packed slots: equal hashes between two builds = the exact gate.
  *
  *   env_bench <libbopl_sim.so> <corpus_dir> [max_games=0 (all)] [warmup=240] [limit=10800]
  *
@@ -104,9 +108,9 @@ static uint64_t state_hash(uint64_t h, const BoplRlState *s) {
 }
 static int cmp_name(const void *a, const void *b) { return strcmp(*(char *const*)a, *(char *const*)b); }
 
-enum { PLAYERS=2, PHASES=8 };
-enum { P_RESET, P_SIM, P_SAMPLE, P_LITE, P_FULL, P_TAIL, P_PRIV, P_PACK };
-static const char *PHASE_NAMES[PHASES]={"reset", "sim", "sample", "lite", "full", "tail", "priv", "pack"};
+enum { PLAYERS=2, PHASES=9 };
+enum { P_RESET, P_SIM, P_SAMPLE, P_LITE, P_FULL, P_TAIL, P_PRIV, P_PACK, P_TRAIN };
+static const char *PHASE_NAMES[PHASES]={"reset", "sim", "sample", "lite", "full", "tail", "priv", "pack", "train"};
 
 static void env_init(BoplPuffer *env, BoplRl *world, float *scratch, float *pack_out, unsigned char (*masks)[BOPL_LOGITS], int ablate) {
     memset(env, 0, sizeof(*env));
@@ -138,11 +142,13 @@ int main(int argc, char **argv) {
     if (!world) { fprintf(stderr, "open failed: %s\n", error); return 1; }
 
     static float scratch_lite[PLAYERS*BOPL_OBS_STRIDE], scratch_full[PLAYERS*BOPL_OBS_STRIDE];
-    static float pack_out[PLAYERS*BOPL4_PACK_P];
-    static unsigned char masks_lite[PLAYERS][BOPL_LOGITS], masks_full[PLAYERS][BOPL_LOGITS];
-    BoplPuffer *lite=calloc(1, sizeof(BoplPuffer)), *full=calloc(1, sizeof(BoplPuffer));
+    static float scratch_train[PLAYERS*BOPL_OBS_STRIDE];
+    static float pack_out[PLAYERS*BOPL4_PACK_P], pack_train[PLAYERS*BOPL4_PACK_P];
+    static unsigned char masks_lite[PLAYERS][BOPL_LOGITS], masks_full[PLAYERS][BOPL_LOGITS], masks_train[PLAYERS][BOPL_LOGITS];
+    BoplPuffer *lite=calloc(1, sizeof(BoplPuffer)), *full=calloc(1, sizeof(BoplPuffer)), *train=calloc(1, sizeof(BoplPuffer));
     env_init(lite, world, scratch_lite, pack_out, masks_lite, 10);
     env_init(full, world, scratch_full, pack_out, masks_full, 0);
+    env_init(train, world, scratch_train, pack_train, masks_train, 0);
     BoplStateCopy delayed[2]={0}, sample={0};
 
     /* BOPL_ENV_BENCH_EVICT_KB: between decisions, outside the timers, sweep
@@ -161,8 +167,8 @@ int main(int argc, char **argv) {
         double t[PHASES]={0}, t0=seconds();
         if (bopl_rl_reset(world, &replay.config)!=BOPL_RL_OK) { fprintf(stderr, "%s: reset failed: %s\n", path, bopl_rl_error(world)); return 1; }
         t[P_RESET]=seconds()-t0;
-        lite->config=full->config=replay.config;
-        bopl_written_forget(lite); bopl_written_forget(full);
+        lite->config=full->config=train->config=replay.config;
+        bopl_written_forget(lite); bopl_written_forget(full); bopl_written_forget(train);
         memset(lite->action_history, 0, sizeof(lite->action_history)); memset(full->action_history, 0, sizeof(full->action_history));
         const BoplRlState *state=bopl_rl_state(world);
         for (int i=0; i<2; i++) bopl_state_copy(&delayed[i], state);
@@ -192,6 +198,13 @@ int main(int argc, char **argv) {
                 double a=seconds(); bopl_encode(env, old, 0); t[phase]+=seconds()-a;
             }
             hash=mix_words(mix_words(hash, scratch_lite, sizeof(scratch_lite)), scratch_full, sizeof(scratch_full));
+            {
+                double a=seconds();
+                bopl4_defer=1; bopl4_pending_count=0; bopl_encode(train, old, 0); bopl4_defer=0;
+                bopl_pack_rows(train);
+                t[P_TRAIN]+=seconds()-a;
+                hash=mix_words(hash, pack_train, sizeof(pack_train));
+            }
             BoplStateCopy published=delayed[cursor]; delayed[cursor]=sample; sample=published; cursor^=1;
             double t3=seconds();
             for (int i=0; i<PLAYERS; i++) {

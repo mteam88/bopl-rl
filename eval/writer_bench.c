@@ -179,29 +179,25 @@ int main(int argc, char **argv) {
     static unsigned char masks[PLAYERS][BOPL_LOGITS];
     env.pack_base=scratch; env.pack_out=pack_out; env.pack_row_begin=0; env.pack_row_end=PLAYERS;
     for (int i=0; i<PLAYERS; i++) env.mask_ptr[i]=masks[i];
-    /* The vector march (bopl4_march_avx512) against the scalar one
-     * (bopl4_march_scalar: bot_raycast's steps): every production row (bits
-     * 8) of every recorded state, both players, bit for bit. */
+    /* The production rows (bits 8) of every recorded state, both players,
+     * hashed: the same states and seed give the same hash across builds, the
+     * writer's exact gate. The FP32 ray writer (bopl_rays_v4.h) is checked
+     * against its CUDA build by the trainer's --dump-rows transport check. */
     {
-        static float reference[BOPL_MAX_PLAYERS*BOPL_OBS_STRIDE];
-        long mismatches=0, rows=0;
-        uint64_t hash=1469598103934665603ull;   /* FNV-1a over the production rows: the same states and seed give the same hash across builds, the writer's exact gate */
+        long rows=0;
+        uint64_t hash=1469598103934665603ull;   /* FNV-1a */
         for (int i=0; i<PLAYERS; i++) { env.layout[i]=BOPL4_LAYOUT_VERSION; bopl_set_ablate_of(&env, i, 8); }
         for (int s=0; s<recorded; s++) {
             const BoplRlState *state=bopl_state_copy_get(&states[s]);
-            bopl4_march_scalar_only=1; bopl_written_forget(&env); compute_observations_from(&env, state);
-            memcpy(reference, scratch, sizeof(float)*(size_t)PLAYERS*BOPL_OBS_STRIDE);
-            bopl4_march_scalar_only=0; bopl_written_forget(&env); compute_observations_from(&env, state);
+            bopl_written_forget(&env); compute_observations_from(&env, state);
             for (int i=0; i<PLAYERS; i++) {
                 rows++;
-                if (memcmp(reference+(size_t)i*BOPL_OBS_STRIDE, scratch+(size_t)i*BOPL_OBS_STRIDE, sizeof(float)*BOPL4_OBS_SIZE)) mismatches++;
                 const unsigned char *row=(const unsigned char*)(scratch+(size_t)i*BOPL_OBS_STRIDE);
                 for (size_t b=0; b<sizeof(float)*BOPL4_OBS_SIZE; b++) { hash^=row[b]; hash*=1099511628211ull; }
             }
         }
-        printf("{\"bench\": \"march-check\", \"loadout\": \"%s\", \"rows\": %ld, \"mismatches\": %ld, \"rows_hash\": \"%016"PRIx64"\", \"load1\": %.2f}\n", loadout, rows, mismatches, hash, load1());
+        printf("{\"bench\": \"rows-hash\", \"loadout\": \"%s\", \"rows\": %ld, \"rows_hash\": \"%016"PRIx64"\", \"load1\": %.2f}\n", loadout, rows, hash, load1());
         fflush(stdout);
-        if (mismatches) { fprintf(stderr, "vector march changed %ld of %ld rows\n", mismatches, rows); return 1; }
     }
     enum { V_PRIV=N_VARIANTS, V_PACK, V_TAIL, N_TIMED };
     static const char *EXTRA_NAMES[]={"v4-priv", "v4-pack", "v4-tail"};

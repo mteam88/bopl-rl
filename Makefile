@@ -240,7 +240,7 @@ $(OUT)/divergence_rate: eval/divergence/divergence_rate.c eval/divergence/diverg
 # Observation-writer microbenchmark + sim ticks/s on one core.
 writer-bench: $(OUT)/writer_bench
 
-$(OUT)/writer_bench: eval/writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/writer_bench: eval/writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/writer_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
@@ -248,11 +248,11 @@ $(OUT)/writer_bench: eval/writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h
 # with the writer built as train/build.py builds the trainer's.
 env-bench: $(OUT)/env_bench
 
-$(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
-$(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared $(INCLUDES) train/eval_binding.c $(ABI)/bopl_rl.c -lm -o $@
 
@@ -335,6 +335,6 @@ check-routing: $(RUST_ROLLOUT)
 	native/artifacts/rl/venv/bin/python train/check_routing.py \
 	  --game $(abspath $(RUST_ROLLOUT)) --output $(abspath $(OUT))/check-routing-port
 
-$(OUT)/check_reward: eval/check_reward.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/check_reward: eval/check_reward.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/check_reward.c $(ABI)/bopl_rl.c -ldl -lm -lpthread -o $@

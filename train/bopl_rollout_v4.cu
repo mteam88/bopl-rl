@@ -500,9 +500,10 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
 
 // ---- packed observation transport (bopl_obs_pack.h) ----------------------
 // One block per row. Mode 0: the flat and privileged blocks, then each set's
-// prefix rows followed by zeros to the block's end. Mode 1 (the slot did not
+// prefix rows followed by zeros to the block's end; mode 2 the same without
+// the terrain and rays, which bopl4_rays_rows writes next. Mode 1 (the slot did not
 // fit, or the row has no writer record): the dense row straight from the
-// mapped host buffer. Either way the device row equals the host row bit for
+// mapped host buffer; mode 3 the same, its terrain and rays from bopl4_rays_rows. Either way the device row equals the host row bit for
 // bit (bopl4_transport_check counts the floats that differ, dump mode only).
 __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows) {
     br_pdl_wait(); br_pdl_release();   /* launched after a memcpy (no PDL edge in); lets br4_sets pre-launch */
@@ -511,16 +512,18 @@ __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float*
     const float* slot = packed + (long)r * BOPL4_PACK_P;
     float* out = dense + (long)r * BOPL_OBS_STRIDE;
     const unsigned* hdr = (const unsigned*)slot;
-    if (hdr[0] != BOPL4_PACK_MODE_ROWS) {
+    if (hdr[0] == BOPL4_PACK_MODE_DENSE || hdr[0] == BOPL4_PACK_MODE_DENSE_SCENE) {
         const float4* src = (const float4*)(host_rows + (long)r * BOPL_OBS_STRIDE);
         float4* dst = (float4*)out;
         for (int i = threadIdx.x; i < BOPL_OBS_STRIDE / 4; i += blockDim.x) dst[i] = src[i];
         return;
     }
-    for (int i = threadIdx.x; i < BOPL4_FLAT; i += blockDim.x) out[i] = slot[BOPL4_PACK_HEADER + i];
-    for (int i = threadIdx.x; i < BOPL4_PRIVILEGED; i += blockDim.x) out[BOPL4_OBS_PRIVILEGED_OFFSET + i] = slot[BOPL4_PACK_HEADER + BOPL4_FLAT + i];
+    // Mode 2 leaves the terrain and rays (the flat block's tail) to bopl4_rays_rows.
+    const int scene = hdr[0] == BOPL4_PACK_MODE_SCENE, flat = scene ? BOPL4_OBS_TERRAIN_OFFSET : BOPL4_FLAT;
+    for (int i = threadIdx.x; i < flat; i += blockDim.x) out[i] = slot[BOPL4_PACK_HEADER + i];
+    for (int i = threadIdx.x; i < BOPL4_PRIVILEGED; i += blockDim.x) out[BOPL4_OBS_PRIVILEGED_OFFSET + i] = slot[BOPL4_PACK_HEADER + flat + i];
     const Bopl4PackSet sets[BOPL4_PACK_SETS] = BOPL4_PACK_TABLE;
-    int base = BOPL4_PACK_ROWS_OFFSET;
+    int base = scene ? BOPL4_PACK_SCENE_ROWS_OFFSET : BOPL4_PACK_ROWS_OFFSET;
     #pragma unroll
     for (int s = 0; s < BOPL4_PACK_SETS; s++) {
         const int present = (int)hdr[1 + s] * sets[s].width, block = sets[s].slots * sets[s].width;

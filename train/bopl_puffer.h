@@ -503,22 +503,61 @@ static void bopl_written_zeroed(BoplPuffer *env, float *row) {
     }
     env->written[w].players=env->written[w].slots=env->written[w].entities=env->written[w].slimes=0;
 }
-/* Pack this env's v4 rows in the trainer's live range (bopl_obs_pack.h). A
- * row without a writer record, or a v3 row, goes dense (mode 1). */
+/* The GPU writes the terrain block and rays (bopl_rays_v4.h) of the rows a
+ * packed transport ships: while bopl_step_finish writes an env's rows
+ * (bopl4_defer), the v4 writer leaves them out and keeps each row's scene
+ * here, and bopl_pack_rows ships the scene (mode 2, or 3 with the dense row).
+ * Rows outside the pack range get them written on the CPU. Per thread: an env's rows are written and packed on
+ * the thread that steps it. BOPL_RAYS_CHECK=1 (train.py --dump-rows) writes
+ * them on the CPU as well, so the transport check compares the GPU's. */
+static __thread int bopl4_defer, bopl4_pending_count;
+static __thread struct { const float *row; Bopl4Scene scene; } bopl4_pending[BOPL_MAX_PLAYERS];
+static int bopl4_rays_check=-1;
+static Bopl4Scene *bopl4_pending_scene(const float *row) {
+    for (int i=0; i<bopl4_pending_count; i++) if (bopl4_pending[i].row==row) return &bopl4_pending[i].scene;
+    if (bopl4_pending_count==BOPL_MAX_PLAYERS) return NULL;
+    bopl4_pending[bopl4_pending_count].row=row;
+    return &bopl4_pending[bopl4_pending_count++].scene;
+}
+static const Bopl4Dirs *bopl4_dirs(void) {
+    static __thread Bopl4Dirs dirs;
+    static __thread int ready=0;   /* per thread: no synchronisation */
+    if (!ready) { bopl4f_dirs_init(&dirs); ready=1; }
+    return &dirs;
+}
+/* Pack this env's v4 rows in the trainer's live range (bopl_obs_pack.h): a
+ * row with a scene goes in mode 2 when it fits, else mode 3 (dense + scene);
+ * one without (the writer cast its rays) in mode 0, or dense (mode 1) without
+ * a writer record, as a v3 row, or when it does not fit. Rows outside the
+ * range get their terrain and rays written here. */
 static void bopl_pack_rows(BoplPuffer *env) {
+    if (bopl4_rays_check<0) { const char *v=getenv("BOPL_RAYS_CHECK"); bopl4_rays_check=v&&v[0]=='1'; }
     for (int a=0; a<env->players; a++) {
-        const float *obs=bopl_obs_row(env, a);
-        if ((uintptr_t)obs<(uintptr_t)env->pack_base) continue;
-        long g=(long)(((uintptr_t)obs-(uintptr_t)env->pack_base)/(BOPL_OBS_STRIDE*sizeof(float)));
-        if (g<env->pack_row_begin || g>=env->pack_row_end) continue;
+        float *obs=bopl_obs_row(env, a);
+        Bopl4Scene *scene=NULL;
+        for (int i=0; i<bopl4_pending_count; i++) if (bopl4_pending[i].row==obs) { scene=&bopl4_pending[i].scene; break; }
+        long g=-1;
+        if ((uintptr_t)obs>=(uintptr_t)env->pack_base)
+            g=(long)(((uintptr_t)obs-(uintptr_t)env->pack_base)/(BOPL_OBS_STRIDE*sizeof(float)));
+        if (g<env->pack_row_begin || g>=env->pack_row_end) {
+            if (scene) bopl4f_write(scene, bopl4_dirs(), obs+BOPL4_OBS_TERRAIN_OFFSET);
+            continue;
+        }
         int counts[4]={-1, -1, -1, -1};
         if (bopl_layout_of(env, a)==4)
             for (int i=0; i<env->written_count; i++) if (env->written[i].row==obs) {
                 counts[0]=env->written[i].players; counts[1]=env->written[i].slots;
                 counts[2]=env->written[i].entities; counts[3]=env->written[i].slimes; break;
             }
-        bopl_pack_row(obs, counts, env->pack_out+g*BOPL4_PACK_P);
+        float *slot=env->pack_out+g*BOPL4_PACK_P;
+        if (scene) {
+            if (bopl4_rays_check) bopl4f_write(scene, bopl4_dirs(), obs+BOPL4_OBS_TERRAIN_OFFSET);
+            if (!bopl_pack_row_scene(obs, counts, scene, slot)) bopl_pack_row_dense_scene(scene, slot);
+            continue;
+        }
+        bopl_pack_row(obs, counts, slot);
     }
+    bopl4_pending_count=0;
 }
 /* Zero slots [count, previous) of a block of `features`-float slots: with a
  * record, the slots from the previous encode's count on are already zero. */
@@ -1344,7 +1383,9 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
     bopl_encode_privileged(env, state, actions);
 }
 static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
+    bopl4_defer=env->pack_out!=NULL; bopl4_pending_count=0;
     bopl_step_finish_from(env, phase, bopl_rl_state(env->world));
+    bopl4_defer=0;
     if (env->pack_out) bopl_pack_rows(env);   /* the rows are final for this step */
 }
 static void c_step(BoplPuffer *env) {

@@ -515,6 +515,10 @@ def main():
     os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in a.head_scale)
     os.environ['BOPL_AIM_FOURIER'] = str(a.aim_fourier)  # read once by the trainer (bopl_aim_config)
     os.environ['BOPL_AIM_AR'] = str(a.aim_ar)
+    if a.dump_rows is not None:
+        # The env workers write the terrain and rays the GPU writes too
+        # (bopl_puffer.h bopl_pack_rows), so the transport check compares them.
+        os.environ['BOPL_RAYS_CHECK'] = '1'
     import numpy as np
     import torch
     from pufferlib import _C, pufferl

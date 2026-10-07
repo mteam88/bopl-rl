@@ -81,7 +81,7 @@ if args.device == "cuda":
         # stale one rather than ship a binding whose kernels predate their sources.
         cuda_object = out / "puffer_cuda.o"
         cuda_sources = [HERE / name for name in ("bopl_rollout.cu", "bopl_rollout_v4.cu", "bopl_set_encoder.cu", "bopl_v4.cu", "bopl_layout_v4.h", "bopl_aim.h",
-                                                  "bopl_layout.h", "pufferlib-close.patch", "pufferlib-bopl.patch")]
+                                                  "bopl_layout.h", "bopl_obs_pack.h", "bopl_rays_v4.h", "pufferlib-close.patch", "pufferlib-bopl.patch")]
         if not cuda_object.exists():
             raise SystemExit(f"--binding-only: {cuda_object} does not exist; run a full build")
         newer = [path.name for path in cuda_sources if path.stat().st_mtime > cuda_object.stat().st_mtime]
@@ -99,7 +99,13 @@ if args.device == "cuda":
     links = []
     for name in names:
         links.append(str(next(path / name for path in libraries if (path / name).exists())))
-    link(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cuda.o"),
+    # The GPU writer of the v4 terrain and rays (bopl_rays_v4.cu): its own object
+    # so -fmad=false (no FMA contraction, as in the CPU writer it matches bit
+    # for bit) leaves the policy's kernels alone. Rebuilt every time (seconds).
+    subprocess.run([str(cuda / "bin/nvcc"), "-O3", "-std=c++17", "-arch=sm_120", "-fmad=false", "-ccbin", args.cuda_host_compiler,
+                    "-Xcompiler=-fPIC", "-I" + str(HERE), "-I" + str(ABI), "-I" + str(cuda / "include"),
+                    "-c", str(HERE / "bopl_rays_v4.cu"), "-o", str(out / "bopl_rays.o")], check=True)
+    link(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cuda.o"), str(out / "bopl_rays.o"),
           str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), *links,
           *["-Wl,-rpath," + str(path) for path in libraries], "-l:libnvidia-ml.so.1",
           # Driver API: the trainer partitions the GPU between rollout and

@@ -538,6 +538,8 @@ struct BrPlan {
     int tiles[BR_MAX_GROUPS + 1];
     BrActs* acts;        // [num_buffers]
     BrWt wt[BR_MAX_GROUPS];
+    // Packed v4 rows: the rays kernel runs on a side stream per buffer beside
+    // br4_sets, joined before the flat GEMM (the only reader of the rays).
 };
 
 static inline int br_pad8(int n) { return (n + 7) & ~7; }
@@ -585,6 +587,8 @@ static const float* br4_dec_rows(BrPlan& p, int buf);
 constexpr int BR4_UNPACK_THREADS = 256;
 __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows);
 __global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches);
+extern "C" void bopl4_rays_init(void);
+extern "C" void bopl4_rays_launch(const float* packed, float* dense, int rows, cudaStream_t stream);
 extern "C" void bopl_pack_register(void* envs, int start, int count, const float* base, float* out, long row_begin, long row_end);
 static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
@@ -842,8 +846,9 @@ static void br_init(PuffeRL* pufferl) {
             }
         }
         // Packed observation transport (bopl_obs_pack.h): policy v4 rows go up
-        // as 6 KB slots instead of 19 KB dense rows; the unpack kernel rebuilds
-        // the dense device row (mode-1 slots from the mapped host row).
+        // as 8 KB slots instead of 19 KB dense rows; the unpack kernel rebuilds
+        // the dense device row (mode-1 slots from the mapped host row) and
+        // bopl4_rays_rows writes the terrain and rays of mode-2 rows.
         if (is_v4 && p->graph_copies && vec->mapped) {
             size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), n = (size_t)vec->total_agents * slot_bytes;
             assert(cudaHostAlloc((void**)&vec->packed_host, n, cudaHostAllocPortable) == cudaSuccess);
@@ -852,6 +857,7 @@ static void br_init(PuffeRL* pufferl) {
             cudaMemset(vec->transport_mismatch, 0, sizeof(int));
             for (long r = 0; r < vec->total_agents; r++) ((unsigned*)(vec->packed_host + r * BOPL4_PACK_P))[0] = BOPL4_PACK_MODE_DENSE;
             cudaMemcpy(vec->packed_dev, vec->packed_host, n, cudaMemcpyHostToDevice);
+            bopl4_rays_init();   // rows with a scene (modes 2, 3): the GPU writes their terrain and rays (bopl_rays_v4.cu)
             // The reward / terminal / mask pack moves to the idle tail of the
             // buffer's packed slots when it fits there (one memcpy per step).
             vec->pack_in_tail = (size_t)(apb - p->rows) * slot_bytes >= (size_t)vec->pack_bytes && br_env_int("BOPL_PACK_TAIL", 1);
@@ -986,6 +992,9 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         const float* host_rows = (const float*)vec->dev_observations + (long)start * BOPL_OBS_STRIDE;
         float* dense = puf_slice(rollouts.observations, t, start, rows).data;
         bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows);
+        // The terrain and rays of the rows with a scene. (A side stream
+        // beside br4_sets measured no faster, 2026-10-06.)
+        bopl4_rays_launch(vec->packed_dev + (long)start * BOPL4_PACK_P, dense, rows, stream);
         if (p.transport_check) bopl4_transport_check<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(dense, host_rows, rows, vec->transport_mismatch);
         obs = dense;
     } else if (p.graph_copies) {

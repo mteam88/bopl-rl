@@ -70,6 +70,10 @@ enum {
     BOPL4_OBS_SIZE=BOPL4_OBS_PRIVILEGED_OFFSET+BOPL4_PRIVILEGED,                /* 4812 */
     BOPL4_SLOT_ABILITY_ID=BOPL4_SLOT_FEATURES-1,
     BOPL4_ENTITY_ABILITY_ID=BOPL4_ENTITY_FEATURES-1,
+    /* Layout v4.1 (BOPL4_ABLATE_AIM): the down rays at -135 and -45 degrees
+     * duplicate around rays 20 and 28 and carry the aim ray and the line of
+     * sight instead (bopl_rays_v4.h). */
+    BOPL4_AIM_RAY=BOPL4_RAYS_AROUND+0, BOPL4_LOS_RAY=BOPL4_RAYS_AROUND+3,
     /* Row memory of every observation buffer shared by the layouts. */
     BOPL_OBS_STRIDE=BOPL4_OBS_SIZE>BOPL_OBS_SIZE?BOPL4_OBS_SIZE:BOPL_OBS_SIZE
 };

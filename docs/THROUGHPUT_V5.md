@@ -85,8 +85,8 @@ sim was the C#-order Updater scheduler from the fidelity merge.
    `bopl4_march` keeps a wall only if its body SDF is at most
    max_i(min(max, limit_i) + |O_i - B|) + 0.1. A culled wall is never a hit, and
    when it would be the minimum the ray ends on the next check either way
-   (the proof is at `bopl4_march`). The 400-game hash is unchanged and
-   writer_bench's march-check passes. Of the 12.5 walls a map has, 6.5 are
+   (the proof is at `bopl4_march`). The 400-game hash was unchanged and
+   writer_bench's march-check (since replaced by its rows hash) passed. Of the 12.5 walls a map has, 6.5 are
    kept per march, and the full writer is 8-10% faster.
    Culling cannot get tighter: the first step's disk around the origin binds
    for every direction.
@@ -244,11 +244,70 @@ sites, with no single structure to repack.
   `detphysics_collider`'s pool scans: exact (debug assertion over all 400
   games), 0.2% faster. Not worth the special case.
 
+## The writer on the GPU (2026-10-06)
+
+With the sim cut to ~38 us per c_step in the pool, the full writer was a
+third of the env step. Matthew chose the full writer on the GPU, in FP32.
+
+- **Why FP32.** The RTX 5070 retires 234 G FP64 add/mul and 27 G sqrt per
+  second. The writer's ~90k FP64 operations per row would take most of the
+  GPU at 1M rows per second. So the terrain block and the rays
+  (`train/bopl_rays_v4.h`) are now single precision, with one source for the
+  CPU writer and the CUDA writer:
+  - No FMA contraction (the pragma, and nvcc -fmad=false for that unit only).
+  - Correctly rounded sqrt and division.
+  - Selects for min and max.
+  - Host-computed trig constants.
+
+  The two writers agree bit for bit: `writer_bench` and the trainer's dump
+  check find 0 mismatched floats in 235,000 rows.
+- **Fidelity against the FP64 writer** (117,500 corpus rows, full writer):
+  - No ray changes class.
+  - Ray distance: max difference 0.00125, p99.99 2.9e-6. 5e-6 of rays differ
+    by more than 1e-3.
+  - Closing speed: max difference 1.2e-7.
+  - Terrain field 0: max difference 1.56e-3, at a 1e-5 rate. Fields 10 and
+    11: 1.2e-4 and 1.7e-4.
+  - The lite writer's terrain is exact.
+
+  This is a recipe change; checkpoints from the FP64 writer see slightly
+  different inputs.
+- **Transport.** Pack modes 2 and 3 are modes 0 and 1 without the terrain
+  and rays. They carry the row's scene (walls, water, circles, body state,
+  at most ~420 floats) instead, and `bopl4_rays_launch` writes the block
+  after the unpack. PACK_P went from 1536 to 2048 floats, so that a row's prefixes
+  (up to ~1600 with 23 entities) and its scene fit in a slot rather than
+  going dense. The policy forward went from 297 to 286 us.
+- **The kernel** (`train/bopl_rays_v4.cu`) is built for latency, since a
+  launch carries a few hundred rows. It runs one block per row, with the scene
+  in shared memory and 4 threads per ray. The fan, the dash rays and the aim
+  run as concurrent warp groups.
+  - 31.7 us per launch of 224 rows.
+  - 78 ns per row at 235k rows (12.8 M rows/s).
+- **End to end** (spec): 387k sps (v7d, CPU writer) to 440-460k. Every run
+  was under varying host load. The rays run inline on the main stream. A
+  side stream beside the set encoders measured no faster (0.95x), so it was
+  not kept.
+
 ## Open
 
-- End-to-end (`BOPL_BENCH_WORKLOAD=spec train/bench_shape.sh`): 344k sps,
-  258k learner at 7e8c0f27; 360k with the clang writer. Still env-bound. In the pool c_step
-  is 60.7 us (sim 38.0, finish 20.8); 12 concurrent env_bench copies
-  reproduce it (sim 38.1, full 16.6), so judge changes there too.
-- With the full writer, the writer is now 34% of the env step.
-  Full vs lite for the specialists is Matthew's call.
+- **Env CPU is still the bound.** In the pool, c_step is ~45 us: sim 37,
+  finish 6.4, sample 1.4. The 11 env threads are 91% busy, and the GPU is
+  ~68% busy (nsys).
+- **SMT gives only 1.3x.** The sim takes 19.6 us solo, 21 us as 6 copies on
+  separate cores, and 32.3 us as 12 copies.
+- **1M sps needs a ~2x faster sim.** It needs ~24 us per c_step on 12
+  threads.
+- **The sim is front-end bound.** Solo it retires 50%; front-end stalls are
+  31% and back-end 17%. The op cache misses 40% and the I-cache 52%. Under
+  load, throughput tracks instructions retired: 305k per decision.
+- **The instruction profile** (30 games):
+  - DetPhysics step: 23%.
+  - player_tick: 9%.
+  - run_spawned_before, inclusive: 13%.
+  - platform_turns: 7%.
+  - circle_circle_group: 6%.
+  - circle_box_group: 6%.
+  - The Updater scheduler's helpers together: 9.6% (platform_updates_in,
+    updater_key, updater_owner_position, platform_pass, platform_turn_key,
+    updater_pass_batch).
