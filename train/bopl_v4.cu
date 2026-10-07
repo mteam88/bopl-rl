@@ -361,6 +361,18 @@ __global__ void mask_rows(bf16* g, const bf16* act, long n) {
     long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
     if (i < n && !(bf(act[i]) > 0.0f)) g[i] = tobf(0.0f);
 }
+/* Eight elements per thread (n a multiple of 8, 16-byte aligned rows): one 16-byte
+ * load of each operand and one store, the same values (the scalar form issued
+ * 2-byte accesses and ran 0.18 ms per entity-set call). */
+__global__ void mask_rows8(bf16* __restrict__ g, const bf16* __restrict__ act, long n8) {
+    long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
+    if (i >= n8) return;
+    uint4 gv = reinterpret_cast<const uint4*>(g)[i], av = reinterpret_cast<const uint4*>(act)[i];
+    bf16* gp = reinterpret_cast<bf16*>(&gv); const bf16* ap = reinterpret_cast<const bf16*>(&av);
+    #pragma unroll
+    for (int j = 0; j < 8; j++) if (!(bf(ap[j]) > 0.0f)) gp[j] = tobf(0.0f);
+    reinterpret_cast<uint4*>(g)[i] = gv;
+}
 static int grid_long(long n) { return (int)((n + BLOCK_SIZE - 1) / BLOCK_SIZE); }
 
 /* ---- pooling -------------------------------------------------------------- */
@@ -1021,7 +1033,8 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
         void* mask = act >= LT_AUX_MIN_ROWS ? a->relu_mask[s].data : nullptr;   /* as the forward decided */
         lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true,
                 mask ? CUBLASLT_EPILOGUE_DRELU : CUBLASLT_EPILOGUE_DEFAULT, stream, mask);
-        if (!mask) mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
+        if (!mask && ((long)act * I) % 8 == 0) mask_rows8<<<grid_long((long)act * I / 8), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I / 8);
+        else if (!mask) mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
         prof_mark("bwd.enc.dh1", stream);
         /* dW1 (I, K) = dh1^T X into the scratch, then keep the first `features` of the padded K */
         lt_gemm(true, false, I, K, act, dh1, I, bfp(a->xpack[s]), K, nullptr, a->acc.data, K, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
