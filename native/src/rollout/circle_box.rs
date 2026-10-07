@@ -1548,9 +1548,7 @@ impl RolloutWorld {
                 // RemoveDestroyedColliders (DetPhysics.cs:1658-1665, 2731).
                 // SortAndSweep pairs only layers the Physics2D matrix lets
                 // collide (DetPhysics.cs:2183).
-                let (layer, composite, collider) = *side.get_or_insert_with(|| {
-                    (self.part_layer(part, data), self.part_composite(part), self.part_collider(part))
-                });
+                let (layer, composite, collider) = *side.get_or_insert_with(|| self.wall_side(part, data));
                 if composite == Some(wall)
                     || !self.wall_collides(wall)
                     || !data.layers_collide(layer, self.entities[self.platform_entities[wall]].layer)
@@ -1560,8 +1558,15 @@ impl RolloutWorld {
                 let rounded = self.narrow_wall(walls, wall);
                 // A Box meets a RoundedRect as a RoundedRect of radius zero
                 // (PhysTools.cs:104-111).
+                // A slime's or clone's box is a trigger (`part_body`), and its
+                // callback, the squish, reads the wall, not the contact: only
+                // whether there is one counts.
                 let contact = match collider {
                     Collider::Circle(circle) => crate::physics::contact::circle_rounded(circle, rounded),
+                    Collider::Box(inner) if matches!(part, Part::Body(_) | Part::Clone(_)) => {
+                        debug_assert!(self.part_body(part).inverse_mass < Fix::ZERO);
+                        crate::physics::contact::box_rounded_meets(inner, rounded).then_some(Contact::default())
+                    }
                     Collider::Box(inner) => {
                         crate::physics::contact::rounded_rounded(RoundedRect { inner, radius: Fix::ZERO }, rounded)
                     }
@@ -1659,12 +1664,45 @@ impl RolloutWorld {
             debug_assert_eq!(bits(before), bits(&self.platforms[wall].collider));
         }
         for &(_, part, wall, contact) in &contacts {
+            // A trigger resolves nothing (`resolve_part_wall`).
+            if matches!(part, Part::Body(_) | Part::Clone(_)) {
+                debug_assert!(self.part_body(part).inverse_mass < Fix::ZERO);
+                continue;
+            }
             self.resolve_part_wall(part, wall, contact);
         }
         if !contacts.is_empty() {
             self.platforms_changed();
         }
         self.scratch.wall_contacts = contacts;
+    }
+
+    /// A wall group part's `part_layer`, `part_composite` and
+    /// `part_collider`; a slime's from its one hurtbox row.
+    #[inline(always)]
+    fn wall_side(&self, part: Part, data: &data::RolloutData) -> (u32, Option<usize>, Collider) {
+        let side = match part {
+            Part::Body(i) => {
+                let entity = Self::hurtbox_entity(&self.players[i]);
+                (self.entities[entity].layer, None, self.body_row_collider(entity))
+            }
+            _ => (self.part_layer(part, data), self.part_composite(part), self.part_collider(part)),
+        };
+        #[cfg(debug_assertions)]
+        {
+            let bits = |c: Collider| match c {
+                Collider::Circle(c) => vec![c.center.x, c.center.y, c.radius],
+                Collider::Box(b) => vec![b.center.x, b.center.y, b.right.x, b.right.y, b.up.x, b.up.y, b.inverse_extents.x, b.inverse_extents.y],
+                Collider::RoundedRect(_) => unreachable!(),
+            }
+            .into_iter()
+            .map(|v| v.to_f64().to_bits())
+            .collect::<Vec<_>>();
+            debug_assert_eq!(side.0, self.part_layer(part, data));
+            debug_assert_eq!(side.1, self.part_composite(part));
+            debug_assert_eq!(bits(side.2), bits(self.part_collider(part)));
+        }
+        side
     }
 
     /// Wall `wall` as a wall group's narrow phase sees it: `walls`' copy,

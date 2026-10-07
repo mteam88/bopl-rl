@@ -259,8 +259,25 @@ pub fn rounded_rounded(a: RoundedRect, b: RoundedRect) -> Option<Contact> {
     }
     result
 }
+/// Whether `rounded_rounded` of box `a` (as a RoundedRect of radius zero)
+/// with `b` finds a contact, for a side whose contact nothing reads: its
+/// tests, without the contact's point. It panics where `rounded_rounded`
+/// does.
+pub fn box_rounded_meets(a: OrientedBox, b: RoundedRect) -> bool {
+    let a = RoundedRect { inner: a, radius: Fix::ZERO };
+    let meets = rounded_rounded_tests::<false>(a, b).is_some();
+    #[cfg(debug_assertions)]
+    debug_assert_eq!(meets, rounded_rounded_reference(a, b).is_some());
+    meets
+}
 #[inline(always)]
 fn rounded_rounded_fast(a: RoundedRect, b: RoundedRect) -> Option<Contact> {
+    rounded_rounded_tests::<true>(a, b)
+}
+/// `rounded_rounded_fast`; without `CONTACT`, only whether it is Some (as a
+/// default Contact).
+#[inline(always)]
+fn rounded_rounded_tests<const CONTACT: bool>(a: RoundedRect, b: RoundedRect) -> Option<Contact> {
     let ca = corners(a.inner);
     let cb = corners(b.inner);
     let (ra, rb) = (a.radius, b.radius);
@@ -356,6 +373,9 @@ fn rounded_rounded_fast(a: RoundedRect, b: RoundedRect) -> Option<Contact> {
     );
     if forward < Fix::ZERO || backward < Fix::ZERO {
         return None;
+    }
+    if !CONTACT {
+        return Some(Contact::default());
     }
     if forward < penetration && forward < backward {
         branch();
