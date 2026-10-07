@@ -574,6 +574,7 @@ static void br_transpose_launch(const BrPlan& p, const BrLinear& src, const BrLi
     }
 }
 
+constexpr int BR4_UNPACK_THREADS = 256;   // bopl4_unpack_rows (bopl_rollout_v4.cu)
 #ifndef BR_KERNELS_ONLY  // the trainer-side part (needs pufferlib.cu); microbenchmarks include only the kernels above
 // Policy v4 chain hooks (bopl_rollout_v4.cu, included at the end of this file).
 static const char* br4_check(PuffeRL* pufferl);
@@ -584,7 +585,6 @@ static const float* br4_dec_rows(BrPlan& p, int buf);
 // Packed observation transport (bopl_obs_pack.h): the unpack of one buffer's
 // slots into its dense device rows, the dump-mode check of those rows against
 // the host rows, and the env-side registration (binding.c: the env struct).
-constexpr int BR4_UNPACK_THREADS = 256;
 __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows);
 __global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches);
 extern "C" void bopl4_rays_init(const float* packed, long slots);
@@ -594,9 +594,12 @@ static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
                       float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream);
+#endif  // BR_KERNELS_ONLY
 // ---------------------------------------------------------------------------
 // Sampler: sample_logits_warp with the env's byte mask as input and the
-// actions written to both the env buffer (float) and the rollout.
+// actions written to both the env buffer (float) and the rollout. (Kernels
+// only: SAMPLE_WARP_ROWS, finite_or_clamp, bopl_game_logit come from
+// pufferlib.cu, or the forward bench.)
 struct BrSampleArgs {
     const float* dec; int ld_dec, A_total; // (rows, ld_dec >= dec_cols + 1): raw logits then the value
     int dec_cols, aim_fourier, aim_ar;       // bopl_aim.h: A_total game logits are materialised from dec_cols columns
@@ -731,6 +734,7 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
     }
 }
 
+#ifndef BR_KERNELS_ONLY
 // Decide whether the batched chain applies and allocate its per-buffer
 // activations. Called once after the frozen banks exist and before cudagraph
 // capture. Falls back to the per-bank chain (pufferl->br == nullptr) when the

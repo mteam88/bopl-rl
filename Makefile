@@ -276,6 +276,22 @@ $(OUT)/encode_check: eval/encode_check.c eval/env_bench.c train/bopl_rays_v4.cu 
 	g++-15 $(OUT)/encode_check.o $(OUT)/encode_check_rl.o $(OUT)/encode_check_rays.o \
 	  $(abspath $(CUDA_HOME))/lib/libcudart.so.13 -Wl,-rpath,$(abspath $(CUDA_HOME))/lib -lm -lpthread -ldl -o $@
 
+# The policy v4 rollout forward of one buffer step on dumped trainer steps
+# (train/fwd_bench.cu): bit-exactness against the trainer and between builds,
+# and the step's latency on 1 and 4 streams. Built against the trainer's
+# overlay (run train/build.py --device cuda first); the row writer object as
+# build.py builds it (-fmad=false).
+PUFFER_OVERLAY ?= native/artifacts/rl/puffer-overlay
+PUFFER_SRC ?= native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9/src
+fwd-bench: $(OUT)/fwd_bench
+
+$(OUT)/fwd_bench: train/fwd_bench.cu train/bopl_rollout.cu train/bopl_rollout_v4.cu train/bopl_v4.cu train/bopl_rays_v4.cu train/bopl_rows_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_layout.h train/bopl_aim.h
+	mkdir -p $(OUT)
+	$(CUDA_HOME)/bin/nvcc -O3 -std=c++17 -arch=sm_120 -fmad=false -ccbin g++-15 $(INCLUDES) -c train/bopl_rays_v4.cu -o $(OUT)/fwd_bench_rays.o
+	$(CUDA_HOME)/bin/nvcc -O3 -std=c++17 -arch=sm_120 -ccbin g++-15 -DPRECISION_FLOAT -I$(PUFFER_OVERLAY) -I$(PUFFER_SRC) $(INCLUDES) -c train/fwd_bench.cu -o $(OUT)/fwd_bench.o
+	g++-15 $(OUT)/fwd_bench.o $(OUT)/fwd_bench_rays.o $(abspath $(CUDA_HOME))/lib/libcudart.so.13 $(abspath $(CUDA_HOME))/lib/libcublas.so.13 \
+	  $(abspath $(CUDA_HOME))/lib/libcublasLt.so.13 $(abspath $(CUDA_HOME))/lib/libcurand.so.10 -lcuda -Wl,-rpath,$(abspath $(CUDA_HOME))/lib -lm -lpthread -ldl -o $@
+
 $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared $(INCLUDES) train/eval_binding.c $(ABI)/bopl_rl.c -lm -o $@
@@ -331,7 +347,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave encode-check agent agent-mac check-reward check-routing
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave encode-check fwd-bench agent agent-mac check-reward check-routing
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.

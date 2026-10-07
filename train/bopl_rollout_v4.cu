@@ -155,6 +155,9 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     }
 }
 
+static void br4_sets_init(int D, int I) { assert(cudaFuncSetAttribute(br4_sets, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)br4_sets_smem(D, I)) == cudaSuccess); }
+static void br4_sets_launch(const Br4SetsArgs& a, cudaStream_t stream) { br_launch_pdl(br4_sets, dim3(a.rows, 4), dim3(BR4_SET_THREADS), br4_sets_smem(a.D, a.I), stream, a); }
+
 // Row-wise glue. One block per row, 256 threads.
 enum { BR4_LN = 0, BR4_RESIDUAL_LN_PRIV = 1, BR4_CRITIC_OUT = 2 };
 struct Br4RowsArgs {
@@ -225,6 +228,84 @@ struct Br4Plan {
     Br4Acts* acts;   // [num_buffers]
 };
 
+// The v4 chain from the live obs rows to the decoder rows A.dec (logits, value
+// at column dec_cols), rollout copies included. The caller samples. Kernels
+// only: the trainer (br4_chain) and the forward bench (fwd_bench.cu) call it.
+struct Br4Groups { const float* emb[BR_MAX_GROUPS]; const float* cout[BR_MAX_GROUPS]; float* state[BR_MAX_GROUPS]; int state_rows[BR_MAX_GROUPS]; };
+static void br4_run(BrPlan& p, int buf, const Br4Groups& gr, const float* obs, const float* rewards, const float* terminals,
+                    float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream) {
+    Br4Plan& q = *p.v4; Br4Acts& A = q.acts[buf];
+    int rows = p.rows, H = p.H;
+    Br4SetsArgs sa = {};
+    sa.obs = obs; sa.rewards = rewards; sa.terminals = terminals;
+    sa.rollout_obs = rollout_obs; sa.rollout_rewards = rollout_rewards; sa.rollout_terminals = rollout_terminals;
+    sa.joined = A.joined; sa.ldj = q.JW; sa.col0 = q.FD; sa.D = q.D; sa.I = q.I; sa.mean_pool = q.mean_pool; sa.rows = rows; sa.g = p.g;
+    BrLinear w_flat = {}, w_fus = {}, w_fi = {}, w_fo = {}, w_act = {}, w_cin = {}, w_b1 = {}, w_b2 = {}, w_cout = {}, w_gru[BR_MAX_LAYERS] = {};
+    BrGateArgs gate = {};
+    for (int g = 0; g < p.g.n; g++) {
+        for (int k = 0; k < 4; k++) { sa.w.w1t[g][k] = q.wt[g].w1t[k]; sa.w.w2[g][k] = q.wt[g].w2b[k]; }
+        sa.w.emb[g] = gr.emb[g];
+        w_flat.w[g] = q.wt[g].flat; w_fus.w[g] = q.wt[g].fusion;
+        for (int l = 0; l < p.layers; l++) w_gru[l].w[g] = q.wt[g].gru[l];
+        w_fi.w[g] = q.wt[g].ffn_in; w_fo.w[g] = q.wt[g].ffn_out; w_act.w[g] = q.wt[g].actor;
+        w_cin.w[g] = q.wt[g].cin; w_b1.w[g] = q.wt[g].b1; w_b2.w[g] = q.wt[g].b2; w_cout.w[g] = gr.cout[g];
+        gate.state[g] = gr.state[g]; gate.state_rows[g] = gr.state_rows[g];
+    }
+    // encoder
+    br4_sets_launch(sa, stream);
+    br_gemm_launch(p, obs, BOPL_OBS_STRIDE, A.joined, q.JW, v4::FLAT, q.FD, q.FD, 1, w_flat, stream);
+    br_gemm_launch(p, A.joined, q.JW, A.ln, q.LNW, q.JW, H, H, 0, w_fus, stream);
+    Br4RowsArgs ra = {}; ra.rows = rows; ra.g = p.g;
+    ra.mode = BR4_LN; ra.W = H; ra.x = A.ln; ra.ldx = q.LNW; ra.out = A.enc; ra.ldout = H;
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
+    // MinGRU
+    const float* x = A.enc;
+    for (int l = 0; l < p.layers; l++) {
+        br_gemm_launch(p, x, H, A.comb, 3 * H, H, 3 * H, 3 * H, 0, w_gru[l], stream);
+        gate.combined = A.comb; gate.x = x; gate.terminals = terminals;
+        gate.out = A.gru[l & 1]; gate.layer = l; gate.H = H; gate.rows = rows; gate.g = p.g;
+        br_launch_pdl(br_gate, dim3(grid_size(rows * H)), dim3(BLOCK_SIZE), 0, stream, gate);
+        x = A.gru[l & 1];
+    }
+    // decoder: y = h + FFN(LN(h)); then LN([y, priv]) for the critic
+    const float* priv = obs + BOPL4_OBS_PRIVILEGED_OFFSET;
+    ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
+    if (q.F) {
+        ra.mode = BR4_LN; ra.W = H; ra.x = x; ra.ldx = H; ra.out = A.ln; ra.ldout = q.LNW;
+        br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
+        br_gemm_launch(p, A.ln, q.LNW, A.f, q.F, H, q.F, q.F, 1, w_fi, stream);
+        br_gemm_launch(p, A.f, q.F, A.y, H, q.F, H, H, 0, w_fo, stream);
+        ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
+        ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = A.y; ra.ldx = H; ra.res = x; ra.ldres = H;
+    } else {
+        ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = x; ra.ldx = H;
+    }
+    ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
+    br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
+    if (q.C) {
+        // The critic runs over the learner's rows only (group 0, its own row
+        // tiles): the frozen banks' values are never read (their advantages
+        // are zeroed, the statistics take learner rows), and their value
+        // column stays the zero A.dec was allocated with. The banks' rows are
+        // 4 of 16 per tile, so this is 4 of the 7 tiles of the three widest
+        // GEMMs (K, N = 512) and the two LNs.
+        BrPlan pl = p; pl.g.n = 1;
+        const int crows = p.g.end[1];
+        br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
+        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
+        ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
+        br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
+        br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
+        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
+        ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
+        ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
+    }
+}
+
+
 #ifndef BR_KERNELS_ONLY
 static void br_group_weights(PuffeRL* pufferl, int g, int buf, PolicyWeights** w, PrecisionTensor** s);
 
@@ -232,7 +313,7 @@ static void br_group_weights(PuffeRL* pufferl, int g, int buf, PolicyWeights** w
 static const char* br4_check(PuffeRL* pufferl) {
     auto* ew = (v4::EncWeights*)pufferl->weights.encoder;
     auto* dw = (v4::DecWeights*)pufferl->weights.decoder;
-    if (ew->D > BR4_SET_THREADS || BR4_SET_THREADS % ew->D || ew->I % 8 || ew->I > BR4_MAX_I) return "v4 set width must divide 256 (inner a multiple of 8 up to 128)";
+    if (ew->D > BR4_POOL_SPLIT || BR4_POOL_SPLIT % ew->D || ew->D % BR4_ENTITY_SPLIT || (ew->I != 64 && ew->I != 128)) return "v4 set width must divide 256 (inner 64 or 128)";
     if (ew->hidden + v4::PRIV > 1024 || dw->cdim > 1024 || dw->ffn > 1024) return "v4 widths above 1024 are not supported by the batched chain";
     if (ew->flat_dim % 8 || dw->cdim % 8 || dw->ffn % 8) return "v4 flat / ffn / critic widths must be multiples of 8";
     for (int b = 0; b < pufferl->num_frozen_banks; b++) {
@@ -283,7 +364,7 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p) {
         }
     }
     size_t smem = br4_sets_smem(q->D, q->I);
-    assert(cudaFuncSetAttribute(br4_sets, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem) == cudaSuccess);
+    br4_sets_init(q->D, q->I);
     p->v4 = q;
     fprintf(stderr, "bopl batched rollout forward: policy v4 chain (set %d/%d, flat %d, ffn %d, critic %d%s), %.1f KB shared per set block, W2 rows in registers\n",
             q->D, q->I, q->FD, q->F, q->C, q->P ? " privileged" : "", smem / 1024.0);
@@ -343,82 +424,20 @@ static void br4_free(PuffeRL* pufferl, BrPlan* p) {
     p->v4 = nullptr;
 }
 
-// The v4 chain from the live obs rows to the decoder rows A.dec (logits, value
-// at column dec_cols), rollout copies included. The caller samples.
+// The trainer's side of one buffer step: per group, the tensors br4_run reads
+// that are not the plan's own (the embedding and critic_out as stored, the
+// recurrent state of this buffer).
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
                       float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream) {
-    Br4Plan& q = *p.v4; Br4Acts& A = q.acts[buf];
-    int rows = p.rows, H = p.H;
-    Br4SetsArgs sa = {};
-    sa.obs = obs; sa.rewards = rewards; sa.terminals = terminals;
-    sa.rollout_obs = rollout_obs; sa.rollout_rewards = rollout_rewards; sa.rollout_terminals = rollout_terminals;
-    sa.joined = A.joined; sa.ldj = q.JW; sa.col0 = q.FD; sa.D = q.D; sa.I = q.I; sa.mean_pool = q.mean_pool; sa.rows = rows; sa.g = p.g;
-    BrLinear w_flat = {}, w_fus = {}, w_fi = {}, w_fo = {}, w_act = {}, w_cin = {}, w_b1 = {}, w_b2 = {}, w_cout = {}, w_gru[BR_MAX_LAYERS] = {};
-    BrGateArgs gate = {};
+    Br4Groups gr = {};
     for (int g = 0; g < p.g.n; g++) {
         PolicyWeights* w; PrecisionTensor* s;
         br_group_weights(pufferl, g, buf, &w, &s);
-        auto* ew = (v4::EncWeights*)w->encoder; auto* dw = (v4::DecWeights*)w->decoder;
-        for (int k = 0; k < 4; k++) { sa.w.w1t[g][k] = q.wt[g].w1t[k]; sa.w.w2[g][k] = q.wt[g].w2b[k]; }
-        sa.w.emb[g] = ew->embedding.data;
-        w_flat.w[g] = q.wt[g].flat; w_fus.w[g] = q.wt[g].fusion;
-        for (int l = 0; l < p.layers; l++) w_gru[l].w[g] = q.wt[g].gru[l];
-        w_fi.w[g] = q.wt[g].ffn_in; w_fo.w[g] = q.wt[g].ffn_out; w_act.w[g] = q.wt[g].actor;
-        w_cin.w[g] = q.wt[g].cin; w_b1.w[g] = q.wt[g].b1; w_b2.w[g] = q.wt[g].b2; w_cout.w[g] = dw->critic_out.data;
-        gate.state[g] = s->data; gate.state_rows[g] = (int)s->shape[1];
+        gr.emb[g] = ((v4::EncWeights*)w->encoder)->embedding.data;
+        gr.cout[g] = ((v4::DecWeights*)w->decoder)->critic_out.data;
+        gr.state[g] = s->data; gr.state_rows[g] = (int)s->shape[1];
     }
-    // encoder
-    br_launch_pdl(br4_sets, dim3(rows, 4), dim3(BR4_SET_THREADS), br4_sets_smem(q.D, q.I), stream, sa);
-    br_gemm_launch(p, obs, BOPL_OBS_STRIDE, A.joined, q.JW, v4::FLAT, q.FD, q.FD, 1, w_flat, stream);
-    br_gemm_launch(p, A.joined, q.JW, A.ln, q.LNW, q.JW, H, H, 0, w_fus, stream);
-    Br4RowsArgs ra = {}; ra.rows = rows; ra.g = p.g;
-    ra.mode = BR4_LN; ra.W = H; ra.x = A.ln; ra.ldx = q.LNW; ra.out = A.enc; ra.ldout = H;
-    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
-    // MinGRU
-    const float* x = A.enc;
-    for (int l = 0; l < p.layers; l++) {
-        br_gemm_launch(p, x, H, A.comb, 3 * H, H, 3 * H, 3 * H, 0, w_gru[l], stream);
-        gate.combined = A.comb; gate.x = x; gate.terminals = terminals;
-        gate.out = A.gru[l & 1]; gate.layer = l; gate.H = H; gate.rows = rows; gate.g = p.g;
-        br_launch_pdl(br_gate, dim3(grid_size(rows * H)), dim3(BLOCK_SIZE), 0, stream, gate);
-        x = A.gru[l & 1];
-    }
-    // decoder: y = h + FFN(LN(h)); then LN([y, priv]) for the critic
-    const float* priv = obs + BOPL4_OBS_PRIVILEGED_OFFSET;
-    ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
-    if (q.F) {
-        ra.mode = BR4_LN; ra.W = H; ra.x = x; ra.ldx = H; ra.out = A.ln; ra.ldout = q.LNW;
-        br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
-        br_gemm_launch(p, A.ln, q.LNW, A.f, q.F, H, q.F, q.F, 1, w_fi, stream);
-        br_gemm_launch(p, A.f, q.F, A.y, H, q.F, H, H, 0, w_fo, stream);
-        ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
-        ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = A.y; ra.ldx = H; ra.res = x; ra.ldres = H;
-    } else {
-        ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = x; ra.ldx = H;
-    }
-    ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
-    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
-    br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
-    if (q.C) {
-        // The critic runs over the learner's rows only (group 0, its own row
-        // tiles): the frozen banks' values are never read (their advantages
-        // are zeroed, the statistics take learner rows), and their value
-        // column stays the zero A.dec was allocated with. The banks' rows are
-        // 4 of 16 per tile, so this is 4 of the 7 tiles of the three widest
-        // GEMMs (K, N = 512) and the two LNs.
-        BrPlan pl = p; pl.g.n = 1;
-        const int crows = p.g.end[1];
-        br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
-        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
-        ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
-        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
-        br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
-        br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
-        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
-        ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
-        ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
-        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
-    }
+    br4_run(p, buf, gr, obs, rewards, terminals, rollout_obs, rollout_rewards, rollout_terminals, stream);
 }
 
 // ---------------------------------------------------------------------------
