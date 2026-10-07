@@ -34646,6 +34646,7 @@ impl RolloutWorld {
     /// in the same pass the clone's `AnimateVelocity` then reads, so the very
     /// first integration tick after a cast already pulls towards the aimed
     /// rotation instead of the spawn rotation.
+    #[inline(always)]
     fn platform_spring(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) {
         if !self.platforms[i].active {
             return;
@@ -35415,6 +35416,25 @@ impl RolloutWorld {
             };
             let mut updaters = self.platform_dynamics[i].updaters;
             debug_assert_eq!(updaters, data::PlatformUpdater::pack(self.platform_updater_order(data, i)));
+            // Nearly every scene platform's prefab leads with these four,
+            // which then run without the dispatch.
+            const SCENE_LEAD: u64 = 0x5321;
+            debug_assert_eq!(
+                SCENE_LEAD,
+                data::PlatformUpdater::pack(&[
+                    U::StickyRoundedRectangle,
+                    U::AnimateVelocity,
+                    U::ShakablePlatform,
+                    U::BoplBody
+                ])
+            );
+            if updaters & 0xffff == SCENE_LEAD {
+                self.platform_sticky(updater_dt, i);
+                self.platform_spring(data, updater_dt, i);
+                shook |= self.platform_shake(data, updater_dt, i);
+                self.platform_body_update(i);
+                updaters >>= 16;
+            }
             while updaters != 0 {
                 let updater = data::PlatformUpdater::from_code(updaters & 15);
                 updaters >>= 4;
@@ -35478,6 +35498,7 @@ impl RolloutWorld {
     /// prefab. It writes a temporary transform displacement directly; the
     /// spring home remains fixed and pulls the rigid body back while
     /// successive samples replace the previous random offset.
+    #[inline(always)]
     fn platform_shake(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
         // A platform not shaking first: that is nearly all of them.
         let dynamics = &self.platform_dynamics[i];
@@ -35548,6 +35569,7 @@ impl RolloutWorld {
     /// BoplBody.UpdateSim, at BoplBody's place in the prefab: the hold's
     /// countdown, then a non-resizable body follows a DPhysics scale change
     /// with its mass and inertia.
+    #[inline(always)]
     fn platform_body_update(&mut self, i: usize) {
         if !self.platforms[i].active {
             return;
@@ -35616,6 +35638,7 @@ impl RolloutWorld {
     /// platform's runs with its prefab, after the players, so a slime landing
     /// this pass still sees it before the ease back, and the ability that
     /// spawned it still reads the bounds from before the change.
+    #[inline(always)]
     fn platform_sticky(&mut self, updater_dt: Fix, i: usize) {
         if !self.platforms[i].active {
             return;
