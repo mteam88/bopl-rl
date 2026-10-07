@@ -4782,7 +4782,6 @@ enum HoleTarget {
 /// are meaningless between ticks; never copied by `fork_from`).
 #[derive(Default)]
 struct PlatformScratch {
-    active: Vec<usize>,
     keyed: Vec<(Fix, usize)>,
     window: Vec<usize>,
     pairs: Vec<[usize; 2]>,
@@ -34273,11 +34272,76 @@ impl RolloutWorld {
             );
         }
         debug_assert_eq!(bounds.len(), platforms.len());
+        // The sweep on the stack: the active platforms are a handful, so an
+        // insertion sort as they are read puts them in order (after every
+        // equal minimum, so by index among ties, the comparator's order
+        // without a NaN), and the window is compacted in place as it is
+        // walked. A NaN minimum or a crowd takes the general sweep.
+        const CAP: usize = 32;
+        let mut order = [(Fix::ZERO, 0usize); CAP];
+        let mut count = 0;
+        for (index, platform) in platforms.iter().enumerate() {
+            if !platform.active {
+                continue;
+            }
+            let min = axis(bounds[index][0]);
+            if count == CAP || min.to_f64().is_nan() {
+                Self::platform_sweep_pairs(platforms, bounds, sweep_x, &mut scratch.keyed, &mut scratch.window, &mut scratch.pairs);
+                return;
+            }
+            let mut place = count;
+            while place > 0 && order[place - 1].0 > min {
+                order[place] = order[place - 1];
+                place -= 1;
+            }
+            order[place] = (min, index);
+            count += 1;
+        }
+        let pairs = &mut scratch.pairs;
+        let mut window = [0usize; CAP];
+        let mut open = 0;
+        for &(min, b) in &order[..count] {
+            let (low, high) = (other(bounds[b][0]), other(bounds[b][1]));
+            let mut kept = 0;
+            for w in 0..open {
+                let a = window[w];
+                if axis(bounds[a][1]) > min {
+                    window[kept] = a;
+                    kept += 1;
+                    // IdPair(active, current): the body that entered the
+                    // sweep first is collider A (DetPhysics.cs:2169-2236).
+                    if !(other(bounds[a][1]) <= low || other(bounds[a][0]) >= high) {
+                        pairs.push([a, b]);
+                    }
+                }
+            }
+            window[kept] = b;
+            open = kept + 1;
+        }
+        #[cfg(debug_assertions)]
+        {
+            let mut swept = Vec::new();
+            Self::platform_sweep_pairs(platforms, bounds, sweep_x, &mut Vec::new(), &mut Vec::new(), &mut swept);
+            debug_assert_eq!(swept, scratch.pairs);
+        }
+    }
+
+    /// `platform_pairs` as DetPhysics sweeps: the active platforms sorted,
+    /// each meeting the earlier ones still open on the axis.
+    fn platform_sweep_pairs(
+        platforms: &[Platform],
+        bounds: &[[Vec2; 2]],
+        sweep_x: bool,
+        keyed: &mut Vec<(Fix, usize)>,
+        window: &mut Vec<usize>,
+        pairs: &mut Vec<[usize; 2]>,
+    ) {
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         // The active platforms by `(axis(a) - axis(b)).sign()`, then index.
         // A difference is zero only when the two are equal, so that is how
         // the minima compare (NaN a tie); the order is total, so sorting the
         // (minimum, index) pairs gives it with no comparator calls.
-        let keyed = &mut scratch.keyed;
         keyed.clear();
         keyed.extend(
             platforms
@@ -34286,13 +34350,8 @@ impl RolloutWorld {
                 .filter_map(|(index, platform)| platform.active.then_some((axis(bounds[index][0]), index))),
         );
         keyed.sort_unstable_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal).then(x.1.cmp(&y.1)));
-        let active = &mut scratch.active;
-        active.clear();
-        active.extend(keyed.iter().map(|&(_, index)| index));
-        let pairs = &mut scratch.pairs;
-        let window = &mut scratch.window;
         window.clear();
-        for &b in active.iter() {
+        for &(_, b) in keyed.iter() {
             window.retain(|&a: &usize| axis(bounds[a][1]) > axis(bounds[b][0]));
             for &a in window.iter() {
                 if other(bounds[a][1]) <= other(bounds[b][0])
