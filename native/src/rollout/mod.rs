@@ -1460,23 +1460,41 @@ fn form_box_flags(active: bool) -> u32 {
     }
 }
 
+/// Most slimes hold no Drill in the cast slot; their call stops at the
+/// three row checks, before the placement's setup.
+#[inline(always)]
 fn place_drill_hitbox_rows(
     entities: &mut [CEntity],
     inverse_extents: &[Vec2],
     slot: &PlayerSlot,
     data: &data::RolloutData,
 ) {
+    if slot.drill_hitbox_entities[slot.active_slot].iter().any(|&entity| entity != usize::MAX) {
+        place_drill_hitbox_rows_held(entities, inverse_extents, slot, data);
+    }
+}
+
+#[inline(never)]
+fn place_drill_hitbox_rows_held(
+    entities: &mut [CEntity],
+    inverse_extents: &[Vec2],
+    slot: &PlayerSlot,
+    data: &data::RolloutData,
+) {
+    // The three boxes share the Drill's pose; Fix arithmetic is pure, so the
+    // basis and the angle's axes are built once.
+    let basis = slot.drill.hitbox_up.perp_cw();
+    let axes = Vec2::angle(slot.drill.hitbox_rotation);
     for (hitbox_index, &entity) in slot.drill_hitbox_entities[slot.active_slot].iter().enumerate() {
         if entity == usize::MAX {
             continue;
         }
         let row = &mut entities[entity];
         let (offset, _) = data.drill.hitboxes[hitbox_index];
-        let basis = slot.drill.hitbox_up.perp_cw();
         let scale = slot.drill_hitbox_scales[slot.active_slot][hitbox_index];
         let scale = if scale == Fix::ZERO { hurtbox_scale(slot.player_scale) } else { scale };
         let center = slot.drill.hitbox_position + (offset * scale).complex_mul(basis);
-        let collider = stored_box(center, Vec2::angle(slot.drill.hitbox_rotation), inverse_extents[entity]);
+        let collider = stored_box(center, axes, inverse_extents[entity]);
         row.x = center.x.raw();
         row.y = center.y.raw();
         row.right_x = collider.right.x.raw();
@@ -38669,64 +38687,6 @@ impl RolloutWorld {
         }
         for index in 0..self.players.len() {
             let entered = std::mem::replace(&mut self.players[index].form_entered, usize::MAX);
-            let (
-                body_e,
-                dash_e,
-                circle_e,
-                bow_e,
-                throw_e,
-                mine_e,
-                rock_e,
-                roll_e,
-                meteor_e,
-                push_e,
-                freeze_e,
-                blink_e,
-                growth_ray_e,
-                shrink_ray_e,
-                duplicator_e,
-                magnet_e,
-                gust_e,
-                revival_e,
-                spike_e,
-                time_stop_e,
-                engine_e,
-                tesla_e,
-                black_hole_e,
-                macho_throw_e,
-                drill_e,
-                beam_e,
-            ) = {
-                let s = &self.players[index];
-                (
-                    s.body_entity,
-                    s.dash_entity,
-                    s.circle_entity,
-                    s.bow_entity,
-                    s.throw_entity,
-                    s.mine_entity,
-                    s.rock_entity,
-                    s.roll_entity,
-                    s.meteor_entity,
-                    s.push_entity,
-                    s.freeze_entity,
-                    s.blink_entity,
-                    s.growth_ray_entity,
-                    s.shrink_ray_entity,
-                    s.duplicator_entity,
-                    s.magnet_entity,
-                    s.gust_entity,
-                    s.revival_entity,
-                    s.spike_entity,
-                    s.time_stop_entity,
-                    s.engine_entity,
-                    s.tesla_entity,
-                    s.black_hole_entity,
-                    s.macho_throw_entity,
-                    s.drill_entity,
-                    s.beam_entity,
-                )
-            };
             let slot = &self.players[index];
             let alive = slot.base.alive && slot.unspawned == 0;
             let choosing_respawn = slot.respawn_ticks > 0 || (slot.revival_effect_ticks > 0 && !slot.revival_hurtbox);
@@ -38739,11 +38699,6 @@ impl RolloutWorld {
             let rolling = slot.active == ActiveAbility::Roll;
             let meteoring = slot.active == ActiveAbility::Meteor;
             let pushing = slot.active == ActiveAbility::Push;
-            let freezing = slot.active == ActiveAbility::Freeze;
-            let blinking = slot.active == ActiveAbility::Blink;
-            let growing = slot.active == ActiveAbility::GrowthRay;
-            let shrinking = slot.active == ActiveAbility::ShrinkRay;
-            let duplicating = slot.active == ActiveAbility::Duplicator;
             let magnetizing = slot.active == ActiveAbility::Magnet;
             let throwing = matches!(
                 slot.active,
@@ -38794,7 +38749,7 @@ impl RolloutWorld {
             // deactivate it, TeleportIndicator.cs:166); the slime stays in its
             // ability, its box frozen where the form began.
             let slime_teleporting = teleporting && !in_ability;
-            let body = &mut self.entities[body_e];
+            let body = &mut self.entities[slot.body_entity];
             let body_was_active = body.flags & E_ACTIVE != 0;
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
@@ -38845,7 +38800,7 @@ impl RolloutWorld {
                 let (right, up) = if body_active || slime_teleporting {
                     (slot.base.collider.right, slot.base.collider.up)
                 } else {
-                    let collider = stored_box(center, Vec2::angle(angle), self.entity_inverse_extents[body_e]);
+                    let collider = stored_box(center, Vec2::angle(angle), self.entity_inverse_extents[slot.body_entity]);
                     (collider.right, collider.up)
                 };
                                 body.right_x = right.x.raw();
@@ -38855,17 +38810,17 @@ impl RolloutWorld {
                 body.rotation = angle.raw();
             }
 
-            if dash_e != usize::MAX {
-                let dash_box = &mut self.entities[dash_e];
+            if slot.dash_entity != usize::MAX {
+                let dash_box = &mut self.entities[slot.dash_entity];
                 let flags = form_box_flags(alive && dashing);
-                if sync_form_row(dash_box, flags, dashing, entered == dash_e, slot.base.id) {
+                if sync_form_row(dash_box, flags, dashing, entered == slot.dash_entity, slot.base.id) {
                     // The Dash body's FixTransform rotation is
                     // Tools.GetRotationFromDirection (Dash.cs:123-124, zero
                     // before performDash); `sync_collider` already built the
                     // synced box with the dash extents from that rotation.
                     // On the exit pass the slime body has taken over, so the
                     // box is rebuilt at the teleport/landing pose.
-                    let at_sync = slot.forms[slot.entity_slot(dash_e)].synced;
+                    let at_sync = slot.forms[slot.entity_slot(slot.dash_entity)].synced;
                     let (center, angle) = if alive && dashing {
                         (at_sync.position, at_sync.orientation.rotation())
                     } else {
@@ -38874,7 +38829,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         Vec2::angle(angle),
-                        self.entity_inverse_extents[dash_e],
+                        self.entity_inverse_extents[slot.dash_entity],
                     );
                     dash_box.x = center.x.raw();
                     dash_box.y = center.y.raw();
@@ -38897,14 +38852,14 @@ impl RolloutWorld {
             // from that angle (Box.SetRotation, Box.cs:30-35). Its centre is
             // the DetPhysics-synced position: a grounded Bow body also moves
             // only in PlayerPhysics.LateUpdateSim, after the sync.
-            if bow_e != usize::MAX {
-                let bow_box = &mut self.entities[bow_e];
+            if slot.bow_entity != usize::MAX {
+                let bow_box = &mut self.entities[slot.bow_entity];
                 let flags = form_box_flags(alive && bowing);
-                if sync_form_row(bow_box, flags, bowing, entered == bow_e, slot.base.id) {
-                    let at_sync = slot.forms[slot.entity_slot(bow_e)].synced;
+                if sync_form_row(bow_box, flags, bowing, entered == slot.bow_entity, slot.base.id) {
+                    let at_sync = slot.forms[slot.entity_slot(slot.bow_entity)].synced;
                     let center = if alive && bowing { at_sync.position } else { exit_position };
                     let rotation = at_sync.orientation.rotation();
-                    let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[bow_e]);
+                    let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[slot.bow_entity]);
                     bow_box.x = center.x.raw();
                     bow_box.y = center.y.raw();
                     bow_box.vx = 0;
@@ -38916,26 +38871,26 @@ impl RolloutWorld {
                     bow_box.rotation = rotation.raw();
                 }
             }
-            if throw_e != usize::MAX {
-                let throw_box = &mut self.entities[throw_e];
+            if slot.throw_entity != usize::MAX {
+                let throw_box = &mut self.entities[slot.throw_entity];
                 // Each slot's prefab owns its row, so a Missile slot's row
                 // keeps the missile box while another throw form is out.
                 let live = throwing || missile_form;
                 let flags = form_box_flags(alive && live);
-                if sync_form_row(throw_box, flags, live, entered == throw_e, slot.base.id) {
-                    let at_sync = slot.forms[slot.entity_slot(throw_e)].synced;
+                if sync_form_row(throw_box, flags, live, entered == slot.throw_entity, slot.base.id) {
+                    let at_sync = slot.forms[slot.entity_slot(slot.throw_entity)].synced;
                     // A grounded form's box keeps this pass's recoil drift and
                     // turn; LateUpdateSim moves only the body. A timed exit
                     // leaves the box at the form's pose; the slime that lands
                     // or re-grounds turns on its own.
                     let (center, rotation) = if live {
                         (at_sync.position, at_sync.orientation.rotation())
-                    } else if let Some((position, rotation, _)) = frozen_pose(throw_e) {
+                    } else if let Some((position, rotation, _)) = frozen_pose(slot.throw_entity) {
                         (position, rotation)
                     } else {
                         (exit_position, at_sync.orientation.rotation())
                     };
-                    let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[throw_e]);
+                    let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[slot.throw_entity]);
                     throw_box.x = center.x.raw();
                     throw_box.y = center.y.raw();
                     throw_box.vx = 0;
@@ -38947,11 +38902,11 @@ impl RolloutWorld {
                     throw_box.rotation = rotation.raw();
                 }
             }
-            if mine_e != usize::MAX {
-                let mine_box = &mut self.entities[mine_e];
+            if slot.mine_entity != usize::MAX {
+                let mine_box = &mut self.entities[slot.mine_entity];
                 let flags = form_box_flags(alive && mining);
-                if sync_form_row(mine_box, flags, mining, entered == mine_e, slot.base.id) {
-                    let at_sync = slot.forms[slot.entity_slot(mine_e)].synced;
+                if sync_form_row(mine_box, flags, mining, entered == slot.mine_entity, slot.base.id) {
+                    let at_sync = slot.forms[slot.entity_slot(slot.mine_entity)].synced;
                     let root = if mining { at_sync.position } else { exit_position };
                     let rotation = at_sync.orientation.rotation();
                     let offset_basis = at_sync.orientation.up().perp_cw();
@@ -38971,7 +38926,7 @@ impl RolloutWorld {
                     let hurtbox = stored_box(
                         center,
                         basis,
-                        self.entity_inverse_extents[mine_e],
+                        self.entity_inverse_extents[slot.mine_entity],
                     );
                     mine_box.x = center.x.raw();
                     mine_box.y = center.y.raw();
@@ -38984,10 +38939,10 @@ impl RolloutWorld {
                     mine_box.rotation = rotation.raw();
                 }
             }
-            if rock_e != usize::MAX {
-                let circle = &mut self.entities[rock_e];
+            if slot.rock_entity != usize::MAX {
+                let circle = &mut self.entities[slot.rock_entity];
                 let flags = if alive && rocking { E_ACTIVE | E_ENABLED } else { E_ENABLED };
-                let publish = sync_form_row(circle, flags, rocking, entered == rock_e, slot.base.id);
+                let publish = sync_form_row(circle, flags, rocking, entered == slot.rock_entity, slot.base.id);
                 // A Blink tunnel or teleport disables the Rock's GameObject,
                 // so its body stops, but the collider still follows the
                 // transform the tunnel moves, at the Player.Scale an earlier
@@ -39011,7 +38966,7 @@ impl RolloutWorld {
                     circle.rotation = slot.rock.body.orientation.raw();
                     circle.angular_velocity = slot.rock.body.angular_velocity.raw();
                     circle.inverse_mass = slot.rock.body.inverse_mass.raw();
-                } else if let Some(s) = slot.form_entities.iter().position(|&e| e == rock_e) {
+                } else if let Some(s) = slot.form_entities.iter().position(|&e| e == slot.rock_entity) {
                     // DetPhysics keeps syncing the deactivated FixTransform:
                     // BounceBall.ExitAbility zeroed its rotation, a
                     // FreezeRayGun calling Ability.ExitAbility directly kept it
@@ -39024,38 +38979,38 @@ impl RolloutWorld {
             for (s, (&e, &ability)) in slot.form_entities.iter().zip(&slot.abilities).enumerate() {
                 if ability == ABILITY_ROCK
                     && e != usize::MAX
-                    && e != rock_e
+                    && e != slot.rock_entity
                     && self.entities[e].flags & E_ACTIVE == 0
                 {
                     self.entities[e].rotation = slot.forms[s].pose.orientation.rotation().raw();
                 }
             }
-            if roll_e != usize::MAX {
-                let circle = &mut self.entities[roll_e];
+            if slot.roll_entity != usize::MAX {
+                let circle = &mut self.entities[slot.roll_entity];
                 let flags = form_box_flags(alive && rolling);
-                if sync_form_row(circle, flags, rolling, entered == roll_e, slot.base.id) {
+                if sync_form_row(circle, flags, rolling, entered == slot.roll_entity, slot.base.id) {
                     // Like the slime's box, the row is the collider DetPhysics
                     // synced; a grounded Roll moves after it (PlayerPhysics.cs:138).
                     // Roll.ExitAbility zeroes the out box's rotation (Roll.cs:202-236).
-                    let at_sync = slot.forms[slot.entity_slot(roll_e)].synced;
+                    let at_sync = slot.forms[slot.entity_slot(slot.roll_entity)].synced;
                     let position = if rolling { at_sync.position } else { exit_position };
                     let rotation = at_sync.orientation.rotation();
                     circle.x = position.x.raw();
                     circle.y = position.y.raw();
                     circle.vx = 0;
                     circle.vy = 0;
-                    circle.radius = slot.forms[slot.entity_slot(roll_e)].circle_radius.raw();
+                    circle.radius = slot.forms[slot.entity_slot(slot.roll_entity)].circle_radius.raw();
                     circle.rotation = rotation.raw();
                 }
             }
-            if meteor_e != usize::MAX {
-                let box_row = &mut self.entities[meteor_e];
+            if slot.meteor_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.meteor_entity];
                 let flags = form_box_flags(alive && meteoring);
-                if sync_form_row(box_row, flags, meteoring, entered == meteor_e, slot.base.id) {
+                if sync_form_row(box_row, flags, meteoring, entered == slot.meteor_entity, slot.base.id) {
                     // Ability.ExitAbility leaves the hidden form box where the
                     // form stood (Ability.cs:139-153); the slime may already
                     // have moved on, through a portal say.
-                    let form = &slot.forms[slot.entity_slot(meteor_e)];
+                    let form = &slot.forms[slot.entity_slot(slot.meteor_entity)];
                     let root = if meteoring { form.synced.position } else { exit_position };
                     let rotation = form.synced.orientation.rotation();
                     let basis = Vec2::angle(rotation);
@@ -39071,7 +39026,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         basis,
-                        self.entity_inverse_extents[meteor_e],
+                        self.entity_inverse_extents[slot.meteor_entity],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -39084,13 +39039,13 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
-            if push_e != usize::MAX {
-                let push_box = &mut self.entities[push_e];
+            if slot.push_entity != usize::MAX {
+                let push_box = &mut self.entities[slot.push_entity];
                 let flags = form_box_flags(alive && pushing);
-                if sync_form_row(push_box, flags, pushing, entered == push_e, slot.base.id) {
+                if sync_form_row(push_box, flags, pushing, entered == slot.push_entity, slot.base.id) {
                     // ControlPlatform.ExitAbility zeroes the form's rotation
                     // (ControlPlatform.cs:106) before its box syncs out.
-                    let at_sync = slot.forms[slot.entity_slot(push_e)].synced;
+                    let at_sync = slot.forms[slot.entity_slot(slot.push_entity)].synced;
                     let root = if pushing { at_sync.position } else { exit_position };
                     let rotation = at_sync.orientation.rotation();
                     let basis = Vec2::angle(rotation);
@@ -39108,7 +39063,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         basis,
-                        self.entity_inverse_extents[push_e],
+                        self.entity_inverse_extents[slot.push_entity],
                     );
                     push_box.x = center.x.raw();
                     push_box.y = center.y.raw();
@@ -39123,16 +39078,26 @@ impl RolloutWorld {
             }
             // The GunTransform forms (FreezeRayGun, Blink, the scale rays and
             // the Duplicator share its rules).
-            for (gun_e, active, offset) in [
-                (freeze_e, freezing, data.freeze.collider_offset),
-                (blink_e, blinking, data.blink.collider_offset),
-                (growth_ray_e, growing, data.scale_rays.growth.collider_offset),
-                (shrink_ray_e, shrinking, data.scale_rays.shrink.collider_offset),
-                (duplicator_e, duplicating, data.duplicator.collider_offset),
+            // A slime holds at most three of the five, so the form and its
+            // offset are looked up only for a row it has.
+            for (gun_e, gun) in [
+                (slot.freeze_entity, ActiveAbility::Freeze),
+                (slot.blink_entity, ActiveAbility::Blink),
+                (slot.growth_ray_entity, ActiveAbility::GrowthRay),
+                (slot.shrink_ray_entity, ActiveAbility::ShrinkRay),
+                (slot.duplicator_entity, ActiveAbility::Duplicator),
             ] {
                 if gun_e == usize::MAX {
                     continue;
                 }
+                let active = slot.active == gun;
+                let offset = match gun {
+                    ActiveAbility::Freeze => data.freeze.collider_offset,
+                    ActiveAbility::Blink => data.blink.collider_offset,
+                    ActiveAbility::GrowthRay => data.scale_rays.growth.collider_offset,
+                    ActiveAbility::ShrinkRay => data.scale_rays.shrink.collider_offset,
+                    _ => data.duplicator.collider_offset,
+                };
                 let row = &mut self.entities[gun_e];
                 let flags = form_box_flags(alive && active);
                 if sync_form_row(row, flags, active, entered == gun_e, slot.base.id) {
@@ -39169,14 +39134,14 @@ impl RolloutWorld {
                     row.rotation = rotation.raw();
                 }
             }
-            if magnet_e != usize::MAX {
-                let row = &mut self.entities[magnet_e];
+            if slot.magnet_entity != usize::MAX {
+                let row = &mut self.entities[slot.magnet_entity];
                 let flags = form_box_flags(alive && magnetizing);
-                if sync_form_row(row, flags, magnetizing, entered == magnet_e, slot.base.id) {
+                if sync_form_row(row, flags, magnetizing, entered == slot.magnet_entity, slot.base.id) {
                     // The form's one FixTransform rotation: the body's while
                     // it magnetizes, then the one its exit left, which a
                     // drop's UpdateSim may aim again (MagnetGun.cs:358, 1256).
-                    let form = &slot.forms[slot.entity_slot(magnet_e)];
+                    let form = &slot.forms[slot.entity_slot(slot.magnet_entity)];
                     let root = if magnetizing { form.synced.position } else { exit_position };
                     let rotation = form.synced.orientation.rotation();
                     let offset_basis = form.synced.orientation.up().perp_cw();
@@ -39185,7 +39150,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         basis,
-                        self.entity_inverse_extents[magnet_e],
+                        self.entity_inverse_extents[slot.magnet_entity],
                     );
                     row.x = center.x.raw();
                     row.y = center.y.raw();
@@ -39200,11 +39165,11 @@ impl RolloutWorld {
             }
             // The Platform ability's hurtbox circle is enabled from
             // OnEnterAbility until CreatePlatform.
-            if circle_e != usize::MAX {
-                let circle = &mut self.entities[circle_e];
+            if slot.circle_entity != usize::MAX {
+                let circle = &mut self.entities[slot.circle_entity];
                 let transforming = alive && slot.active == ActiveAbility::Platform;
                 let disabled = (0..3).any(|s| {
-                    slot.form_entities[s] == circle_e
+                    slot.form_entities[s] == slot.circle_entity
                         && slot.abilities[s] == ABILITY_PLATFORM
                         && slot.platform_hurtbox_disabled[s]
                 });
@@ -39215,7 +39180,7 @@ impl RolloutWorld {
                 if !disabled {
                     flags |= E_ENABLED;
                 }
-                if sync_form_row(circle, flags, transforming, entered == circle_e, slot.base.id) {
+                if sync_form_row(circle, flags, transforming, entered == slot.circle_entity, slot.base.id) {
                     // DetPhysics copies the ability body's FixTransform rotation
                     // (body.up = Slerp(...), PlatformTransform.cs:281), then the
                     // one the exit left at the ejected position the exit pass
@@ -39225,7 +39190,7 @@ impl RolloutWorld {
                     let (center, rotation) = if transforming {
                         (slot.base.position, slot.base.rotation())
                     } else {
-                        (exit_position, slot.forms[slot.entity_slot(circle_e)].pose.orientation.rotation())
+                        (exit_position, slot.forms[slot.entity_slot(slot.circle_entity)].pose.orientation.rotation())
                     };
                     circle.x = center.x.raw();
                     circle.y = center.y.raw();
@@ -39233,21 +39198,21 @@ impl RolloutWorld {
                     // Ability assigns Player.Scale to the hurtbox on the exit
                     // pass too, ahead of PlatformTransform's ExitAbility.
                     let (radius, _) =
-                        slot.form_circle(circle_e, data.platform.hurtbox_radius, Vec2::ZERO);
+                        slot.form_circle(slot.circle_entity, data.platform.hurtbox_radius, Vec2::ZERO);
                     circle.radius = radius.raw();
                 }
             }
             // Gust's QuickSpell body is a circle with the FixTransform's
             // authored offset. It remains still through both animations.
-            if gust_e != usize::MAX {
-                let circle = &mut self.entities[gust_e];
+            if slot.gust_entity != usize::MAX {
+                let circle = &mut self.entities[slot.gust_entity];
                 let gusting = alive && slot.active == ActiveAbility::Gust;
                 let flags = form_box_flags(gusting);
-                if sync_form_row(circle, flags, gusting, entered == gust_e, slot.base.id) {
+                if sync_form_row(circle, flags, gusting, entered == slot.gust_entity, slot.base.id) {
                     let (position, rotation) = if gusting {
                         (slot.base.position, slot.base.rotation())
                     } else {
-                        (exit_position, slot.forms[slot.entity_slot(gust_e)].pose.orientation.rotation())
+                        (exit_position, slot.forms[slot.entity_slot(slot.gust_entity)].pose.orientation.rotation())
                     };
                     let (radius, offset) = slot.form_circle(
                         slot.gust_entity,
@@ -39261,15 +39226,15 @@ impl RolloutWorld {
                     circle.radius = radius.raw();
                 }
             }
-            if revival_e != usize::MAX {
-                let circle = &mut self.entities[revival_e];
+            if slot.revival_entity != usize::MAX {
+                let circle = &mut self.entities[slot.revival_entity];
                 let reviving = alive && slot.active == ActiveAbility::Revival;
                 let flags = form_box_flags(reviving);
-                if sync_form_row(circle, flags, reviving, entered == revival_e, slot.base.id) {
+                if sync_form_row(circle, flags, reviving, entered == slot.revival_entity, slot.base.id) {
                     let (position, rotation) = if reviving {
                         (slot.base.position, slot.base.rotation())
                     } else {
-                        (exit_position, slot.forms[slot.entity_slot(revival_e)].pose.orientation.rotation())
+                        (exit_position, slot.forms[slot.entity_slot(slot.revival_entity)].pose.orientation.rotation())
                     };
                     let (radius, offset) = slot.form_circle(
                         slot.revival_entity,
@@ -39283,14 +39248,14 @@ impl RolloutWorld {
                     circle.radius = radius.raw();
                 }
             }
-            if spike_e != usize::MAX {
-                let box_row = &mut self.entities[spike_e];
+            if slot.spike_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.spike_entity];
                 let flags = form_box_flags(alive && spiking);
-                let publish = sync_form_row(box_row, flags, spiking, entered == spike_e, slot.base.id);
+                let publish = sync_form_row(box_row, flags, spiking, entered == slot.spike_entity, slot.base.id);
                 if publish {
                     // The form's FixTransform, casting or hidden.
-                    let pose = slot.forms[slot.entity_slot(spike_e)].pose;
-                    let position = if spiking || frozen_pose(spike_e).is_some() { pose.position } else { exit_position };
+                    let pose = slot.forms[slot.entity_slot(slot.spike_entity)].pose;
+                    let position = if spiking || frozen_pose(slot.spike_entity).is_some() { pose.position } else { exit_position };
                     let rotation = pose.orientation.rotation();
                     let (center_basis, collider_basis) = (pose.orientation.up().perp_cw(), Vec2::angle(rotation));
                     let form = &slot.forms[slot.active_slot];
@@ -39303,7 +39268,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         collider_basis,
-                        self.entity_inverse_extents[spike_e],
+                        self.entity_inverse_extents[slot.spike_entity],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -39314,17 +39279,17 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
-            if engine_e != usize::MAX {
-                let box_row = &mut self.entities[engine_e];
+            if slot.engine_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.engine_entity];
                 let flags = form_box_flags(alive && planting_engine);
-                let publish = sync_form_row(box_row, flags, planting_engine, entered == engine_e, slot.base.id);
+                let publish = sync_form_row(box_row, flags, planting_engine, entered == slot.engine_entity, slot.base.id);
                 if publish {
                     // The form's FixTransform, casting or hidden.
-                    let pose = slot.forms[slot.entity_slot(engine_e)].pose;
-                    let position = if planting_engine || frozen_pose(engine_e).is_some() { pose.position } else { exit_position };
+                    let pose = slot.forms[slot.entity_slot(slot.engine_entity)].pose;
+                    let position = if planting_engine || frozen_pose(slot.engine_entity).is_some() { pose.position } else { exit_position };
                     let rotation = pose.orientation.rotation();
                     let (center_basis, collider_basis) = (pose.orientation.up().perp_cw(), Vec2::angle(rotation));
-                    let form = &slot.forms[slot.entity_slot(engine_e)];
+                    let form = &slot.forms[slot.entity_slot(slot.engine_entity)];
                     let offset = if form.scale == Fix::ZERO {
                         data.engine.collider_offset
                     } else {
@@ -39334,7 +39299,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         collider_basis,
-                        self.entity_inverse_extents[engine_e],
+                        self.entity_inverse_extents[slot.engine_entity],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -39345,17 +39310,17 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
-            if tesla_e != usize::MAX {
-                let box_row = &mut self.entities[tesla_e];
+            if slot.tesla_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.tesla_entity];
                 let flags = form_box_flags(alive && planting_tesla);
-                let publish = sync_form_row(box_row, flags, planting_tesla, entered == tesla_e, slot.base.id);
+                let publish = sync_form_row(box_row, flags, planting_tesla, entered == slot.tesla_entity, slot.base.id);
                 if publish {
                     // The form's FixTransform, casting or hidden.
-                    let pose = slot.forms[slot.entity_slot(tesla_e)].pose;
-                    let position = if planting_tesla || frozen_pose(tesla_e).is_some() { pose.position } else { exit_position };
+                    let pose = slot.forms[slot.entity_slot(slot.tesla_entity)].pose;
+                    let position = if planting_tesla || frozen_pose(slot.tesla_entity).is_some() { pose.position } else { exit_position };
                     let rotation = pose.orientation.rotation();
                     let (center_basis, collider_basis) = (pose.orientation.up().perp_cw(), Vec2::angle(rotation));
-                    let form = &slot.forms[slot.entity_slot(tesla_e)];
+                    let form = &slot.forms[slot.entity_slot(slot.tesla_entity)];
                     let offset = if form.scale == Fix::ZERO {
                         data.tesla.collider_offset
                     } else {
@@ -39365,7 +39330,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         collider_basis,
-                        self.entity_inverse_extents[tesla_e],
+                        self.entity_inverse_extents[slot.tesla_entity],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -39376,19 +39341,19 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
-            if black_hole_e != usize::MAX {
-                let box_row = &mut self.entities[black_hole_e];
+            if slot.black_hole_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.black_hole_entity];
                 let flags = form_box_flags(alive && casting_black_hole);
-                let publish = sync_form_row(box_row, flags, casting_black_hole, entered == black_hole_e, slot.base.id);
+                let publish = sync_form_row(box_row, flags, casting_black_hole, entered == slot.black_hole_entity, slot.base.id);
                 if publish {
                     let (position, rotation, basis) = if let Some((position, rotation, up)) =
-                        frozen_pose(black_hole_e)
+                        frozen_pose(slot.black_hole_entity)
                     {
                         (position, rotation, up.perp_cw())
                     } else {
                         // BlackHoleClap.ExitAbility leaves the form's rotation
                         // (BlackHoleClap.cs:153-166), which the out box keeps.
-                        let at_sync = slot.forms[slot.entity_slot(black_hole_e)].synced;
+                        let at_sync = slot.forms[slot.entity_slot(slot.black_hole_entity)].synced;
                         let position = if casting_black_hole { at_sync.position } else { exit_position };
                         (position, at_sync.orientation.rotation(), at_sync.orientation.up().perp_cw())
                     };
@@ -39404,7 +39369,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         Vec2::angle(rotation),
-                        self.entity_inverse_extents[black_hole_e],
+                        self.entity_inverse_extents[slot.black_hole_entity],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -39417,28 +39382,28 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
-            if macho_throw_e != usize::MAX {
-                let box_row = &mut self.entities[macho_throw_e];
+            if slot.macho_throw_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.macho_throw_entity];
                 let flags = form_box_flags(alive && macho_throwing);
-                let publish = sync_form_row(box_row, flags, macho_throwing, entered == macho_throw_e, slot.base.id);
+                let publish = sync_form_row(box_row, flags, macho_throwing, entered == slot.macho_throw_entity, slot.base.id);
                 if publish {
                     let (position, center_basis, rotation, collider_basis) = if let Some((
                         position,
                         rotation,
                         up,
-                    )) = frozen_pose(macho_throw_e)
+                    )) = frozen_pose(slot.macho_throw_entity)
                     {
                         (position, up.perp_cw(), rotation, Vec2::angle(rotation))
                     } else {
                         // MachoThrow2.ExitAbility zeroes the form's rotation
                         // (MachoThrow2.cs:776); a freeze ray's direct
                         // Ability.ExitAbility leaves it (FreezeRayGun.cs:128).
-                        let at_sync = slot.forms[slot.entity_slot(macho_throw_e)].synced;
+                        let at_sync = slot.forms[slot.entity_slot(slot.macho_throw_entity)].synced;
                         let rotation = at_sync.orientation.rotation();
                         let position = if macho_throwing { at_sync.position } else { exit_position };
                         (position, at_sync.orientation.up().perp_cw(), rotation, Vec2::angle(rotation))
                     };
-                    let form = &slot.forms[slot.entity_slot(macho_throw_e)];
+                    let form = &slot.forms[slot.entity_slot(slot.macho_throw_entity)];
                     let offset = if form.scale == Fix::ZERO {
                         data.macho_throw.collider_offset
                     } else {
@@ -39448,7 +39413,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         collider_basis,
-                        self.entity_inverse_extents[macho_throw_e],
+                        self.entity_inverse_extents[slot.macho_throw_entity],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -39461,13 +39426,13 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
-            if drill_e != usize::MAX {
-                let box_row = &mut self.entities[drill_e];
+            if slot.drill_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.drill_entity];
                 let flags = form_box_flags(alive && drilling);
-                if sync_form_row(box_row, flags, drilling, entered == drill_e, slot.base.id) {
+                if sync_form_row(box_row, flags, drilling, entered == slot.drill_entity, slot.base.id) {
                     // Drill.ExitAbility leaves the body's rotation
                     // (Drill.cs:125-133), so the out box keeps it.
-                    let form = &slot.forms[slot.entity_slot(drill_e)];
+                    let form = &slot.forms[slot.entity_slot(slot.drill_entity)];
                     let at_sync = form.synced;
                     let position = if drilling { at_sync.position } else { exit_position };
                     let rotation = at_sync.orientation.rotation();
@@ -39482,7 +39447,7 @@ impl RolloutWorld {
                     let collider = stored_box(
                         center,
                         Vec2::angle(rotation),
-                        self.entity_inverse_extents[drill_e],
+                        self.entity_inverse_extents[slot.drill_entity],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -39495,10 +39460,10 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
-            if beam_e != usize::MAX {
-                let box_row = &mut self.entities[beam_e];
+            if slot.beam_entity != usize::MAX {
+                let box_row = &mut self.entities[slot.beam_entity];
                 let flags = form_box_flags(alive && beaming);
-                let publish = sync_form_row(box_row, flags, beaming, entered == beam_e, slot.base.id);
+                let publish = sync_form_row(box_row, flags, beaming, entered == slot.beam_entity, slot.base.id);
                 if publish {
                     // OnEnterAbility and StartBeam write the authored offset and
                     // extents after Ability scaled the box, so they stay unscaled
@@ -39511,7 +39476,7 @@ impl RolloutWorld {
                     let rotation = at_sync.orientation.rotation();
                     let basis = at_sync.orientation.up().perp_cw();
                     let center = position + form.offset.complex_mul(basis);
-                    let collider = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[beam_e]);
+                    let collider = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[slot.beam_entity]);
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
                     box_row.vx = 0;
@@ -39534,15 +39499,15 @@ impl RolloutWorld {
                     E_ENABLED | E_TRIGGER
                 };
             }
-            if time_stop_e != usize::MAX {
-                let circle = &mut self.entities[time_stop_e];
+            if slot.time_stop_entity != usize::MAX {
+                let circle = &mut self.entities[slot.time_stop_entity];
                 let flags = form_box_flags(alive && casting_time_stop);
-                let publish = sync_form_row(circle, flags, casting_time_stop, entered == time_stop_e, slot.base.id);
+                let publish = sync_form_row(circle, flags, casting_time_stop, entered == slot.time_stop_entity, slot.base.id);
                 if publish {
                     // CastSpell.ExitAbility zeroes the form's rotation, and its
                     // UnGround moves the body the out box keeps
                     // (CastSpell.cs:164-182).
-                    let at_sync = slot.forms[slot.entity_slot(time_stop_e)].synced;
+                    let at_sync = slot.forms[slot.entity_slot(slot.time_stop_entity)].synced;
                     let position = if casting_time_stop { at_sync.position } else { exit_position };
                     let (rotation, basis) =
                         (at_sync.orientation.rotation(), at_sync.orientation.up().perp_cw());
