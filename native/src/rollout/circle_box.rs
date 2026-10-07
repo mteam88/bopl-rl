@@ -793,7 +793,18 @@ impl RolloutWorld {
         }
         let entity = Self::hurtbox_entity(slot);
         let row = self.entities.get(entity)?;
-        (row.layer == LAYER_PLAYER && self.collides(entity)).then_some(row.kind == 0)
+        if row.layer != LAYER_PLAYER {
+            return None;
+        }
+        // `collides` would find this slot's hurtbox only after scanning every
+        // other collider pool; the row is a circle or box, so it is
+        // `hurtbox_collider`'s answer.
+        let collides = match row.kind {
+            0 | 1 => self.hurtbox_collider(i).is_some(),
+            _ => self.collides(entity),
+        };
+        debug_assert_eq!(collides, self.collides(entity));
+        collides.then_some(row.kind == 0)
     }
 
     /// Whether a Tesla node's circle is a part of the Circle/Circle group, or
@@ -829,7 +840,22 @@ impl RolloutWorld {
     /// disables it (FlammableSmoke.cs:85-89).
     fn cloud_part(&self, i: usize) -> bool {
         let cloud = &self.smoke_clouds[i];
-        cloud.active && cloud.registered && cloud.entity.is_some_and(|entity| self.collides(entity))
+        cloud.active && cloud.registered && cloud.entity.is_some_and(|entity| self.cloud_collides(entity))
+    }
+
+    /// `collides` for a Smoke cloud's circle row. No node, rocket, spike,
+    /// clone, pickup, arrow, item, lightning or hurtbox owns the row, so
+    /// `detphysics_collider` would answer with `row_collider` after scanning
+    /// every one of those pools; this asks it directly.
+    fn cloud_collides(&self, entity: usize) -> bool {
+        let collides = match self.entities.get(entity) {
+            Some(row) if row.kind == 0 => {
+                row_is_active(row) && row.flags & (E_DESTROYED | E_REMOVED) == 0 && !self.blink_object_hidden(Some(entity))
+            }
+            _ => self.collides(entity),
+        };
+        debug_assert_eq!(collides, self.collides(entity));
+        collides
     }
 
     /// Whether an abilityless clone's collider is in this Simulate's pairs,

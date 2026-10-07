@@ -249,6 +249,21 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     The hash is unchanged, and the debug-assertions exact gate passes
     (12,400 games). In the trainer (3 interleaved repeats at load ~12),
     the sim time moves within noise.
+24. **v10: the part filters ask the collider they know.** `collides` goes
+    through `detphysics_collider`, which scans the node, rocket, spike,
+    clone, pickup, arrow, item and lightning pools and then the players
+    before it builds a collider, only for `is_some()`. A callgrind profile
+    of v9 put `cloud_part` at ~6% of sim instructions (738k calls on the 30
+    games, ~15 per tick) and `body_part_circle` at 1.8%.
+    - `cloud_collides` answers a smoke cloud's circle row from the row
+      itself (active, not destroyed or removed, not hidden in a Blink
+      tunnel), which is what `row_collider` returns once every scan
+      misses.
+    - `body_part_circle` asks `hurtbox_collider` for its own slot.
+    Both debug_assert that they agree with `collides`. Instructions drop
+    3.497G to 3.387G (-3.1%), and cycles (non-PGO, taskset, interleaved)
+    drop by about 4%. The PGO env_bench sim goes from 15.60 to 15.15 us, the
+    hash is unchanged, and the debug-assertions exact gate passes.
 
 
 ## Cold caches in the trainer
@@ -346,7 +361,8 @@ sites, with no single structure to repack.
   1.208-1.219G. The skipped loads were not on the critical path.
 - Answering a player's own hurtbox in `body_part_circle` without
   `detphysics_collider`'s pool scans: exact (debug assertion over all 400
-  games), 0.2% faster. Not worth the special case.
+  games), 0.2% faster at the time. It was kept in v10 (item 24), where it
+  is -1% instructions next to the smoke-cloud fast path.
 
 ## The writer on the GPU (2026-10-06)
 
