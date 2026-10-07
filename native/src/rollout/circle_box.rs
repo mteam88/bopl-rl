@@ -1550,7 +1550,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let rounded = walls.get(wall).copied().unwrap_or(self.platforms[wall].collider);
+                let rounded = self.narrow_wall(walls, wall);
                 // A Box meets a RoundedRect as a RoundedRect of radius zero
                 // (PhysTools.cs:104-111).
                 let contact = match collider {
@@ -1606,20 +1606,23 @@ impl RolloutWorld {
                 Part::Missile(missile) => CallbackHit::MissileBlast { missile },
                 // PlayerCollision.OnCollide's squish acts only on the wall
                 // layer (PlayerCollision.cs:326).
-                Part::Body(index) if wall_layer => CallbackHit::Squish {
-                    slime: Slime::Player(index),
-                    wall,
-                    collider: walls.get(wall).copied().unwrap_or(self.platforms[wall].collider),
-                },
-                Part::Clone(index) if wall_layer => CallbackHit::Squish {
-                    slime: Slime::Clone(index),
-                    wall,
-                    collider: walls.get(wall).copied().unwrap_or(self.platforms[wall].collider),
-                },
+                // Queued where it is built: a squish built into `hit` and
+                // copied from there reloads the wall's collider across
+                // stores of other variants' fields.
+                Part::Body(_) | Part::Clone(_) if wall_layer => {
+                    let slime = match part {
+                        Part::Body(index) => Slime::Player(index),
+                        Part::Clone(index) => Slime::Clone(index),
+                        _ => unreachable!(),
+                    };
+                    let collider = self.narrow_wall(walls, wall);
+                    self.scratch.callback_hits.push((key, CallbackHit::Squish { slime, wall, collider }));
+                    continue;
+                }
                 // RopeHook.OnCollide tests the collider the manifold copied
                 // (RopeHook.cs:86-131).
                 Part::Hook(rope) => {
-                    let collider = walls.get(wall).copied().unwrap_or(self.platforms[wall].collider);
+                    let collider = self.narrow_wall(walls, wall);
                     CallbackHit::RopeHook {
                         rope,
                         target: HookTarget::Platform(wall),
@@ -1631,11 +1634,7 @@ impl RolloutWorld {
                 // two overlap much earlier (BlackHole.cs:207-210, 516-547).
                 Part::Hole(hole)
                     if wall_layer
-                        && walls
-                            .get(wall)
-                            .copied()
-                            .unwrap_or(self.platforms[wall].collider)
-                            .overlaps(self.black_holes[hole].position) =>
+                        && self.narrow_wall(walls, wall).overlaps(self.black_holes[hole].position) =>
                 {
                     let inverse_mass = self.platform_dynamics[wall].body.inverse_mass;
                     CallbackHit::BlackHole { hole, target: HoleTarget::Wall(wall), inverse_mass }
@@ -1659,6 +1658,16 @@ impl RolloutWorld {
             self.platforms_changed();
         }
         self.scratch.wall_contacts = contacts;
+    }
+
+    /// Wall `wall` as a wall group's narrow phase sees it: `walls`' copy,
+    /// or past them the live collider (read only then).
+    #[inline(always)]
+    fn narrow_wall(&self, walls: &[RoundedRect], wall: usize) -> RoundedRect {
+        match walls.get(wall) {
+            Some(&rounded) => rounded,
+            None => self.platforms[wall].collider,
+        }
     }
 
     /// The bounds SortAndSweep took of a wall, before this pass's
