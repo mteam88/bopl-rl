@@ -329,6 +329,21 @@ sites, with no single structure to repack.
   about 2% of a 12% world-cycling tax. In the trainer, data dominates the
   misses (about 48 KB of L2 misses per env step, against 30 KB of code),
   spread over many structures.
+- Huge pages (2026-10-07). THP=always alone does nothing on this box:
+  free memory has no 2 MB blocks (page cache fills the rest), and
+  defrag=madvise never compacts for unadvised faults, so every fault falls
+  back. After drop_caches, compact_memory and defrag=always, the trainer's
+  cand arm got real huge pages (4-5k THP faults, 0 fallbacks), yet the
+  pairs were 513.9k vs 519.0k and 526.1k vs 529.3k sps, within the ~2.5%
+  run-to-run noise (an earlier A/A run, with no huge pages in either arm,
+  differed by 2.5%). The TLB counts agree: in env_bench with 12 copies,
+  L1-iTLB misses that hit the L2 TLB are ~21M and page walks ~0.5M per
+  27G cycles, under 1%. So remapping the sim's text to huge pages is not
+  worth building either.
+- Lazy "any live" bits that let `run_spawned_before` skip its wall-tunnel,
+  shockwave and SuperStar scans (86% of its calls list nothing; 5.8 calls
+  per tick): exact, -1.1% instructions, and cycles 1.195-1.200G to
+  1.208-1.219G. The skipped loads were not on the critical path.
 - Answering a player's own hurtbox in `body_part_circle` without
   `detphysics_collider`'s pool scans: exact (debug assertion over all 400
   games), 0.2% faster. Not worth the special case.
