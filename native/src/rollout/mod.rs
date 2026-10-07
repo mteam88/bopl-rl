@@ -37212,18 +37212,21 @@ impl RolloutWorld {
 
         // DetPhysics integrates every rounded body before it constructs any
         // contacts. Only dropped boulders and springless sudden-death bodies
-        // have a gravityScale, under the game's -40 gravity.
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active {
-                self.sync_inactive_platform(i);
+        // have a gravityScale, under the game's -40 gravity. An inactive
+        // platform is synchronized after the others integrate: each touches
+        // only its own platform, body and children.
+        debug_assert_eq!(self.platforms.len(), self.platform_dynamics.len());
+        let mut inactive = false;
+        for (platform, dynamics) in self.platforms.iter_mut().zip(self.platform_dynamics.iter_mut()) {
+            if !platform.active {
+                inactive = true;
                 continue;
             }
-            let dynamics = &mut self.platform_dynamics[i];
             if dynamics.attached_children != 0 {
                 // SyncAllPhysicsObjectsToFixTransformPosition discards any
                 // prior Box/RR correction of CompositeBody.position and
                 // re-anchors the composite on its rounded-root FixTransform.
-                dynamics.composite_position = self.platforms[i].surface.center;
+                dynamics.composite_position = platform.surface.center;
                 // The rounded rect's own force joins the combined body's.
                 dynamics.body.force += dynamics.root_body.force;
                 dynamics.root_body.force = Vec2::ZERO;
@@ -37236,7 +37239,6 @@ impl RolloutWorld {
             } else {
                 dynamics.body.integrate(physics_dt, Fix::from_int(-40))
             };
-            let platform = &mut self.platforms[i];
             // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
             let (basis, right, up) = dynamics.basis_axes(platform.collider.inner.inverse_extents);
             if dynamics.attached_children != 0 {
@@ -37252,6 +37254,13 @@ impl RolloutWorld {
             inner.center = platform.surface.center;
             inner.right = right;
             inner.up = up;
+        }
+        if inactive {
+            for i in 0..self.platforms.len() {
+                if !self.platforms[i].active {
+                    self.sync_inactive_platform(i);
+                }
+            }
         }
         // Composite children are synchronized immediately after integration.
         // Positional corrections later in this pass move CompositeBody.position
