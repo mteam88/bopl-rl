@@ -40401,9 +40401,15 @@ impl RolloutWorld {
             return;
         }
         self.platform_rows_epoch = self.platform_epoch;
-        for (i, platform) in self.platforms.iter().enumerate() {
-            let e = &mut self.entities[self.platform_entities[i]];
-            let dynamics = &self.platform_dynamics[i];
+        debug_assert!(
+            self.platform_dynamics.len() == self.platforms.len() && self.platform_entities.len() == self.platforms.len()
+        );
+        let entities = &mut self.entities;
+        let inverse_extents = &mut self.entity_inverse_extents;
+        for ((platform, dynamics), &entity) in
+            self.platforms.iter().zip(&self.platform_dynamics).zip(&self.platform_entities)
+        {
+            let e = &mut entities[entity];
             let observed_body = if dynamics.attached_children == 0 {
                 &dynamics.body
             } else {
@@ -40417,11 +40423,7 @@ impl RolloutWorld {
             // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
             let right = platform.collider.inner.right;
             let up = platform.collider.inner.up;
-            set_inverse_extents(
-                &mut self.entity_inverse_extents,
-                self.platform_entities[i],
-                platform.collider.inner.inverse_extents,
-            );
+            set_inverse_extents(inverse_extents, entity, platform.collider.inner.inverse_extents);
             // RlObservation publishes PhysicsBody.orientation directly. The
             // collider basis is derived output and must not be converted back
             // into an angle (especially around the Q32 sine-table boundary).
@@ -40477,6 +40479,11 @@ impl RolloutWorld {
         order[..count].sort_unstable_by_key(|&index| {
             self.entities[self.players[index].body_entity].hierarchy
         });
+        // Nearly every observation has no abilityless clone to interleave.
+        if !self.abilityless_clones.iter().any(|clone| clone.active && clone.entity.is_some()) {
+            slimes.extend(order[..count].iter().map(|&index| self.slime_row(index)));
+            return;
+        }
         let mut clone_order = [usize::MAX; MAX_PLAYERS * 16];
         let mut clone_count = 0usize;
         for (index, clone) in self.abilityless_clones.iter().enumerate() {
@@ -40526,130 +40533,135 @@ impl RolloutWorld {
                 slimes.push(clone_row(clone_order[next_clone]));
                 next_clone += 1;
             }
-            let slot = &self.players[index];
-            let in_ability = slot.active != ActiveAbility::None;
-            let respawning = slot.respawn_ticks > 0
-                || slot.respawn_spawn_ticks > 0
-                || slot.revival_effect_ticks > 0;
-            let mut flags = if slot.has_spawned { S_SPAWNED } else { 0 };
-            if (slot.teleport_effect_active || slot.blink_tunnel_active) && !in_ability {
-                // The inactive slime's RewindRecorder is skipped by the
-                // Updater, so a rewind in progress keeps suppressInput set
-                // (RewindRecorder.cs:150, 342-352), as does a respawn that
-                // has not reached Spawn (SlimeController.cs:519, 574, 626).
-                if respawning || slot.rewind.rewinding {
-                    flags |= S_SUPPRESS_INPUT;
-                }
-            } else if respawning || slot.rewind.rewinding {
-                flags |= S_ACTIVE | S_SUPPRESS_INPUT;
-            } else if in_ability {
-                // onEnterAbility disables the original slime GameObject but
-                // its spawned/simulated state remains visible to observation.
-                flags |= S_IN_ABILITY;
-            } else {
-                flags |= S_ACTIVE;
-            }
-            let slime = if in_ability { &slot.slime } else { &slot.base };
-            if slime.simulated {
-                flags |= S_SIMULATED;
-            }
-            if slot.abilityless {
-                flags |= S_ABILITYLESS;
-            }
-            let mut ability_flags = [0u32; 3];
-            for (s, flags) in ability_flags.iter_mut().enumerate() {
-                if slot.abilities[s] == 0 {
-                    continue;
-                }
-                let mut f = 1u32;
-                if slot.timers[s] >= slot.cooldowns[s] {
-                    f |= 2;
-                }
-                if slot.timers[s] > slot.cooldowns[s] {
-                    f |= 4;
-                }
-                // Bit 8 and the Bow charge read the form GameObject's
-                // activeInHierarchy, which a Blink tunnel or a Teleport clears.
-                if in_ability
-                    && slot.active_slot == s
-                    && !slot.blink_tunnel_active
-                    && !slot.teleport_effect_active
-                {
-                    f |= 8;
-                    if slot.active == ActiveAbility::Bow {
-                        // RlObservation reflects BowTransform.loadingFrame
-                        // into bits 4..6 and hasFired into bit 7.
-                        f |= (slot.bow.loading_frame & 7) << 4;
-                        if slot.bow.has_fired {
-                            f |= 0x80;
-                        }
-                    }
-                }
-                *flags = f;
-            }
-            let (slime_position, velocity, rotation, state) =
-                if slot.late_obs_tick.checked_add(1) == Some(self.tick) {
-                    // ApplyRagDoll zeroes selfImposedVelocity and leaves
-                    // externalVelocity alone; the row reads both live.
-                    (
-                        slot.late_obs_position,
-                        slot.base.velocity + slot.base.external_velocity,
-                        slot.late_obs_rotation,
-                        slot.late_obs_state,
-                    )
-                } else if in_ability {
-                    (
-                        slot.slime.position,
-                        slot.slime.velocity + slot.slime.external_velocity,
-                        slot.slime.rotation(),
-                        slot.inactive_obs_state,
-                    )
-                } else {
-                    (
-                        slot.base.position,
-                        slot.base.velocity + slot.base.external_velocity,
-                        slot.base.rotation(),
-                        slot.obs_state,
-                    )
-                };
-            // An empty ability list publishes no cooldowns, and OldUpdate
-            // never advances the timers past it.
-            let cooldown = |s: usize| if s < slot.ability_count { slot.cooldowns[s] } else { Fix::ZERO };
-            let timer = |s: usize| if s < slot.ability_count { slot.timers[s] } else { slot.spare_timer };
-            let [x, y, vx, vy, rotation, scale, cooldown0, cooldown1, cooldown2, timer0, timer1, timer2] =
-                Fix::raw_array([
-                    slime_position.x,
-                    slime_position.y,
-                    velocity.x,
-                    velocity.y,
-                    rotation,
-                    if in_ability { slot.slime.scale } else { slot.base.scale },
-                    cooldown(0),
-                    cooldown(1),
-                    cooldown(2),
-                    timer(0),
-                    timer(1),
-                    timer(2),
-                ]);
-            slimes.push(CSlime {
-                id: self.entities[slot.body_entity].id,
-                owner: slot.base.id,
-                flags,
-                state,
-                x,
-                y,
-                vx,
-                vy,
-                rotation,
-                scale,
-                abilities: slot.abilities,
-                ability_flags,
-                cooldowns: [cooldown0, cooldown1, cooldown2],
-                timers: [timer0, timer1, timer2],
-            });
+            slimes.push(self.slime_row(index));
         }
         for &index in &clone_order[next_clone..clone_count] {
             slimes.push(clone_row(index));
+        }
+    }
+
+    /// The CSlime row of player body `index`, a listed slime.
+    fn slime_row(&self, index: usize) -> CSlime {
+        let slot = &self.players[index];
+        let in_ability = slot.active != ActiveAbility::None;
+        let respawning = slot.respawn_ticks > 0
+            || slot.respawn_spawn_ticks > 0
+            || slot.revival_effect_ticks > 0;
+        let mut flags = if slot.has_spawned { S_SPAWNED } else { 0 };
+        if (slot.teleport_effect_active || slot.blink_tunnel_active) && !in_ability {
+            // The inactive slime's RewindRecorder is skipped by the
+            // Updater, so a rewind in progress keeps suppressInput set
+            // (RewindRecorder.cs:150, 342-352), as does a respawn that
+            // has not reached Spawn (SlimeController.cs:519, 574, 626).
+            if respawning || slot.rewind.rewinding {
+                flags |= S_SUPPRESS_INPUT;
+            }
+        } else if respawning || slot.rewind.rewinding {
+            flags |= S_ACTIVE | S_SUPPRESS_INPUT;
+        } else if in_ability {
+            // onEnterAbility disables the original slime GameObject but
+            // its spawned/simulated state remains visible to observation.
+            flags |= S_IN_ABILITY;
+        } else {
+            flags |= S_ACTIVE;
+        }
+        let slime = if in_ability { &slot.slime } else { &slot.base };
+        if slime.simulated {
+            flags |= S_SIMULATED;
+        }
+        if slot.abilityless {
+            flags |= S_ABILITYLESS;
+        }
+        let mut ability_flags = [0u32; 3];
+        for (s, flags) in ability_flags.iter_mut().enumerate() {
+            if slot.abilities[s] == 0 {
+                continue;
+            }
+            let mut f = 1u32;
+            if slot.timers[s] >= slot.cooldowns[s] {
+                f |= 2;
+            }
+            if slot.timers[s] > slot.cooldowns[s] {
+                f |= 4;
+            }
+            // Bit 8 and the Bow charge read the form GameObject's
+            // activeInHierarchy, which a Blink tunnel or a Teleport clears.
+            if in_ability
+                && slot.active_slot == s
+                && !slot.blink_tunnel_active
+                && !slot.teleport_effect_active
+            {
+                f |= 8;
+                if slot.active == ActiveAbility::Bow {
+                    // RlObservation reflects BowTransform.loadingFrame
+                    // into bits 4..6 and hasFired into bit 7.
+                    f |= (slot.bow.loading_frame & 7) << 4;
+                    if slot.bow.has_fired {
+                        f |= 0x80;
+                    }
+                }
+            }
+            *flags = f;
+        }
+        let (slime_position, velocity, rotation, state) =
+            if slot.late_obs_tick.checked_add(1) == Some(self.tick) {
+                // ApplyRagDoll zeroes selfImposedVelocity and leaves
+                // externalVelocity alone; the row reads both live.
+                (
+                    slot.late_obs_position,
+                    slot.base.velocity + slot.base.external_velocity,
+                    slot.late_obs_rotation,
+                    slot.late_obs_state,
+                )
+            } else if in_ability {
+                (
+                    slot.slime.position,
+                    slot.slime.velocity + slot.slime.external_velocity,
+                    slot.slime.rotation(),
+                    slot.inactive_obs_state,
+                )
+            } else {
+                (
+                    slot.base.position,
+                    slot.base.velocity + slot.base.external_velocity,
+                    slot.base.rotation(),
+                    slot.obs_state,
+                )
+            };
+        // An empty ability list publishes no cooldowns, and OldUpdate
+        // never advances the timers past it.
+        let cooldown = |s: usize| if s < slot.ability_count { slot.cooldowns[s] } else { Fix::ZERO };
+        let timer = |s: usize| if s < slot.ability_count { slot.timers[s] } else { slot.spare_timer };
+        let [x, y, vx, vy, rotation, scale, cooldown0, cooldown1, cooldown2, timer0, timer1, timer2] =
+            Fix::raw_array([
+                slime_position.x,
+                slime_position.y,
+                velocity.x,
+                velocity.y,
+                rotation,
+                if in_ability { slot.slime.scale } else { slot.base.scale },
+                cooldown(0),
+                cooldown(1),
+                cooldown(2),
+                timer(0),
+                timer(1),
+                timer(2),
+            ]);
+        CSlime {
+            id: self.entities[slot.body_entity].id,
+            owner: slot.base.id,
+            flags,
+            state,
+            x,
+            y,
+            vx,
+            vy,
+            rotation,
+            scale,
+            abilities: slot.abilities,
+            ability_flags,
+            cooldowns: [cooldown0, cooldown1, cooldown2],
+            timers: [timer0, timer1, timer2],
         }
     }
 
