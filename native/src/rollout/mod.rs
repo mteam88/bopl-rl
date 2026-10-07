@@ -1056,31 +1056,39 @@ pub struct SmokeCloud {
 /// all +0 with a zero step, is such a state, whose raws are 0.
 #[derive(Clone, Copy, Default)]
 pub struct RestMemo {
-    state: [u64; 17],
+    body: [u64; 14],
+    center: [u64; 2],
+    dt: u64,
     raws: [i64; 4],
 }
 
+const _: () = assert!(std::mem::size_of::<Body>() == 14 * 8 && std::mem::align_of::<Body>() == 8);
+
 impl RestMemo {
+    /// A body's bits.
     #[inline(always)]
-    fn state(body: &Body, center: Vec2, dt: Fix) -> [u64; 17] {
-        // SAFETY: a Body is 14 `Fix`, each 8 bytes with no invalid bit pattern.
-        let body: [u64; 14] = unsafe { std::mem::transmute::<Body, [u64; 14]>(*body) };
-        let mut state = [0; 17];
-        state[..14].copy_from_slice(&body);
-        state[14..].copy_from_slice(&[center.x.bits(), center.y.bits(), dt.bits()]);
-        state
+    fn bits(body: &Body) -> &[u64; 14] {
+        // SAFETY: a Body is 14 `Fix`, each 8 bytes (the size and alignment
+        // checked above) with no invalid bit pattern.
+        unsafe { &*(body as *const Body).cast::<[u64; 14]>() }
+    }
+
+    #[inline(always)]
+    fn holds(&self, body: &Body, center: Vec2, dt: Fix) -> bool {
+        let differ = Self::bits(body).iter().zip(&self.body).fold(0, |differ, (a, b)| differ | (a ^ b));
+        differ | (center.x.bits() ^ self.center[0]) | (center.y.bits() ^ self.center[1]) | (dt.bits() ^ self.dt) == 0
     }
 
     /// `center += body.integrate(dt, 0)`, then the row's center and velocity.
     #[inline(always)]
     fn step(&mut self, body: &mut Body, center: &mut Vec2, dt: Fix, row: Option<&mut CEntity>) {
-        let state = Self::state(body, *center, dt);
-        let same = state.iter().zip(&self.state).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0;
-        if !same {
+        if !self.holds(body, *center, dt) {
+            let before = (*Self::bits(body), [center.x.bits(), center.y.bits()]);
             *center += body.integrate(dt, Fix::ZERO);
             let raws = Fix::raw_array([center.x, center.y, body.velocity.x, body.velocity.y]);
-            if Self::state(body, *center, dt) == state {
-                *self = Self { state, raws };
+            if (*Self::bits(body), [center.x.bits(), center.y.bits()]) == before {
+                *self = Self { body: before.0, center: before.1, dt: dt.bits(), raws };
+                debug_assert!(self.holds(body, *center, dt));
             }
             if let Some(row) = row {
                 [row.x, row.y, row.vx, row.vy] = raws;
@@ -1091,7 +1099,7 @@ impl RestMemo {
         {
             let (mut body, mut center) = (*body, *center);
             center += body.integrate(dt, Fix::ZERO);
-            debug_assert_eq!(Self::state(&body, center, dt), state, "a resting body moved");
+            debug_assert!(self.holds(&body, center, dt), "a resting body moved");
             debug_assert_eq!(self.raws, Fix::raw_array([center.x, center.y, body.velocity.x, body.velocity.y]));
         }
         if let Some(row) = row {
@@ -10156,6 +10164,9 @@ impl RolloutWorld {
     }
 
     fn smoke_clouds_integrate(&mut self, physics_dt: Fix) {
+        // Only an active tunnel or effect hides an object (`object_hidden_in`).
+        let hiding = self.blink_object_tunnels.iter().any(|tunnel| tunnel.active)
+            || self.teleport_object_effects.iter().any(|effect| effect.active);
         for index in 0..self.smoke_clouds.len() {
             let cloud = &self.smoke_clouds[index];
             if !cloud.active || !cloud.registered {
@@ -10164,7 +10175,8 @@ impl RolloutWorld {
             // A cloud a Blink tunnel or Teleport effect deactivated is skipped
             // by DetPhysics like any inactive GameObject, but RlObservation
             // still exports its body's velocity, which a Shockwave pushed.
-            let hidden = self.blink_object_hidden(cloud.entity);
+            let hidden = hiding && self.blink_object_hidden(cloud.entity);
+            debug_assert_eq!(hidden, self.blink_object_hidden(cloud.entity));
             let cloud = &mut self.smoke_clouds[index];
             // Ignite disables the circle, and DetPhysics integrates only
             // active colliders (FlammableSmoke.cs:88). The row still shows
