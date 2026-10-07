@@ -4872,6 +4872,7 @@ struct PlatformScratch {
     /// Circle/Box group.
     circle_parts: Vec<(Part, u32)>,
     circle_ends: [u32; circle_box::CC_BLOCKS],
+    box_bodies: u32,
     circle_parts_tick: Option<u32>,
     /// sweep_pairs' priors still open on the sweep axis.
     sweep_live: Vec<circle_box::LivePart>,
@@ -29157,7 +29158,7 @@ impl RolloutWorld {
         effects: &[TeleportObjectEffect],
         entity: Option<usize>,
     ) -> bool {
-        let Some(entity) = entity else {
+        let Some(entity) = entity.filter(|_| !(tunnels.is_empty() && effects.is_empty())) else {
             return false;
         };
         let entity_id = entities.get(entity).map_or(0, |row| row.id);
