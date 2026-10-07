@@ -35889,10 +35889,15 @@ impl RolloutWorld {
     fn platform_scene_lead(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
         debug_assert!(self.platforms[i].active);
         let (tick, time_scale, sudden_death) = (self.tick, self.player_time_scale, self.sudden_death);
+        // The center the spring reads, taken with the active test's platform:
+        // only `sticky_finish` may move it (`platform_sink` writes the
+        // dynamics alone), and it re-reads it.
+        let mut center = self.platforms[i].surface.center;
         let mut dynamics = &mut self.platform_dynamics[i];
         let ease = Self::sticky_step(dynamics, updater_dt, time_scale, sudden_death);
         if ease.is_some() || dynamics.surface_shape_dirty {
             self.sticky_finish(i, ease);
+            center = self.platforms[i].surface.center;
             dynamics = &mut self.platform_dynamics[i];
         }
         debug_assert!(self.platforms[i].active);
@@ -35901,7 +35906,8 @@ impl RolloutWorld {
                 self.platform_sink(data, updater_dt, i);
                 dynamics = &mut self.platform_dynamics[i];
             }
-            Self::spring_step(dynamics, self.platforms[i].surface.center, updater_dt, tick);
+            debug_assert!(center == self.platforms[i].surface.center);
+            Self::spring_step(dynamics, center, updater_dt, tick);
         }
         let shook = Self::shakes(dynamics);
         if shook {
