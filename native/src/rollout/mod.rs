@@ -9581,6 +9581,7 @@ impl RolloutWorld {
     /// a DuplicatePlatformEffect, a TeleportIndicator and a wall's
     /// QuantumTunnel. The per-kind passes later in the pass run the rest, and
     /// each of their objects first runs this walk to its own turn.
+    #[inline]
     fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
         // Nearly every walk finds nothing, and with no smoke cloud and no
         // player object on the summary tells so without a scan.
@@ -9594,6 +9595,12 @@ impl RolloutWorld {
                 return;
             }
         }
+        self.spawned_walk_before(data, updater_dt, before);
+    }
+
+    /// `run_spawned_before`'s walk, past its summary test.
+    #[inline(never)]
+    fn spawned_walk_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
         self.spawned_walk::<false>(data, updater_dt, before, before);
     }
 
