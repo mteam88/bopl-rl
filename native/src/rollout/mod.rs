@@ -20332,8 +20332,9 @@ impl RolloutWorld {
     /// SmokeCircle's DestroyIfOutsideSceneBounds below the floor: the water
     /// splash, or past a space floor its UpEffect, a MineExplosion set on
     /// Camera_YMin (DestroyIfOutsideSceneBounds.cs:69-80, SmokeCircle.prefab).
-    fn smoke_cloud_floor_effect(&self, cloud: &SmokeCloud) -> Option<BoundsEffect> {
-        let map = &data::get().maps[self.map];
+    fn smoke_cloud_floor_effect(&self, cloud: &SmokeCloud, data: &data::RolloutData) -> Option<BoundsEffect> {
+        debug_assert!(std::ptr::eq(data, data::get()));
+        let map = &data.maps[self.map];
         if cloud.position.y >= map.lower_boundary() {
             return None;
         }
@@ -20368,7 +20369,7 @@ impl RolloutWorld {
         // so its floor effect comes after whatever an older updater spawns
         // this pass, such as a Mine's MineExplosion at the top bound
         // (DestroyIfOutsideSceneBounds.cs).
-        if let Some(effect) = self.smoke_cloud_floor_effect(&cloud) {
+        if let Some(effect) = self.smoke_cloud_floor_effect(&cloud, data) {
             self.remove_smoke_cloud(cloud_index);
             self.queued_spawns.push((100_000_000 + cloud.hierarchy_base, effect));
             return;
@@ -20658,27 +20659,25 @@ impl RolloutWorld {
         // Updater skips an inactive cloud. The QuantumTunnel or
         // TeleportedObjectEffect holding it is newer, so the pass that lets
         // it go has already passed it by.
-        if !self.active_self(self.smoke_clouds[cloud_index].entity) {
+        let cloud = &self.smoke_clouds[cloud_index];
+        if !self.active_self(cloud.entity) || !cloud.active || !cloud.registered {
             return;
         }
-        let cloud = self.smoke_clouds[cloud_index];
-        if cloud.active
-            && cloud.registered
-            && let Some(effect) = self.smoke_cloud_floor_effect(&cloud)
-        {
+        if let Some(effect) = self.smoke_cloud_floor_effect(cloud, data) {
             self.spawn_bounds_effect(effect, data);
             self.remove_smoke_cloud(cloud_index);
             return;
         }
         let cloud = &mut self.smoke_clouds[cloud_index];
-        if !cloud.active || !cloud.registered {
-            return;
-        }
-        let frame = data
-            .smoke
-            .cloud_enter_frame_ticks
-            .partition_point(|&end| end <= cloud.age_ticks)
-            .min(data.smoke.cloud_radii.len() - 1);
+        // The enter animation's frame: nearly every cloud is past it, on its
+        // last radius.
+        let (ends, last) = (&data.smoke.cloud_enter_frame_ticks, data.smoke.cloud_radii.len() - 1);
+        let frame = if last.checked_sub(1).and_then(|k| ends.get(k)).is_some_and(|&end| end <= cloud.age_ticks) {
+            last
+        } else {
+            ends.partition_point(|&end| end <= cloud.age_ticks).min(last)
+        };
+        debug_assert_eq!(frame, ends.partition_point(|&end| end <= cloud.age_ticks).min(last));
         if let Some(entity) = cloud.entity {
             cloud.radius_before = self.entities[entity].radius;
             cloud.radius_tick = self.tick;
