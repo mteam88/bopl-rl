@@ -138,6 +138,12 @@ impl Fix {
         }
         Self(result)
     }
+    /// `self / rhs` for a divisor the caller knows is nonzero (the f64
+    /// build drops the zero test; this is the checked division).
+    #[inline]
+    pub fn div_nonzero(self, rhs: Self) -> Self {
+        self / rhs
+    }
     pub fn checked_div(self, rhs: Self) -> Result<Self, MathError> {
         if rhs.0 == 0 {
             return Err(MathError::DivisionByZero);

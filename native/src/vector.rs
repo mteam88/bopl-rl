@@ -36,6 +36,11 @@ impl Vec2 {
     pub fn normalized(self) -> Self {
         self / self.length()
     }
+    /// `self / rhs` by `Fix::div_nonzero`.
+    #[inline]
+    pub fn div_nonzero(self, rhs: Fix) -> Self {
+        Self::new(self.x.div_nonzero(rhs), self.y.div_nonzero(rhs))
+    }
     pub fn normalized_safe(self) -> Self {
         let length = self.length();
         if length == Fix::ZERO {

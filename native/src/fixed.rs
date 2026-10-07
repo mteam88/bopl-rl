@@ -217,6 +217,14 @@ impl Fix {
     pub fn slow_mul(self, rhs: Self) -> Self {
         Self(self.0 * rhs.0)
     }
+    /// `self / rhs` for a divisor the caller knows is nonzero (a positive
+    /// inverse mass): the quotient without the zero test, which debug builds
+    /// still check.
+    #[inline]
+    pub fn div_nonzero(self, rhs: Self) -> Self {
+        debug_assert!(rhs.0 != 0.0, "fixed division by zero");
+        Self(self.0 / rhs.0)
+    }
     pub fn checked_div(self, rhs: Self) -> Result<Self, MathError> {
         if rhs.0 == 0.0 {
             return Err(MathError::DivisionByZero);

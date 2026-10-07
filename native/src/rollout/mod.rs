@@ -2031,7 +2031,9 @@ pub struct PlatformDynamics {
     pub speed: Fix,
     pub mu: Fix,
     pub rotation_speed: Fix,
-    pub rotation_mu: Fix,
+    /// `One - rotationMu`, AnimateVelocity's per-pass angular damping
+    /// factor: rotationMu is constant per body, so its complement is kept.
+    pub rotation_keep: Fix,
     pub interpolate_rotation_home: bool,
     /// ShakablePlatform's transform-space displacement. Meteor writes the
     /// request after this map updater has run, so the first sample is taken
@@ -6553,7 +6555,7 @@ impl RolloutWorld {
                 speed: p.speed,
                 mu: p.mu,
                 rotation_speed: p.rotation_speed,
-                rotation_mu: p.rotation_mu,
+                rotation_keep: Fix::ONE - p.rotation_mu,
                 interpolate_rotation_home: p.interpolate_rotation_home,
                 shake_time: Fix::ZERO,
                 shake_duration: Fix::ZERO,
@@ -19556,7 +19558,7 @@ impl RolloutWorld {
             speed: Fix::ZERO,
             mu: Fix::ZERO,
             rotation_speed: Fix::ZERO,
-            rotation_mu: Fix::ZERO,
+            rotation_keep: Fix::ONE,
             interpolate_rotation_home: false,
             shake_time: Fix::ZERO,
             shake_duration: Fix::ZERO,
@@ -31932,7 +31934,7 @@ impl RolloutWorld {
             speed: pd.spawn_speed,
             mu: pd.spawn_mu,
             rotation_speed: pd.spawn_rotation_speed,
-            rotation_mu: pd.spawn_rotation_mu,
+            rotation_keep: Fix::ONE - pd.spawn_rotation_mu,
             interpolate_rotation_home: true,
             shake_time: Fix::ZERO,
             shake_duration: Fix::ZERO,
@@ -35073,10 +35075,12 @@ impl RolloutWorld {
             (dynamics.home_position - position) * dynamics.speed
                 - dynamics.body.velocity * dynamics.mu
         };
-        let impulse = spring * updater_dt / dynamics.body.inverse_mass;
+        // A platform body's inverse mass is `One / (10 + mass)` scaled by a
+        // ratio of positive scales: never zero.
+        let inverse_mass = dynamics.body.inverse_mass;
+        let impulse = (spring * updater_dt).div_nonzero(inverse_mass);
         dynamics.body.force += impulse * Fix::from_int(60);
-        let floating =
-            -dynamics.body.velocity * dynamics.mu * updater_dt / dynamics.body.inverse_mass;
+        let floating = (-dynamics.body.velocity * dynamics.mu * updater_dt).div_nonzero(inverse_mass);
         let (added, floating) = (impulse * Fix::from_int(60), floating * Fix::from_int(60));
         dynamics.spring_step = Some((tick, added, floating, position));
         if dynamics.interpolate_rotation_home {
@@ -35086,7 +35090,7 @@ impl RolloutWorld {
             }
             dynamics.body.angular_velocity = (dynamics.body.angular_velocity
                 + angle_delta * dynamics.rotation_speed * updater_dt)
-                * (Fix::ONE - dynamics.rotation_mu);
+                * dynamics.rotation_keep;
         }
     }
 
@@ -36032,7 +36036,14 @@ impl RolloutWorld {
         dynamics.hold.update_sim();
         let previous = dynamics.body_scale;
         let scale = dynamics.scale;
-        if !dynamics.body_resizable && previous != scale {
+        // A resizable body's `body_scale = scale` only changes it when the
+        // two differ (neither is ever zero or NaN), so both kinds test the
+        // one comparison first.
+        if previous == scale {
+            debug_assert!(scale != Fix::ZERO);
+            return false;
+        }
+        if !dynamics.body_resizable {
             let ratio = previous / scale;
             dynamics.unscaled_inverse_mass = Some((tick, dynamics.body.inverse_mass));
             dynamics.body.inverse_mass *= ratio;
@@ -36045,9 +36056,8 @@ impl RolloutWorld {
             }
             dynamics.body_scale = scale;
             return true;
-        } else if dynamics.body_resizable {
-            dynamics.body_scale = scale;
         }
+        dynamics.body_scale = scale;
         false
     }
 
@@ -36121,9 +36131,12 @@ impl RolloutWorld {
         }
         // StickyRoundedRectangle.UpdateSim eases a grown platform back.
         dynamics.time_since_scaled_up += updater_dt * time_scale;
-        (dynamics.scale > dynamics.base_scale
-            && (dynamics.time_since_scaled_up > Fix::from_int(10) || sudden_death)
-            && time_scale >= Fix::from_f32(0.01))
+        // Nearly every platform is at its base scale: that test first.
+        if dynamics.scale <= dynamics.base_scale {
+            return None;
+        }
+        (time_scale >= Fix::from_f32(0.01)
+            && (sudden_death || dynamics.time_since_scaled_up > Fix::from_int(10)))
         .then(|| {
             dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
                 + dynamics.base_scale * updater_dt
@@ -36150,22 +36163,23 @@ impl RolloutWorld {
     /// VectorFieldPlatform.UpdateSim, after the platform's spring, shake and
     /// collider updaters.
     fn platform_vector_field(&mut self, data: &data::RolloutData, updater_dt: Fix, platform_index: usize) {
-        if self.sudden_death
-            || updater_dt <= Fix::ZERO
-            || !self.platforms[platform_index].active
-            || !self.vector_fields.contains(&platform_index)
-        {
+        if self.sudden_death || updater_dt <= Fix::ZERO || !self.platforms[platform_index].active {
             return;
         }
-        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        let fixed_time = DT * self.player_time_scale;
+        // `vector_fields` lists exactly the live platforms whose definition
+        // has a field (both pushes test it, and removal retires the entry),
+        // so the definition's field stands for the membership test.
         let map = &data.maps[self.map];
-        let Some(field) = map.platforms[self.platform_defs[platform_index]]
-            .vector_field
-            .as_ref()
-        else {
+        let field = map
+            .platforms
+            .get(self.platform_defs[platform_index])
+            .and_then(|def| def.vector_field.as_ref());
+        debug_assert_eq!(field.is_some(), self.vector_fields.contains(&platform_index));
+        let Some(field) = field else {
             return;
         };
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        let fixed_time = DT * self.player_time_scale;
         if sim_time < field.delay {
             return;
         }
