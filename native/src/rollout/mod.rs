@@ -4865,11 +4865,14 @@ struct PlatformScratch {
     spawned_window: Option<std::ops::Range<u32>>,
     /// `run_spawned_before`'s turns: (updater hierarchy, kind, index).
     spawned_queue: Vec<(UpdaterKey, u8, usize)>,
-    /// The active smoke clouds' Updater keys with their slots, sorted, as of
-    /// list version `cloud_keys_version` (0: stale, as a cloud spawned or
-    /// left since).
+    /// Every smoke cloud slot's Updater key with its slot, active or not,
+    /// sorted, as of list version `cloud_keys_version` (0: stale, as a cloud
+    /// spawned since). `cloud_keys_epoch` counts the rebuilds.
     cloud_keys: Vec<u128>,
     cloud_keys_version: u64,
+    cloud_keys_epoch: u64,
+    /// `smoke_tick`'s copy of `cloud_keys`, its order for the pass.
+    cloud_order: Vec<u128>,
     /// The scans `run_spawned_before` may find something in (`WALK_*`).
     /// Each bit is set wherever its state turns on, and cleared by the
     /// walk when its scan finds nothing on, so a clear bit skips the scan.
@@ -8831,22 +8834,23 @@ impl RolloutWorld {
         }
     }
 
-    /// Rebuilds `scratch.cloud_keys` if Updater's list or the clouds changed.
+    /// Rebuilds `scratch.cloud_keys` if Updater's list changed or a cloud
+    /// spawned. A cloud that leaves keeps its slot's key.
     fn refresh_cloud_keys(&mut self) {
         if self.scratch.cloud_keys_version != self.scratch.updater_version {
             let mut keys = std::mem::take(&mut self.scratch.cloud_keys);
             keys.clear();
-            keys.extend((self.smoke_clouds.iter().enumerate()).filter(|(_, cloud)| cloud.active).map(|(i, cloud)| {
+            keys.extend((self.smoke_clouds.iter().enumerate()).map(|(i, cloud)| {
                 pack_keyed(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i)
             }));
             keys.sort_unstable();
             self.scratch.cloud_keys = keys;
             self.scratch.cloud_keys_version = self.scratch.updater_version;
+            self.scratch.cloud_keys_epoch += 1;
         }
         #[cfg(debug_assertions)]
         {
             let mut fresh: Vec<u128> = (self.smoke_clouds.iter().enumerate())
-                .filter(|(_, cloud)| cloud.active)
                 .map(|(i, cloud)| pack_keyed(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i))
                 .collect();
             fresh.sort_unstable();
@@ -8981,7 +8985,9 @@ impl RolloutWorld {
             if key >= before {
                 break;
             }
-            push(key, 9, i);
+            if self.smoke_clouds[i].active {
+                push(key, 9, i);
+            }
         }
         for (i, effect) in self.scale_changers.iter().enumerate() {
             if effect.active {
@@ -9159,7 +9165,7 @@ impl RolloutWorld {
                 5 => self.ability_pickups_tick_before(hierarchy - 99_999_999, data, updater_dt),
                 6 => self.engines_tick(data, updater_dt, turn),
                 8 => self.rope_turn(index),
-                9 => self.smoke_cloud_turn(index, hierarchy, data, updater_dt),
+                9 => self.smoke_cloud_turn(index, key, data, updater_dt),
                 10 => self.scale_changer_step(index, data, updater_dt),
                 11 => self.duplicate_platform_effects_tick(
                     data,
@@ -17135,7 +17141,6 @@ impl RolloutWorld {
                 if cloud.active {
                     cloud.active = false;
                     cloud.registered = false;
-                    self.scratch.cloud_keys_version = 0;
                     if let Some(entity) = cloud.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                     }
@@ -20378,17 +20383,18 @@ impl RolloutWorld {
         }
     }
 
-    /// Cloud `cloud_index`'s turn ahead of `smoke_tick`, queued at prefab
-    /// row `hierarchy`. Every cloud's prefab base is its own (register_prefab
-    /// advances the numbering by SmokeCircle's five rows), so the cloud whose
-    /// rows start there is this one, unless a spawn since the queue was built
-    /// reused its slot.
-    fn smoke_cloud_turn(&mut self, cloud_index: usize, hierarchy: u32, data: &data::RolloutData, updater_dt: Fix) {
+    /// Cloud `cloud_index`'s turn ahead of `smoke_tick`, queued at `key`.
+    /// Every cloud's prefab base is its own (register_prefab advances the
+    /// numbering by SmokeCircle's five rows), so the cloud whose rows start
+    /// at the key's row is this one, unless a spawn since the queue was built
+    /// reused its slot. The walk's turns leave Updater's list as it is, so
+    /// the queued key is still the cloud's.
+    fn smoke_cloud_turn(&mut self, cloud_index: usize, key: UpdaterKey, data: &data::RolloutData, updater_dt: Fix) {
         let cloud = &self.smoke_clouds[cloud_index];
-        if 100_000_000 + cloud.hierarchy_base != hierarchy || !cloud.active {
+        if 100_000_000 + cloud.hierarchy_base != key.2 || !cloud.active {
             return;
         }
-        let key = self.updater_key(cloud.appended, hierarchy);
+        debug_assert_eq!(key, self.updater_key(cloud.appended, key.2));
         if !self.updater_passed(key) {
             self.updater_take_turn(key);
             self.smoke_cloud_update(cloud_index, data, updater_dt);
@@ -20396,11 +20402,23 @@ impl RolloutWorld {
     }
 
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.smoke_clouds, |cloud| self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
-        for &cloud_index in &order {
+        // Every cloud in Updater order: `cloud_keys` sorts the same (key,
+        // slot) pairs `updater_order` would.
+        self.refresh_cloud_keys();
+        let mut order = std::mem::take(&mut self.scratch.cloud_order);
+        order.clone_from(&self.scratch.cloud_keys);
+        let epoch = self.scratch.cloud_keys_epoch;
+        for &packed in &order {
+            let (listed, cloud_index) = unpack_keyed(packed);
             let cloud = &self.smoke_clouds[cloud_index];
-            let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
+            // A slot's listed key stands until a spawn or a change to
+            // Updater's list makes the index stale.
+            let key = if self.scratch.cloud_keys_epoch == epoch && self.scratch.cloud_keys_version == self.scratch.updater_version {
+                listed
+            } else {
+                self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base)
+            };
+            debug_assert_eq!(key, self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
             if !self.updater_passed(key) {
                 self.run_spawned_before(data, updater_dt, key);
                 if self.updater_passed(key) {
@@ -20410,7 +20428,7 @@ impl RolloutWorld {
                 self.smoke_cloud_update(cloud_index, data, updater_dt);
             }
         }
-        self.scratch.item_order = order;
+        self.scratch.cloud_order = order;
 
         for index in 0..self.smoke_explosions.len() {
             let explosion = &mut self.smoke_explosions[index];
@@ -33619,7 +33637,6 @@ impl RolloutWorld {
     }
 
     fn remove_smoke_cloud(&mut self, cloud_index: usize) {
-        self.scratch.cloud_keys_version = 0;
         let cloud = &mut self.smoke_clouds[cloud_index];
         cloud.active = false;
         cloud.registered = false;
