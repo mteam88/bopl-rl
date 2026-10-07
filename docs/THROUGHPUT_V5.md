@@ -217,6 +217,20 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     rounds), sim us per decision goes from 27.9-32.1 to 25.0-26.7 (-10% to
     -17%; other sessions' load made the two runs differ). The hash is
     unchanged, and the exact gate passes with a debug-assertions candidate.
+22. **The writer: overflow telemetry folds into the encode.** With the
+    delay, `bopl_step_sample` ran `bopl_count_overflow` on every sampled
+    state, which repeats the encoder's visibility and nearest-entity pass,
+    only for telemetry. Each delayed state is now counted as it is encoded,
+    and at an episode's end `bopl_count_unpublished` counts the samples the
+    delay never publishes, so every sampled state is still counted once.
+    The one difference: the encoder counts a forced hidden controller's
+    slots toward `visible_slots`, which only moves the overflow log. In the
+    trainer, sample goes from 1.3 to 0.2 us and finish rises 0.3 us, so
+    c_step drops 40.3 to 39.75 us (2 interleaved repeats).
+    The ballistic relation also skips the sqrt for an arc sample whose
+    squared distance is not below the best so far. sqrt and the radius
+    subtraction are monotone, so the chosen sample is unchanged, NaN
+    included. The writer gets about 0.3% faster, and the hash is unchanged.
 
 
 ## Cold caches in the trainer

@@ -52,10 +52,14 @@ static void bopl4_relation(float *out, double dx, double dy, double dvx, double 
     if (ballistic) {
         /* Arc under gravity (observer assumed on the ground), sampled every
          * 1/15 s to the horizon; the nearest sample's distance and time. */
-        double best=r-radius, best_t=0.0;
+        double best=r-radius, best_t=0.0, best_squared=dx*dx+dy*dy;
         for (int k=1; k<=30; k++) {
-            double t=k/15.0, px=dx+dvx*t, py=dy+dvy*t-0.5*BOPL4_GRAVITY*t*t, d=sqrt(px*px+py*py)-radius;
-            if (d<best) { best=d; best_t=t; }
+            double t=k/15.0, px=dx+dvx*t, py=dy+dvy*t-0.5*BOPL4_GRAVITY*t*t, squared=px*px+py*py;
+            /* sqrt and -radius are monotone, so a sample can only beat `best`
+             * when its square is smaller: skip the sqrt otherwise. */
+            if (squared>=best_squared) continue;
+            double d=sqrt(squared)-radius;
+            if (d<best) { best=d; best_t=t; best_squared=squared; }
         }
         out[10]=bopl_clip(best/16.0); out[11]=bopl_clip(best_t/BOPL4_HORIZON);
     }

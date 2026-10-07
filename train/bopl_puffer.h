@@ -214,6 +214,10 @@ typedef struct {
      * 13 KB observation per player, and encoding at publish time, replaces
      * the old encode -> sample -> history -> publish copy chain. */
     BoplStateCopy delayed[2], sample_copy;
+    /* Whether each held state has been through overflow telemetry: a delayed
+     * state is counted when it is encoded, and the samples an episode end
+     * leaves unpublished are counted then (bopl_count_unpublished). */
+    int delayed_counted[2], sample_counted;
     /* How many player, entity and slime rows the last encode into each
      * observation row left non-zero (bopl_encode); the unused slots behind
      * them were zeroed then and stay zero, so the next encode zeroes only the
@@ -418,9 +422,8 @@ static int bopl_previous_offset(const BoplPuffer *env, int player) {
  * fraction (obs[5]/obs[7]); the count is logged per episode. Crowded Platform
  * rounds (>96 live bodies) are a real, rare game state, not an error: the
  * 2026-09-08 500M run died on one at 55M learner steps. Report once per env,
- * keep training. Counted when a state is sampled (bopl_step_sample) or
- * encoded undelayed, once per state, as before the delayed states were
- * encoded at publish time. */
+ * keep training. Counted once per sampled state: when it is encoded, or at
+ * the episode end for the samples still waiting in the delay. */
 static void bopl_note_overflow(BoplPuffer *env, int active_count, int count,
                                int visible_slimes, int visible_slots) {
     if (active_count>count || visible_slimes>BOPL_OBS_SLIMES || visible_slots>BOPL_OBS_SLOTS) {
@@ -444,7 +447,7 @@ static void bopl_note_entity_rows(BoplPuffer *env, const BoplRlState *state,
     }
 }
 /* Every visible-entity and visible-slime count of `state` per observer, for
- * the overflow telemetry of a state that is encoded later. */
+ * the overflow telemetry of a sampled state that is never encoded. */
 static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
     if (!state) return;
     for (int a=0; a<env->players; a++) {
@@ -1033,8 +1036,8 @@ static void bopl_reset_observations(BoplPuffer *env, const BoplRlState *state) {
     memset(env->applied, 0, sizeof(env->applied));   /* before the rows: no aim ray at the episode start */
     compute_observations_from(env, state);
     /* The first two delayed decisions observe this same first state. */
-    for (int i=0; i<2; i++) bopl_state_copy(&env->delayed[i], state);
-    env->delay_cursor=0;
+    for (int i=0; i<2; i++) { bopl_state_copy(&env->delayed[i], state); env->delayed_counted[i]=1; }
+    env->delay_cursor=0; env->sample_counted=1;
     memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
     memset(env->action_history, 0, sizeof(env->action_history));
     for (int i=0; i<env->players; i++) {
@@ -1263,7 +1266,14 @@ static void bopl_step_begin(BoplPuffer *env, BoplStepPhase *phase) {
  * (or the final state when the episode ended earlier). */
 static void bopl_step_sample(BoplPuffer *env, const BoplRlState *state) {
     bopl_state_copy(&env->sample_copy, state);
-    bopl_count_overflow(env, state);
+    env->sample_counted=0;
+}
+/* At an episode end: count the samples the delay never publishes. */
+static void bopl_count_unpublished(BoplPuffer *env) {
+    for (int i=0; i<2; i++) if (!env->delayed_counted[i]) {
+        bopl_count_overflow(env, bopl_state_copy_get(&env->delayed[i])); env->delayed_counted[i]=1;
+    }
+    if (!env->sample_counted) { bopl_count_overflow(env, bopl_state_copy_get(&env->sample_copy)); env->sample_counted=1; }
 }
 static void bopl_step_advance(BoplPuffer *env, const BoplStepPhase *phase) {
     const BoplRlAction *actions=phase->actions;
@@ -1361,14 +1371,17 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
         }
     }
     if (terminal) { env->counters.matches++; if (env->config.map<BOPL_COUNTER_MAPS) env->counters.map_matches[env->config.map]++; }
+    if (terminal && env->observation_delay) bopl_count_unpublished(env);
     if (terminal && !env->no_autoreset) { c_reset(env); return; }
     if (env->observation_delay) {
-        /* Publish the state sampled two decisions ago (already counted for
-         * overflow when sampled), then keep this decision's sample in its
-         * place: the buffers swap, nothing is copied. */
-        BoplStateCopy *old=&env->delayed[env->delay_cursor];
-        bopl_encode(env, bopl_state_copy_get(old), 0);
+        /* Publish the state sampled two decisions ago (counted for overflow
+         * as it is encoded), then keep this decision's sample in its place:
+         * the buffers swap, nothing is copied. */
+        int cursor=env->delay_cursor;
+        BoplStateCopy *old=&env->delayed[cursor];
+        bopl_encode(env, bopl_state_copy_get(old), !env->delayed_counted[cursor]);
         BoplStateCopy published=*old; *old=env->sample_copy; env->sample_copy=published;
+        env->delayed_counted[cursor]=env->sample_counted; env->sample_counted=1;
         env->delay_cursor=(env->delay_cursor+1)%2;
     } else compute_observations_from(env, state);
     if (!terminal) for (int i=0; i<env->players; i++) {
