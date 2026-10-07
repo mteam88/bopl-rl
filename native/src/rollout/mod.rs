@@ -4835,6 +4835,11 @@ struct PlatformScratch {
     spawned_window: Option<std::ops::Range<u32>>,
     /// `run_spawned_before`'s turns: (updater hierarchy, kind, index).
     spawned_queue: Vec<(UpdaterKey, u8, usize)>,
+    /// The active smoke clouds' Updater keys with their slots, sorted, as of
+    /// list version `cloud_keys_version` (0: stale, as a cloud spawned or
+    /// left since).
+    cloud_keys: Vec<(UpdaterKey, usize)>,
+    cloud_keys_version: u64,
     /// The authored platform pass's platform per definition (usize::MAX:
     /// none), found once per pass.
     authored_platforms: Vec<usize>,
@@ -5329,6 +5334,7 @@ impl RolloutWorld {
         self.missile_explosions.clone_from(&src.missile_explosions);
         self.grenade_explosions.clone_from(&src.grenade_explosions);
         self.smoke_clouds.clone_from(&src.smoke_clouds);
+        self.scratch.cloud_keys_version = 0;
         self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
@@ -5586,6 +5592,7 @@ impl RolloutWorld {
         self.missile_explosions.clear();
         self.grenade_explosions.clear();
         self.smoke_clouds.clear();
+        self.scratch.cloud_keys_version = 0;
         self.smoke_explosions.clear();
         self.time_stop_effects.clear();
         self.spike_attacks.clear();
@@ -8779,6 +8786,29 @@ impl RolloutWorld {
         }
     }
 
+    /// Rebuilds `scratch.cloud_keys` if Updater's list or the clouds changed.
+    fn refresh_cloud_keys(&mut self) {
+        if self.scratch.cloud_keys_version != self.scratch.updater_version {
+            let mut keys = std::mem::take(&mut self.scratch.cloud_keys);
+            keys.clear();
+            keys.extend((self.smoke_clouds.iter().enumerate()).filter(|(_, cloud)| cloud.active).map(|(i, cloud)| {
+                (self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i)
+            }));
+            keys.sort_unstable();
+            self.scratch.cloud_keys = keys;
+            self.scratch.cloud_keys_version = self.scratch.updater_version;
+        }
+        #[cfg(debug_assertions)]
+        {
+            let mut fresh: Vec<(UpdaterKey, usize)> = (self.smoke_clouds.iter().enumerate())
+                .filter(|(_, cloud)| cloud.active)
+                .map(|(i, cloud)| (self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i))
+                .collect();
+            fresh.sort_unstable();
+            debug_assert_eq!(fresh, self.scratch.cloud_keys);
+        }
+    }
+
     /// Updater.UpdateSim for every runtime-spawned updatable ahead of
     /// `before` in Updater's list that has not taken its turn this pass, in
     /// list order (`UpdaterKey`). Only updatables already appended take a
@@ -8793,6 +8823,7 @@ impl RolloutWorld {
     /// QuantumTunnel. The per-kind passes later in the pass run the rest, and
     /// each of their objects first runs this walk to its own turn.
     fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
+        self.refresh_cloud_keys();
         let tick = self.tick;
         let mut queue = std::mem::take(&mut self.scratch.spawned_queue);
         queue.clear();
@@ -8875,12 +8906,14 @@ impl RolloutWorld {
                 }
             }
         }
-        for (i, cloud) in self.smoke_clouds.iter().enumerate() {
-            if cloud.active {
-                if live(cloud.appended) {
-                    push(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), 9, i);
-                }
+        // A Smoke cast keeps dozens of clouds alive, and each cloud's turn
+        // runs this walk: only those keyed in [cursor, before) can queue.
+        let clouds = &self.scratch.cloud_keys;
+        for &(key, i) in &clouds[clouds.partition_point(|&(key, _)| key < cursor)..] {
+            if key >= before {
+                break;
             }
+            push(key, 9, i);
         }
         for (i, effect) in self.scale_changers.iter().enumerate() {
             if effect.active {
@@ -17007,6 +17040,7 @@ impl RolloutWorld {
                 if cloud.active {
                     cloud.active = false;
                     cloud.registered = false;
+                    self.scratch.cloud_keys_version = 0;
                     if let Some(entity) = cloud.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                     }
@@ -27139,6 +27173,7 @@ impl RolloutWorld {
             } else {
                 self.smoke_clouds.push(clone);
             }
+            self.scratch.cloud_keys_version = 0;
         }
     }
 
@@ -33474,6 +33509,7 @@ impl RolloutWorld {
             } else {
                 self.smoke_clouds.push(cloud);
             }
+            self.scratch.cloud_keys_version = 0;
             // SmokeGrenadeExplode2 instantiates the presentation burst after
             // each cloud; it has updatables but no observed collider.
             self.register_prefab(data::get().prefab("SmokeExplosion 1"));
@@ -33482,6 +33518,7 @@ impl RolloutWorld {
     }
 
     fn remove_smoke_cloud(&mut self, cloud_index: usize) {
+        self.scratch.cloud_keys_version = 0;
         let cloud = &mut self.smoke_clouds[cloud_index];
         cloud.active = false;
         cloud.registered = false;

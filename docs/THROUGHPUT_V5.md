@@ -297,6 +297,17 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     writers, so `perf stat` counts the sim alone; instruction counts are
     deterministic, so a 1% change shows without noise): PGO sim -1.1%.
     The hash is unchanged, and the exact gate passes.
+28. **v14: the active smoke clouds are indexed by Updater key.** A Smoke
+    cast keeps dozens of clouds alive and each cloud's turn runs
+    `run_spawned_before`, which walked every cloud to find the few keyed in
+    [cursor, before): O(clouds^2) per pass, 3.1% of the trainer's sim
+    instructions. The active clouds' keys are now kept sorted in scratch,
+    rebuilt when Updater's list version moves or a cloud spawns or leaves
+    (both spawn sites, both deactivations, reset, `fork_from`), and the
+    walk binary-searches them. A debug assertion compares the index with a
+    fresh one at every use. PGO sim -1.6% instructions and -0.7% cycles
+    (7 interleaved rounds); the hash is unchanged, and the exact gate
+    passes.
 
 
 ## Cold caches in the trainer
