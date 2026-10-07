@@ -34890,10 +34890,19 @@ impl RolloutWorld {
             general(scratch);
             return;
         }
+        // `order` is always a permutation of the walls (rebuilt above when
+        // their number changes, and only ever reordered below), so every
+        // index the sweep reads is in bounds.
+        let bounds = &bounds[..count];
+        let platforms = &platforms[..count];
+        debug_assert!(order.iter().all(|&index| index < count));
+        // SAFETY: `index < count`, the length of both.
+        let wall_box = |index: usize| unsafe { *bounds.get_unchecked(index) };
+        let wall_active = |index: usize| unsafe { platforms.get_unchecked(index).active };
         let mut keys = [(Fix::ZERO, 0usize); CAP];
         let mut nan = false;
         for (key, &index) in keys.iter_mut().zip(order.iter()) {
-            let min = axis(bounds[index][0]);
+            let min = axis(wall_box(index)[0]);
             nan |= min.to_f64().is_nan();
             *key = (min, index);
         }
@@ -34925,14 +34934,15 @@ impl RolloutWorld {
         let mut window = [0usize; CAP];
         let mut open = 0;
         for &(min, b) in &keys[..count] {
-            if !platforms[b].active {
+            if !wall_active(b) {
                 continue;
             }
-            let (low_b, high_b) = (other(bounds[b][0]), other(bounds[b][1]));
+            let box_b = wall_box(b);
+            let (low_b, high_b) = (other(box_b[0]), other(box_b[1]));
             let mut kept = 0;
             for w in 0..open {
                 let a = window[w];
-                let box_a = bounds[a];
+                let box_a = wall_box(a);
                 if axis(box_a[1]) > min {
                     window[kept] = a;
                     kept += 1;
