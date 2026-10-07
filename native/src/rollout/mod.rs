@@ -1045,6 +1045,59 @@ pub struct SmokeCloud {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+    /// A state its physics step last left as it was.
+    pub rest: RestMemo,
+}
+
+/// A body's physics step from a state it leaves as it was, and that
+/// state's row fields: a step from the same bits (body, center and step)
+/// leaves them again, so it can go untaken and the row take the raws kept.
+/// Most smoke clouds sit still: no velocity, force or spin. The default,
+/// all +0 with a zero step, is such a state, whose raws are 0.
+#[derive(Clone, Copy, Default)]
+pub struct RestMemo {
+    state: [u64; 17],
+    raws: [i64; 4],
+}
+
+impl RestMemo {
+    #[inline(always)]
+    fn state(body: &Body, center: Vec2, dt: Fix) -> [u64; 17] {
+        // SAFETY: a Body is 14 `Fix`, each 8 bytes with no invalid bit pattern.
+        let body: [u64; 14] = unsafe { std::mem::transmute::<Body, [u64; 14]>(*body) };
+        let mut state = [0; 17];
+        state[..14].copy_from_slice(&body);
+        state[14..].copy_from_slice(&[center.x.bits(), center.y.bits(), dt.bits()]);
+        state
+    }
+
+    /// `center += body.integrate(dt, 0)`, then the row's center and velocity.
+    #[inline(always)]
+    fn step(&mut self, body: &mut Body, center: &mut Vec2, dt: Fix, row: Option<&mut CEntity>) {
+        let state = Self::state(body, *center, dt);
+        let same = state.iter().zip(&self.state).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0;
+        if !same {
+            *center += body.integrate(dt, Fix::ZERO);
+            let raws = Fix::raw_array([center.x, center.y, body.velocity.x, body.velocity.y]);
+            if Self::state(body, *center, dt) == state {
+                *self = Self { state, raws };
+            }
+            if let Some(row) = row {
+                [row.x, row.y, row.vx, row.vy] = raws;
+            }
+            return;
+        }
+        #[cfg(debug_assertions)]
+        {
+            let (mut body, mut center) = (*body, *center);
+            center += body.integrate(dt, Fix::ZERO);
+            debug_assert_eq!(Self::state(&body, center, dt), state, "a resting body moved");
+            debug_assert_eq!(self.raws, Fix::raw_array([center.x, center.y, body.velocity.x, body.velocity.y]));
+        }
+        if let Some(row) = row {
+            [row.x, row.y, row.vx, row.vy] = self.raws;
+        }
+    }
 }
 
 /// What a smoke cloud's update reads besides the cloud and its row, for
@@ -10117,9 +10170,9 @@ impl RolloutWorld {
             // active colliders (FlammableSmoke.cs:88). The row still shows
             // the body's velocity, which a Shockwave keeps pushing.
             if !hidden && cloud.ignition_time < Fix::ZERO {
-                cloud.position += cloud.body.integrate(physics_dt, Fix::ZERO);
-            }
-            if let Some(entity) = cloud.entity {
+                let row = cloud.entity.map(|entity| &mut self.entities[entity]);
+                cloud.rest.step(&mut cloud.body, &mut cloud.position, physics_dt, row);
+            } else if let Some(entity) = cloud.entity {
                 let row = &mut self.entities[entity];
                 set_moving_row(row, cloud.position, cloud.body.velocity);
             }
