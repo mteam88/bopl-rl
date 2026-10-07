@@ -27,10 +27,11 @@ impl Player {
         // at its next sync.
         self.dash.active = true;
         self.sync_collider(inverse_extents);
-        // readyDash's UnGround (Dash.cs:109).
+        // readyDash's UnGround (Dash.cs:109). SyncPhysicsTo and UnGround read
+        // the retained attachedGround, which a Blink may have deactivated.
         if self.grounded {
             self.dash.local = self.local;
-            let surface = &self.platform(walls.platforms()).unwrap().surface;
+            let surface = &self.attached_ground(walls.platforms()).unwrap().surface;
             self.position = surface.position(self.local, self.dash.radius);
             self.unground(Some(surface), true);
         } else {

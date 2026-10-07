@@ -40041,6 +40041,30 @@ mod tests {
     }
 
     #[test]
+    fn dash_from_a_deactivated_retained_ground_reads_its_surface() {
+        // The same deactivated ground under a Dash entry: readyDash's
+        // UnGround read it through an active-only lookup and stopped the
+        // trainer (spec bench, 2026-10-06; maps 89 and 123, Blink in a kit).
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let index = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
+        let platform = world.platforms[index].clone();
+        let top = platform.surface.center + platform.surface.up * platform.surface.extents.y;
+        let mut player = world.players[0].base.clone();
+        player.attach(&platform, top);
+        world.platforms[index].active = false;
+        player.cooldown = Fix::from_int(5);
+        let local = player.local;
+
+        let action = Action { angle: 0, buttons: 2 };
+        player.move_step(action, Vec2::ZERO, &mut world, Some(Vec2::new(Fix::ONE, Fix::ONE)));
+
+        assert!(player.dash.active);
+        assert!(!player.grounded);
+        assert_eq!(player.dash.local, local);
+    }
+
+    #[test]
     fn charging_roll_runs_zero_input_ground_move() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
