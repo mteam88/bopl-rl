@@ -5301,6 +5301,9 @@ struct PlatformScratch {
     /// pass sorts afresh from the last pass's order, which the walls seldom
     /// change; any order of the walls gives the same sort.
     wall_order: Vec<usize>,
+    /// The active walls' boxes in `wall_order`, edge by edge, for
+    /// `platform_pairs`.
+    wall_lanes: WallLanes,
     /// The walls when the Circle/RoundedRect narrow phase builds every
     /// manifold, before any of that group's corrections move them.
     circle_colliders: Vec<RoundedRect>,
@@ -5497,6 +5500,83 @@ enum PendingObject {
     SmokeExplosion,
     RevivalClone,
     StockClone,
+}
+
+/// The active walls' boxes in sweep order (`platform_pairs`): each one's
+/// low and high edge on the sweep axis and on the other, and its index.
+/// Lanes past the active walls hold stale boxes, which the pair masks drop.
+#[derive(Default)]
+struct WallLanes {
+    low: [Fix; WALL_LANES],
+    high: [Fix; WALL_LANES],
+    other_low: [Fix; WALL_LANES],
+    other_high: [Fix; WALL_LANES],
+    index: [usize; WALL_LANES],
+}
+
+/// The most walls `platform_pairs` sweeps in lanes.
+const WALL_LANES: usize = 32;
+
+impl WallLanes {
+    /// The walls in lanes `0..lane` that pair with lane `lane`, a bit per
+    /// lane: each still open on the sweep axis (its high edge past this
+    /// one's low edge) and overlapping it on the other.
+    #[inline(always)]
+    fn meeting(&self, lane: usize) -> u32 {
+        debug_assert!(lane < WALL_LANES);
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(feature = "q32")))]
+        let mask = {
+            use std::arch::x86_64::{
+                _CMP_GE_OQ, _CMP_GT_OQ, _CMP_LE_OQ, _mm256_andnot_pd, _mm256_cmp_pd, _mm256_loadu_pd,
+                _mm256_movemask_pd, _mm256_or_pd, _mm256_set1_pd,
+            };
+            // Ordered compares: a NaN edge never meets, like the scalar
+            // `>` and never fails the `<=`/`>=` separations.
+            // SAFETY: avx2 is enabled; `Fix` is a transparent f64, and each
+            // four-lane read starts at a multiple of 4 below `lane` <
+            // WALL_LANES, a multiple of 4.
+            unsafe {
+                let low = _mm256_set1_pd(self.low[lane].to_f64());
+                let other_low = _mm256_set1_pd(self.other_low[lane].to_f64());
+                let other_high = _mm256_set1_pd(self.other_high[lane].to_f64());
+                let (high_lanes, other_high_lanes, other_low_lanes) = (
+                    self.high.as_ptr().cast::<f64>(),
+                    self.other_high.as_ptr().cast::<f64>(),
+                    self.other_low.as_ptr().cast::<f64>(),
+                );
+                let mut mask = 0u32;
+                let mut first = 0;
+                while first < lane {
+                    let open = _mm256_cmp_pd::<_CMP_GT_OQ>(_mm256_loadu_pd(high_lanes.add(first)), low);
+                    let below = _mm256_cmp_pd::<_CMP_LE_OQ>(_mm256_loadu_pd(other_high_lanes.add(first)), other_low);
+                    let above = _mm256_cmp_pd::<_CMP_GE_OQ>(_mm256_loadu_pd(other_low_lanes.add(first)), other_high);
+                    let meets = _mm256_andnot_pd(_mm256_or_pd(below, above), open);
+                    mask |= (_mm256_movemask_pd(meets) as u32) << first;
+                    first += 4;
+                }
+                mask & ((1u32 << lane) - 1)
+            }
+        };
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2", not(feature = "q32"))))]
+        let mask = self.meeting_scalar(lane);
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(mask, self.meeting_scalar(lane));
+        mask
+    }
+
+    /// `meeting`, wall by wall, as the sweep's window tests each.
+    #[cfg_attr(all(target_arch = "x86_64", target_feature = "avx2", not(feature = "q32")), allow(dead_code))]
+    fn meeting_scalar(&self, lane: usize) -> u32 {
+        let mut mask = 0;
+        for a in 0..lane {
+            if self.high[a] > self.low[lane]
+                && !(self.other_high[a] <= self.other_low[lane] || self.other_low[a] >= self.other_high[lane])
+            {
+                mask |= 1 << a;
+            }
+        }
+        mask
+    }
 }
 
 impl PlatformScratch {
@@ -35828,62 +35908,62 @@ impl RolloutWorld {
         // SAFETY: `index < count`, the length of both.
         let wall_box = |index: usize| unsafe { *bounds.get_unchecked(index) };
         let wall_active = |index: usize| unsafe { platforms.get_unchecked(index).active };
-        let mut keys = [(Fix::ZERO, 0usize); CAP];
-        let mut nan = false;
-        for (key, &index) in keys.iter_mut().zip(order.iter()) {
-            let min = axis(wall_box(index)[0]);
-            nan |= min.to_f64().is_nan();
-            *key = (min, index);
-        }
-        if nan {
-            general(scratch);
-            return;
-        }
-        let mut moved = false;
-        for k in 1..count {
-            let key = keys[k];
-            let mut place = k;
-            while place > 0 && (keys[place - 1].0 > key.0 || (keys[place - 1].0 == key.0 && keys[place - 1].1 > key.1)) {
-                keys[place] = keys[place - 1];
-                place -= 1;
-            }
-            if place != k {
-                keys[place] = key;
-                moved = true;
-            }
-        }
-        if moved {
-            for (slot, key) in order.iter_mut().zip(keys.iter()) {
-                *slot = key.1;
-            }
-        }
-        // The window holds the open active walls, which it reads by their
-        // boxes.
-        let pairs = &mut scratch.pairs;
-        let mut window = [0usize; CAP];
-        let mut open = 0;
-        for &(min, b) in &keys[..count] {
-            if !wall_active(b) {
-                continue;
-            }
-            let box_b = wall_box(b);
-            let (low_b, high_b) = (other(box_b[0]), other(box_b[1]));
-            let mut kept = 0;
-            for w in 0..open {
-                let a = window[w];
-                let box_a = wall_box(a);
-                if axis(box_a[1]) > min {
-                    window[kept] = a;
-                    kept += 1;
-                    // IdPair(active, current): the body that entered the
-                    // sweep first is collider A (DetPhysics.cs:2169-2236).
-                    if !(other(box_a[1]) <= low_b || other(box_a[0]) >= high_b) {
-                        pairs.push([a, b]);
-                    }
+        // One walk of last pass's order lays the active walls' boxes out in
+        // lanes and finds whether each wall still follows the one before it
+        // by (low edge, index) - nearly always so - which a NaN low edge
+        // never does.
+        let lanes = &mut scratch.wall_lanes;
+        let fill = |lanes: &mut WallLanes, order: &[usize]| {
+            let mut active = 0usize;
+            let mut in_order = true;
+            // The first wall follows anything but a lower edge than
+            // `Fix::MIN` (`usize::MAX` wraps to 0).
+            let mut previous = (Fix::MIN, usize::MAX);
+            for &index in order {
+                let [low, high] = wall_box(index);
+                let min = axis(low);
+                in_order &= (previous.0 < min) | ((previous.0 == min) & (previous.1.wrapping_add(1) <= index));
+                previous = (min, index);
+                // Every wall writes the next lane; only an active one keeps it.
+                // SAFETY: `active` counts walls before this one, at most
+                // `count - 1 < CAP == WALL_LANES`.
+                unsafe {
+                    *lanes.low.get_unchecked_mut(active) = min;
+                    *lanes.high.get_unchecked_mut(active) = axis(high);
+                    *lanes.other_low.get_unchecked_mut(active) = other(low);
+                    *lanes.other_high.get_unchecked_mut(active) = other(high);
+                    *lanes.index.get_unchecked_mut(active) = index;
                 }
+                active = active.wrapping_add(usize::from(wall_active(index)));
             }
-            window[kept] = b;
-            open = kept + 1;
+            (active, in_order)
+        };
+        const { assert!(CAP == WALL_LANES) };
+        let (mut active, in_order) = fill(lanes, order);
+        if !in_order {
+            if order.iter().any(|&index| axis(wall_box(index)[0]).to_f64().is_nan()) {
+                general(scratch);
+                return;
+            }
+            // The keys are distinct and none is NaN: any sort gives the one
+            // order.
+            order.sort_unstable_by(|&a, &b| axis(wall_box(a)[0]).cmp(&axis(wall_box(b)[0])).then(a.cmp(&b)));
+            let refill = fill(lanes, order);
+            debug_assert!(refill.1);
+            active = refill.0;
+        }
+        // Each active wall meets the earlier ones still open on the sweep
+        // axis and overlapping it on the other: the window's pairs, in its
+        // order. IdPair(active, current): the body that entered the sweep
+        // first is collider A (DetPhysics.cs:2169-2236).
+        let pairs = &mut scratch.pairs;
+        for b in 1..active {
+            let mut meeting = lanes.meeting(b);
+            while meeting != 0 {
+                let a = meeting.trailing_zeros() as usize;
+                pairs.push([lanes.index[a], lanes.index[b]]);
+                meeting &= meeting - 1;
+            }
         }
         #[cfg(debug_assertions)]
         {
