@@ -34648,40 +34648,37 @@ impl RolloutWorld {
     /// rotation instead of the spawn rotation.
     #[inline(always)]
     fn platform_spring(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) {
-        if !self.platforms[i].active {
-            return;
+        if self.platforms[i].active {
+            self.platform_spring_active(data, updater_dt, i);
         }
+    }
+
+    /// `platform_spring` for an active platform.
+    #[inline(always)]
+    fn platform_spring_active(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) {
+        debug_assert!(self.platforms[i].active);
         let tick = self.tick;
         let dynamics = &mut self.platform_dynamics[i];
         // A body instantiated this pass joins the Updater on the next.
         if dynamics.init_tick.is_some_and(|t| t > tick) {
             return;
         }
-        // ActivateSuddenDeath moves the spring home; the body follows through
-        // the ordinary spring/integration path rather than teleporting. The
-        // first pass that sees the session flag draws this body's delay from
-        // the shared stream, in registration order with the shakes. Once
-        // drawn it is `AnimateVelocity.inSuddenDeath`, not the session flag:
-        // the component latch survives `WinGame`'s
-        // `ActivateSuddenDeath(activate: false)`, so the level keeps sinking
-        // on the tick that decides the round and on every tick after it.
-        // Whether it sinks matters only with the flag up or a delay drawn,
-        // so the spawned list is searched only then.
         if self.sudden_death || dynamics.sudden_death_delay.is_some() {
-            let def_index = self.platform_defs[i];
-            let sinks = def_index != usize::MAX
-                || self.spawned.iter().any(|s| s.active && s.platform_index == i);
-            if sinks {
-                self.platform_sink(data, updater_dt, i, def_index);
-            }
+            self.platform_sink(data, updater_dt, i);
         }
-
-        // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
-        // mass and 60 Hz impulse conversions: their intermediate fixed-point
-        // rounding is observable over long-running springs (notably map 2's
-        // orbiter), so simplifying this to `velocity += spring * DT` drifts.
         let position = self.platforms[i].surface.center;
-        let dynamics = &mut self.platform_dynamics[i];
+        Self::spring_step(&mut self.platform_dynamics[i], position, updater_dt, tick);
+    }
+
+    /// AnimateVelocity.UpdateSim's spring on `dynamics`, which reads the
+    /// body at `position`, unless the level intro holds it.
+    ///
+    /// Keep the apparently cancelling inverse mass and 60 Hz impulse
+    /// conversions: their intermediate fixed-point rounding is observable
+    /// over long-running springs (notably map 2's orbiter), so simplifying
+    /// this to `velocity += spring * DT` drifts.
+    #[inline(always)]
+    fn spring_step(dynamics: &mut PlatformDynamics, position: Vec2, updater_dt: Fix, tick: u32) {
         if dynamics.intro_disabled {
             return;
         }
@@ -34710,11 +34707,25 @@ impl RolloutWorld {
         }
     }
 
-    /// AnimateVelocity's sudden-death sinking for a platform that sinks
-    /// (authored, or a live spawned one): the delay drawn on the first pass
-    /// that sees the session flag, then the home's descent.
+    /// AnimateVelocity's sudden-death sinking, with the session flag up or a
+    /// delay drawn, for a platform that sinks (authored, or a live spawned
+    /// one): the delay drawn on the first pass that sees the flag, then the
+    /// home's descent.
+    ///
+    /// ActivateSuddenDeath moves the spring home; the body follows through
+    /// the ordinary spring/integration path rather than teleporting. The
+    /// first pass that sees the session flag draws this body's delay from
+    /// the shared stream, in registration order with the shakes. Once
+    /// drawn it is `AnimateVelocity.inSuddenDeath`, not the session flag:
+    /// the component latch survives `WinGame`'s
+    /// `ActivateSuddenDeath(activate: false)`, so the level keeps sinking
+    /// on the tick that decides the round and on every tick after it.
     #[inline(never)]
-    fn platform_sink(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize, def_index: usize) {
+    fn platform_sink(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) {
+        let def_index = self.platform_defs[i];
+        if def_index == usize::MAX && !self.spawned.iter().any(|s| s.active && s.platform_index == i) {
+            return;
+        }
         if self.sudden_death && self.platform_dynamics[i].sudden_death_delay.is_none() {
             let max_delay = if def_index == usize::MAX {
                 data.platform.sudden_death_max_delay
@@ -35428,11 +35439,12 @@ impl RolloutWorld {
                     U::BoplBody
                 ])
             );
+            // Each of the four does nothing on an inactive platform, and none
+            // deactivates one (the `_active` forms check it in debug builds).
             if updaters & 0xffff == SCENE_LEAD {
-                self.platform_sticky(updater_dt, i);
-                self.platform_spring(data, updater_dt, i);
-                shook |= self.platform_shake(data, updater_dt, i);
-                self.platform_body_update(i);
+                if self.platforms[i].active {
+                    shook |= self.platform_scene_lead(data, updater_dt, i);
+                }
                 updaters >>= 16;
             }
             while updaters != 0 {
@@ -35465,6 +35477,40 @@ impl RolloutWorld {
         if shook {
             self.platforms_changed();
         }
+    }
+
+    /// `platform_sticky_active`, `platform_spring_active`,
+    /// `platform_shake_active` and `platform_body_update_active` in turn on
+    /// active platform `i`, holding its dynamics across them; whether it
+    /// shook.
+    #[inline(always)]
+    fn platform_scene_lead(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
+        debug_assert!(self.platforms[i].active);
+        let (tick, time_scale, sudden_death) = (self.tick, self.player_time_scale, self.sudden_death);
+        let mut dynamics = &mut self.platform_dynamics[i];
+        let ease = Self::sticky_step(dynamics, updater_dt, time_scale, sudden_death);
+        if ease.is_some() || dynamics.surface_shape_dirty {
+            self.sticky_finish(i, ease);
+            dynamics = &mut self.platform_dynamics[i];
+        }
+        debug_assert!(self.platforms[i].active);
+        if !dynamics.init_tick.is_some_and(|t| t > tick) {
+            if sudden_death || dynamics.sudden_death_delay.is_some() {
+                self.platform_sink(data, updater_dt, i);
+                dynamics = &mut self.platform_dynamics[i];
+            }
+            Self::spring_step(dynamics, self.platforms[i].surface.center, updater_dt, tick);
+        }
+        let shook = Self::shakes(dynamics);
+        if shook {
+            self.platform_shake_sample(data, updater_dt, i);
+            dynamics = &mut self.platform_dynamics[i];
+        }
+        debug_assert!(self.platforms[i].active);
+        if Self::body_step(dynamics, tick) {
+            self.platforms_changed();
+        }
+        shook
     }
 
     /// Each definition's authored platform (usize::MAX: none) into `authored`.
@@ -35500,16 +35546,27 @@ impl RolloutWorld {
     /// successive samples replace the previous random offset.
     #[inline(always)]
     fn platform_shake(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
-        // A platform not shaking first: that is nearly all of them.
-        let dynamics = &self.platform_dynamics[i];
+        self.platforms[i].active && self.platform_shake_active(data, updater_dt, i)
+    }
+
+    /// `platform_shake` for an active platform.
+    #[inline(always)]
+    fn platform_shake_active(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
+        debug_assert!(self.platforms[i].active);
+        Self::shakes(&self.platform_dynamics[i]) && self.platform_shake_sample(data, updater_dt, i)
+    }
+
+    /// Whether ShakablePlatform shakes this pass: nearly every platform
+    /// does not.
+    #[inline(always)]
+    fn shakes(dynamics: &PlatformDynamics) -> bool {
         let duration = dynamics.shake_duration;
-        if duration == Fix::ZERO
-            || dynamics.shake_time >= duration
-            || dynamics.intro_disabled
-            || !self.platforms[i].active
-        {
-            return false;
-        }
+        !(duration == Fix::ZERO || dynamics.shake_time >= duration || dynamics.intro_disabled)
+    }
+
+    /// ShakablePlatform's sample for a platform that `shakes`; true.
+    fn platform_shake_sample(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
+        let duration = self.platform_dynamics[i].shake_duration;
         self.platform_dynamics[i].shake_time += updater_dt;
         let strength = if self.platform_dynamics[i].meteor_shake_curve {
             data.meteor
@@ -35571,16 +35628,30 @@ impl RolloutWorld {
     /// with its mass and inertia.
     #[inline(always)]
     fn platform_body_update(&mut self, i: usize) {
-        if !self.platforms[i].active {
-            return;
+        if self.platforms[i].active {
+            self.platform_body_update_active(i);
         }
-        let dynamics = &mut self.platform_dynamics[i];
+    }
+
+    /// `platform_body_update` for an active platform.
+    #[inline(always)]
+    fn platform_body_update_active(&mut self, i: usize) {
+        debug_assert!(self.platforms[i].active);
+        let tick = self.tick;
+        if Self::body_step(&mut self.platform_dynamics[i], tick) {
+            self.platforms_changed();
+        }
+    }
+
+    /// BoplBody.UpdateSim on `dynamics`: whether the body rescaled.
+    #[inline(always)]
+    fn body_step(dynamics: &mut PlatformDynamics, tick: u32) -> bool {
         dynamics.hold.update_sim();
         let previous = dynamics.body_scale;
         let scale = dynamics.scale;
         if !dynamics.body_resizable && previous != scale {
             let ratio = previous / scale;
-            dynamics.unscaled_inverse_mass = Some((self.tick, dynamics.body.inverse_mass));
+            dynamics.unscaled_inverse_mass = Some((tick, dynamics.body.inverse_mass));
             dynamics.body.inverse_mass *= ratio;
             dynamics.body.inverse_inertia *= ratio;
             // DPhysicsRoundedRect.inverseMass writes the combined body of
@@ -35590,10 +35661,11 @@ impl RolloutWorld {
                 dynamics.root_body.inverse_inertia *= ratio;
             }
             dynamics.body_scale = scale;
-            self.platforms_changed();
+            return true;
         } else if dynamics.body_resizable {
             dynamics.body_scale = scale;
         }
+        false
     }
 
     /// AntiLockPlatform runs after AnimateVelocity: add the ordinary force
@@ -35640,23 +35712,46 @@ impl RolloutWorld {
     /// spawned it still reads the bounds from before the change.
     #[inline(always)]
     fn platform_sticky(&mut self, updater_dt: Fix, i: usize) {
-        if !self.platforms[i].active {
-            return;
+        if self.platforms[i].active {
+            self.platform_sticky_active(updater_dt, i);
         }
-        let time_scale = self.player_time_scale;
-        let sudden_death = self.sudden_death;
+    }
+
+    /// `platform_sticky` for an active platform.
+    #[inline(always)]
+    fn platform_sticky_active(&mut self, updater_dt: Fix, i: usize) {
+        debug_assert!(self.platforms[i].active);
+        let (time_scale, sudden_death) = (self.player_time_scale, self.sudden_death);
         let dynamics = &mut self.platform_dynamics[i];
+        let ease = Self::sticky_step(dynamics, updater_dt, time_scale, sudden_death);
+        if ease.is_some() || dynamics.surface_shape_dirty {
+            self.sticky_finish(i, ease);
+        }
+    }
+
+    /// StickyRoundedRectangle.UpdateSim's drop countdown and scale-up clock
+    /// on `dynamics`: the eased-back scale if a grown platform eases back.
+    #[inline(always)]
+    fn sticky_step(dynamics: &mut PlatformDynamics, updater_dt: Fix, time_scale: Fix, sudden_death: bool) -> Option<Fix> {
         if dynamics.drop_players_frames >= 0 {
             dynamics.drop_players_frames -= 1;
         }
         // StickyRoundedRectangle.UpdateSim eases a grown platform back.
         dynamics.time_since_scaled_up += updater_dt * time_scale;
-        if dynamics.scale > dynamics.base_scale
+        (dynamics.scale > dynamics.base_scale
             && (dynamics.time_since_scaled_up > Fix::from_int(10) || sudden_death)
-            && time_scale >= Fix::from_f32(0.01)
-        {
-            let value = dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
-                + dynamics.base_scale * updater_dt;
+            && time_scale >= Fix::from_f32(0.01))
+        .then(|| {
+            dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
+                + dynamics.base_scale * updater_dt
+        })
+    }
+
+    /// The rest of StickyRoundedRectangle.UpdateSim after `sticky_step`:
+    /// the ease back to `ease`, then UpdateBounds if the shape changed.
+    #[inline(never)]
+    fn sticky_finish(&mut self, i: usize, ease: Option<Fix>) {
+        if let Some(value) = ease {
             self.set_platform_scale(i, value);
             // UpdateBounds closes StickyRoundedRectangle.UpdateSim, so a
             // slime walking this pass already sees the eased-back shape.
