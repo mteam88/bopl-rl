@@ -625,9 +625,26 @@ impl RolloutWorld {
     /// `sweep_x`, its `part_layer` `layer`, `part_composite` and its swept
     /// bounds.
     fn group_part(&self, part: Part, layer: u32, sweep_x: bool, data: &data::RolloutData) -> GroupPart {
+        self.group_part_bounded(part, layer, self.swept_bounds(Swept::Part(part)), sweep_x, data)
+    }
+
+    /// `group_part` with the part's `swept_bounds`.
+    #[inline(always)]
+    fn group_part_bounded(
+        &self,
+        part: Part,
+        layer: u32,
+        bounds: Option<[Vec2; 2]>,
+        sweep_x: bool,
+        data: &data::RolloutData,
+    ) -> GroupPart {
         debug_assert_eq!(layer, self.part_layer(part, data));
         debug_assert_eq!(sweep_x, self.sweep_x());
-        let bounds = self.swept_bounds(Swept::Part(part));
+        #[cfg(debug_assertions)]
+        {
+            let bits = |b: Option<[Vec2; 2]>| b.map(|b| [b[0].x, b[0].y, b[1].x, b[1].y].map(|v| v.to_f64().to_bits()));
+            debug_assert_eq!(bits(bounds), bits(self.swept_bounds(Swept::Part(part))));
+        }
         let low = bounds.map_or(Vec2::ZERO, |b| b[0]);
         let min = if sweep_x { low.x } else { low.y };
         GroupPart {
@@ -1077,7 +1094,7 @@ impl RolloutWorld {
     /// How many Smoke clouds are parts (`cloud_layer`), counted up to two:
     /// all a `LayerSet` reads of them. Every cloud's row is on the cloud
     /// layer, so the clouds themselves are taken only for a group they can
-    /// pair in (`push_cloud_parts`); over the test replays one pass in eight
+    /// pair in (`insert_cloud_parts`); over the test replays one pass in eight
     /// with a cloud has any partner for one.
     fn cloud_parts_present(&self, data: &data::RolloutData) -> u32 {
         let mut count = 0;
@@ -1097,19 +1114,55 @@ impl RolloutWorld {
         count
     }
 
-    /// Every Smoke cloud that is a part, in the order the groups take them,
-    /// as a pair loop reads it.
-    fn push_cloud_parts(&self, group: &mut Vec<GroupPart>, sweep_x: bool, data: &data::RolloutData) {
+    /// Every Smoke cloud that is a part and can pair with one of
+    /// `group[partners]`, in the order the groups take them, as a pair loop
+    /// reads it, put in at `place`; how many. Clouds never pair with each
+    /// other, so a cloud whose bounds meet no partner's on a layer it
+    /// collides with makes no pair, and leaving it out leaves every other
+    /// pair as it was (`LayerSet`). Past eight such partners every cloud is
+    /// taken.
+    fn insert_cloud_parts(
+        &self,
+        group: &mut Vec<GroupPart>,
+        place: usize,
+        partners: std::ops::Range<usize>,
+        sweep_x: bool,
+        data: &data::RolloutData,
+    ) -> usize {
         let layer = data.smoke.cloud_layer;
+        debug_assert!(!data.layers_collide(layer, layer));
+        let mut bounds = [[Vec2::ZERO; 2]; 8];
+        let mut count = 0;
+        for partner in &group[partners] {
+            if let Some(partner_bounds) = partner.bounds.filter(|_| data.layers_collide(layer, partner.layer)) {
+                if count == bounds.len() {
+                    count = usize::MAX;
+                    break;
+                }
+                bounds[count] = partner_bounds;
+                count += 1;
+            }
+        }
+        let end = group.len();
         for i in 0..self.smoke_clouds.len() {
             if let Some(cloud_layer) = self.cloud_layer(i, data) {
                 debug_assert_eq!(cloud_layer, layer);
-                group.push(self.group_part(Part::Cloud(i), layer, sweep_x, data));
+                let part = Part::Cloud(i);
+                let cloud_bounds = self.swept_bounds(Swept::Part(part));
+                let meets = |cloud_bounds: [Vec2; 2]| {
+                    count == usize::MAX || bounds[..count].iter().any(|&b| sweep::swept_meet(cloud_bounds, b))
+                };
+                if cloud_bounds.is_some_and(meets) {
+                    group.push(self.group_part_bounded(part, layer, cloud_bounds, sweep_x, data));
+                }
             }
         }
+        let taken = group.len() - end;
+        group[place..].rotate_right(taken);
+        taken
     }
 
-    /// The clouds `push_cloud_parts` takes with their layers, for debug
+    /// Every cloud that is a part, with its layer, for debug
     /// assertions against the groups' every part.
     #[cfg(debug_assertions)]
     fn cloud_layered(&self, data: &data::RolloutData) -> Vec<(Part, u32)> {
@@ -1342,11 +1395,9 @@ impl RolloutWorld {
             )
         };
         circle_group(&mut group, &circle_layers[..cloud_at]);
-        if cloud_count > 0 && box_set.meets(cloud_layer, data) {
-            self.push_cloud_parts(&mut group, sweep_x, data);
-        }
+        let cloud_place = group.len();
         circle_group(&mut group, &circle_layers[cloud_at..]);
-        let circles = group.len();
+        let mut circles = group.len();
         let mut box_parts = std::mem::take(&mut self.scratch.box_parts);
         box_parts.clear();
         for &(part, layer) in box_layers {
@@ -1363,6 +1414,11 @@ impl RolloutWorld {
         }
         self.scratch.box_parts = box_parts;
         self.scratch.box_parts_tick = Some(self.tick);
+        // The clouds among the circles, those that can pair with a box.
+        if cloud_count > 0 && box_set.meets(cloud_layer, data) {
+            let boxes = circles..group.len();
+            circles += self.insert_cloud_parts(&mut group, cloud_place, boxes, sweep_x, data);
+        }
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
         let (circle_parts, box_parts) = group.split_at(circles);
@@ -1767,10 +1823,12 @@ impl RolloutWorld {
         };
         let cloud_at = ends[CC_CLOUDS] as usize;
         pairing(&mut group, &parts[..cloud_at]);
-        if cloud_count > 0 && layers.meets_other(cloud_layer, data) {
-            self.push_cloud_parts(&mut group, sweep_x, data);
-        }
+        let cloud_place = group.len();
         pairing(&mut group, &parts[cloud_at..]);
+        if cloud_count > 0 && layers.meets_other(cloud_layer, data) {
+            let partners = 0..group.len();
+            self.insert_cloud_parts(&mut group, cloud_place, partners, sweep_x, data);
+        }
         self.scratch.circle_ends = ends;
         self.scratch.circle_clouds = cloud_count;
         self.scratch.box_bodies = box_bodies;
