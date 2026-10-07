@@ -368,6 +368,42 @@ const fn destroyed_flags(flags: u32) -> u32 {
     (flags & (E_TRIGGER | E_FIX_DESTROYED)) | E_DESTROYED
 }
 
+/// Whether any row is destroyed and not yet removed: the test opening every
+/// RemoveDestroyedColliders, three or so per tick, nearly always false. With
+/// AVX-512 it gathers sixteen rows' flags per step.
+fn any_destroyed_unremoved(entities: &[CEntity]) -> bool {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    {
+        use std::arch::x86_64::*;
+        const WORDS: usize = std::mem::size_of::<CEntity>() / 4;
+        const _: () = assert!(std::mem::size_of::<CEntity>() % 4 == 0);
+        // SAFETY: lane j of the step at row i reads the flags word of row
+        // i + j, and the mask keeps only lanes with i + j < entities.len().
+        unsafe {
+            let flags = entities.as_ptr().cast::<u8>().add(std::mem::offset_of!(CEntity, flags)).cast::<i32>();
+            let offsets = _mm512_mullo_epi32(
+                _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+                _mm512_set1_epi32(WORDS as i32),
+            );
+            let bits = _mm512_set1_epi32((E_DESTROYED | E_REMOVED) as i32);
+            let destroyed = _mm512_set1_epi32(E_DESTROYED as i32);
+            let mut i = 0;
+            while i < entities.len() {
+                let lanes = (entities.len() - i).min(16);
+                let mask = (u32::MAX >> (32 - lanes)) as __mmask16;
+                let row = _mm512_mask_i32gather_epi32::<4>(_mm512_setzero_si512(), mask, offsets, flags.add(i * WORDS));
+                if _mm512_mask_cmpeq_epi32_mask(mask, _mm512_and_si512(row, bits), destroyed) != 0 {
+                    return true;
+                }
+                i += 16;
+            }
+            false
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+    entities.iter().any(|row| row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED)
+}
+
 /// A row DetPhysics dropped. Its object may still be IsDestroyed.
 #[inline]
 const fn removed_flags(flags: u32) -> u32 {
@@ -31963,7 +31999,9 @@ impl RolloutWorld {
     /// Returns whether there was nothing to drop.
     fn remove_destroyed_colliders(&mut self) -> bool {
         // Most queries find nothing to drop: one scan instead of four.
-        if !self.entities.iter().any(|row| row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED) {
+        let pending = any_destroyed_unremoved(&self.entities);
+        debug_assert_eq!(pending, self.entities.iter().any(|row| row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED));
+        if !pending {
             return true;
         }
         let mut hidden = false;

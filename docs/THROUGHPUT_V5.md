@@ -277,6 +277,14 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     old path. In the trainer profile the function falls to 2.57%; the PGO
     env_bench sim goes from 16.01 to 15.67 us (200 games), the hash is
     unchanged, and the debug-assertions exact gate passes.
+26. **v12: the destroyed-row check is one AVX-512 gather scan.**
+    `remove_destroyed_colliders` runs on every collider query and almost
+    always finds nothing to drop; its `iter().any` over the 136-byte rows
+    was 1.1% of trainer cycles. It now gathers the `flags` word of 16 rows
+    per instruction and tests them with a masked compare (scalar fallback
+    without AVX-512; a debug assertion checks it against the scalar scan).
+    c30 cycles fall 1.5%, and the PGO env_bench sim goes from 15.29 to
+    15.04 us. The hash is unchanged, and the exact gate passes.
 
 
 ## Cold caches in the trainer
@@ -388,10 +396,12 @@ sites, with no single structure to repack.
   2.3%, so the 12th hardware thread is nearly free. A 12th env thread
   (BOPL_ENV_THREADS=12, spec, 3 interleaved pairs) was neutral: +1.1%,
   -1.4%, -0.2%, with stragglers up from ~75-190 to ~110-170 us.
-- Instruction cuts in tight, well-predicted scans (the `any()` in
-  `remove_destroyed_colliders`, 2.2% of v10's instructions) are the same
-  case as the "any live" bits above: they run from the op cache off the
-  critical path, so they do not move cycles in a front-end-bound sim.
+- Callgrind on the corpus is not the trainer. A cycles profile of the live
+  trainer (v11 item) tracks its own instruction profile closely, function
+  by function (cycles/instructions 0.8-1.3, front end and all), but it
+  ranks lines differently from corpus callgrind: the `any()` scan in
+  `remove_destroyed_colliders` is 1.1% of trainer cycles, and observation
+  copies weigh more. Pick targets from the trainer profile.
 
 ## The writer on the GPU (2026-10-06)
 
