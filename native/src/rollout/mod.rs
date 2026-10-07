@@ -5036,6 +5036,11 @@ struct PlatformScratch {
     cloud_keys: Vec<u128>,
     cloud_keys_version: u64,
     cloud_keys_epoch: u64,
+    /// (pass, `cloud_keys_epoch`, place): no key in `cloud_keys` below the
+    /// place is at or past Updater's place, as of a walk this pass. That
+    /// place only moves on within a pass (`updater_pass_to`) once the pass
+    /// begins, which resets this, so a later walk's keys start no earlier.
+    cloud_walk: (u32, u64, u32),
     /// `smoke_tick`'s copy of `cloud_keys`, its order for the pass.
     cloud_order: Vec<u128>,
     /// The scans `run_spawned_before` may find something in (`WALK_*`).
@@ -8233,6 +8238,7 @@ impl RolloutWorld {
             }
         }
         self.scratch.updater_cursor = (self.tick, (0, 0, 0));
+        self.scratch.cloud_walk = (self.tick, self.scratch.cloud_keys_epoch, 0);
         self.append_updater_batch();
         // Updater initializes every prefab queued during the prior pass
         // before DetPhysics.UpdateDuplicatedObjects and before it invokes any
@@ -9128,6 +9134,22 @@ impl RolloutWorld {
     /// QuantumTunnel. The per-kind passes later in the pass run the rest, and
     /// each of their objects first runs this walk to its own turn.
     fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
+        self.spawned_walk::<false>(data, updater_dt, before, before);
+    }
+
+    /// `run_spawned_before(before)`, which with `AHEAD` also answers whether
+    /// it found nothing to run and nothing, as things stood when it looked,
+    /// that a walk from past `before` up to `ahead` would run: then such a
+    /// walk, with nothing changed since but Updater's place, would find
+    /// nothing either.
+    #[inline(always)]
+    fn spawned_walk<const AHEAD: bool>(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        before: UpdaterKey,
+        ahead: UpdaterKey,
+    ) -> bool {
         self.refresh_cloud_keys();
         #[cfg(debug_assertions)]
         debug_assert_eq!(self.walk_awake_now() & !self.scratch.walk_awake, 0, "a walk scan woke unflagged");
@@ -9141,15 +9163,20 @@ impl RolloutWorld {
         // hidden or disabled, for the rest of the pass. The others still
         // mark the turn they ran.
         let cursor = if self.scratch.updater_cursor.0 == tick { self.scratch.updater_cursor.1 } else { (0, 0, 0) };
+        // Whether something lies past `before` and short of `ahead`.
+        let mut busy = false;
         let mut push = |key: UpdaterKey, kind: u8, index: usize| {
             if key.0 <= tick && key < before && (!cursor_kind(kind) || key >= cursor) {
                 queue.push((key, kind, index));
+            } else if AHEAD && key.0 <= tick && key > before && key < ahead {
+                busy = true;
             }
         };
         // An Updater key leads with the pass it was appended on: one appended
         // after this pass or `before`'s, or (every kind here keeps Updater's
         // place) before the cursor's, is out without searching for its place.
-        let live = |appended: u32| appended <= tick && appended <= before.0 && appended >= cursor.0;
+        let last = if AHEAD { ahead.0 } else { before.0 };
+        let live = |appended: u32| appended <= tick && appended <= last && appended >= cursor.0;
         for i in self.first_runtime_platform()..self.platforms.len() {
             // A platform's key leads with its `appended` too (updater_member_key).
             if self.platform_pass(i) != PlatformPass::Authored && live(self.platform_dynamics[i].appended) {
@@ -9218,11 +9245,23 @@ impl RolloutWorld {
         }
         // A Smoke cast keeps dozens of clouds alive, and each cloud's turn
         // runs this walk: only those keyed in [cursor, before) can queue.
+        // The place the last walk this pass started from is where to look
+        // on from (`cloud_walk`).
         let clouds = &self.scratch.cloud_keys;
         let start = pack_keyed(cursor, 0);
-        for &packed in &clouds[clouds.partition_point(|&packed| packed < start)..] {
+        let epoch = self.scratch.cloud_keys_epoch;
+        let (walk_tick, walk_epoch, walk_from) = self.scratch.cloud_walk;
+        let from = if walk_tick == tick && walk_epoch == epoch {
+            let from = walk_from as usize;
+            from + clouds[from..].iter().position(|&packed| packed >= start).unwrap_or(clouds.len() - from)
+        } else {
+            clouds.partition_point(|&packed| packed < start)
+        };
+        debug_assert_eq!(from, clouds.partition_point(|&packed| packed < start));
+        self.scratch.cloud_walk = (tick, epoch, from as u32);
+        for &packed in &clouds[from..] {
             let (key, i) = unpack_keyed(packed);
-            if key >= before {
+            if key >= if AHEAD { ahead } else { before } {
                 break;
             }
             if self.smoke_clouds[i].active {
@@ -9382,6 +9421,7 @@ impl RolloutWorld {
         }
         // Cleared before any turn runs, which may turn one back on.
         self.scratch.walk_awake &= !quiet;
+        let still = AHEAD && queue.is_empty() && !busy;
         queue.sort_unstable();
         for &(key, kind, index) in &queue {
             // A turn an earlier updatable's own walk already passed is not
@@ -9405,7 +9445,11 @@ impl RolloutWorld {
                 5 => self.ability_pickups_tick_before(hierarchy - 99_999_999, data, updater_dt),
                 6 => self.engines_tick(data, updater_dt, turn),
                 8 => self.rope_turn(index),
-                9 => self.smoke_cloud_turn(index, key, data, updater_dt),
+                // The cloud's turn takes its own place in Updater's walk.
+                9 => {
+                    self.smoke_cloud_turn(index, key, data, updater_dt);
+                    continue;
+                }
                 10 => self.scale_changer_step(index, data, updater_dt),
                 11 => self.duplicate_platform_effects_tick(
                     data,
@@ -9445,6 +9489,7 @@ impl RolloutWorld {
         }
         self.scratch.spawned_queue = queue;
         self.updater_pass_to(before);
+        still
     }
 
     /// The Updater key of Portal Gun shot `shot_index`.
@@ -20655,18 +20700,20 @@ impl RolloutWorld {
     /// the bounds splashes claim spawn hierarchy in the clouds' order.
     /// SmokeCircle's updaters for one cloud: DestroyIfOutsideSceneBounds, the
     /// enter animation's radius, and FlammableSmoke's ignition.
-    fn smoke_cloud_update(&mut self, cloud_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+    /// Whether the cloud did no more than step its own state (no splash,
+    /// removal or detonation).
+    fn smoke_cloud_update(&mut self, cloud_index: usize, data: &data::RolloutData, updater_dt: Fix) -> bool {
         // Updater skips an inactive cloud. The QuantumTunnel or
         // TeleportedObjectEffect holding it is newer, so the pass that lets
         // it go has already passed it by.
         let cloud = &self.smoke_clouds[cloud_index];
         if !self.active_self(cloud.entity) || !cloud.active || !cloud.registered {
-            return;
+            return true;
         }
         if let Some(effect) = self.smoke_cloud_floor_effect(cloud, data) {
             self.spawn_bounds_effect(effect, data);
             self.remove_smoke_cloud(cloud_index);
-            return;
+            return false;
         }
         let cloud = &mut self.smoke_clouds[cloud_index];
         // The enter animation's frame: nearly every cloud is past it, on its
@@ -20690,8 +20737,10 @@ impl RolloutWorld {
             cloud.ignition_time += updater_dt;
             if cloud.ignition_time > cloud.ignition_delay {
                 self.detonate_smoke_cloud(cloud_index, data);
+                return false;
             }
         }
+        true
     }
 
     /// Cloud `cloud_index`'s turn ahead of `smoke_tick`, queued at `key`.
@@ -20700,16 +20749,17 @@ impl RolloutWorld {
     /// at the key's row is this one, unless a spawn since the queue was built
     /// reused its slot. The walk's turns leave Updater's list as it is, so
     /// the queued key is still the cloud's.
+    /// The walk queued it only if Updater had not passed it, and passes it
+    /// whether the cloud updates or not.
     fn smoke_cloud_turn(&mut self, cloud_index: usize, key: UpdaterKey, data: &data::RolloutData, updater_dt: Fix) {
+        debug_assert!(!self.updater_passed(key));
+        self.updater_take_turn(key);
         let cloud = &self.smoke_clouds[cloud_index];
         if 100_000_000 + cloud.hierarchy_base != key.2 || !cloud.active {
             return;
         }
         debug_assert_eq!(key, self.updater_key(cloud.appended, key.2));
-        if !self.updater_passed(key) {
-            self.updater_take_turn(key);
-            self.smoke_cloud_update(cloud_index, data, updater_dt);
-        }
+        self.smoke_cloud_update(cloud_index, data, updater_dt);
     }
 
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
@@ -20719,24 +20769,55 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.cloud_order);
         order.clone_from(&self.scratch.cloud_keys);
         let epoch = self.scratch.cloud_keys_epoch;
-        for &packed in &order {
+        // The key the last walk found nothing short of, past the cloud it
+        // led to, and Updater's list as it was then (`spawned_walk`). Nearly
+        // every walk here finds nothing: the next cloud's needs no doing
+        // while the list stands and the cloud between did nothing but step.
+        let mut still: Option<(UpdaterKey, u64, u64)> = None;
+        for (slot, &packed) in order.iter().enumerate() {
             let (listed, cloud_index) = unpack_keyed(packed);
             let cloud = &self.smoke_clouds[cloud_index];
             // A slot's listed key stands until a spawn or a change to
             // Updater's list makes the index stale.
-            let key = if self.scratch.cloud_keys_epoch == epoch && self.scratch.cloud_keys_version == self.scratch.updater_version {
+            let listing = (self.scratch.cloud_keys_epoch, self.scratch.updater_version);
+            let key = if listing.0 == epoch && self.scratch.cloud_keys_version == listing.1 {
                 listed
             } else {
                 self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base)
             };
             debug_assert_eq!(key, self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
             if !self.updater_passed(key) {
-                self.run_spawned_before(data, updater_dt, key);
+                if still == Some((key, listing.0, listing.1)) && self.scratch.cloud_keys_version == listing.1 {
+                    #[cfg(debug_assertions)]
+                    {
+                        self.run_spawned_before(data, updater_dt, key);
+                        debug_assert!(self.scratch.spawned_queue.is_empty());
+                    }
+                    self.updater_pass_to(key);
+                    still = None;
+                } else {
+                    // The next listed cloud's key, while the listing stands.
+                    let ahead = order.get(slot + 1).map_or(key, |&next| unpack_keyed(next).0);
+                    let current = listing.0 == epoch && self.scratch.cloud_keys_version == listing.1;
+                    still = if current && self.spawned_walk::<true>(data, updater_dt, key, ahead) {
+                        Some((ahead, self.scratch.cloud_keys_epoch, self.scratch.updater_version))
+                    } else {
+                        if !current {
+                            self.run_spawned_before(data, updater_dt, key);
+                        }
+                        None
+                    };
+                }
                 if self.updater_passed(key) {
+                    still = None;
                     continue;
                 }
                 self.updater_take_turn(key);
-                self.smoke_cloud_update(cloud_index, data, updater_dt);
+                if !self.smoke_cloud_update(cloud_index, data, updater_dt) {
+                    still = None;
+                }
+            } else {
+                still = None;
             }
         }
         self.scratch.cloud_order = order;
