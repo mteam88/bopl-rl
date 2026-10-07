@@ -4843,6 +4843,9 @@ const WALK_WALL_TUNNELS: u8 = 1;
 const WALK_WAVES: u8 = 2;
 const WALK_PLAYERS: u8 = 4;
 const WALK_ALL: u8 = WALK_WALL_TUNNELS | WALK_WAVES | WALK_PLAYERS;
+/// A `walk_scan` kind flag: the object takes no turn now, but may later
+/// this pass with nothing to say so.
+const WALK_SUMMARY_ONLY: u8 = 0x80;
 
 /// Whether player slot `slot` holds an object `run_spawned_before` queues.
 fn walk_player_awake(slot: &PlayerSlot) -> bool {
@@ -5145,6 +5148,19 @@ struct PlatformScratch {
     cloud_walk: (u32, u64, u32),
     /// `smoke_tick`'s copy of `cloud_keys`, its order for the pass.
     cloud_order: Vec<u128>,
+    /// The walk summary: the keys, sorted, of every object `walk_scan`
+    /// found that a walk could queue on its pass (appended by it), as of
+    /// the last scan, at Updater list version `walk_pending_version` (0 or
+    /// u64::MAX: none). Its objects are listed, and an object a spawn brings
+    /// is appended on the next pass, which changes the list; so it stands,
+    /// as a superset, for later passes too, while the list stands and no
+    /// object comes on without a spawn (`walk_pending_stale`).
+    /// `walk_pending_pos` is (pass, the first key Updater has not passed).
+    walk_pending: Vec<UpdaterKey>,
+    walk_pending_version: u64,
+    walk_pending_pos: (u32, u32),
+    #[cfg(debug_assertions)]
+    walk_pending_built: (u32, UpdaterKey, UpdaterKey, bool),
     /// The scans `run_spawned_before` may find something in (`WALK_*`).
     /// Each bit is set wherever its state turns on, and cleared by the
     /// walk when its scan finds nothing on, so a clear bit skips the scan.
@@ -9059,6 +9075,11 @@ impl RolloutWorld {
     /// equal numbers in registration order (Updater.cs:258-270, `dotnet_sort`).
     fn append_updater_batch(&mut self) {
         let mut batch = std::mem::take(&mut self.updater_batch);
+        // An object spawned last pass is appended by this one, even one
+        // destroyed since, whose updatables leave the list unchanged.
+        if !batch.is_empty() {
+            self.walk_pending_stale();
+        }
         batch.retain(|&(_, _, destroyed)| !destroyed);
         dotnet_sort::introspective_sort(&mut batch, |x, y| x.0.cmp(&y.0));
         let pass = self.tick;
@@ -9249,63 +9270,21 @@ impl RolloutWorld {
         self.scratch.walk_awake & bit != 0
     }
 
-    /// Updater.UpdateSim for every runtime-spawned updatable ahead of
-    /// `before` in Updater's list that has not taken its turn this pass, in
-    /// list order (`UpdaterKey`). Only updatables already appended take a
-    /// turn: one instantiated this pass waits for the next. So a slime
-    /// respawned from a stock, or an ability form instantiated at pickup,
-    /// updates after every object appended ahead of it: a Duplicator copy's
-    /// or a spawned platform's updaters, a hole's pull, a Tack, Poke Ball or
-    /// Mjolnir, a Portal, a DynamicAbilityPickup (one newer than a live
-    /// ScaleChanger waits for it), a RocketEngine's push, a hook's Rope and
-    /// RopeAttachment, a Smoke cloud's FlammableSmoke, a player ScaleChanger,
-    /// a DuplicatePlatformEffect, a TeleportIndicator and a wall's
-    /// QuantumTunnel. The per-kind passes later in the pass run the rest, and
-    /// each of their objects first runs this walk to its own turn.
-    fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
-        self.spawned_walk::<false>(data, updater_dt, before, before);
-    }
-
-    /// `run_spawned_before(before)`, which with `AHEAD` also answers whether
-    /// it found nothing to run and nothing, as things stood when it looked,
-    /// that a walk from past `before` up to `ahead` would run: then such a
-    /// walk, with nothing changed since but Updater's place, would find
-    /// nothing either.
+    /// Every runtime-spawned updatable but the smoke clouds that may take
+    /// a turn in `spawned_walk` this pass, with its key, kind and index:
+    /// those appended by this pass, with the `WALK_*` scans `awake` names.
+    /// Returns the scans that found nothing on.
     #[inline(always)]
-    fn spawned_walk<const AHEAD: bool>(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        before: UpdaterKey,
-        ahead: UpdaterKey,
-    ) -> bool {
-        self.refresh_cloud_keys();
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(self.walk_awake_now() & !self.scratch.walk_awake, 0, "a walk scan woke unflagged");
-        let tick = self.tick;
-        let awake = self.scratch.walk_awake;
-        // The scans that found everything off.
+    fn walk_scan(
+        &self,
+        tick: u32,
+        awake: u8,
+        push: &mut impl FnMut(UpdaterKey, u8, usize),
+    ) -> u8 {
         let mut quiet = 0;
-        let mut queue = std::mem::take(&mut self.scratch.spawned_queue);
-        queue.clear();
-        // Updater's place: the kinds that keep it pass a turn they skip,
-        // hidden or disabled, for the rest of the pass. The others still
-        // mark the turn they ran.
-        let cursor = if self.scratch.updater_cursor.0 == tick { self.scratch.updater_cursor.1 } else { (0, 0, 0) };
-        // Whether something lies past `before` and short of `ahead`.
-        let mut busy = false;
-        let mut push = |key: UpdaterKey, kind: u8, index: usize| {
-            if key.0 <= tick && key < before && (!cursor_kind(kind) || key >= cursor) {
-                queue.push((key, kind, index));
-            } else if AHEAD && key.0 <= tick && key > before && key < ahead {
-                busy = true;
-            }
-        };
         // An Updater key leads with the pass it was appended on: one appended
-        // after this pass or `before`'s, or (every kind here keeps Updater's
-        // place) before the cursor's, is out without searching for its place.
-        let last = if AHEAD { ahead.0 } else { before.0 };
-        let live = |appended: u32| appended <= tick && appended <= last && appended >= cursor.0;
+        // after this pass is out without searching for its place.
+        let live = |appended: u32| appended <= tick;
         for i in self.first_runtime_platform()..self.platforms.len() {
             // A platform's key leads with its `appended` too (updater_member_key).
             if self.platform_pass(i) != PlatformPass::Authored && live(self.platform_dynamics[i].appended) {
@@ -9370,31 +9349,6 @@ impl RolloutWorld {
                 if live(shot.appended) {
                     push(self.updater_key(shot.appended, 100_000_000 + shot.hierarchy_base), 40, i);
                 }
-            }
-        }
-        // A Smoke cast keeps dozens of clouds alive, and each cloud's turn
-        // runs this walk: only those keyed in [cursor, before) can queue.
-        // The place the last walk this pass started from is where to look
-        // on from (`cloud_walk`).
-        let clouds = &self.scratch.cloud_keys;
-        let start = pack_keyed(cursor, 0);
-        let epoch = self.scratch.cloud_keys_epoch;
-        let (walk_tick, walk_epoch, walk_from) = self.scratch.cloud_walk;
-        let from = if walk_tick == tick && walk_epoch == epoch {
-            let from = walk_from as usize;
-            from + clouds[from..].iter().position(|&packed| packed >= start).unwrap_or(clouds.len() - from)
-        } else {
-            clouds.partition_point(|&packed| packed < start)
-        };
-        debug_assert_eq!(from, clouds.partition_point(|&packed| packed < start));
-        self.scratch.cloud_walk = (tick, epoch, from as u32);
-        for &packed in &clouds[from..] {
-            let (key, i) = unpack_keyed(packed);
-            if key >= if AHEAD { ahead } else { before } {
-                break;
-            }
-            if self.smoke_clouds[i].active {
-                push(key, 9, i);
             }
         }
         for (i, effect) in self.scale_changers.iter().enumerate() {
@@ -9532,13 +9486,12 @@ impl RolloutWorld {
                 }
             }
         }
+        // A hidden missile turns visible again without a hook: the summary
+        // keeps it (WALK_SUMMARY_ONLY), and only a visible one takes a turn.
         for (i, missile) in self.guided_missiles.iter().enumerate() {
-            if missile.active
-                && !self.blink_object_hidden(missile.entity)
-            {
-                if live(missile.appended) {
-                    push(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base), 19, i);
-                }
+            if missile.active && live(missile.appended) {
+                let kind = if self.blink_object_hidden(missile.entity) { 19 | WALK_SUMMARY_ONLY } else { 19 };
+                push(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base), kind, i);
             }
         }
         for (i, marker) in self.revival_marker_pool.iter().enumerate() {
@@ -9547,10 +9500,213 @@ impl RolloutWorld {
                     push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 41, i);
                 }
             }
+        }        quiet
+    }
+
+    /// An object `walk_scan` would find came on mid-pass without a spawn
+    /// (which lists it on the next pass): the walk summary no longer stands.
+    #[inline]
+    fn walk_pending_stale(&mut self) {
+        self.scratch.walk_pending_version = u64::MAX;
+    }
+
+    /// The first key in the walk summary at or past Updater's place
+    /// `cursor` on this pass, (u32::MAX, ..) with none; None while it does
+    /// not stand.
+    #[inline(always)]
+    fn walk_pending_next(&mut self, cursor: UpdaterKey) -> Option<UpdaterKey> {
+        let scratch = &mut self.scratch;
+        if scratch.walk_pending_version != scratch.updater_version {
+            return None;
+        }
+        let (pass, mut pos) = scratch.walk_pending_pos;
+        if pass != self.tick {
+            pos = 0;
+        }
+        let pending = &scratch.walk_pending;
+        while (pos as usize) < pending.len() && pending[pos as usize] < cursor {
+            pos += 1;
+        }
+        scratch.walk_pending_pos = (self.tick, pos);
+        Some(pending.get(pos as usize).copied().unwrap_or((u32::MAX, u32::MAX, u32::MAX)))
+    }
+
+    /// Checks that a walk to `before` the summary skips would queue nothing
+    /// but smoke clouds.
+    #[cfg(debug_assertions)]
+    fn check_walk_skip(&self, cursor: UpdaterKey, before: UpdaterKey) {
+        self.check_walk_pending(cursor);
+        let tick = self.tick;
+        let mut full = Vec::new();
+        self.walk_scan(tick, self.scratch.walk_awake, &mut |key, kind, index| {
+            if kind & WALK_SUMMARY_ONLY == 0 && key.0 <= tick && key < before && key >= cursor {
+                full.push((key, kind, index));
+            }
+        });
+        debug_assert!(full.is_empty(), "the walk summary skipped {full:?}");
+    }
+
+    /// Checks `walk_pending`, while it stands, against a fresh scan: it
+    /// holds every key at or past Updater's place that a walk would queue,
+    /// but the player objects' (a walk with `WALK_PLAYERS` awake does not
+    /// use it). A wall's QuantumTunnel and a shockwave come on appended by
+    /// the next pass, or not at all.
+    #[cfg(debug_assertions)]
+    fn check_walk_pending(&self, cursor: UpdaterKey) {
+        let tick = self.tick;
+        if self.scratch.walk_pending_version != self.scratch.updater_version {
+            return;
+        }
+        let pending = &self.scratch.walk_pending;
+        debug_assert!(pending.is_sorted());
+        let mut missing = Vec::new();
+        self.walk_scan(tick, WALK_WALL_TUNNELS | WALK_WAVES, &mut |key, kind, index| {
+            if key.0 <= tick && key >= cursor && pending.binary_search(&key).is_err() {
+                missing.push((key, kind & !WALK_SUMMARY_ONLY, index));
+            }
+        });
+        debug_assert!(missing.is_empty(), "the walk summary lacks {missing:?} (cursor {cursor:?}, tick {tick}, pending {pending:?} pos {:?}, built {:?})", self.scratch.walk_pending_pos, self.scratch.walk_pending_built);
+    }
+
+    /// Updater.UpdateSim for every runtime-spawned updatable ahead of
+    /// `before` in Updater's list that has not taken its turn this pass, in
+    /// list order (`UpdaterKey`). Only updatables already appended take a
+    /// turn: one instantiated this pass waits for the next. So a slime
+    /// respawned from a stock, or an ability form instantiated at pickup,
+    /// updates after every object appended ahead of it: a Duplicator copy's
+    /// or a spawned platform's updaters, a hole's pull, a Tack, Poke Ball or
+    /// Mjolnir, a Portal, a DynamicAbilityPickup (one newer than a live
+    /// ScaleChanger waits for it), a RocketEngine's push, a hook's Rope and
+    /// RopeAttachment, a Smoke cloud's FlammableSmoke, a player ScaleChanger,
+    /// a DuplicatePlatformEffect, a TeleportIndicator and a wall's
+    /// QuantumTunnel. The per-kind passes later in the pass run the rest, and
+    /// each of their objects first runs this walk to its own turn.
+    fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
+        // Nearly every walk finds nothing, and with no smoke cloud and no
+        // player object on the summary tells so without a scan.
+        if self.smoke_clouds.is_empty() && self.scratch.walk_awake & WALK_PLAYERS == 0 {
+            let tick = self.tick;
+            let cursor = if self.scratch.updater_cursor.0 == tick { self.scratch.updater_cursor.1 } else { (0, 0, 0) };
+            if self.walk_pending_next(cursor).is_some_and(|next| next >= before) {
+                #[cfg(debug_assertions)]
+                self.check_walk_skip(cursor, before);
+                self.updater_pass_to(before);
+                return;
+            }
+        }
+        self.spawned_walk::<false>(data, updater_dt, before, before);
+    }
+
+    /// `run_spawned_before(before)`, which with `AHEAD` also answers whether
+    /// it found nothing to run and nothing, as things stood when it looked,
+    /// that a walk from past `before` up to `ahead` would run: then such a
+    /// walk, with nothing changed since but Updater's place, would find
+    /// nothing either.
+    #[inline(always)]
+    fn spawned_walk<const AHEAD: bool>(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        before: UpdaterKey,
+        ahead: UpdaterKey,
+    ) -> bool {
+        self.refresh_cloud_keys();
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.walk_awake_now() & !self.scratch.walk_awake, 0, "a walk scan woke unflagged");
+        let tick = self.tick;
+        let awake = self.scratch.walk_awake;
+        // The scans that found everything off.
+        let mut quiet = 0;
+        let mut queue = std::mem::take(&mut self.scratch.spawned_queue);
+        queue.clear();
+        // Updater's place: the kinds that keep it pass a turn they skip,
+        // hidden or disabled, for the rest of the pass. The others still
+        // mark the turn they ran.
+        let cursor = if self.scratch.updater_cursor.0 == tick { self.scratch.updater_cursor.1 } else { (0, 0, 0) };
+        #[cfg(debug_assertions)]
+        self.check_walk_pending(cursor);
+        // Whether something lies past `before` and short of `ahead`.
+        let busy = std::cell::Cell::new(false);
+        let push = |queue: &mut Vec<(UpdaterKey, u8, usize)>, key: UpdaterKey, kind: u8, index: usize| {
+            if kind & WALK_SUMMARY_ONLY != 0 {
+            } else if key.0 <= tick && key < before && (!cursor_kind(kind) || key >= cursor) {
+                queue.push((key, kind, index));
+            } else if AHEAD && key.0 <= tick && key > before && key < ahead {
+                busy.set(true);
+            }
+        };
+        // A Smoke cast keeps dozens of clouds alive, and each cloud's turn
+        // runs this walk: only those keyed in [cursor, before) can queue.
+        // The place the last walk this pass started from is where to look
+        // on from (`cloud_walk`).
+        let clouds = &self.scratch.cloud_keys;
+        let start = pack_keyed(cursor, 0);
+        let epoch = self.scratch.cloud_keys_epoch;
+        let (walk_tick, walk_epoch, walk_from) = self.scratch.cloud_walk;
+        let from = if walk_tick == tick && walk_epoch == epoch {
+            let from = walk_from as usize;
+            from + clouds[from..].iter().position(|&packed| packed >= start).unwrap_or(clouds.len() - from)
+        } else {
+            clouds.partition_point(|&packed| packed < start)
+        };
+        debug_assert_eq!(from, clouds.partition_point(|&packed| packed < start));
+        self.scratch.cloud_walk = (tick, epoch, from as u32);
+        for &packed in &clouds[from..] {
+            let (key, i) = unpack_keyed(packed);
+            if key >= if AHEAD { ahead } else { before } {
+                break;
+            }
+            if self.smoke_clouds[i].active {
+                push(&mut queue, key, 9, i);
+            }
+        }
+        // Every other object the scans below would queue is in the summary,
+        // as of the last scan this pass (`walk_pending`): with none in
+        // [cursor, before), and with AHEAD none in (before, ahead), they
+        // queue nothing.
+        let next = if awake & WALK_PLAYERS == 0 { self.walk_pending_next(cursor) } else { None };
+        let summary = next.is_some_and(|next| next >= before);
+        if AHEAD && summary {
+            let pending = &self.scratch.walk_pending[self.scratch.walk_pending_pos.1 as usize..];
+            if pending.iter().find(|&&key| key > before).is_some_and(|&key| key < ahead) {
+                busy.set(true);
+            }
+        }
+        if summary {
+            #[cfg(debug_assertions)]
+            {
+                self.check_walk_skip(cursor, before);
+                let mut full_busy = false;
+                self.walk_scan(tick, awake, &mut |key, kind, _| {
+                    full_busy |= kind & WALK_SUMMARY_ONLY == 0 && AHEAD && key.0 <= tick && key > before && key < ahead;
+                });
+                debug_assert!(busy.get() || !full_busy, "the walk summary missed a turn ahead");
+            }
+        } else {
+            let mut pending = std::mem::take(&mut self.scratch.walk_pending);
+            pending.clear();
+            quiet = self.walk_scan(tick, awake, &mut |key, kind, index| {
+                // Those it queues and those Updater has passed too: a
+                // turn's own walk may come before the queue's later turns,
+                // and the next pass starts over.
+                if key.0 <= tick {
+                    pending.push(key);
+                }
+                push(&mut queue, key, kind, index);
+            });
+            pending.sort_unstable();
+            let pos = pending.partition_point(|&key| key < cursor);
+            self.scratch.walk_pending = pending;
+            self.scratch.walk_pending_pos = (tick, pos as u32);
+            self.scratch.walk_pending_version = self.scratch.updater_version;
+            #[cfg(debug_assertions)]
+            {
+                self.scratch.walk_pending_built = (tick, cursor, before, AHEAD);
+            }
         }
         // Cleared before any turn runs, which may turn one back on.
         self.scratch.walk_awake &= !quiet;
-        let still = AHEAD && queue.is_empty() && !busy;
+        let still = AHEAD && queue.is_empty() && !busy.get();
         queue.sort_unstable();
         for &(key, kind, index) in &queue {
             // A turn an earlier updatable's own walk already passed is not
@@ -19403,6 +19559,7 @@ impl RolloutWorld {
         let mut child_body = source.body;
         child_body.orientation = desired_rotation;
         let attach_order = self.attach_child_body(platform_index, child_body);
+        self.walk_pending_stale();
         let spike = &mut self.spike_attacks[spike_index];
         spike.attach_order = attach_order;
         spike.macho_carried = false;
@@ -20249,6 +20406,11 @@ impl RolloutWorld {
         if !quiet {
             self.scratch.pending_quiet =
                 (pending.is_empty() && !self.unregistered_objects_waiting()).then_some(self.next_spawn_hierarchy);
+        }
+        // A registration turns an object on, appended by this pass or
+        // before (a marker, an arrow, a clapped Black Hole).
+        if !pending.is_empty() {
+            self.walk_pending_stale();
         }
         self.scratch.pending_objects = pending;
     }

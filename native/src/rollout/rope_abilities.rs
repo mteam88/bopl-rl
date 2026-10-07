@@ -2061,6 +2061,8 @@ impl RolloutWorld {
         );
         let offset = pose.offset(point);
         let scale = pose.scale;
+        // The hook's RopeAttachment takes its turns from here on.
+        self.walk_pending_stale();
         let rope = &mut self.ropes[rope_index];
         rope.physics.mass_start = Fix::ONE;
         rope.physics.force_start = Vec2::ZERO;
