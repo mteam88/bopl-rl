@@ -5111,7 +5111,7 @@ struct PlatformScratch {
     cb_contacts: Vec<(CallbackKey, Part, Part, Contact)>,
     /// The Box/RoundedRect or Circle/RoundedRect group's parts, and its
     /// manifolds in sweep order: (key, part, wall, contact).
-    wall_parts: Vec<Part>,
+    wall_parts: Vec<(Part, [Vec2; 2])>,
     wall_contacts: Vec<(CallbackKey, Part, usize, Contact)>,
     item_order: Vec<usize>,
     cc_contacts: Vec<(Part, Part, Contact)>,
@@ -34776,7 +34776,7 @@ impl RolloutWorld {
                 && item.callback_registered_tick != self.tick
                 && !self.blink_object_hidden(item.entity)
             {
-                parts.push(Part::Item(i));
+                self.push_swept(&mut parts, Part::Item(i));
             }
         }
         // A node's circle is in DetPhysics while its row is.
@@ -34785,7 +34785,7 @@ impl RolloutWorld {
                 && !node.macho_carried
                 && matches!(node.entity.and_then(|entity| self.detphysics_collider(entity)), Some(DetCollider::Circle(_)))
             {
-                parts.push(Part::Node(i));
+                self.push_swept(&mut parts, Part::Node(i));
             }
         }
         // A Blink tunnel or teleport disables the form's GameObject, taking
@@ -34796,42 +34796,42 @@ impl RolloutWorld {
                 && !slot.blink_tunnel_active
                 && !slot.teleport_effect_active
             {
-                parts.push(Part::Rock(i));
+                self.push_swept(&mut parts, Part::Rock(i));
             }
         }
         for (i, shot) in self.portal_shots.iter().enumerate() {
             if shot.active && !self.blink_object_hidden(shot.entity) {
-                parts.push(Part::Shot(i));
+                self.push_swept(&mut parts, Part::Shot(i));
             }
         }
         for i in 0..self.arrows.len() {
             if self.arrow_registered(i) {
-                parts.push(Part::Arrow(i));
+                self.push_swept(&mut parts, Part::Arrow(i));
             }
         }
         for (i, rock) in self.duplicated_rocks.iter().enumerate() {
             if rock.active && !self.blink_object_hidden(rock.entity) {
-                parts.push(Part::DuplicatedRock(i));
+                self.push_swept(&mut parts, Part::DuplicatedRock(i));
             }
         }
         for rope in 0..self.ropes.len() {
             if self.hook_live(rope) {
-                parts.push(Part::Hook(rope));
+                self.push_swept(&mut parts, Part::Hook(rope));
             }
         }
         for (i, hole) in self.black_holes.iter().enumerate() {
             if hole.active && !self.blink_object_hidden(hole.entity) {
-                parts.push(Part::Hole(i));
+                self.push_swept(&mut parts, Part::Hole(i));
             }
         }
         for i in 0..self.players.len() {
             if self.body_part_circle(i) == Some(true) {
-                parts.push(Part::Body(i));
+                self.push_swept(&mut parts, Part::Body(i));
             }
         }
         for i in 0..self.abilityless_clones.len() {
             if self.clone_part_circle(i) == Some(true) {
-                parts.push(Part::Clone(i));
+                self.push_swept(&mut parts, Part::Clone(i));
             }
         }
         let walls = std::mem::take(&mut self.scratch.circle_colliders);
@@ -37791,7 +37791,7 @@ impl RolloutWorld {
                 && spike.platform_index < self.platforms.len()
                 && !self.attached_hidden(spike.platform_index, spike.entity)
             {
-                parts.push(Part::Spike(i));
+                self.push_swept(&mut parts, Part::Spike(i));
             }
         }
         for (i, engine) in self.engines.iter().enumerate() {
@@ -37800,22 +37800,22 @@ impl RolloutWorld {
                 && engine.platform_index < self.platforms.len()
                 && !self.attached_hidden(engine.platform_index, engine.entity)
             {
-                parts.push(Part::Engine(i));
+                self.push_swept(&mut parts, Part::Engine(i));
             }
         }
         for i in 0..self.guided_missiles.len() {
             if self.guided_missile_live(i) {
-                parts.push(Part::Missile(i));
+                self.push_swept(&mut parts, Part::Missile(i));
             }
         }
         for i in 0..self.players.len() {
             if self.body_part_circle(i) == Some(false) {
-                parts.push(Part::Body(i));
+                self.push_swept(&mut parts, Part::Body(i));
             }
         }
         for i in 0..self.abilityless_clones.len() {
             if self.clone_part_circle(i) == Some(false) {
-                parts.push(Part::Clone(i));
+                self.push_swept(&mut parts, Part::Clone(i));
             }
         }
         // The walls as the narrow phase copies them are the walls now: nothing

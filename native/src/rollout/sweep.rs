@@ -7,7 +7,10 @@
 use super::*;
 
 /// A collider in SortAndSweep, by the collection that owns it.
+// Release builds bound all but `Part` in `take_sweep` directly; debug builds
+// name the rest to check those lists.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub(super) enum Swept {
     Part(Part),
     /// The player's registered Player-layer shape: the slime's box, or its
@@ -331,6 +334,22 @@ impl RolloutWorld {
     /// The collider's bounding box in this pass's SortAndSweep; None for one
     /// registered after it, which meets nothing until the next pass.
     pub(super) fn swept_bounds(&self, collider: Swept) -> Option<[Vec2; 2]> {
+        self.swept_bounds_inlined(collider)
+    }
+
+    /// A wall group's part with its `swept_bounds`, pushed only if
+    /// SortAndSweep bounded it: a part registered after it meets nothing
+    /// this pass (DetPhysics.cs:2169-2231). Inlined where the part's kind is
+    /// known, so its box comes straight from its pool's list.
+    #[inline(always)]
+    pub(super) fn push_swept(&self, parts: &mut Vec<(Part, [Vec2; 2])>, part: Part) {
+        if let Some(bounds) = self.swept_bounds_inlined(Swept::Part(part)) {
+            parts.push((part, bounds));
+        }
+    }
+
+    #[inline(always)]
+    fn swept_bounds_inlined(&self, collider: Swept) -> Option<[Vec2; 2]> {
         let Some(sweep) = self.scratch.sweep.as_deref().filter(|sweep| sweep.tick == Some(self.tick)) else {
             return Some(self.current_bounds(collider, data::get()));
         };

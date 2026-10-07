@@ -1486,7 +1486,13 @@ impl RolloutWorld {
     /// DetPhysics.cs:2405-2437), then each pair that is no trigger resolves
     /// with ResolveCollision and PositionalCorrection on each side's own
     /// inverse mass.
-    pub(super) fn wall_group(&mut self, group: u8, parts: &[Part], walls: &[RoundedRect], data: &data::RolloutData) {
+    pub(super) fn wall_group(
+        &mut self,
+        group: u8,
+        parts: &[(Part, [Vec2; 2])],
+        walls: &[RoundedRect],
+        data: &data::RolloutData,
+    ) {
         let mut contacts = std::mem::take(&mut self.scratch.wall_contacts);
         contacts.clear();
         // Nothing below moves until every manifold is built. The walls'
@@ -1510,11 +1516,12 @@ impl RolloutWorld {
         }
         // A wall past the swept boxes meets every part's box.
         let boxed_walls = swept_walls.len().min(self.platforms.len());
-        for &part in parts {
-            // SortAndSweep pairs on the bounds it took before any group
-            // corrected anything; a part registered after it meets nothing
-            // this pass (DetPhysics.cs:2169-2231).
-            let Some(bounds) = self.swept_bounds(Swept::Part(part)) else { continue };
+        for &(part, bounds) in parts {
+            #[cfg(debug_assertions)]
+            {
+                let bits = |b: Option<[Vec2; 2]>| b.map(|b| [b[0].x, b[0].y, b[1].x, b[1].y].map(|v| v.to_f64().to_bits()));
+                debug_assert_eq!(bits(Some(bounds)), bits(self.swept_bounds(Swept::Part(part))));
+            }
             let mut side: Option<(u32, Option<usize>, Collider)> = None;
             // The cheap box test first, sixteen walls at a time, then any wall
             // past the swept boxes; in wall order.
