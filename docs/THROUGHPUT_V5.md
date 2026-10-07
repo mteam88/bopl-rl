@@ -204,7 +204,9 @@ sites, with no single structure to repack.
 - Skipping a wall's sqrt when its lower bound max(qx, qy) - radius is
   above every live lane's smallest upper bound (exact, and only 31% of
   (wall, step) pairs need the sqrt): 22% slower on the full writer. The
-  bound pass lengthens each step's dependent chain.
+  bound pass lengthens each step's dependent chain. Under trainer-like
+  SMT load (12 concurrent env_bench copies, siblings sharing the sqrt
+  unit) it also loses: full writer 16.6 to 20.0 us.
 - Two independent 8-lane chains in one march loop (exact): 12% slower. It
   spills (54 stack references against 12), and a 16-wide drain wastes
   more lanes. A microbenchmark of the 5-wall step on this core: 74 TSC
@@ -213,11 +215,9 @@ sites, with no single structure to repack.
 
 ## Open
 
-- End-to-end (`BOPL_BENCH_WORKLOAD=spec train/bench_shape.sh`, after the
-  2026-10-06 reboot, load ~24 from other agents): 302k sps, 227k learner.
-  Still env-bound: per buffer step eval_env 1.33 ms against eval_gpu
-  0.29 ms. In the pool, c_step is 71.7 us (sim 43.5, finish 26.3), about
-  1.9x env_bench's single-core numbers, because SMT runs 11 threads on
-  6 cores and the box was loaded.
-- With the full writer, the writer is now 38% of the env step.
+- End-to-end (`BOPL_BENCH_WORKLOAD=spec train/bench_shape.sh`, at
+  7e8c0f27): 344k sps, 258k learner. Still env-bound. In the pool c_step
+  is 60.7 us (sim 38.0, finish 20.8); 12 concurrent env_bench copies
+  reproduce it (sim 38.1, full 16.6), so judge changes there too.
+- With the full writer, the writer is now 34% of the env step.
   Full vs lite for the specialists is Matthew's call.
