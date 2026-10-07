@@ -2005,6 +2005,9 @@ pub struct PlatformDynamics {
     /// none (a pending one is a pass after its spawn pass, never 0), so
     /// `init_tick > tick` is the whole "joins on a later pass" test.
     pub init_tick: u32,
+    /// `platform_defs`' entry for it as the definition itself (None for
+    /// `usize::MAX`): a copy keeps its source's with the index.
+    pub definition: Option<&'static data::PlatformDef>,
     /// The prefab whose component order runs the platform's updaters.
     pub prefab: PlatformPrefab,
     /// That prefab's updaters, `PlatformUpdater::pack`ed: what
@@ -6523,6 +6526,7 @@ impl RolloutWorld {
                 p.ice,
             ));
             self.platform_dynamics.push(PlatformDynamics {
+                definition: Some(&data::get().maps[map].platforms[index]),
                 registered: (
                     &data::get().maps[map].platforms[index].registrations,
                     &data::get().maps[map].platforms[index].registration_orders,
@@ -19524,6 +19528,7 @@ impl RolloutWorld {
         self.platforms.push(make_platform(self.next_platform_id, &surface, extents, ice));
         self.next_platform_id += 1;
         self.platform_dynamics.push(PlatformDynamics {
+            definition: None,
             registered: (
                 data::get().prefab("Boulder"),
                 data::get().prefab_orders("Boulder"),
@@ -31902,6 +31907,7 @@ impl RolloutWorld {
             false,
         ));
         self.platform_dynamics.push(PlatformDynamics {
+            definition: None,
             registered: (
                 data::get().prefab("ResizablePlatform"),
                 data::get().prefab_orders("ResizablePlatform"),
@@ -35111,30 +35117,34 @@ impl RolloutWorld {
     /// on the tick that decides the round and on every tick after it.
     #[inline(never)]
     fn platform_sink(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) {
-        let def_index = self.platform_defs[i];
-        if def_index == usize::MAX && !self.spawned.iter().any(|s| s.active && s.platform_index == i) {
+        let definition = self.platform_dynamics[i].definition;
+        debug_assert!(std::ptr::eq(
+            definition.map_or(std::ptr::null(), |d| d as *const _),
+            data.maps[self.map]
+                .platforms
+                .get(self.platform_defs[i])
+                .map_or(std::ptr::null(), |d| d as *const _),
+        ));
+        if definition.is_none() && !self.spawned.iter().any(|s| s.active && s.platform_index == i) {
             return;
         }
         if self.sudden_death && self.platform_dynamics[i].sudden_death_delay.is_none() {
-            let max_delay = if def_index == usize::MAX {
-                data.platform.sudden_death_max_delay
-            } else {
-                data.maps[self.map].platforms[def_index].sudden_death_max_delay
+            let max_delay = match definition {
+                None => data.platform.sudden_death_max_delay,
+                Some(def) => def.sudden_death_max_delay,
             };
             self.platform_dynamics[i].sudden_death_delay =
                 Some(self.rng.fix_range(Fix::ZERO, max_delay));
         }
         if let Some(delay) = self.platform_dynamics[i].sudden_death_delay {
             let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
-            let (speed_scale, accel, curve) = if def_index == usize::MAX {
-                (
+            let (speed_scale, accel, curve) = match definition {
+                None => (
                     data.platform.sudden_death_speed,
                     data.platform.sudden_death_acceleration,
                     &data.platform.sudden_death_y_speed,
-                )
-            } else {
-                let def = &data.maps[self.map].platforms[def_index];
-                (def.sudden_death_speed, def.sudden_death_acceleration, &def.sudden_death_y_speed)
+                ),
+                Some(def) => (def.sudden_death_speed, def.sudden_death_acceleration, &def.sudden_death_y_speed),
             };
             // AnimateVelocity.UpdateSim (AnimateVelocity.cs:137):
             //
@@ -36174,11 +36184,17 @@ impl RolloutWorld {
         // `vector_fields` lists exactly the live platforms whose definition
         // has a field (both pushes test it, and removal retires the entry),
         // so the definition's field stands for the membership test.
-        let map = &data.maps[self.map];
-        let field = map
-            .platforms
-            .get(self.platform_defs[platform_index])
+        let field = self.platform_dynamics[platform_index]
+            .definition
             .and_then(|def| def.vector_field.as_ref());
+        debug_assert!(std::ptr::eq(
+            field.map_or(std::ptr::null(), |f| f as *const _),
+            data.maps[self.map]
+                .platforms
+                .get(self.platform_defs[platform_index])
+                .and_then(|def| def.vector_field.as_ref())
+                .map_or(std::ptr::null(), |f| f as *const _),
+        ));
         debug_assert_eq!(field.is_some(), self.vector_fields.contains(&platform_index));
         let Some(field) = field else {
             return;
