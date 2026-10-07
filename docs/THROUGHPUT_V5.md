@@ -235,6 +235,29 @@ sites, with no single structure to repack.
 ## Measured and not kept
 
 - `overflow-checks = false`: 2%. The checks stay as a safety net.
+- BOLT on top of PGO (llvm-bolt 22: ext-tsp blocks, cdsort functions, hot
+  and cold split, from an LBR profile of env_bench on the train games): it
+  was exact, but cut taken branches only 26% and gave nothing. Solo, sim
+  went from 14.69 to 14.63 us; with 12 copies, from 25.45 to 25.55. PGO
+  already lays the code out.
+- Lockstep worlds (2026-10-07). In the trainer, 43% of instruction fetches
+  miss the I-cache (38 per 1k instructions) and 40% miss the op cache, while
+  L3 fills are only 5 per 1k. The idea was that a tick reruns a wide code
+  path once per world, so stepping several worlds phase by phase would reuse
+  that code while it is still hot.
+  - **How it worked.** `game_tick` became an async state machine that yielded
+    between its 71 top-level phases. The pool claimed 4 envs at once, and
+    `bopl_rl_step_sampled_many` polled their worlds round-robin. It was exact.
+  - **The probe** (21 or 64 worlds per thread):
+    - Solo, I-cache misses halved but L1D refills rose 75%, so it was neutral.
+    - With 12 copies it was 7% faster.
+  - **The trainer** (spec, A/B): the async state machine alone made the sim
+    6-8% slower (32.7 to 34.7 us, and 33.7 to 36.6 us). Lockstep groups of 4
+    cost another 6% on top (35.4 to 37.7 us). Coarser claims also lengthened
+    eval_gpu, from 0.334 to 0.400 ms.
+  - **Net:** 500k sps fell to 445k.
+  - **Lesson:** solo env_bench and the probe both missed the async cost. Only
+    the trainer A/B showed it.
 - A no-hit certificate (skipping the march for a ray whose segment stays
   more than 0.05 from every wall) was not built. 58% of rays end without a
   hit, but they average 6 steps each (the sky, not grazing the floor; only
@@ -322,9 +345,11 @@ third of the env step. Matthew chose the full writer on the GPU, in FP32.
 
 ## Open
 
-- **Env CPU is still the bound.** In the pool, c_step is ~45 us: sim 37,
-  finish 6.4, sample 1.4. The 11 env threads are 91% busy, and the GPU is
-  ~68% busy (nsys).
+- **Env CPU is still the bound.** At v8 (~500k sps) c_step is ~40-43 us in
+  the pool: sim 31-35, finish 6.1, sample 1.3. ~10.3 of 12 hardware threads
+  are stepping envs, so 1M needs c_step ~20 us. In the trainer the encoder
+  (finish + sample) is ~15% of cycles, spread over memsets and small double
+  ops with no single hotspot.
 - **SMT gives only 1.3x.** The sim takes 19.6 us solo, 21 us as 6 copies on
   separate cores, and 32.3 us as 12 copies.
 - **1M sps needs a ~2x faster sim.** It needs ~24 us per c_step on 12
