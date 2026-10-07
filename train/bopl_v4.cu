@@ -176,14 +176,16 @@ __global__ void scatter_rows(const float* input, Gather g, int B, const int* off
         }
     }
 }
-/* The flat block and the privileged block of every row. */
-__global__ void pack_flat(const float* input, Gather g, int B, float* flat, float* priv) {
+/* The flat block and the privileged block of every row, as float4 copies. */
+static_assert(FLAT % 4 == 0 && PRIV % 4 == 0 && PRIV_OFF % 4 == 0 && STRIDE % 4 == 0, "pack_flat copies float4");
+__global__ void pack_flat(const float* input, Gather g, int B, float4* flat, float4* priv) {
+    constexpr int F4 = FLAT / 4, P4 = PRIV / 4;
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= B * (FLAT + PRIV)) return;
-    int b = i / (FLAT + PRIV), c = i - b * (FLAT + PRIV);
-    const float* row = row_ptr(input, g, b);
-    if (c < FLAT) flat[(long)b * FLAT + c] = row[c];
-    else priv[(long)b * PRIV + c - FLAT] = row[PRIV_OFF + c - FLAT];
+    if (i >= B * (F4 + P4)) return;
+    int b = i / (F4 + P4), c = i - b * (F4 + P4);
+    const float4* row = (const float4*)row_ptr(input, g, b);
+    if (c < F4) flat[(long)b * F4 + c] = row[c];
+    else priv[(long)b * P4 + c - F4] = row[PRIV_OFF / 4 + c - F4];
 }
 __global__ void to_bf16(const float* src, bf16* dst, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -668,26 +670,24 @@ struct EncWeights {
  * Every training pass resamples its minibatch (prio_replay draws segments
  * with replacement), so one pass's packing is not the next's; but the rows
  * they draw from are the slot's learner rows, fixed for the update.
- * enc_precompute packs those once per update with the packing kernels
- * themselves (count_rows, scatter_rows into a fixed slab of rows[s] slots per
- * row, pack_flat), and the passes gather from the cache instead of walking
+ * enc_precompute packs those once per update (cache_pack: the valid rows
+ * into a fixed slab of rows[s] slots per row and the counts), and the passes
+ * gather from the cache instead of walking
  * the 19 KB observation rows again: counts by row, packed set rows as 16-byte
- * copies, flat / privileged rows by row. Same source floats, same
- * conversions, same drop order (the pass's scan and cap): bit-identical to
- * packing from the observations, 4 x (count 0.42 + scatter 0.71 ms) -> 1 x
- * plus 4 gathers per update. Filled through the bound Gather (its obs is the
+ * copies. Same source floats, same conversions, same drop order (the pass's
+ * scan and cap): bit-identical to packing from the observations, 4 x (count
+ * 0.42 + scatter 0.71 ms) -> 1 x plus 4 gathers per update. The flat and
+ * privileged blocks are one contiguous stretch of the observation row each,
+ * so the passes read them in place (pack_flat): a cached copy cost its write
+ * and read back for the same gather. Filled through the bound Gather (its obs is the
  * update's slot); valid until the trainer's next enc_precompute. */
 struct RowCache {
     int valid, N, T, B_total, apb, primary, n_agents;
     int* agents;          /* (n_agents) learner agent ids: the cache's row order is agent position x T + tick */
     int* agent_pos;       /* (B_total) position of an agent in agents, -1 for a non-learner */
     int* counts;          /* (SETS, N) */
-    int* offsets;         /* (SETS, N) the slab's row offsets r * rows[s], scatter_rows' destinations */
     bf16* slab[SETS];     /* (N * rows[s], kpad) */
     int* ids[SETS];       /* (N * rows[s]) */
-    int* scratch[SETS];   /* (N * rows[s]) scatter_rows' sample output, unused (the pass writes its own) */
-    float* flat;          /* (N, FLAT) */
-    float* priv;          /* (N, PRIV) */
 };
 struct EncActs {
     Gather gather;
@@ -751,14 +751,68 @@ __global__ void cache_copy_rows(Gather g, const int* agent_pos, int B, const int
     for (int t = lane; t < n * v4s; t += 32) out[t] = in[t];
     for (int j = lane; j < n; j += 32) { ids[dst + j] = slab_ids[src + j]; sample[dst + j] = b; }
 }
-__global__ void cache_flat(Gather g, const int* agent_pos, int B, const float4* flat_all, const float4* priv_all, float4* flat, float4* priv) {
-    constexpr int F4 = FLAT / 4, P4 = PRIV / 4;
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= B * (F4 + P4)) return;
-    int b = i / (F4 + P4), c = i - b * (F4 + P4);
-    long r = cache_row(g, agent_pos, b);
-    if (c < F4) flat[(long)b * F4 + c] = flat_all[r * F4 + c];
-    else priv[(long)b * P4 + c - F4] = priv_all[r * P4 + c - F4];
+/* enc_precompute's packing, one warp per cached row: each set's valid rows
+ * (column 0 != 0, in row order) into the row's slab slots [r * rows[s],
+ * + count) with their embedding ids, and the count. The values, conversions
+ * and order of count_rows + scatter_rows over the slab offsets, in one pass
+ * over the observation row: the lanes walk the (valid row, column) pairs of a set
+ * flattened, so a row's loads do not wait behind the previous row's stores
+ * (scatter_rows copies row after row; it ran 1.1 ms for the entity set). */
+constexpr int PACK_WARPS = 8;
+/* Set S's valid rows of the observation row into sel (row indices in order); returns the count. */
+template<int S>
+__device__ __forceinline__ int cache_pack_select(const float* row, int lane, int* sel) {
+    constexpr Spec sp = SPEC[S];
+    static_assert(sp.rows <= 64, "two ballots per set");
+    const float* base = row + sp.offset;
+    bool v0 = lane < sp.rows && base[lane * sp.width] != 0.0f;
+    bool v1 = lane + 32 < sp.rows && base[(lane + 32) * sp.width] != 0.0f;
+    unsigned b0 = __ballot_sync(0xffffffffu, v0), b1 = __ballot_sync(0xffffffffu, v1);
+    unsigned below = (1u << lane) - 1;
+    if (v0) sel[__popc(b0 & below)] = lane;
+    if (v1) sel[__popc(b0) + __popc(b1 & below)] = lane + 32;
+    return __popc(b0) + __popc(b1);
+}
+/* The n selected rows into slab slots [r * rows, + n): bf16 [features | one-hot id] in kpad
+ * columns, two columns per lane step, and their embedding ids. */
+template<int S>
+__device__ __forceinline__ void cache_pack_rows(const float* row, long r, int n, int lane, const int* sel, bf16* slab, int* ids) {
+    constexpr Spec sp = SPEC[S];
+    static_assert(sp.kpad % 2 == 0 && sp.width % 2 == 0 && sp.offset % 2 == 0 && STRIDE % 2 == 0, "float2 / bf16x2 steps");
+    constexpr int KP2 = sp.kpad / 2;
+    const float* base = row + sp.offset;
+    long dst = r * sp.rows;
+    __nv_bfloat162* out = (__nv_bfloat162*)(slab + dst * sp.kpad);
+    #pragma unroll 4
+    for (int i = lane; i < n * KP2; i += 32) {
+        int j = i / KP2, k = (i - j * KP2) * 2;
+        const float* src = base + sel[j] * sp.width;
+        float v0, v1;
+        if (k + 1 < sp.features) { float2 t = *(const float2*)(src + k); v0 = t.x; v1 = t.y; }
+        else {
+            int id = sp.id_col >= 0 ? embedding_id(src[sp.id_col]) : -1;
+            v0 = k < sp.features ? src[k] : (sp.id_col >= 0 && k - sp.features == id) ? 1.0f : 0.0f;
+            v1 = (sp.id_col >= 0 && k + 1 - sp.features == id) ? 1.0f : 0.0f;
+        }
+        out[i] = __halves2bfloat162(tobf(v0), tobf(v1));
+    }
+    for (int j = lane; j < n; j += 32) ids[dst + j] = sp.id_col >= 0 ? embedding_id(base[sel[j] * sp.width + sp.id_col]) : 0;
+}
+struct PackSlabs { bf16* slab[SETS]; int* ids[SETS]; };
+__global__ void __launch_bounds__(PACK_WARPS * 32) cache_pack(Gather g, int N, PackSlabs out, int* counts) {
+    __shared__ int sel[PACK_WARPS][SETS][64];
+    int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    long r = (long)blockIdx.x * PACK_WARPS + w;
+    if (r >= N) return;
+    const float* row = row_ptr(nullptr, g, (int)r);
+    int n0 = cache_pack_select<0>(row, lane, sel[w][0]), n1 = cache_pack_select<1>(row, lane, sel[w][1]);
+    int n2 = cache_pack_select<2>(row, lane, sel[w][2]), n3 = cache_pack_select<3>(row, lane, sel[w][3]);
+    __syncwarp();
+    if (lane < SETS) counts[(long)lane * N + r] = lane == 0 ? n0 : lane == 1 ? n1 : lane == 2 ? n2 : n3;
+    cache_pack_rows<2>(row, r, n2, lane, sel[w][2], out.slab[2], out.ids[2]);
+    cache_pack_rows<1>(row, r, n1, lane, sel[w][1], out.slab[1], out.ids[1]);
+    cache_pack_rows<3>(row, r, n3, lane, sel[w][3], out.slab[3], out.ids[3]);
+    cache_pack_rows<0>(row, r, n0, lane, sel[w][0], out.slab[0], out.ids[0]);
 }
 static void* cache_alloc(size_t bytes) {
     void* p = nullptr;
@@ -771,7 +825,6 @@ static void* cache_alloc(size_t bytes) {
  * the buffers are allocated once and the shape may not change afterwards. */
 static void enc_precompute(void* activations, int apb, int primary, cudaStream_t stream) {
     auto* a = (EncActs*)activations; RowCache& c = a->cache; const Gather& g = a->gather;
-    static_assert(FLAT % 4 == 0 && PRIV % 4 == 0, "cache_flat copies float4");
     if (!g.obs) throw std::runtime_error("Bopl v4: the row cache needs a bound observation gather");
     if (c.N == 0) {
         std::vector<int> agents, pos(g.B_total, -1);
@@ -783,42 +836,30 @@ static void enc_precompute(void* activations, int apb, int primary, cudaStream_t
         c.agents = (int*)cache_alloc(agents.size() * sizeof(int));
         c.agent_pos = (int*)cache_alloc(pos.size() * sizeof(int));
         c.counts = (int*)cache_alloc((size_t)SETS * c.N * sizeof(int));
-        c.offsets = (int*)cache_alloc((size_t)SETS * c.N * sizeof(int));
-        std::vector<int> off((size_t)SETS * c.N);
         long bytes = 0;
         for (int s = 0; s < SETS; s++) {
             size_t slots = (size_t)c.N * SPEC[s].rows;
-            for (long r = 0; r < c.N; r++) off[(size_t)s * c.N + r] = (int)(r * SPEC[s].rows);
             c.slab[s] = (bf16*)cache_alloc(slots * SPEC[s].kpad * sizeof(bf16));
             c.ids[s] = (int*)cache_alloc(slots * sizeof(int));
-            c.scratch[s] = (int*)cache_alloc(slots * sizeof(int));
-            bytes += slots * (SPEC[s].kpad * sizeof(bf16) + 2 * sizeof(int));
+            bytes += slots * (SPEC[s].kpad * sizeof(bf16) + sizeof(int));
         }
-        c.flat = (float*)cache_alloc((size_t)c.N * FLAT * sizeof(float));
-        c.priv = (float*)cache_alloc((size_t)c.N * PRIV * sizeof(float));
-        bytes += (size_t)c.N * (FLAT + PRIV) * sizeof(float);
         if (cudaMemcpy(c.agents, agents.data(), agents.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess
-            || cudaMemcpy(c.agent_pos, pos.data(), pos.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess
-            || cudaMemcpy(c.offsets, off.data(), off.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess)
+            || cudaMemcpy(c.agent_pos, pos.data(), pos.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess)
             throw std::runtime_error("Bopl v4: row cache upload failed");
         if (env_int("BOPL_V4_MEMLOG", 0)) fprintf(stderr, "bopl v4 memory: row cache N=%d %.1f MB\n", c.N, bytes / 1048576.0);
     } else if (c.T != g.T || c.B_total != g.B_total || c.apb != apb || c.primary != primary) {
         /* Another shape (the check harness's cases; the trainer's is fixed): drop
          * and reallocate. Graphs captured on the old buffers are stale. */
-        for (void* p : {(void*)c.agents, (void*)c.agent_pos, (void*)c.counts, (void*)c.offsets, (void*)c.flat, (void*)c.priv}) cudaFree(p);
-        for (int s = 0; s < SETS; s++) { cudaFree(c.slab[s]); cudaFree(c.ids[s]); cudaFree(c.scratch[s]); }
+        for (void* p : {(void*)c.agents, (void*)c.agent_pos, (void*)c.counts}) cudaFree(p);
+        for (int s = 0; s < SETS; s++) { cudaFree(c.slab[s]); cudaFree(c.ids[s]); }
         c = RowCache{};
         enc_precompute(activations, apb, primary, stream);
         return;
     }
     Gather all{g.obs, c.agents, g.T, g.B_total};
     int N = c.N;
-    count_rows<<<grid_size(N * SETS), BLOCK_SIZE, 0, stream>>>(nullptr, all, N, c.counts);
-    scatter_rows<0><<<grid_size(N * 32), BLOCK_SIZE, 0, stream>>>(nullptr, all, N, c.offsets, N * SPEC[0].rows, c.slab[0], c.ids[0], c.scratch[0]);
-    scatter_rows<1><<<grid_size(N * 32), BLOCK_SIZE, 0, stream>>>(nullptr, all, N, c.offsets, N * SPEC[1].rows, c.slab[1], c.ids[1], c.scratch[1]);
-    scatter_rows<2><<<grid_size(N * 32), BLOCK_SIZE, 0, stream>>>(nullptr, all, N, c.offsets, N * SPEC[2].rows, c.slab[2], c.ids[2], c.scratch[2]);
-    scatter_rows<3><<<grid_size(N * 32), BLOCK_SIZE, 0, stream>>>(nullptr, all, N, c.offsets, N * SPEC[3].rows, c.slab[3], c.ids[3], c.scratch[3]);
-    pack_flat<<<grid_size(N * (FLAT + PRIV)), BLOCK_SIZE, 0, stream>>>(nullptr, all, N, c.flat, c.priv);
+    PackSlabs slabs{{c.slab[0], c.slab[1], c.slab[2], c.slab[3]}, {c.ids[0], c.ids[1], c.ids[2], c.ids[3]}};
+    cache_pack<<<(N + PACK_WARPS - 1) / PACK_WARPS, PACK_WARPS * 32, 0, stream>>>(all, N, slabs, c.counts);
     c.valid = 1;
 }
 
@@ -899,8 +940,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     }
     /* flat block and privileged block */
     const RowCache& c = a->cache;
-    if (c.valid) cache_flat<<<grid_size(B * (FLAT + PRIV) / 4), BLOCK_SIZE, 0, stream>>>(a->gather, c.agent_pos, B, (const float4*)c.flat, (const float4*)c.priv, (float4*)a->flat_input.data, (float4*)a->priv.data);
-    else pack_flat<<<grid_size(B * (FLAT + PRIV)), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->flat_input.data, a->priv.data);
+    pack_flat<<<grid_size(B * (FLAT + PRIV) / 4), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, (float4*)a->flat_input.data, (float4*)a->priv.data);
     g_v4_privileged = a->priv.data; g_v4_privileged_rows = B;
     prof_mark("enc.pack_flat", stream);
     /* joined[:, :FD] = ReLU(flat_input W_flat^T): the ReLU in the epilogue, written at the joined stride */
