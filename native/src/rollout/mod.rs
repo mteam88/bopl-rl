@@ -1047,6 +1047,54 @@ pub struct SmokeCloud {
     pub duplicate_shake_offset: Vec2,
 }
 
+/// What a smoke cloud's update reads besides the cloud and its row, for
+/// one walk: the floor, and the enter animation's last frame.
+struct SteadyCloud {
+    floor: Fix,
+    last_end: u32,
+    last_radius: Fix,
+}
+
+impl SteadyCloud {
+    fn new(world: &RolloutWorld, data: &data::RolloutData) -> Self {
+        let (ends, radii) = (&data.smoke.cloud_enter_frame_ticks, &data.smoke.cloud_radii);
+        let last = radii.len() - 1;
+        Self {
+            floor: data.maps[world.map].lower_boundary(),
+            // With no frame before the last, `update` takes no cloud.
+            last_end: last.checked_sub(1).and_then(|k| ends.get(k)).copied().unwrap_or(u32::MAX),
+            last_radius: radii[last],
+        }
+    }
+
+    /// `smoke_cloud_update` for `cloud`, an active one taking its turn at
+    /// `key`, if it is steady: on, registered, above the floor, past its
+    /// enter animation and unlit, it does nothing but set its radius on its
+    /// row (one of `rows`) and count its age. Updater's place is left for
+    /// the caller to move past `key`.
+    #[inline(always)]
+    fn update(&self, cloud: &mut SmokeCloud, rows: &mut [CEntity], key: UpdaterKey, tick: u32, updater_dt: Fix) -> bool {
+        debug_assert!(cloud.active);
+        let Some(row) = cloud.entity.and_then(|entity| rows.get_mut(entity)) else { return false };
+        if !(row.flags & E_ACTIVE != 0
+            && cloud.registered
+            && cloud.hierarchy_base.wrapping_add(100_000_000) == key.2
+            && cloud.position.y >= self.floor
+            && cloud.age_ticks >= self.last_end
+            && cloud.ignition_time < Fix::ZERO)
+        {
+            return false;
+        }
+        cloud.radius_before = row.radius;
+        cloud.radius_tick = tick;
+        row.radius = (self.last_radius * cloud.scale).raw();
+        if updater_dt > Fix::ZERO {
+            cloud.age_ticks = cloud.age_ticks.saturating_add(1);
+        }
+        true
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct SmokeExplosion {
     pub active: bool,
@@ -9780,16 +9828,27 @@ impl RolloutWorld {
         // runs this walk: only those keyed in [cursor, before) can queue.
         // The place the last walk this pass started from is where to look
         // on from (`cloud_walk`).
+        // They go into the queue only if something else does: on their
+        // own they take their turns straight from `cloud_keys`
+        // (`smoke_clouds_walk`), from `from` to `clouds_end`, the first
+        // keyed at or past `before`.
         let from = self.cloud_walk_from(cursor);
+        let mut clouds_end = from;
+        let mut cloud_turns = false;
         for &packed in &self.scratch.cloud_keys[from..] {
             let (key, i) = unpack_keyed(packed);
             if key >= if AHEAD { ahead } else { before } {
                 break;
             }
-            if self.smoke_clouds[i].active {
+            if key < before {
+                clouds_end += 1;
+                debug_assert!(key >= cursor);
+                cloud_turns |= key.0 <= tick && self.smoke_clouds[i].active;
+            } else if self.smoke_clouds[i].active {
                 push(&mut queue, key, 9, i);
             }
         }
+        debug_assert!(queue.is_empty());
         // Every other object the scans below would queue is in the summary,
         // as of the last scan this pass (`walk_pending`): with none in
         // [cursor, before), and with AHEAD none in (before, ahead), they
@@ -9857,8 +9916,13 @@ impl RolloutWorld {
         }
         // Cleared before any turn runs, which may turn one back on.
         self.scratch.walk_awake &= !quiet;
-        let still = AHEAD && queue.is_empty() && !busy.get();
-        queue.sort_unstable();
+        let still = AHEAD && queue.is_empty() && !cloud_turns && !busy.get();
+        if clouds_end > from {
+            self.walk_clouds(&mut queue, from..clouds_end, cloud_turns, data, updater_dt);
+        } else {
+            queue.sort_unstable();
+        }
+        debug_assert!(queue.is_sorted());
         for &(key, kind, index) in &queue {
             // A turn an earlier updatable's own walk already passed is not
             // taken again.
@@ -21187,6 +21251,157 @@ impl RolloutWorld {
         true
     }
 
+    /// The smoke clouds a walk takes, listed in `cloud_keys[slots]`, with
+    /// `queue` the rest it queued; `turns`, whether any cloud there is on and
+    /// takes a turn. The clouds keyed ahead of everything else queued, nearly
+    /// always all of them, take their turns now, straight from the listing:
+    /// they run no walk of their own and change nothing the rest read. The
+    /// others join the queue, which this sorts.
+    #[inline(never)]
+    fn walk_clouds(
+        &mut self,
+        queue: &mut Vec<(UpdaterKey, u8, usize)>,
+        slots: std::ops::Range<usize>,
+        turns: bool,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+    ) {
+        queue.sort_unstable();
+        let split = match queue.first() {
+            Some(first) => {
+                let first = pack_keyed(first.0, 0);
+                slots.start + self.scratch.cloud_keys[slots.clone()].partition_point(|&packed| packed < first)
+            }
+            None => slots.end,
+        };
+        if turns && split > slots.start {
+            self.smoke_clouds_walk(slots.start..split, data, updater_dt);
+        }
+        if split == slots.end {
+            return;
+        }
+        // The rest go ahead of everything else, which then slides into
+        // place among them: there is seldom more than a platform's turn.
+        let others = queue.len();
+        let tick = self.tick;
+        for j in split..slots.end {
+            let (key, i) = unpack_keyed(self.scratch.cloud_keys[j]);
+            if key.0 <= tick && self.smoke_clouds[i].active {
+                queue.push((key, 9, i));
+            }
+        }
+        queue.rotate_left(others);
+        let clouds = queue.len() - others;
+        for k in clouds..queue.len() {
+            let entry = queue[k];
+            let place = queue[..k].partition_point(|other| *other < entry);
+            queue[place..=k].rotate_right(1);
+        }
+    }
+
+    /// The turns of the smoke clouds listed in `cloud_keys[slots]`, on in
+    /// Updater's place in a walk that queued nothing else: as the walk's
+    /// queue would run them, each that was on when it looked (and still is,
+    /// in the slot its listing names) once.
+    #[inline(never)]
+    fn smoke_clouds_walk(&mut self, slots: std::ops::Range<usize>, data: &data::RolloutData, updater_dt: Fix) {
+        #[cfg(debug_assertions)]
+        let listing = (self.scratch.cloud_keys_epoch, self.scratch.cloud_keys.len());
+        let tick = self.tick;
+        let steady = SteadyCloud::new(self, data);
+        // The last turn a steady cloud took, after any other: Updater's
+        // place moves past it at the end. Until then the place stands short
+        // of only those turns, so it tells which this walk's own have passed
+        // all the same; and until another's turn runs, none.
+        let mut deferred = None;
+        let mut other = false;
+        let (mut j, end) = (slots.start, slots.end);
+        while j < end {
+            // The steady clouds in a row, which call nothing.
+            #[cfg(debug_assertions)]
+            let mut checked = None;
+            {
+                let cursor = self.scratch.updater_cursor;
+                let (keys, clouds, rows) = (&self.scratch.cloud_keys[..end], &mut self.smoke_clouds, &mut self.entities[..]);
+                while j < end {
+                    let (key, i) = unpack_keyed(keys[j]);
+                    let cloud = &mut clouds[i];
+                    if key.0 > tick || !cloud.active || (other && cursor.0 == tick && key < cursor.1) {
+                        j += 1;
+                        continue;
+                    }
+                    #[cfg(debug_assertions)]
+                    let before = (*cloud, cloud.entity.and_then(|entity| rows.get(entity).copied()));
+                    if !steady.update(cloud, rows, key, tick, updater_dt) {
+                        break;
+                    }
+                    deferred = Some(key);
+                    j += 1;
+                    #[cfg(debug_assertions)]
+                    {
+                        checked = Some((i, before));
+                        break;
+                    }
+                }
+            }
+            #[cfg(debug_assertions)]
+            if let Some((i, before)) = checked {
+                debug_assert_eq!(listing, (self.scratch.cloud_keys_epoch, self.scratch.cloud_keys.len()));
+                self.check_steady_cloud(i, before, data, updater_dt);
+                continue;
+            }
+            if j == end {
+                break;
+            }
+            let (key, i) = unpack_keyed(self.scratch.cloud_keys[j]);
+            if let Some(key) = deferred.take() {
+                self.updater_take_unpassed_turn(key);
+            }
+            debug_assert!(!self.updater_passed(key));
+            self.smoke_cloud_turn(i, key, data, updater_dt);
+            other = true;
+            j += 1;
+        }
+        if let Some(key) = deferred {
+            self.updater_take_unpassed_turn(key);
+        }
+    }
+
+    /// `SteadyCloud::update` for cloud `index`, taking its turn at `key`.
+    #[inline(always)]
+    fn steady_cloud_update(&mut self, steady: &SteadyCloud, index: usize, key: UpdaterKey, data: &data::RolloutData, updater_dt: Fix) -> bool {
+        let tick = self.tick;
+        let cloud = &mut self.smoke_clouds[index];
+        if !cloud.active {
+            return false;
+        }
+        #[cfg(debug_assertions)]
+        let before = (*cloud, cloud.entity.and_then(|entity| self.entities.get(entity).copied()));
+        if !steady.update(cloud, &mut self.entities, key, tick, updater_dt) {
+            return false;
+        }
+        #[cfg(debug_assertions)]
+        self.check_steady_cloud(index, before, data, updater_dt);
+        let _ = data;
+        true
+    }
+
+    /// Checks a steady cloud's update (`SteadyCloud::update`) against the
+    /// full one's from where it started, `before`.
+    #[cfg(debug_assertions)]
+    fn check_steady_cloud(&mut self, index: usize, before: (SmokeCloud, Option<CEntity>), data: &data::RolloutData, updater_dt: Fix) {
+        let entity = before.0.entity.expect("a steady cloud's row");
+        let after = (self.smoke_clouds[index], self.entities[entity]);
+        (self.smoke_clouds[index], self.entities[entity]) = (before.0, before.1.unwrap());
+        debug_assert!(self.smoke_cloud_update(index, data, updater_dt), "a steady cloud's update did more than step");
+        let fields = |cloud: &SmokeCloud, row: &CEntity| {
+            (cloud.active, cloud.registered, cloud.radius_before, cloud.radius_tick, cloud.age_ticks, cloud.ignition_time.bits(), row.radius, row.flags)
+        };
+        debug_assert_eq!(fields(&self.smoke_clouds[index], &self.entities[entity]), fields(&after.0, &after.1));
+        debug_assert!(self.entities[entity] == after.1);
+        (self.smoke_clouds[index], self.entities[entity]) = after;
+    }
+
     /// Cloud `cloud_index`'s turn ahead of `smoke_tick`, queued at `key`.
     /// Every cloud's prefab base is its own (register_prefab advances the
     /// numbering by SmokeCircle's five rows), so the cloud whose rows start
@@ -21217,6 +21432,7 @@ impl RolloutWorld {
         // every walk here finds nothing: the next cloud's needs no doing
         // while the list stands and the cloud between did nothing but step.
         let mut still: Option<(UpdaterKey, u64, u64)> = None;
+        let steady = SteadyCloud::new(self, data);
         // Updater has passed every cloud listed below its place: the walks
         // of the turns before this pass have run most of them.
         let (cursor_tick, cursor) = self.scratch.updater_cursor;
@@ -21267,7 +21483,9 @@ impl RolloutWorld {
                     continue;
                 }
                 self.updater_take_unpassed_turn(key);
-                if !self.smoke_cloud_update(cloud_index, data, updater_dt) {
+                if !self.steady_cloud_update(&steady, cloud_index, key, data, updater_dt)
+                    && !self.smoke_cloud_update(cloud_index, data, updater_dt)
+                {
                     still = None;
                 }
             } else {
