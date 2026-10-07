@@ -308,6 +308,14 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     fresh one at every use. PGO sim -1.6% instructions and -0.7% cycles
     (7 interleaved rounds); the hash is unchanged, and the exact gate
     passes.
+29. **v15: two binary searches in `run_spawned_before` are cheaper.** The
+    first runtime platform is now a count of the authored ones, kept at
+    reset, push, removal and `fork_from` (a debug assertion checks it against
+    the search), and the cloud index holds each (key, slot) packed into one
+    u128 that orders the same, so its search compares integers instead of
+    tuples. Together they were 1.4% of the trainer's sim instructions.
+    PGO sim -0.56% instructions, cycles neutral (7 rounds); the hash is
+    unchanged, and the exact gate passes.
 
 
 ## Cold caches in the trainer

@@ -4567,6 +4567,16 @@ fn ragdoll_pass(
 /// position.
 type UpdaterKey = (u32, u32, u32);
 
+/// A (key, slot) pair as one integer that orders as the pair does.
+fn pack_keyed(key: UpdaterKey, slot: usize) -> u128 {
+    debug_assert!(slot <= u32::MAX as usize);
+    (u128::from(key.0) << 96) | (u128::from(key.1) << 64) | (u128::from(key.2) << 32) | slot as u128
+}
+
+fn unpack_keyed(packed: u128) -> (UpdaterKey, usize) {
+    (((packed >> 96) as u32, (packed >> 64) as u32, (packed >> 32) as u32), packed as u32 as usize)
+}
+
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
@@ -4838,7 +4848,7 @@ struct PlatformScratch {
     /// The active smoke clouds' Updater keys with their slots, sorted, as of
     /// list version `cloud_keys_version` (0: stale, as a cloud spawned or
     /// left since).
-    cloud_keys: Vec<(UpdaterKey, usize)>,
+    cloud_keys: Vec<u128>,
     cloud_keys_version: u64,
     /// The authored platform pass's platform per definition (usize::MAX:
     /// none), found once per pass.
@@ -4990,6 +5000,8 @@ pub struct RolloutWorld {
     /// pushed. `platform_pass` reads it here rather than from the far wider
     /// `platform_dynamics`; a Duplicator copy's pass still depends on ropes.
     platform_kinds: Vec<PlatformPass>,
+    /// How many of `platform_kinds` lead it as `Authored`.
+    authored_platforms: usize,
     /// Parallel to `platforms`: index into the entity table.
     pub platform_entities: Vec<usize>,
     /// The scene water's row, registered with the map.
@@ -5199,6 +5211,7 @@ impl RolloutWorld {
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_kinds: Vec::with_capacity(64),
+            authored_platforms: 0,
             platform_entities: Vec::with_capacity(64),
             water_entity: None,
             arrows: Vec::with_capacity(64),
@@ -5316,6 +5329,7 @@ impl RolloutWorld {
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_kinds.clone_from(&src.platform_kinds);
+        self.authored_platforms = src.authored_platforms;
         self.platform_entities.clone_from(&src.platform_entities);
         self.water_entity = src.water_entity;
         self.arrows.clone_from(&src.arrows);
@@ -5434,6 +5448,7 @@ impl RolloutWorld {
             platform_dynamics: _,
             platform_defs: _,
             platform_kinds: _,
+            authored_platforms: _,
             platform_entities: _,
             water_entity: _,
             arrows: _,
@@ -5639,6 +5654,7 @@ impl RolloutWorld {
         self.platforms_changed();
         self.platform_defs.clear();
         self.platform_kinds.clear();
+        self.authored_platforms = 0;
         self.platform_entities.clear();
         self.water_entity = None;
         self.entities.clear();
@@ -6231,7 +6247,9 @@ impl RolloutWorld {
             });
             self.platforms_changed();
             self.platform_defs.push(index);
+            debug_assert_eq!(self.authored_platforms, self.platform_kinds.len());
             self.platform_kinds.push(PlatformPass::Authored);
+            self.authored_platforms += 1;
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
             if p.orbit.is_some() {
@@ -8792,7 +8810,7 @@ impl RolloutWorld {
             let mut keys = std::mem::take(&mut self.scratch.cloud_keys);
             keys.clear();
             keys.extend((self.smoke_clouds.iter().enumerate()).filter(|(_, cloud)| cloud.active).map(|(i, cloud)| {
-                (self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i)
+                pack_keyed(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i)
             }));
             keys.sort_unstable();
             self.scratch.cloud_keys = keys;
@@ -8800,9 +8818,9 @@ impl RolloutWorld {
         }
         #[cfg(debug_assertions)]
         {
-            let mut fresh: Vec<(UpdaterKey, usize)> = (self.smoke_clouds.iter().enumerate())
+            let mut fresh: Vec<u128> = (self.smoke_clouds.iter().enumerate())
                 .filter(|(_, cloud)| cloud.active)
-                .map(|(i, cloud)| (self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i))
+                .map(|(i, cloud)| pack_keyed(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), i))
                 .collect();
             fresh.sort_unstable();
             debug_assert_eq!(fresh, self.scratch.cloud_keys);
@@ -8909,7 +8927,9 @@ impl RolloutWorld {
         // A Smoke cast keeps dozens of clouds alive, and each cloud's turn
         // runs this walk: only those keyed in [cursor, before) can queue.
         let clouds = &self.scratch.cloud_keys;
-        for &(key, i) in &clouds[clouds.partition_point(|&(key, _)| key < cursor)..] {
+        let start = pack_keyed(cursor, 0);
+        for &packed in &clouds[clouds.partition_point(|&packed| packed < start)..] {
+            let (key, i) = unpack_keyed(packed);
             if key >= before {
                 break;
             }
@@ -31434,7 +31454,9 @@ impl RolloutWorld {
         self.platforms.remove(index);
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
-        self.platform_kinds.remove(index);
+        if self.platform_kinds.remove(index) == PlatformPass::Authored {
+            self.authored_platforms -= 1;
+        }
         self.platform_entities.remove(index);
         self.platforms_changed();
         self.orbits.retain(|orbit| orbit.0 != index);
@@ -34807,7 +34829,8 @@ impl RolloutWorld {
     /// later one (spawned, a Duplicator copy) is appended, so they lead the
     /// list, and no runtime platform's pass is ever `Authored`.
     fn first_runtime_platform(&self) -> usize {
-        let first = self.platform_kinds.partition_point(|&kind| kind == PlatformPass::Authored);
+        let first = self.authored_platforms;
+        debug_assert_eq!(first, self.platform_kinds.partition_point(|&kind| kind == PlatformPass::Authored));
         debug_assert!(self.platform_kinds[first..].iter().all(|&kind| kind != PlatformPass::Authored));
         first
     }
