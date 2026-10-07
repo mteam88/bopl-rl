@@ -1451,6 +1451,18 @@ fn sync_form_row(row: &mut CEntity, flags: u32, live: bool, entered: bool, owner
     live || entered || was_active
 }
 
+/// A trigger box row's centre, zero velocity and axes, converted together:
+/// the eight fields lie in a row and `raw_array` packs them.
+fn set_box_row(row: &mut CEntity, center: Vec2, right: Vec2, up: Vec2) {
+    [row.x, row.y, row.vx, row.vy, row.right_x, row.right_y, row.up_x, row.up_y] =
+        Fix::raw_array([center.x, center.y, Fix::ZERO, Fix::ZERO, right.x, right.y, up.x, up.y]);
+}
+
+/// A row's centre and velocity, converted together like `set_box_row`'s.
+fn set_moving_row(row: &mut CEntity, center: Vec2, velocity: Vec2) {
+    [row.x, row.y, row.vx, row.vy] = Fix::raw_array([center.x, center.y, velocity.x, velocity.y]);
+}
+
 /// A form box's flags: a trigger, active while its form is live.
 fn form_box_flags(active: bool) -> u32 {
     if active {
@@ -6961,10 +6973,7 @@ impl RolloutWorld {
         if let Some(entity) = state.entity {
             let row = &mut self.entities[entity];
             row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
-            row.x = state.synced_center.x.raw();
-            row.y = state.synced_center.y.raw();
-            row.vx = state.body.velocity.x.raw();
-            row.vy = state.body.velocity.y.raw();
+            set_moving_row(row, state.synced_center, state.body.velocity);
         }
     }
 
@@ -7061,10 +7070,7 @@ impl RolloutWorld {
                 // The circle's orientation turns at the angularVelocity a
                 // MagnetGun lock gives it (MagnetGun.cs:740).
                 let row = &mut self.entities[entity];
-                row.x = center.x.raw();
-                row.y = center.y.raw();
-                row.vx = state.body.velocity.x.raw();
-                row.vy = state.body.velocity.y.raw();
+                set_moving_row(row, center, state.body.velocity);
                 row.rotation = state.body.orientation.raw();
                 row.angular_velocity = state.body.angular_velocity.raw();
             }
@@ -9359,10 +9365,7 @@ impl RolloutWorld {
             }
             let entity = shot.entity.expect("registered PortalShot collider");
             let row = &mut self.entities[entity];
-            row.x = shot.position.x.raw();
-            row.y = shot.position.y.raw();
-            row.vx = shot.body.velocity.x.raw();
-            row.vy = shot.body.velocity.y.raw();
+            set_moving_row(row, shot.position, shot.body.velocity);
             row.rotation = shot.body.orientation.raw();
             row.angular_velocity = shot.body.angular_velocity.raw();
         }
@@ -9386,10 +9389,7 @@ impl RolloutWorld {
             }
             if let Some(entity) = cloud.entity {
                 let row = &mut self.entities[entity];
-                row.x = cloud.position.x.raw();
-                row.y = cloud.position.y.raw();
-                row.vx = cloud.body.velocity.x.raw();
-                row.vy = cloud.body.velocity.y.raw();
+                set_moving_row(row, cloud.position, cloud.body.velocity);
             }
         }
     }
@@ -9445,10 +9445,7 @@ impl RolloutWorld {
         }
         if let Some(entity) = shot.entity {
             let row = &mut self.entities[entity];
-            row.x = shot.position.x.raw();
-            row.y = shot.position.y.raw();
-            row.vx = shot.body.velocity.x.raw();
-            row.vy = shot.body.velocity.y.raw();
+            set_moving_row(row, shot.position, shot.body.velocity);
             row.rotation = shot.body.orientation.raw();
             row.angular_velocity = shot.body.angular_velocity.raw();
         }
@@ -9900,10 +9897,7 @@ impl RolloutWorld {
                     rock.position = position;
                     rock.body.velocity = map(rock.body.velocity);
                     let row = &mut self.entities[entity];
-                    row.x = position.x.raw();
-                    row.y = position.y.raw();
-                    row.vx = rock.body.velocity.x.raw();
-                    row.vy = rock.body.velocity.y.raw();
+                    set_moving_row(row, position, rock.body.velocity);
                 }
                 PortalBody::Spike(index) => {
                     let spike = &mut self.spike_attacks[index];
@@ -17121,10 +17115,7 @@ impl RolloutWorld {
                         let row = &mut self.entities[entity];
                         row.flags = destroyed_flags(row.flags);
                         row.owner = 0;
-                        row.x = arrow.position.x.raw();
-                        row.y = arrow.position.y.raw();
-                        row.vx = arrow.velocity.x.raw();
-                        row.vy = arrow.velocity.y.raw();
+                        set_moving_row(row, arrow.position, arrow.velocity);
                         row.rotation = arrow.rotation.raw();
                         row.angular_velocity = 0;
                     }
@@ -31852,10 +31843,7 @@ impl RolloutWorld {
             let row = &mut self.entities[entity];
             row.flags = destroyed_flags(row.flags);
             row.owner = 0;
-            row.x = position.x.raw();
-            row.y = position.y.raw();
-            row.vx = body.velocity.x.raw();
-            row.vy = body.velocity.y.raw();
+            set_moving_row(row, position, body.velocity);
             row.rotation = body.orientation.raw();
             row.angular_velocity = body.angular_velocity.raw();
         }
@@ -32144,10 +32132,7 @@ impl RolloutWorld {
         let entity = missile.entity.expect("registered Missile collider");
         let collider = missile.collider(&self.entity_inverse_extents);
         let row = &mut self.entities[entity];
-        row.x = missile.position.x.raw();
-        row.y = missile.position.y.raw();
-        row.vx = missile.body.velocity.x.raw();
-        row.vy = missile.body.velocity.y.raw();
+        set_moving_row(row, missile.position, missile.body.velocity);
         row.right_x = collider.right.x.raw();
         row.right_y = collider.right.y.raw();
         row.up_x = collider.up.x.raw();
@@ -33125,10 +33110,7 @@ impl RolloutWorld {
             if !hidden {
                 row.flags = E_ACTIVE | E_ENABLED;
             }
-            row.x = item.position.x.raw();
-            row.y = item.position.y.raw();
-            row.vx = item.body.velocity.x.raw();
-            row.vy = item.body.velocity.y.raw();
+            set_moving_row(row, item.position, item.body.velocity);
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
             row.radius = item.collider_radius.raw();
@@ -33941,10 +33923,7 @@ impl RolloutWorld {
             let missile = self.guided_missiles[missile_index];
             if let Some(entity) = missile.entity {
                 let row = &mut self.entities[entity];
-                row.x = missile.position.x.raw();
-                row.y = missile.position.y.raw();
-                row.vx = missile.body.velocity.x.raw();
-                row.vy = missile.body.velocity.y.raw();
+                set_moving_row(row, missile.position, missile.body.velocity);
                 row.rotation = missile.body.orientation.raw();
                 row.angular_velocity = missile.body.angular_velocity.raw();
             }
@@ -34081,10 +34060,7 @@ impl RolloutWorld {
                 continue;
             };
             let row = &mut self.entities[entity];
-            row.x = item.position.x.raw();
-            row.y = item.position.y.raw();
-            row.vx = item.body.velocity.x.raw();
-            row.vy = item.body.velocity.y.raw();
+            set_moving_row(row, item.position, item.body.velocity);
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
         }
@@ -36062,10 +36038,7 @@ impl RolloutWorld {
         let rock = self.duplicated_rocks[rock_index];
         if let Some(entity) = rock.entity {
             let row = &mut self.entities[entity];
-            row.x = rock.position.x.raw();
-            row.y = rock.position.y.raw();
-            row.vx = rock.body.velocity.x.raw();
-            row.vy = rock.body.velocity.y.raw();
+            set_moving_row(row, rock.position, rock.body.velocity);
             row.rotation = rock.body.orientation.raw();
             row.angular_velocity = rock.body.angular_velocity.raw();
             row.inverse_mass = rock.body.inverse_mass.raw();
@@ -38827,15 +38800,11 @@ impl RolloutWorld {
             };
             let in_form = alive && (dashing || in_ability);
             if body_active || body_was_active || slime_teleporting || in_form {
-                body.x = center.x.raw();
-                body.y = center.y.raw();
                 // The hurtbox has PlayerBody movement on the same GameObject
                 // but no BoplBody. DPhysicsBox therefore registers an
                 // infinite-mass trigger PhysicsBody whose observed velocity
                 // remains zero; the moving velocity is exposed by the
                 // separate slime record.
-                body.vx = 0;
-                body.vy = 0;
                 // The active row is the Player-layer box which DetPhysics
                 // already synchronized. Reusing those axes is both more
                 // faithful than rebuilding them from the scalar angle and
@@ -38848,10 +38817,7 @@ impl RolloutWorld {
                     let collider = stored_box(center, Vec2::angle(angle), self.entity_inverse_extents[slot.body_entity]);
                     (collider.right, collider.up)
                 };
-                                body.right_x = right.x.raw();
-                body.right_y = right.y.raw();
-                body.up_x = up.x.raw();
-                body.up_y = up.y.raw();
+                set_box_row(body, center, right, up);
                 body.rotation = angle.raw();
             }
 
@@ -38876,16 +38842,9 @@ impl RolloutWorld {
                         Vec2::angle(angle),
                         self.entity_inverse_extents[slot.dash_entity],
                     );
-                    dash_box.x = center.x.raw();
-                    dash_box.y = center.y.raw();
                     // DPhysicsBox is a trigger body; PlayerBody velocity is not
                     // stored on its PhysicsBody observation record.
-                    dash_box.vx = 0;
-                    dash_box.vy = 0;
-                    dash_box.right_x = collider.right.x.raw();
-                    dash_box.right_y = collider.right.y.raw();
-                    dash_box.up_x = collider.up.x.raw();
-                    dash_box.up_y = collider.up.y.raw();
+                    set_box_row(dash_box, center, collider.right, collider.up);
                     dash_box.rotation = angle.raw();
                 }
             }
@@ -38905,14 +38864,7 @@ impl RolloutWorld {
                     let center = if alive && bowing { at_sync.position } else { exit_position };
                     let rotation = at_sync.orientation.rotation();
                     let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[slot.bow_entity]);
-                    bow_box.x = center.x.raw();
-                    bow_box.y = center.y.raw();
-                    bow_box.vx = 0;
-                    bow_box.vy = 0;
-                    bow_box.right_x = hurtbox.right.x.raw();
-                    bow_box.right_y = hurtbox.right.y.raw();
-                    bow_box.up_x = hurtbox.up.x.raw();
-                    bow_box.up_y = hurtbox.up.y.raw();
+                    set_box_row(bow_box, center, hurtbox.right, hurtbox.up);
                     bow_box.rotation = rotation.raw();
                 }
             }
@@ -38936,14 +38888,7 @@ impl RolloutWorld {
                         (exit_position, at_sync.orientation.rotation())
                     };
                     let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[slot.throw_entity]);
-                    throw_box.x = center.x.raw();
-                    throw_box.y = center.y.raw();
-                    throw_box.vx = 0;
-                    throw_box.vy = 0;
-                    throw_box.right_x = hurtbox.right.x.raw();
-                    throw_box.right_y = hurtbox.right.y.raw();
-                    throw_box.up_x = hurtbox.up.x.raw();
-                    throw_box.up_y = hurtbox.up.y.raw();
+                    set_box_row(throw_box, center, hurtbox.right, hurtbox.up);
                     throw_box.rotation = rotation.raw();
                 }
             }
@@ -38973,14 +38918,7 @@ impl RolloutWorld {
                         basis,
                         self.entity_inverse_extents[slot.mine_entity],
                     );
-                    mine_box.x = center.x.raw();
-                    mine_box.y = center.y.raw();
-                    mine_box.vx = 0;
-                    mine_box.vy = 0;
-                    mine_box.right_x = hurtbox.right.x.raw();
-                    mine_box.right_y = hurtbox.right.y.raw();
-                    mine_box.up_x = hurtbox.up.x.raw();
-                    mine_box.up_y = hurtbox.up.y.raw();
+                    set_box_row(mine_box, center, hurtbox.right, hurtbox.up);
                     mine_box.rotation = rotation.raw();
                 }
             }
@@ -39003,10 +38941,7 @@ impl RolloutWorld {
                     // where its body ended (BounceBall.cs:231-240), and
                     // DetPhysics syncs the deactivated box there.
                     let position = if rocking { slot.base.position } else { exit_position };
-                    circle.x = position.x.raw();
-                    circle.y = position.y.raw();
-                    circle.vx = slot.rock.body.velocity.x.raw();
-                    circle.vy = slot.rock.body.velocity.y.raw();
+                    set_moving_row(circle, position, slot.rock.body.velocity);
                     circle.radius = slot.rock_circle().circle_radius.raw();
                     circle.rotation = slot.rock.body.orientation.raw();
                     circle.angular_velocity = slot.rock.body.angular_velocity.raw();
@@ -39073,14 +39008,7 @@ impl RolloutWorld {
                         basis,
                         self.entity_inverse_extents[slot.meteor_entity],
                     );
-                    box_row.x = center.x.raw();
-                    box_row.y = center.y.raw();
-                    box_row.vx = 0;
-                    box_row.vy = 0;
-                    box_row.right_x = collider.right.x.raw();
-                    box_row.right_y = collider.right.y.raw();
-                    box_row.up_x = collider.up.x.raw();
-                    box_row.up_y = collider.up.y.raw();
+                    set_box_row(box_row, center, collider.right, collider.up);
                     box_row.rotation = rotation.raw();
                 }
             }
@@ -39110,14 +39038,7 @@ impl RolloutWorld {
                         basis,
                         self.entity_inverse_extents[slot.push_entity],
                     );
-                    push_box.x = center.x.raw();
-                    push_box.y = center.y.raw();
-                    push_box.vx = 0;
-                    push_box.vy = 0;
-                    push_box.right_x = collider.right.x.raw();
-                    push_box.right_y = collider.right.y.raw();
-                    push_box.up_x = collider.up.x.raw();
-                    push_box.up_y = collider.up.y.raw();
+                    set_box_row(push_box, center, collider.right, collider.up);
                     push_box.rotation = rotation.raw();
                 }
             }
@@ -39168,14 +39089,7 @@ impl RolloutWorld {
                     let offset = slot.gun_offset(s, offset);
                     let center = root + offset_basis.complex_mul(offset);
                     let collider = stored_box(center, basis, self.entity_inverse_extents[gun_e]);
-                    row.x = center.x.raw();
-                    row.y = center.y.raw();
-                    row.vx = 0;
-                    row.vy = 0;
-                    row.right_x = collider.right.x.raw();
-                    row.right_y = collider.right.y.raw();
-                    row.up_x = collider.up.x.raw();
-                    row.up_y = collider.up.y.raw();
+                    set_box_row(row, center, collider.right, collider.up);
                     row.rotation = rotation.raw();
                 }
             }
@@ -39197,14 +39111,7 @@ impl RolloutWorld {
                         basis,
                         self.entity_inverse_extents[slot.magnet_entity],
                     );
-                    row.x = center.x.raw();
-                    row.y = center.y.raw();
-                    row.vx = 0;
-                    row.vy = 0;
-                    row.right_x = collider.right.x.raw();
-                    row.right_y = collider.right.y.raw();
-                    row.up_x = collider.up.x.raw();
-                    row.up_y = collider.up.y.raw();
+                    set_box_row(row, center, collider.right, collider.up);
                     row.rotation = rotation.raw();
                 }
             }
@@ -39416,14 +39323,7 @@ impl RolloutWorld {
                         Vec2::angle(rotation),
                         self.entity_inverse_extents[slot.black_hole_entity],
                     );
-                    box_row.x = center.x.raw();
-                    box_row.y = center.y.raw();
-                    box_row.vx = 0;
-                    box_row.vy = 0;
-                    box_row.right_x = collider.right.x.raw();
-                    box_row.right_y = collider.right.y.raw();
-                    box_row.up_x = collider.up.x.raw();
-                    box_row.up_y = collider.up.y.raw();
+                    set_box_row(box_row, center, collider.right, collider.up);
                     box_row.rotation = rotation.raw();
                 }
             }
@@ -39460,14 +39360,7 @@ impl RolloutWorld {
                         collider_basis,
                         self.entity_inverse_extents[slot.macho_throw_entity],
                     );
-                    box_row.x = center.x.raw();
-                    box_row.y = center.y.raw();
-                    box_row.vx = 0;
-                    box_row.vy = 0;
-                    box_row.right_x = collider.right.x.raw();
-                    box_row.right_y = collider.right.y.raw();
-                    box_row.up_x = collider.up.x.raw();
-                    box_row.up_y = collider.up.y.raw();
+                    set_box_row(box_row, center, collider.right, collider.up);
                     box_row.rotation = rotation.raw();
                 }
             }
@@ -39494,14 +39387,7 @@ impl RolloutWorld {
                         Vec2::angle(rotation),
                         self.entity_inverse_extents[slot.drill_entity],
                     );
-                    box_row.x = center.x.raw();
-                    box_row.y = center.y.raw();
-                    box_row.vx = 0;
-                    box_row.vy = 0;
-                    box_row.right_x = collider.right.x.raw();
-                    box_row.right_y = collider.right.y.raw();
-                    box_row.up_x = collider.up.x.raw();
-                    box_row.up_y = collider.up.y.raw();
+                    set_box_row(box_row, center, collider.right, collider.up);
                     box_row.rotation = rotation.raw();
                 }
             }
@@ -39522,14 +39408,7 @@ impl RolloutWorld {
                     let basis = at_sync.orientation.up().perp_cw();
                     let center = position + form.offset.complex_mul(basis);
                     let collider = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[slot.beam_entity]);
-                    box_row.x = center.x.raw();
-                    box_row.y = center.y.raw();
-                    box_row.vx = 0;
-                    box_row.vy = 0;
-                    box_row.right_x = collider.right.x.raw();
-                    box_row.right_y = collider.right.y.raw();
-                    box_row.up_x = collider.up.x.raw();
-                    box_row.up_y = collider.up.y.raw();
+                    set_box_row(box_row, center, collider.right, collider.up);
                     box_row.rotation = rotation.raw();
                 }
             }
@@ -39585,10 +39464,7 @@ impl RolloutWorld {
                 continue;
             }
             let e = &mut self.entities[arrow.entity.expect("registered arrow entity")];
-            e.x = arrow.position.x.raw();
-            e.y = arrow.position.y.raw();
-            e.vx = arrow.velocity.x.raw();
-            e.vy = arrow.velocity.y.raw();
+            set_moving_row(e, arrow.position, arrow.velocity);
             e.rotation = arrow.rotation.raw();
             e.angular_velocity = arrow.angular_velocity.raw();
             e.inverse_mass = arrow.inverse_mass.raw();
@@ -39599,10 +39475,7 @@ impl RolloutWorld {
             }
             let e = &mut self.entities[marker.entity.expect("registered Revival marker")];
             let position = marker.position + data.revival.marker_offset;
-            e.x = position.x.raw();
-            e.y = position.y.raw();
-            e.vx = marker.body.velocity.x.raw();
-            e.vy = marker.body.velocity.y.raw();
+            set_moving_row(e, position, marker.body.velocity);
             e.rotation = marker.body.orientation.raw();
             e.angular_velocity = marker.body.angular_velocity.raw();
         }
@@ -39612,10 +39485,7 @@ impl RolloutWorld {
             }
             let e = &mut self.entities[marker.entity.expect("registered Teleport marker")];
             let position = marker.position + data.teleport.marker_offset;
-            e.x = position.x.raw();
-            e.y = position.y.raw();
-            e.vx = marker.body.velocity.x.raw();
-            e.vy = marker.body.velocity.y.raw();
+            set_moving_row(e, position, marker.body.velocity);
             e.rotation = marker.body.orientation.raw();
             e.angular_velocity = marker.body.angular_velocity.raw();
         }
@@ -39841,35 +39711,40 @@ impl RolloutWorld {
                         slot.obs_state,
                     )
                 };
+            // An empty ability list publishes no cooldowns, and OldUpdate
+            // never advances the timers past it.
+            let cooldown = |s: usize| if s < slot.ability_count { slot.cooldowns[s] } else { Fix::ZERO };
+            let timer = |s: usize| if s < slot.ability_count { slot.timers[s] } else { slot.spare_timer };
+            let [x, y, vx, vy, rotation, scale, cooldown0, cooldown1, cooldown2, timer0, timer1, timer2] =
+                Fix::raw_array([
+                    slime_position.x,
+                    slime_position.y,
+                    velocity.x,
+                    velocity.y,
+                    rotation,
+                    if in_ability { slot.slime.scale } else { slot.base.scale },
+                    cooldown(0),
+                    cooldown(1),
+                    cooldown(2),
+                    timer(0),
+                    timer(1),
+                    timer(2),
+                ]);
             slimes.push(CSlime {
                 id: self.entities[slot.body_entity].id,
                 owner: slot.base.id,
                 flags,
                 state,
-                x: slime_position.x.raw(),
-                y: slime_position.y.raw(),
-                vx: velocity.x.raw(),
-                vy: velocity.y.raw(),
-                rotation: rotation.raw(),
-                scale: if in_ability {
-                    slot.slime.scale.raw()
-                } else {
-                    slot.base.scale.raw()
-                },
+                x,
+                y,
+                vx,
+                vy,
+                rotation,
+                scale,
                 abilities: slot.abilities,
                 ability_flags,
-                // An empty ability list publishes no cooldowns, and OldUpdate
-                // never advances the timers past it.
-                cooldowns: std::array::from_fn(|s| {
-                    if s < slot.ability_count { slot.cooldowns[s].raw() } else { 0 }
-                }),
-                timers: std::array::from_fn(|s| {
-                    if s < slot.ability_count {
-                        slot.timers[s].raw()
-                    } else {
-                        slot.spare_timer.raw()
-                    }
-                }),
+                cooldowns: [cooldown0, cooldown1, cooldown2],
+                timers: [timer0, timer1, timer2],
             });
         }
         for &index in &clone_order[next_clone..clone_count] {
