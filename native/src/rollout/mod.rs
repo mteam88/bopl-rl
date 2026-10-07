@@ -1946,10 +1946,16 @@ impl Default for RewindState {
 }
 
 impl RewindState {
+    /// `head` only ever comes from here or a default 0, so it is below
+    /// `REWIND_CAPACITY` and its wrap is one compare, not a remainder;
+    /// `count` never passes the capacity, so it cannot overflow.
     fn push(&mut self, sample: RewindSample) {
-        self.ring[self.head] = sample;
-        self.head = (self.head + 1) % REWIND_CAPACITY;
-        self.count = (self.count + 1).min(REWIND_CAPACITY);
+        debug_assert!(self.head < REWIND_CAPACITY && self.count <= REWIND_CAPACITY);
+        let head = self.head.min(REWIND_CAPACITY - 1);
+        self.ring[head] = sample;
+        let next = head + 1;
+        self.head = if next == REWIND_CAPACITY { 0 } else { next };
+        self.count += (self.count < REWIND_CAPACITY) as usize;
     }
 
     fn sample_back(&self, ticks: usize) -> RewindSample {
@@ -4838,8 +4844,22 @@ impl PlayerSlot {
         // value is unchanged. Q32 `(One / old) * new` is not necessarily one,
         // so the collider's stored inverse extents keep drifting by raw units
         // (SlimeController.cs:206, DPhysicsBox.cs:212-214).
-        let ratio = (Fix::ONE / self.body_collider_scale) * scale;
-        inverse_extents[self.body_entity] = inverse_extents[self.body_entity] / ratio;
+        // At the unit scale, kept, the ratio is exactly one, and dividing by
+        // one changes no bit: nearly every pass takes this shortcut.
+        if scale == Fix::ONE && self.body_collider_scale == Fix::ONE {
+            // The row still has to exist, as the division's indexing asks.
+            assert!(self.body_entity < inverse_extents.len());
+            #[cfg(debug_assertions)]
+            {
+                let bits = |v: Vec2| [v.x.to_f64().to_bits(), v.y.to_f64().to_bits()];
+                let ratio = (Fix::ONE / self.body_collider_scale) * scale;
+                let extents = inverse_extents[self.body_entity];
+                assert_eq!(bits(extents / ratio), bits(extents), "set_ordinary_body_scale: the unit ratio moved the extents");
+            }
+        } else {
+            let ratio = (Fix::ONE / self.body_collider_scale) * scale;
+            inverse_extents[self.body_entity] = inverse_extents[self.body_entity] / ratio;
+        }
         self.body_collider_scale = scale;
         // The hurtbox's FixTransform is the slime's, in a form or not.
         if self.active == ActiveAbility::None {
@@ -11109,7 +11129,26 @@ impl RolloutWorld {
     /// vulnerable through its spawn animation: BeforeSpawnInit enables the
     /// hurtbox and ReSpawn clears invulnerability (SlimeController.cs:516-538,
     /// 588-600).
+    #[inline(always)]
     fn hittable(&self, index: usize) -> bool {
+        let slot = &self.players[index];
+        // One fold of the disqualifiers rather than a test and branch per
+        // field: every operand is a plain load, so evaluating them all is
+        // free of side effects and gives `hittable_reference` exactly.
+        let counters = slot.unspawned | slot.respawn_ticks;
+        let flags = (!slot.base.alive) as u8
+            | slot.revival_clone_pending as u8
+            | slot.stock_clone_pending as u8
+            | slot.teleport_effect_active as u8
+            | slot.blink_tunnel_active as u8
+            | (slot.revival_effect_ticks != 0 && !slot.revival_hurtbox) as u8;
+        let hittable = counters == 0 && flags == 0;
+        debug_assert_eq!(hittable, self.hittable_reference(index));
+        hittable
+    }
+
+    /// `hittable` as the field-by-field conjunction it folds.
+    fn hittable_reference(&self, index: usize) -> bool {
         let slot = &self.players[index];
         slot.base.alive
             && slot.unspawned == 0
@@ -11288,21 +11327,41 @@ impl RolloutWorld {
         }
     }
 
+    /// Whether `apply_platform_drop` would drop the body: its tests ahead of
+    /// any change, which read state only. Nearly every grounded pass stands on
+    /// a platform with no drop under way, so asking this first spares the
+    /// caller's other tests.
+    fn platform_drop_due(&self, index: usize) -> bool {
+        let slot = &self.players[index];
+        if !slot.base.grounded {
+            return false;
+        }
+        let Some(platform_index) = slot.base.active_ground_index(&self.platforms) else {
+            return false;
+        };
+        let dynamics = &self.platform_dynamics[platform_index];
+        dynamics.drop_players_frames > 0 && dynamics.dont_drop_player_id != slot.base.id
+    }
+
     /// PlayerPhysics.DropPlatformTest, where Move's grounded branch ends
     /// (PlayerPhysics.cs:227, 281) or Roll.Move calls it (Roll.cs:299), on a
     /// body that went into that Move grounded. True when it dropped the body.
     fn apply_platform_drop(&mut self, index: usize) -> bool {
+        let due = cfg!(debug_assertions) && self.platform_drop_due(index);
         // A Move that ungrounded the body returned before the test.
         if !self.players[index].base.grounded {
+            debug_assert!(!due);
             return false;
         }
         let Some(platform_index) = self.players[index].base.active_ground_index(&self.platforms) else {
+            debug_assert!(!due);
             return false;
         };
         let dynamics = self.platform_dynamics[platform_index];
         if dynamics.drop_players_frames <= 0
             || dynamics.dont_drop_player_id == self.players[index].base.id
         {
+            debug_assert!(!due);
             return false;
         }
         let normal = self.platforms[platform_index]
@@ -11336,6 +11395,7 @@ impl RolloutWorld {
             // and it already published its position before Move.
             slot.state_ticks = 1;
         }
+        debug_assert!(due);
         true
     }
 
@@ -13361,12 +13421,12 @@ impl RolloutWorld {
         let grounded = self.players[index].base.grounded;
         if self.players[index].rope.is_some() {
             self.rope_player_move(index, masked, movement_input, jump_pressed);
-            if grounded && self.hittable(index) {
+            if grounded && self.platform_drop_due(index) && self.hittable(index) {
                 self.apply_platform_drop(index);
             }
         } else {
             let integrate = self.slot_physics(index, |slot, world| slot.base.move_unintegrated(masked, movement_input, world, None));
-            if grounded && self.hittable(index) {
+            if grounded && self.platform_drop_due(index) && self.hittable(index) {
                 self.apply_platform_drop(index);
             }
             if integrate {
@@ -36035,7 +36095,8 @@ impl RolloutWorld {
         self.players[index].base.fixed_delta_time = self.fixed_delta_time(index, DT);
         // SlimeController and these forms run as ever: only their FixedDeltaTime
         // steps are zero and their SpriteAnimators hold.
-        let runs_frozen = self.hittable(index)
+        // Asked only while time is stopped for the slime, which is rare.
+        let runs_frozen = || self.hittable(index)
             && matches!(
                 self.players[index].active,
                 ActiveAbility::None
@@ -36061,7 +36122,7 @@ impl RolloutWorld {
                     | ActiveAbility::Throw
                     | ActiveAbility::Roll
             );
-        let stopped = self.is_time_stopped_for(index) && !runs_frozen;
+        let stopped = self.is_time_stopped_for(index) && !runs_frozen();
         // A slime that is not hittable (parked for a stock choice) or
         // spawn animation, waiting to revive) has PlayerPhysics disabled
         // (SlimeController.cs:518, 624), so Time Stop changes nothing for it
