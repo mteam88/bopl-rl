@@ -7372,7 +7372,7 @@ impl RolloutWorld {
         // in row order, the registered ones' places for the spread; past
         // the buffer's room, the spread scans the rows again.
         const ROOM: usize = 64;
-        let mut registered = [Vec2::ZERO; ROOM];
+        let mut registered = [std::mem::MaybeUninit::<Vec2>::uninit(); ROOM];
         let mut kept = 0usize;
         for entity in &self.entities {
             if entity.kind >= 2 {
@@ -7390,7 +7390,7 @@ impl RolloutWorld {
             }
             if live {
                 if kept < ROOM {
-                    registered[kept] = position;
+                    registered[kept].write(position);
                 }
                 kept = kept.wrapping_add(1);
             }
@@ -7409,7 +7409,8 @@ impl RolloutWorld {
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         };
         if kept <= ROOM {
-            registered[..kept].iter().for_each(|&position| spread(position));
+            // SAFETY: the scan wrote each of the first `kept` places.
+            registered[..kept].iter().for_each(|position| spread(unsafe { position.assume_init() }));
         } else {
             for entity in self.entities.iter().filter(|entity| entity.kind < 2 && entity.flags & E_REMOVED == 0) {
                 spread(Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y)));
