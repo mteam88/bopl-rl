@@ -33,6 +33,12 @@
 #pragma GCC optimize("fp-contract=off")
 #endif
 
+/* n floats of a row zeroed, and copied: as float stores (the device lowers
+ * a plain memset or memcpy of a float pointer to byte stores, one store per
+ * byte, a quarter of a writer's instructions). */
+#define BOPL4_ZERO(p, n) memset(__builtin_assume_aligned((p), 4), 0, (size_t)(n)*sizeof(float))
+#define BOPL4_COPY(d, s, n) memcpy(__builtin_assume_aligned((d), 4), __builtin_assume_aligned((s), 4), (size_t)(n)*sizeof(float))
+
 /* Writer ablations (bopl_obs_v4.h). */
 enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8 };
 #define BOPL4_SLIME_RADIUS 0.76   /* bopl_bots.h BOT_SLIME_RADIUS */
@@ -194,7 +200,7 @@ BOPL4D_FN double bopl_surface_distance(const BoplRlEntity *entity, double x, dou
 BOPL4D_FN void bopl_player_features(float *out, const BoplRlState *state,
                                     const BoplRlPlayer *player, const BoplRlPlayer *self,
                                     double self_x, double self_y) {
-    memset(out, 0, BOPL_PLAYER_FEATURES*sizeof(float));
+    BOPL4_ZERO(out, BOPL_PLAYER_FEATURES);
     int hidden=bopl_spatial_hidden(state, player->id, self->id), bodies=0;
     for (uint32_t i=0; i<state->header.slime_count; i++)
         if (state->slimes[i].owner==player->id) bodies++;
@@ -252,12 +258,12 @@ BOPL4D_FN void bopl4_relation(float *out, double dx, double dy, double dvx, doub
         }
         out[10]=bopl_clip(best/16.0); out[11]=bopl_clip(best_t/BOPL4_HORIZON);
     }
-    if (ablation&BOPL4_ABLATE_RELATIONAL) memset(out, 0, BOPL4_RELATION*sizeof(float));
+    if (ablation&BOPL4_ABLATE_RELATIONAL) BOPL4_ZERO(out, BOPL4_RELATION);
 }
 /* Controlling-slime block (BOPL4_BODY); NULL or hidden bodies are all zero.
  * sin_r, cos_r: sinf and cosf of the body's rotation (as a float). */
 BOPL4D_FN void bopl4_body(float *out, const BoplRlSlime *slime, float sin_r, float cos_r) {
-    memset(out, 0, BOPL4_BODY*sizeof(float));
+    BOPL4_ZERO(out, BOPL4_BODY);
     if (!slime) return;
     double vx=bopl_fix(slime->vx), vy=bopl_fix(slime->vy);
     out[0]=1; out[1]=bopl_clip(BOPL4_DIVC(vx, BOPL4_VELOCITY_SCALE)); out[2]=bopl_clip(BOPL4_DIVC(vy, BOPL4_VELOCITY_SCALE));
@@ -441,13 +447,13 @@ BOPL4D_FN void bopl4_opponent_part(float *opp, int part, const BoplRlState *stat
                                    float sin_r, float cos_r, int ablation) {
     if (part==0) {
         if (enemy->player) bopl_player_features(opp, state, enemy->player, self, self_x, self_y);
-        else memset(opp, 0, BOPL_PLAYER_FEATURES*sizeof(float));
+        else BOPL4_ZERO(opp, BOPL_PLAYER_FEATURES);
     } else if (part==1) {
         bopl4_body(opp+BOPL_PLAYER_FEATURES, enemy->player?enemy->slime:NULL, sin_r, cos_r);
     } else {
         if (enemy->player && enemy->known)
             bopl4_relation(opp+BOPL4_SELF, enemy->x-self_x, enemy->y-self_y, enemy->vx-self_vx, enemy->vy-self_vy, 0.0, 0, ablation);
-        else memset(opp+BOPL4_SELF, 0, BOPL4_RELATION*sizeof(float));
+        else BOPL4_ZERO(opp+BOPL4_SELF, BOPL4_RELATION);
     }
 }
 BOPL4D_FN void bopl4_opponent_block(float *opp, const BoplRlState *state, const Bopl4Enemy *enemy, const BoplRlPlayer *self,
@@ -462,7 +468,7 @@ enum { BOPL4_PLAYER_PARTS=2 };
 BOPL4D_FN void bopl4_player_part(float *row, int part, const BoplRlState *state, const BoplRlPlayer *player, const BoplRlPlayer *self,
                                  double self_x, double self_y, double self_vx, double self_vy, int ablation) {
     if (part==0) { bopl_player_features(row, state, player, self, self_x, self_y); return; }
-    memset(row+BOPL_PLAYER_FEATURES, 0, BOPL4_RELATION*sizeof(float));
+    BOPL4_ZERO(row+BOPL_PLAYER_FEATURES, BOPL4_RELATION);
     if (!bopl_spatial_hidden(state, player->id, self->id)) {
         double x=bopl_fix(player->x), y=bopl_fix(player->y);
         const BoplRlSlime *body=bopl_controlling_slime(state, player->id, x, y);
@@ -494,7 +500,7 @@ BOPL4D_FN void bopl4_slot_row(float *out, const BoplRlState *state, const BoplRl
     row[14]=!hidden;
     row[15]=enemy->player && slime->owner==enemy->player->id;
     row[BOPL4_SLOT_ABILITY_ID]=(float)id;
-    memcpy(out, row, sizeof(row));
+    BOPL4_COPY(out, row, BOPL4_SLOT_FEATURES);
 }
 /* An entity row (BOPL4_ENTITY_FEATURES), part `part` of it: 0 the entity's
  * own features (0-32 and the ability id), 1 its relation to the observer
@@ -507,7 +513,7 @@ BOPL4D_FN void bopl4_entity_part(float *row, int part, const BoplRlState *state,
     double radius=bopl_fix(entity->radius);
     int projectile=(entity->flags&BOPL_ENTITY_PROJECTILE)!=0 && entity->inverse_mass>0;
     if (part==0) {
-        memset(row, 0, 33*sizeof(float));
+        BOPL4_ZERO(row, 33);
         row[0]=1; if (entity->kind<5) row[1+entity->kind]=1;
         row[6]=entity->owner==self->id; row[7]=bopl_ally(state, entity->owner, self);
         row[8]=entity->owner!=0 && !row[6] && !row[7];
@@ -565,7 +571,7 @@ BOPL4D_FN void bopl4_slime_part(float *row, int part, const BoplRlState *state, 
     double sx=bopl_fix(slime->x), sy=bopl_fix(slime->y), svx=bopl_fix(slime->vx), svy=bopl_fix(slime->vy);
     if (part==1) { bopl4_relation(row+30, sx-self_x, sy-self_y, svx-self_vx, svy-self_vy, 0.0, 0, ablation); return; }
     const BoplRlPlayer *owner=bopl_player_by_id(state, slime->owner);
-    memset(row, 0, 30*sizeof(float));
+    BOPL4_ZERO(row, 30);
     row[0]=1; row[1]=slime->owner==self->id; row[2]=bopl_ally(state, slime->owner, self);
     row[3]=(slime->flags&BOPL_SLIME_ACTIVE)!=0; row[4]=(slime->flags&BOPL_SLIME_SPAWNED)!=0;
     row[5]=(slime->flags&BOPL_SLIME_IN_ABILITY)!=0; row[6]=(slime->flags&BOPL_SLIME_SUPPRESS_INPUT)!=0;
