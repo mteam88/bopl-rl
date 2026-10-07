@@ -4883,8 +4883,11 @@ struct PlatformScratch {
     /// walk when its scan finds nothing on, so a clear bit skips the scan.
     walk_awake: u8,
     /// The authored platform pass's platform per definition (usize::MAX:
-    /// none), found once per pass.
+    /// none).
     authored_platforms: Vec<usize>,
+    /// Whether `authored_platforms` stands: the authored platforms move only
+    /// when one is removed, and a reset or a fork brings others.
+    authored_platforms_built: bool,
     /// Updater.UpdateSim's place in the pass's list, with the pass it
     /// belongs to: every updatable below the key has had its turn, run or
     /// skipped as disabled, and is not visited again until the next pass.
@@ -5382,6 +5385,7 @@ impl RolloutWorld {
         self.smoke_clouds.clone_from(&src.smoke_clouds);
         self.scratch.cloud_keys_version = 0;
         self.scratch.walk_awake = WALK_ALL;
+        self.scratch.authored_platforms_built = false;
         self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
@@ -5642,6 +5646,7 @@ impl RolloutWorld {
         self.smoke_clouds.clear();
         self.scratch.cloud_keys_version = 0;
         self.scratch.walk_awake = WALK_ALL;
+        self.scratch.authored_platforms_built = false;
         self.smoke_explosions.clear();
         self.time_stop_effects.clear();
         self.spike_attacks.clear();
@@ -31584,6 +31589,7 @@ impl RolloutWorld {
         self.platform_defs.remove(index);
         if self.platform_kinds.remove(index) == PlatformPass::Authored {
             self.authored_platforms -= 1;
+            self.scratch.authored_platforms_built = false;
         }
         self.platform_entities.remove(index);
         self.platforms_changed();
@@ -35098,18 +35104,21 @@ impl RolloutWorld {
         // platform list both, so each definition is looked up among the live
         // platforms. The map loads one authored platform per definition (a
         // Duplicator copy keeps its source's, but is not authored), so one
-        // walk finds them all; an index a removal in this pass shifted fails
-        // the check and the definition is searched for again.
+        // walk finds them all, and it stands until an authored platform is
+        // removed; an index a removal in this pass shifted fails the check
+        // and the definition is searched for again.
         let mut authored = std::mem::take(&mut self.scratch.authored_platforms);
         let first_runtime = self.first_runtime_platform();
         if pass == PlatformPass::Authored {
-            authored.clear();
-            authored.resize(data.maps[self.map].platforms.len(), usize::MAX);
-            for i in 0..first_runtime {
-                let definition = self.platform_defs[i];
-                if definition < authored.len() && authored[definition] == usize::MAX && self.platform_pass(i) == pass {
-                    authored[definition] = i;
-                }
+            if !self.scratch.authored_platforms_built {
+                self.authored_platforms_into(data, &mut authored);
+                self.scratch.authored_platforms_built = true;
+            }
+            #[cfg(debug_assertions)]
+            {
+                let mut fresh = Vec::new();
+                self.authored_platforms_into(data, &mut fresh);
+                debug_assert_eq!(fresh, authored);
             }
         }
         // The other passes skip the authored platforms; until one of theirs
@@ -35135,7 +35144,15 @@ impl RolloutWorld {
             } else {
                 k
             };
-            if !self.platform_updates_in(i, pass) {
+            // An authored platform found above is of this pass, and its pass
+            // has no window and no Updater key to wait for.
+            let updates = if pass == PlatformPass::Authored {
+                self.platform_dynamics[i].appended <= self.tick
+            } else {
+                self.platform_updates_in(i, pass)
+            };
+            debug_assert_eq!(updates, self.platform_updates_in(i, pass));
+            if !updates {
                 continue;
             }
             // A runtime platform's prefab takes its turn in Updater's walk,
@@ -35172,6 +35189,18 @@ impl RolloutWorld {
         self.scratch.authored_platforms = authored;
         if shook {
             self.platforms_changed();
+        }
+    }
+
+    /// Each definition's authored platform (usize::MAX: none) into `authored`.
+    fn authored_platforms_into(&self, data: &data::RolloutData, authored: &mut Vec<usize>) {
+        authored.clear();
+        authored.resize(data.maps[self.map].platforms.len(), usize::MAX);
+        for i in 0..self.first_runtime_platform() {
+            let definition = self.platform_defs[i];
+            if definition < authored.len() && authored[definition] == usize::MAX && self.platform_pass(i) == PlatformPass::Authored {
+                authored[definition] = i;
+            }
         }
     }
 
