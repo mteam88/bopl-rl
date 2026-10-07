@@ -161,6 +161,11 @@ impl RolloutWorld {
         // changes a player's ability, so the inactive ones are left untaken
         // (debug builds check every row read was taken).
         let live = |active: bool, entity: Option<usize>| entity.filter(|_| active);
+        // Nothing between here and the groups writes a cloud's row (a
+        // correction moves only the cloud's own position), so `swept_bounds`
+        // bounds a cloud's row when a group reads it, from the row as it is
+        // here; debug builds take them here too and check that.
+        #[cfg(debug_assertions)]
         self.smoke_clouds.iter().for_each(|cloud| take(live(cloud.active, cloud.entity)));
         self.grenade_explosions.iter().for_each(|blast| take(live(blast.active, blast.entity)));
         self.missile_explosions.iter().for_each(|blast| take(live(blast.active, blast.entity)));
@@ -292,13 +297,20 @@ impl RolloutWorld {
             Swept::Part(Part::Arrow(i)) => sweep.arrows.get(i),
             Swept::Part(Part::Body(i)) => sweep.players.get(i),
             Swept::Part(Part::Clone(i)) => sweep.clones.get(i),
-            Swept::Part(Part::Cloud(i)) => self.smoke_clouds[i].entity.and_then(|entity| {
+            // `take_sweep` leaves a cloud's row to be bounded here, on a row
+            // it would have bounded: one there was when it ran.
+            Swept::Part(Part::Cloud(i)) => {
+                let entity = self.smoke_clouds[i].entity.filter(|&entity| entity < sweep.rows.len())?;
+                let bounds = self.row_shape_bounds(entity);
                 #[cfg(debug_assertions)]
-                debug_assert!(!sweep.owned.get(entity).is_some_and(|&owned| owned));
-                #[cfg(debug_assertions)]
-                debug_assert!(sweep.taken.get(entity).is_none_or(|&taken| taken));
-                sweep.rows.get(entity)
-            }),
+                {
+                    debug_assert!(!sweep.owned.get(entity).is_some_and(|&owned| owned));
+                    debug_assert!(sweep.taken[entity]);
+                    let bits = |b: [Vec2; 2]| [b[0].x, b[0].y, b[1].x, b[1].y].map(|v| v.to_f64().to_bits());
+                    debug_assert_eq!(bits(bounds), bits(sweep.rows[entity]));
+                }
+                return Some(bounds);
+            }
             Swept::Part(Part::Explosion(Blast::Beam(i))) => {
                 return Some(self.beam_pool[i].swept_collider.map_or(NOWHERE, box_bounds));
             }
