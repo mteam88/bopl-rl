@@ -4583,6 +4583,26 @@ fn cursor_kind(kind: u8) -> bool {
     matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 40 | 41 | 42)
 }
 
+/// `run_spawned_before`'s scans that cover a fixed-size pool, where most
+/// slots are off: a wall's QuantumTunnel (every platform), a Gust or Meteor
+/// shockwave (three gust slots a body), and the player objects (a slime's
+/// QuantumTunnel, its TeleportedObjectEffect, its StockRespawnChooser, its
+/// SuperStar effects and its revival). Five or more walks a pass scan them,
+/// and almost always find all of them off.
+const WALK_WALL_TUNNELS: u8 = 1;
+const WALK_WAVES: u8 = 2;
+const WALK_PLAYERS: u8 = 4;
+const WALK_ALL: u8 = WALK_WALL_TUNNELS | WALK_WAVES | WALK_PLAYERS;
+
+/// Whether player slot `slot` holds an object `run_spawned_before` queues.
+fn walk_player_awake(slot: &PlayerSlot) -> bool {
+    slot.blink_tunnel_active
+        || slot.teleport_effect_active
+        || slot.respawn_ticks > 0
+        || slot.revival_effect_ticks != 0
+        || slot.gold_mushroom.iter().any(|effect| effect.active)
+}
+
 /// The place just after `key`.
 fn updater_next(key: UpdaterKey) -> UpdaterKey {
     (key.0, key.1, key.2 + 1)
@@ -4850,6 +4870,10 @@ struct PlatformScratch {
     /// left since).
     cloud_keys: Vec<u128>,
     cloud_keys_version: u64,
+    /// The scans `run_spawned_before` may find something in (`WALK_*`).
+    /// Each bit is set wherever its state turns on, and cleared by the
+    /// walk when its scan finds nothing on, so a clear bit skips the scan.
+    walk_awake: u8,
     /// The authored platform pass's platform per definition (usize::MAX:
     /// none), found once per pass.
     authored_platforms: Vec<usize>,
@@ -5349,6 +5373,7 @@ impl RolloutWorld {
         self.grenade_explosions.clone_from(&src.grenade_explosions);
         self.smoke_clouds.clone_from(&src.smoke_clouds);
         self.scratch.cloud_keys_version = 0;
+        self.scratch.walk_awake = WALK_ALL;
         self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
@@ -5608,6 +5633,7 @@ impl RolloutWorld {
         self.grenade_explosions.clear();
         self.smoke_clouds.clear();
         self.scratch.cloud_keys_version = 0;
+        self.scratch.walk_awake = WALK_ALL;
         self.smoke_explosions.clear();
         self.time_stop_effects.clear();
         self.spike_attacks.clear();
@@ -7235,6 +7261,7 @@ impl RolloutWorld {
         slot.eating = clone.eating;
         slot.pass_start = pass_start;
         self.players[body] = slot;
+        self.scratch.walk_awake |= WALK_PLAYERS;
         let retired = &mut self.abilityless_clones[clone_index];
         let grip = retired.grip;
         if grip.rope.is_some() {
@@ -8827,6 +8854,22 @@ impl RolloutWorld {
         }
     }
 
+    /// The `WALK_*` scans that would find something on now.
+    #[cfg(debug_assertions)]
+    fn walk_awake_now(&self) -> u8 {
+        let mut awake = 0;
+        if self.platform_dynamics.iter().any(|state| state.blink_tunnel_active) {
+            awake |= WALK_WALL_TUNNELS;
+        }
+        if self.gust_wave_slots().iter().chain(&self.meteor_waves).any(|wave| wave.active) {
+            awake |= WALK_WAVES;
+        }
+        if self.players.iter().any(walk_player_awake) {
+            awake |= WALK_PLAYERS;
+        }
+        awake
+    }
+
     /// Updater.UpdateSim for every runtime-spawned updatable ahead of
     /// `before` in Updater's list that has not taken its turn this pass, in
     /// list order (`UpdaterKey`). Only updatables already appended take a
@@ -8842,7 +8885,12 @@ impl RolloutWorld {
     /// each of their objects first runs this walk to its own turn.
     fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
         self.refresh_cloud_keys();
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.walk_awake_now() & !self.scratch.walk_awake, 0, "a walk scan woke unflagged");
         let tick = self.tick;
+        let awake = self.scratch.walk_awake;
+        // The scans that found everything off.
+        let mut quiet = 0;
         let mut queue = std::mem::take(&mut self.scratch.spawned_queue);
         queue.clear();
         // Updater's place: the kinds that keep it pass a turn they skip,
@@ -8956,11 +9004,18 @@ impl RolloutWorld {
                 }
             }
         }
-        for (i, state) in self.platform_dynamics.iter().enumerate() {
-            if state.blink_tunnel_active {
-                if live(state.blink_tunnel_appended) {
-                    push(self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy), 13, i);
+        if awake & WALK_WALL_TUNNELS != 0 {
+            let mut any = false;
+            for (i, state) in self.platform_dynamics.iter().enumerate() {
+                if state.blink_tunnel_active {
+                    any = true;
+                    if live(state.blink_tunnel_appended) {
+                        push(self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy), 13, i);
+                    }
                 }
+            }
+            if !any {
+                quiet |= WALK_WALL_TUNNELS;
             }
         }
         for (i, tunnel) in self.blink_object_tunnels.iter().enumerate() {
@@ -8970,16 +9025,41 @@ impl RolloutWorld {
                 }
             }
         }
-        for (i, slot) in self.players.iter().enumerate() {
-            if slot.blink_tunnel_active {
-                if live(slot.blink_tunnel_appended) {
-                    push(self.updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy), 20, i);
+        // The queue sorts its entries, all distinct, so the order the scans
+        // push in is free: the player objects come from one scan.
+        if awake & WALK_PLAYERS != 0 {
+            let mut any = false;
+            for (i, slot) in self.players.iter().enumerate() {
+                if !walk_player_awake(slot) {
+                    continue;
+                }
+                any = true;
+                if slot.blink_tunnel_active {
+                    if live(slot.blink_tunnel_appended) {
+                        push(self.updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy), 20, i);
+                    }
+                }
+                if slot.teleport_effect_active {
+                    if live(slot.teleport_effect_appended) {
+                        push(self.updater_key(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy), 21, i);
+                    }
+                }
+                if slot.respawn_ticks > 0 {
+                    push(self.chooser_key(i), 27, i);
+                }
+                for (s, effect) in slot.gold_mushroom.iter().enumerate() {
+                    if effect.active {
+                        if live(effect.appended) {
+                            push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 28, i * 3 + s);
+                        }
+                    }
+                }
+                if let Some(key) = self.revival_key(i) {
+                    push(key, 42, i);
                 }
             }
-            if slot.teleport_effect_active {
-                if live(slot.teleport_effect_appended) {
-                    push(self.updater_key(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy), 21, i);
-                }
+            if !any {
+                quiet |= WALK_PLAYERS;
             }
         }
         for (i, effect) in self.teleport_object_effects.iter().enumerate() {
@@ -9008,25 +9088,20 @@ impl RolloutWorld {
                 }
             }
         }
-        for (kind, waves) in [(25, self.gust_wave_slots()), (26, &self.meteor_waves[..])] {
-            for (i, wave) in waves.iter().enumerate() {
-                if wave.active {
-                    if live(wave.appended) {
-                        push(self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), kind, i);
+        if awake & WALK_WAVES != 0 {
+            let mut any = false;
+            for (kind, waves) in [(25, self.gust_wave_slots()), (26, &self.meteor_waves[..])] {
+                for (i, wave) in waves.iter().enumerate() {
+                    if wave.active {
+                        any = true;
+                        if live(wave.appended) {
+                            push(self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), kind, i);
+                        }
                     }
                 }
             }
-        }
-        for (i, slot) in self.players.iter().enumerate() {
-            if slot.respawn_ticks > 0 {
-                push(self.chooser_key(i), 27, i);
-            }
-            for (s, effect) in slot.gold_mushroom.iter().enumerate() {
-                if effect.active {
-                    if live(effect.appended) {
-                        push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 28, i * 3 + s);
-                    }
-                }
+            if !any {
+                quiet |= WALK_WAVES;
             }
         }
         for (i, effect) in self.frozen_solids.iter().enumerate() {
@@ -9059,11 +9134,8 @@ impl RolloutWorld {
                 }
             }
         }
-        for i in 0..self.players.len() {
-            if let Some(key) = self.revival_key(i) {
-                push(key, 42, i);
-            }
-        }
+        // Cleared before any turn runs, which may turn one back on.
+        self.scratch.walk_awake &= !quiet;
         queue.sort_unstable();
         for &(key, kind, index) in &queue {
             // A turn an earlier updatable's own walk already passed is not
@@ -10797,6 +10869,7 @@ impl RolloutWorld {
                             time: Fix::ZERO,
                             slime_id,
                         };
+                        self.scratch.walk_awake |= WALK_PLAYERS;
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
@@ -13192,6 +13265,7 @@ impl RolloutWorld {
             force_scale,
             ..Shockwave::default()
         });
+        self.scratch.walk_awake |= WALK_WAVES;
         self.meteor_targets.push(WaveTargets::default());
     }
 
@@ -14019,6 +14093,7 @@ impl RolloutWorld {
                 ..Shockwave::default()
             };
             self.gust_targets[wave] = WaveTargets::default();
+            self.scratch.walk_awake |= WALK_WAVES;
             slot.gust.phase = 1;
             slot.gust.ticks = 0;
         } else if gust.phase == 1 && gust.ticks > data.gust.exit_ticks {
@@ -20535,6 +20610,7 @@ impl RolloutWorld {
                 slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
             }
             self.players[player_index].set_teleport_hidden(&mut self.entities, true);
+            self.scratch.walk_awake |= WALK_PLAYERS;
             self.players[player_index].teleport_effect_time = Fix::ZERO;
             self.players[player_index].teleport_effect_hierarchy = self.register_prefab(data.prefab("teleportingObjectEffect"));
             self.players[player_index].teleport_effect_appended = self.tick + 1;
@@ -21842,6 +21918,7 @@ impl RolloutWorld {
             let distance = (target - slot.revival_effect_position).length();
             slot.revival_particle = Some((distance, Fix::ZERO));
             slot.revival_effect_ticks = 1;
+            self.scratch.walk_awake |= WALK_PLAYERS;
             let particle = data.prefab("ReviveParticle 1");
             let base = self.register_prefab(particle);
             // InitRevive registers the ReviveParticle, the prefab's first
@@ -28190,6 +28267,7 @@ impl RolloutWorld {
             dynamics.shake_amount = data.blink.wall_shake;
             dynamics.meteor_shake_curve = false;
             dynamics.blink_tunnel_active = true;
+            self.scratch.walk_awake |= WALK_WALL_TUNNELS;
             dynamics.blink_tunnel_initialized = false;
             dynamics.blink_tunnel_delay = Fix::ZERO;
             dynamics.blink_tunnel_age = Fix::ZERO;
@@ -28694,6 +28772,7 @@ impl RolloutWorld {
             slot.sync_form_pose();
         }
         slot.set_blink_tunnel(&mut self.entities, true);
+        self.scratch.walk_awake |= WALK_PLAYERS;
         slot.blink_tunnel_appended = self.tick + 1;
         slot.blink_tunnel_age = Fix::ZERO;
         slot.blink_tunnel_released = false;
@@ -36738,6 +36817,7 @@ impl RolloutWorld {
             return None;
         }
         self.players.push(self.players[0].clone());
+        self.scratch.walk_awake |= WALK_PLAYERS;
         Some(self.players.len() - 1)
     }
 
@@ -37015,6 +37095,7 @@ impl RolloutWorld {
             last.take_player_state(&self.players[owner]);
             last.slime_gone = false;
             self.players[owner] = last;
+            self.scratch.walk_awake |= WALK_PLAYERS;
             if self.players[owner].form_flag_body == index {
                 self.players[owner].form_flag_body = owner;
             }
@@ -37128,6 +37209,7 @@ impl RolloutWorld {
             slot.revival_target_marker = Some(marker_index);
             slot.revival_clone_position = self.revival_marker_pool[marker_index].position;
             slot.revival_effect_ticks = data::get().revival.effect_wisp_ticks + 1;
+            self.scratch.walk_awake |= WALK_PLAYERS;
             // killPlayer UnGrounds the slime before it instantiates ReviveEffect
             // at the body, so a still-named attachedGround lifts it 0.05 off
             // along the normal (PlayerCollision.cs:140, PlayerPhysics.cs:366-370).
@@ -37158,6 +37240,7 @@ impl RolloutWorld {
                 clone.revival_clone_position = self.revival_marker_pool[marker].position;
                 clone.revival_clone_id = revived_count;
                 self.players[body] = clone;
+                self.scratch.walk_awake |= WALK_PLAYERS;
                 revived[revived_count] = body;
                 revived_count += 1;
             }
@@ -37316,6 +37399,7 @@ impl RolloutWorld {
         slot.clone_ability_hierarchy = clone_ability_hierarchy;
         slot.stock_indicator_hierarchy = stock_indicator_hierarchy;
         slot.respawn_ticks = 360;
+        self.scratch.walk_awake |= WALK_PLAYERS;
         slot.respawn_spawn_ticks = 0;
         slot.respawn_selected = 1;
         slot.chooser_appended = self.tick + 1;
@@ -40899,6 +40983,7 @@ mod tests {
         world.begin_freeze(Slime::Player(0), Fix::from_int(10));
         world.players[0].timers.fill(Fix::from_int(3));
         world.players[0].set_teleport_hidden(&mut world.entities, true);
+        world.scratch.walk_awake |= WALK_PLAYERS;
         world.tick += 1;
 
         world.frozen_solids_tick(data::get(), DT);
