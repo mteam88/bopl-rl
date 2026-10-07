@@ -731,9 +731,10 @@ static void bopl4_previous_history(float *previous, BoplRlAction *history, BoplR
  * bopl_encode_v4_row counts) without the row: the visible entities after rope
  * thinning, the visible slimes and their slots. Only for states of at most
  * BOPL4_ENTITIES entities, so every visible entity is kept. */
-static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a) {
+typedef struct { int count, visible_slimes, visible_slots, source_counts[BOPL_ABILITY_COUNT]; } Bopl4Census;
+static void bopl4_census(const BoplRlState *state, int a, Bopl4Census *c) {
     const BoplRlPlayer *self=&state->players[a];
-    uint32_t kept[BOPL4_ENTITIES]; int count=0, source_counts[BOPL_ABILITY_COUNT]={0};
+    memset(c, 0, sizeof(*c));
     for (uint32_t i=0; i<state->header.entity_count;) {
         int end=(state->entities[i].kind==3)?bopl_rope_group_end(state, i):(int)i+1;
         int group=end-(int)i;
@@ -741,15 +742,15 @@ static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a) {
             const BoplRlEntity *entity=&state->entities[i+j];
             if (entity->kind==3 && !bopl_rope_span_kept(j, group)) continue;
             if (!bopl_entity_visible(state, entity, self->id)) continue;
-            kept[count++]=i+(uint32_t)j;
+            c->count++;
             uint32_t source=entity->reserved[0];
-            if (source>0 && source<=BOPL_ABILITY_COUNT) source_counts[source-1]++;
+            if (source>0 && source<=BOPL_ABILITY_COUNT) c->source_counts[source-1]++;
         }
         i=(uint32_t)end;
     }
     /* A hidden slime's slots still count when it is the primary enemy's
      * body (the observer's own is never hidden). */
-    int visible_slimes=0, visible_slots=0, enemy_known=0;
+    int enemy_known=0;
     const BoplRlSlime *enemy_controller=NULL;
     for (uint32_t i=0; i<state->header.slime_count; i++) {
         const BoplRlSlime *slime=&state->slimes[i];
@@ -762,29 +763,58 @@ static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a) {
                 enemy_known=1;
             }
             if (slime!=enemy_controller) continue;
-        } else visible_slimes++;
+        } else c->visible_slimes++;
         for (int slot=0; slot<3; slot++) {
             uint32_t id=slime->abilities[slot], flags=slime->ability_flags[slot];
-            if ((flags&1) && id!=0 && id<=BOPL_ABILITY_COUNT) visible_slots++;
+            if ((flags&1) && id!=0 && id<=BOPL_ABILITY_COUNT) c->visible_slots++;
         }
     }
-    bopl_note_overflow(env, count, count, visible_slimes, visible_slots);
-    bopl_note_entity_rows(env, state, kept, count, source_counts);
+}
+/* bopl_note_overflow and bopl_note_entity_rows of a census: every visible
+ * entity is kept, so no ability's entities overflow (entity_overflow gains
+ * 0) and entity_rows gains each ability's count, the integer sums exact in
+ * any order (the zero additions left out: the counters are never -0). */
+static void bopl4_census_note(BoplPuffer *env, const Bopl4Census *c) {
+    bopl_note_overflow(env, c->count, c->count, c->visible_slimes, c->visible_slots);
+    for (int ability=1; ability<BOPL_ABILITY_COUNT; ability++)
+        if (c->source_counts[ability-1]) env->counters.entity_rows[ability]+=c->source_counts[ability-1];
+}
+/* What the shipped rows of one encode share: the slimes' sinf and cosf, and
+ * the overflow census when no player is invisible (flags bit 4: then
+ * bopl_spatial_hidden is 0 for every pair, so every observer sees the same
+ * entities and slimes and the census is the state's). Found by the first
+ * shipped row (state NULL until then). */
+typedef struct {
+    const BoplRlState *state;
+    int shared_census, census_ready;
+    Bopl4Census census;
+    float trig[2*BOPL4_SLIMES];
+} Bopl4Shared;
+static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
+    shared->state=state; shared->census_ready=0; shared->shared_census=1;
+    for (uint32_t i=0; i<state->header.player_count; i++) if (state->players[i].flags&4) shared->shared_census=0;
+    for (uint32_t i=0; i<state->header.slime_count; i++) bopl4_sincos(&state->slimes[i], &shared->trig[2*i], &shared->trig[2*i+1]);
+}
+static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a, Bopl4Shared *shared) {
+    if (!shared->shared_census) { Bopl4Census c; bopl4_census(state, a, &c); bopl4_census_note(env, &c); return; }
+    if (!shared->census_ready) { bopl4_census(state, a, &shared->census); shared->census_ready=1; }
+    bopl4_census_note(env, &shared->census);
 }
 /* Ship player a's v4 row as its state (pack mode 4, bopl_rows_v4.h
  * Bopl4StateHead) when bopl_step_finish writes the env's rows, the row is in
  * the pack range and the state fits the slot: the GPU writes the row. Here:
  * the overflow telemetry, the slot's head and state, and the row's
  * own-action block cleared for the tail. Returns 0 to encode on the CPU. */
-static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, int count_overflow) {
+static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, int count_overflow, Bopl4Shared *shared) {
     if (!bopl4_defer || bopl4_state_count==BOPL_MAX_PLAYERS) return 0;
     float *obs=bopl_obs_row(env, a), *slot=bopl4_pack_slot(env, obs);
     uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
     if (!slot || entities>BOPL4_ENTITIES || slimes>BOPL4_SLIMES || bopl4_state_words(entities, slimes)>BOPL4_PACK_P) return 0;
+    if (shared->state!=state) bopl4_shared_init(shared, state);
     if (bopl4_check_rows()) {
         /* The CPU's row as well, for the transport check (rays included). */
         bopl4_defer=0; bopl_encode_v4_row(env, state, a, count_overflow); bopl4_defer=1;
-    } else if (count_overflow) bopl4_count_row(env, state, a);
+    } else if (count_overflow) bopl4_count_row(env, state, a, shared);
     bopl_written_forget_row(env, obs);   /* the host row is not written */
     memset(obs+BOPL4_OBS_PREVIOUS_OFFSET, 0, BOPL4_PREVIOUS*sizeof(float));
     int ablation=bopl_ablate_of(env, a);
@@ -803,14 +833,15 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     char *out=(char*)(slot+BOPL4_STATE_OFFSET);
     memcpy(out, &state->header, sizeof(state->header)); out+=sizeof(state->header);
     memcpy(out, state->players, sizeof(state->players)); out+=sizeof(state->players);
+    const BoplRlEntity *shipped=(const BoplRlEntity*)out;
     memcpy(out, state->entities, (size_t)entities*sizeof(BoplRlEntity)); out+=(size_t)entities*sizeof(BoplRlEntity);
     memcpy(out, state->slimes, (size_t)slimes*sizeof(BoplRlSlime)); out+=(size_t)slimes*sizeof(BoplRlSlime);
     float *trig=(float*)out;
-    for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &trig[2*i], &trig[2*i+1]);
+    memcpy(trig, shared->trig, (size_t)slimes*2*sizeof(float));
     unsigned char *sectors=(unsigned char*)(trig+2*slimes);
     double self_x=bopl_fix(state->players[a].x), self_y=bopl_fix(state->players[a].y);
     for (uint32_t i=0; i<entities; i++) {
-        const BoplRlEntity *entity=&state->entities[i];
+        const BoplRlEntity *entity=&shipped[i];
         sectors[i]=entity->inverse_mass>0?(unsigned char)bopl4_sector(bopl_fix(entity->x)-self_x, bopl_fix(entity->y)-self_y):0;
     }
     int k=bopl4_state_count++;
@@ -818,12 +849,13 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     return 1;
 }
 static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
+    Bopl4Shared shared; shared.state=NULL;
     for (int a=0; a<env->players; a++) {
         if (!state) {
             float *obs=bopl_obs_row(env, a);
             memset(obs, 0, bopl_obs_size_of(env, a)*sizeof(float)); bopl_written_zeroed(env, obs);
         } else if (bopl_layout_of(env, a)==4) {
-            if (!bopl4_encode_state(env, state, a, count_overflow)) bopl_encode_v4_row(env, state, a, count_overflow);
+            if (!bopl4_encode_state(env, state, a, count_overflow, &shared)) bopl_encode_v4_row(env, state, a, count_overflow);
         } else bopl_encode_v3_row(env, state, a, count_overflow);
     }
 }
