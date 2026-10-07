@@ -2439,8 +2439,21 @@ impl SlimeMut<'_> {
     /// is null or destroyed (`lost`) is levelled and UnGround(false)ed, and
     /// OnNoLongerGrounded sets State.fall whatever the state, ending a
     /// ragdoll. True when it did.
+    ///
+    /// A ground destroyed while the slime's PlayerPhysics was inactive under
+    /// a form left no record, since only the live body is stranded. A form
+    /// killed while the Poke Ball mask refuses the slime's own killPlayer
+    /// hands that frozen PlayerPhysics back without SyncPhysicsTo
+    /// (SlimeController.cs:213-221), still grounded on it. A ground gone from
+    /// the scene is IsDestroyed, and Unity null once the pass that destroyed
+    /// it drained, so UnGround has nothing to lift off (PlayerPhysics.cs:
+    /// 366-370). This check runs ahead of OldUpdate's casts, so Dash's
+    /// SyncPhysicsTo and readyDash's UnGround never read such a ground
+    /// (Dash.cs:94, 109).
     fn lose_destroyed_ground(&mut self, lost: Option<DestroyedGround>, platforms: &[Platform], tick: u32) -> bool {
-        if !self.base.grounded || lost.is_none() && self.base.ground.is_some() {
+        if !self.base.grounded
+            || lost.is_none() && self.base.ground_index(platforms).is_some()
+        {
             return false;
         }
         *self.ground_destroyed = lost;
@@ -40972,6 +40985,61 @@ mod tests {
         assert!(player.dash.active);
         assert!(!player.grounded);
         assert_eq!(player.dash.local, local);
+    }
+
+    #[test]
+    fn dash_after_a_refused_form_kill_finds_the_frozen_ground_destroyed() {
+        // A ground destroyed under a form strands only the form's body. The
+        // slime's PlayerPhysics froze grounded on it, and a form killed while
+        // the Poke Ball mask refuses the slime's killPlayer hands it back
+        // without SyncPhysicsTo. Its next UpdateSim must find that ground
+        // destroyed before OldUpdate readies a Dash off it, which unwrapped
+        // None and stopped the trainer (gate seed 8191: map 101, seed
+        // 3890269112; a Black Hole killed a Magnet form).
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let index =
+            world.spawn_ability_platform(0, Vec2::new(Fix::ZERO, Fix::from_int(30)), Fix::ONE);
+        let id = world.platforms[index].id;
+        let position = world.platforms[index]
+            .surface
+            .position(Fix::ZERO, world.players[0].base.radius);
+        {
+            let player = &mut world.players[0].base;
+            player.position = position;
+            player.velocity = Vec2::ZERO;
+            player.external_velocity = Vec2::ZERO;
+            player.set_rotation(Fix::ZERO);
+            player.grounded = true;
+            player.ground = Some(id);
+            player.local = Fix::ZERO;
+        }
+        world.players[0].cooldowns = [Fix::ZERO; 3];
+        world.players[0].timers = [Fix::from_f64(0.01); 3];
+
+        // Bow, the third slot.
+        world.tick += 1;
+        world.player_tick(0, Action { angle: 0, buttons: 8 }, Vec2::ZERO, false, data::get());
+        assert!(world.players[0].active == ActiveAbility::Bow);
+        assert!(world.players[0].slime.grounded);
+        assert_eq!(world.players[0].slime.ground, Some(id));
+
+        world.remove_platform(index, false);
+        world.players[0].invulnerable |= INVULNERABLE_POKE;
+        world.tick += 1;
+        world.kill(0, 1, 0, true, false);
+        assert!(world.players[0].active == ActiveAbility::None);
+        assert!(world.players[0].base.alive);
+        assert!(world.players[0].base.grounded);
+        assert_eq!(world.players[0].base.ground, Some(id));
+        assert!(world.players[0].ground_destroyed.is_none());
+
+        // Dash, the second slot.
+        world.tick += 1;
+        world.player_tick(0, Action { angle: 0, buttons: 4 }, Vec2::ZERO, false, data::get());
+        assert!(world.players[0].base.dash.active);
+        assert!(!world.players[0].base.grounded);
+        assert_eq!(world.players[0].base.ground, None);
     }
 
     #[test]
