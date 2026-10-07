@@ -239,6 +239,22 @@ impl Fix {
         let raw = lookup(SIN, if horizontal { 205886 - index } else { index }).0;
         Self(if vertical { -raw } else { raw })
     }
+    /// The table entry `fast_sin` reads, with its sign in bit 32:
+    /// `fast_sin` is `fast_sin_at(fast_sin_entry())`.
+    pub fn fast_sin_entry(self) -> u64 {
+        let (angle, horizontal, vertical) = self.sin_quadrant();
+        let index = ((angle >> 15) as usize).min(205886);
+        (if horizontal { 205886 - index } else { index }) as u64 | (vertical as u64) << 32
+    }
+    /// `fast_cos`'s entry, as `fast_sin_entry`.
+    pub fn fast_cos_entry(self) -> u64 {
+        Self(self.0.wrapping_add(if self.0 > 0 { -20_239_556_556 } else { Self::HALF_PI.0 })).fast_sin_entry()
+    }
+    /// The value at a `fast_sin_entry`.
+    pub fn fast_sin_at(entry: u64) -> Self {
+        let raw = lookup(SIN, (entry & 0xffff_ffff) as usize).0;
+        Self(if entry >> 32 != 0 { -raw } else { raw })
+    }
     pub fn fast_cos(self) -> Self {
         Self(self.0.wrapping_add(if self.0 > 0 {
             -20_239_556_556

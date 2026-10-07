@@ -2069,10 +2069,69 @@ pub struct PlatformDynamics {
     /// The tunnel's updater slot: spawned updaters created after it (a
     /// Black Hole) see the wall it restores on the same pass.
     pub blink_tunnel_hierarchy: u32,
-    /// `(orientation, Vec2::angle(orientation))` from the last integration:
-    /// a platform that translates without rotating (sudden death, a spring
-    /// settling) keeps its basis instead of consulting the sine table twice.
-    pub basis: Option<(Fix, Vec2)>,
+    /// The basis and box axes of the last integration: a platform that
+    /// translates without rotating (sudden death, a spring settling) keeps
+    /// its basis instead of consulting the sine table twice.
+    pub basis: Option<PlatformBasis>,
+}
+
+/// `Vec2::angle(orientation)` and the rounded rectangle's box axes on it
+/// (Box.SetRotation), kept from one integration to the next. A turn small
+/// enough to leave both sine-table entries alone leaves the basis, and an
+/// unchanged basis and `inverse_extents` the axes.
+#[derive(Clone, Copy)]
+pub struct PlatformBasis {
+    orientation: Fix,
+    /// `fast_cos_entry` and `fast_sin_entry` of the orientation.
+    entries: [u64; 2],
+    basis: Vec2,
+    /// The `inverse_extents` bits `right` and `up` were built from.
+    inverse_extents: Option<[u64; 2]>,
+    right: Vec2,
+    up: Vec2,
+}
+
+impl PlatformDynamics {
+    /// The basis of the body's orientation and the box axes it gives a box
+    /// of `inverse_extents`: `Vec2::angle(orientation)`,
+    /// `(RIGHT / inverse_extents.x).complex_mul(basis)` and
+    /// `(UP / inverse_extents.y).complex_mul(basis)`.
+    #[inline(always)]
+    fn basis_axes(&mut self, inverse_extents: Vec2) -> (Vec2, Vec2, Vec2) {
+        let orientation = self.body.orientation;
+        if !matches!(self.basis, Some(cached) if cached.orientation == orientation) {
+            let entries = [orientation.fast_cos_entry(), orientation.fast_sin_entry()];
+            match &mut self.basis {
+                Some(cached) if cached.entries == entries => cached.orientation = orientation,
+                slot => {
+                    *slot = Some(PlatformBasis {
+                        orientation,
+                        entries,
+                        basis: Vec2::new(Fix::fast_sin_at(entries[0]), Fix::fast_sin_at(entries[1])),
+                        inverse_extents: None,
+                        right: Vec2::ZERO,
+                        up: Vec2::ZERO,
+                    })
+                }
+            }
+        }
+        let Some(cached) = &mut self.basis else { unreachable!() };
+        let bits = [inverse_extents.x.to_f64().to_bits(), inverse_extents.y.to_f64().to_bits()];
+        if cached.inverse_extents != Some(bits) {
+            cached.right = (Vec2::RIGHT / inverse_extents.x).complex_mul(cached.basis);
+            cached.up = (Vec2::UP / inverse_extents.y).complex_mul(cached.basis);
+            cached.inverse_extents = Some(bits);
+        }
+        #[cfg(debug_assertions)]
+        {
+            let bits = |v: Vec2| [v.x.to_f64().to_bits(), v.y.to_f64().to_bits()];
+            let basis = Vec2::angle(orientation);
+            debug_assert_eq!(bits(cached.basis), bits(basis));
+            debug_assert_eq!(bits(cached.right), bits((Vec2::RIGHT / inverse_extents.x).complex_mul(basis)));
+            debug_assert_eq!(bits(cached.up), bits((Vec2::UP / inverse_extents.y).complex_mul(basis)));
+        }
+        (cached.basis, cached.right, cached.up)
+    }
 }
 
 /// PlatformTransform.State.
@@ -7297,12 +7356,14 @@ impl RolloutWorld {
     /// `sweep_axes` from the colliders where they are now.
     #[inline(never)]
     fn sweep_axes_now(&self) -> (bool, bool) {
+        // The counts are bounded by the collections' lengths, so they add
+        // without the overflow test.
         let mut mean = Vec2::ZERO;
         let mut active_count = 0usize;
         for platform in &self.platforms {
             if platform.active {
                 mean += platform.collider.inner.center;
-                active_count += 1;
+                active_count = active_count.wrapping_add(1);
             }
         }
         // One scan of the rows sums the active circles and boxes and keeps,
@@ -7310,8 +7371,11 @@ impl RolloutWorld {
         // the buffer's room, the spread scans the rows again.
         const ROOM: usize = 64;
         let mut registered = [Vec2::ZERO; ROOM];
-        let mut kept = 0;
-        for entity in self.entities.iter().filter(|entity| entity.kind < 2) {
+        let mut kept = 0usize;
+        for entity in &self.entities {
+            if entity.kind >= 2 {
+                continue;
+            }
             let active = row_is_active(entity);
             let live = entity.flags & E_REMOVED == 0;
             if !(active || live) {
@@ -7320,13 +7384,13 @@ impl RolloutWorld {
             let position = Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             if active {
                 mean += position;
-                active_count += 1;
+                active_count = active_count.wrapping_add(1);
             }
             if live {
                 if kept < ROOM {
                     registered[kept] = position;
                 }
-                kept += 1;
+                kept = kept.wrapping_add(1);
             }
         }
         if active_count != 0 {
@@ -34771,9 +34835,20 @@ impl RolloutWorld {
     /// `sweep_x` is `sweep_axes().0`, taken just before with nothing moved,
     /// and `scratch.callback_bounds` the platforms' boxes, just taken.
     fn platform_pairs(platforms: &[Platform], scratch: &mut PlatformScratch, sweep_x: bool) {
+        // One sweep per axis, so no edge read picks its coordinate.
+        if sweep_x {
+            Self::platform_pairs_on::<true>(platforms, scratch);
+        } else {
+            Self::platform_pairs_on::<false>(platforms, scratch);
+        }
+    }
+
+    #[inline(always)]
+    fn platform_pairs_on<const SWEEP_X: bool>(platforms: &[Platform], scratch: &mut PlatformScratch) {
+        let sweep_x = SWEEP_X;
         scratch.pairs.clear();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
+        let axis = |v: Vec2| if SWEEP_X { v.x } else { v.y };
+        let other = |v: Vec2| if SWEEP_X { v.y } else { v.x };
         // Each platform's box, from the collider it holds now.
         let bounds = &scratch.callback_bounds;
         #[cfg(debug_assertions)]
@@ -34842,38 +34917,27 @@ impl RolloutWorld {
                 *slot = key.1;
             }
         }
-        // The active walls' edges in that order, so the window walk reads
-        // its own arrays rather than each box by index.
-        let (mut low, mut high, mut other_low, mut other_high) = ([Fix::ZERO; CAP], [Fix::ZERO; CAP], [Fix::ZERO; CAP], [Fix::ZERO; CAP]);
-        let mut walls = [0usize; CAP];
-        let mut active = 0;
-        for &(min, index) in &keys[..count] {
-            if !platforms[index].active {
-                continue;
-            }
-            let b = bounds[index];
-            low[active] = min;
-            high[active] = axis(b[1]);
-            other_low[active] = other(b[0]);
-            other_high[active] = other(b[1]);
-            walls[active] = index;
-            active += 1;
-        }
+        // The window holds the open active walls, which it reads by their
+        // boxes.
         let pairs = &mut scratch.pairs;
         let mut window = [0usize; CAP];
         let mut open = 0;
-        for b in 0..active {
-            let (min, low_b, high_b) = (low[b], other_low[b], other_high[b]);
+        for &(min, b) in &keys[..count] {
+            if !platforms[b].active {
+                continue;
+            }
+            let (low_b, high_b) = (other(bounds[b][0]), other(bounds[b][1]));
             let mut kept = 0;
             for w in 0..open {
                 let a = window[w];
-                if high[a] > min {
+                let box_a = bounds[a];
+                if axis(box_a[1]) > min {
                     window[kept] = a;
                     kept += 1;
                     // IdPair(active, current): the body that entered the
                     // sweep first is collider A (DetPhysics.cs:2169-2236).
-                    if !(other_high[a] <= low_b || other_low[a] >= high_b) {
-                        pairs.push([walls[a], walls[b]]);
+                    if !(other(box_a[1]) <= low_b || other(box_a[0]) >= high_b) {
+                        pairs.push([a, b]);
                     }
                 }
             }
@@ -37160,31 +37224,22 @@ impl RolloutWorld {
             } else {
                 dynamics.body.integrate(physics_dt, Fix::from_int(-40))
             };
-            let orientation = dynamics.body.orientation;
-            let basis = match dynamics.basis {
-                Some((rotation, basis)) if rotation == orientation => basis,
-                _ => {
-                    let basis = Vec2::angle(orientation);
-                    dynamics.basis = Some((orientation, basis));
-                    basis
-                }
-            };
             let platform = &mut self.platforms[i];
+            // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
+            let (basis, right, up) = dynamics.basis_axes(platform.collider.inner.inverse_extents);
             if dynamics.attached_children != 0 {
-                dynamics.root_body.orientation = orientation;
+                dynamics.root_body.orientation = dynamics.body.orientation;
                 dynamics.composite_position += shift;
             } else {
                 dynamics.composite_position = platform.surface.center + shift;
             }
             platform.surface.center += shift;
             platform.surface.right = basis;
-            platform.surface.up = platform.surface.right.perp();
-            // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
+            platform.surface.up = basis.perp();
             let inner = &mut platform.collider.inner;
             inner.center = platform.surface.center;
-            inner.right =
-                (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(platform.surface.right);
-            inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(platform.surface.right);
+            inner.right = right;
+            inner.up = up;
         }
         // Composite children are synchronized immediately after integration.
         // Positional corrections later in this pass move CompositeBody.position

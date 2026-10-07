@@ -329,6 +329,29 @@ impl Fix {
         let value = (value * 4_294_967_296.0).floor() / 4_294_967_296.0;
         Self(if vertical { -value } else { value })
     }
+    /// The table entry `fast_sin` reads, with its sign: `fast_sin` is
+    /// `fast_sin_at(fast_sin_entry())`, so two angles with one entry share
+    /// the value. The entry is the mirrored index's bits (an integer, or
+    /// -0 for a -0 angle, so bit 0 is free) with the sign in bit 0.
+    pub fn fast_sin_entry(self) -> u64 {
+        const LUT_LAST: f64 = 205886.0;
+        let (angle, horizontal, vertical) = self.sin_quadrant();
+        let index = (angle * 131_072.0).floor().min(LUT_LAST);
+        let index = if horizontal { LUT_LAST - index } else { index };
+        index.to_bits() | vertical as u64
+    }
+    /// `fast_cos`'s entry, as `fast_sin_entry`.
+    pub fn fast_cos_entry(self) -> u64 {
+        Self(self.0 + if self.0 > 0.0 { Self::COS_SHIFT_POSITIVE.0 } else { Self::HALF_PI.0 }).fast_sin_entry()
+    }
+    /// The value at a `fast_sin_entry`.
+    pub fn fast_sin_at(entry: u64) -> Self {
+        const LUT_LAST: f64 = 205886.0;
+        let index = f64::from_bits(entry & !1);
+        let value = sin_reduced(index * (std::f64::consts::FRAC_PI_2 / LUT_LAST));
+        let value = (value * 4_294_967_296.0).floor() / 4_294_967_296.0;
+        Self(if entry & 1 != 0 { -value } else { value })
+    }
     pub fn cos(self) -> Self {
         Self(
             self.0
