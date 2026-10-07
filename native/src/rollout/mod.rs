@@ -9505,17 +9505,21 @@ impl RolloutWorld {
         quiet
     }
 
-    /// Object `index` of `walk_scan` kind `kind` as it stands: its key, if
-    /// it has one there, and whether the scan would queue it now (given the
-    /// key is in range). None for the player objects, or past the pool.
-    fn walk_object(&self, kind: u8, index: usize) -> Option<(UpdaterKey, bool)> {
-        let tick = self.tick;
-        let live = |appended: u32| appended <= tick;
-        let keyed = |appended: u32, base: u32| self.updater_key(appended, 100_000_000 + base);
+    /// Whether object `index` of `walk_scan` kind `kind`, which the scan
+    /// found keyed `key` on the list as it stands, would take a turn now;
+    /// None if the slot holds another object (or none), or a player
+    /// object's. A key is (pass appended, place, number) with the place a
+    /// function of the other two on a given list, so the object is the one
+    /// whose pass and number match.
+    #[inline]
+    fn walk_turn(&self, kind: u8, index: usize, key: UpdaterKey) -> Option<bool> {
+        let (appended, _, number) = key;
+        // A slot holding the object keyed `key`, appended by this pass.
+        let at = |slot_appended: u32, slot_number: u32| (slot_appended, slot_number) == (appended, number);
         macro_rules! pooled {
             ($pool:expr, |$o:ident| $on:expr) => {{
                 let $o = $pool.get(index)?;
-                Some((keyed($o.appended, $o.hierarchy_base), $on && live($o.appended)))
+                at($o.appended, 100_000_000 + $o.hierarchy_base).then(|| $on)
             }};
         }
         match kind {
@@ -9523,13 +9527,16 @@ impl RolloutWorld {
                 if index < self.first_runtime_platform() || index >= self.platforms.len() {
                     return None;
                 }
-                let turn = self.platform_pass(index) != PlatformPass::Authored && live(self.platform_dynamics[index].appended);
-                Some((self.platform_turn_key(index), turn))
+                let number = self.entities[self.platform_entities[index]].hierarchy - 1;
+                debug_assert_ne!(self.platform_pass(index), PlatformPass::Authored);
+                at(self.platform_dynamics[index].appended, number).then_some(true)
             }
             1 => pooled!(self.black_holes, |o| o.active),
+            // Whether Updater lists an item depends on its key alone.
             2 => {
-                let item = self.thrown_items.get(index)?;
-                Some((keyed(item.appended, item.hierarchy_base), live(item.appended) && self.thrown_item_listed(item)))
+                let turn = pooled!(self.thrown_items, |o| true);
+                debug_assert!(turn.is_none() || self.thrown_item_listed(&self.thrown_items[index]));
+                turn
             }
             4 => pooled!(self.portals, |o| o.active),
             5 => pooled!(self.ability_pickups, |o| true),
@@ -9537,15 +9544,17 @@ impl RolloutWorld {
             16 => pooled!(self.tesla_nodes, |o| true),
             8 => {
                 let rope = self.ropes.get(index)?;
-                Some((self.rope_key(index), rope.physics.enabled))
+                at(rope.appended, 100_000_000 + rope.hierarchy).then_some(rope.physics.enabled)
             }
             29 => {
                 let rope = self.ropes.get(index)?;
-                Some((self.rope_attachment_key(index), rope.physics.enabled && rope.attach[0].parent.is_some()))
+                let number = 100_000_000 + rope.hook_hierarchy + rope_abilities::HOOK_ATTACHMENT_LOCAL;
+                at(rope.appended, number).then_some(rope.physics.enabled && rope.attach[0].parent.is_some())
             }
             30 => {
                 let rope = self.ropes.get(index / 2)?;
-                Some((self.rope_end_attachment_key(index / 2, index % 2)?, rope.physics.enabled))
+                let (slot_appended, hierarchy) = rope.attach[index % 2].turn?;
+                at(slot_appended, 100_000_000 + hierarchy).then_some(rope.physics.enabled)
             }
             40 => pooled!(self.portal_shots, |o| o.active),
             10 => pooled!(self.scale_changers, |o| o.active),
@@ -9553,22 +9562,20 @@ impl RolloutWorld {
             12 => pooled!(self.teleport_marker_pool, |o| o.active && o.registered),
             13 => {
                 let state = self.platform_dynamics.get(index)?;
-                let key = keyed(state.blink_tunnel_appended, state.blink_tunnel_hierarchy);
-                Some((key, state.blink_tunnel_active && live(state.blink_tunnel_appended)))
+                at(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy).then_some(state.blink_tunnel_active)
             }
             17 => {
                 let tunnel = self.blink_object_tunnels.get(index)?;
-                Some((keyed(tunnel.appended, tunnel.hierarchy), tunnel.active && live(tunnel.appended)))
+                at(tunnel.appended, 100_000_000 + tunnel.hierarchy).then_some(tunnel.active)
             }
             22 => {
                 let effect = self.teleport_object_effects.get(index)?;
-                Some((keyed(effect.appended, effect.hierarchy), effect.active && live(effect.appended)))
+                at(effect.appended, 100_000_000 + effect.hierarchy).then_some(effect.active)
             }
             14 => pooled!(self.abilityless_clones, |o| o.active),
             23 => {
                 let clone = self.abilityless_clones.get(index)?;
-                let key = keyed(clone.blink_tunnel_appended, clone.blink_tunnel_hierarchy);
-                Some((key, clone.blink_tunnel_active && live(clone.blink_tunnel_appended)))
+                at(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy).then_some(clone.blink_tunnel_active)
             }
             24 => pooled!(self.spike_attacks, |o| o.active && !o.macho_carried),
             25 => pooled!(self.gust_wave_slots(), |o| o.active),
@@ -9788,20 +9795,17 @@ impl RolloutWorld {
         let next = if awake & WALK_PLAYERS == 0 { self.walk_pending_next(cursor) } else { None };
         let mut summary = next.is_some();
         // The summary's objects keyed in [cursor, before) are the only ones
-        // the scans could queue: those still where it found them, with the
-        // same key, queue if they take a turn now. One gone from its slot
-        // (another's key there) sends the walk to the scans.
+        // the scans could queue: those still where it found them queue if
+        // they take a turn now. One gone from its slot (another's key there)
+        // sends the walk to the scans.
         let marked = queue.len();
         if next.is_some_and(|next| next < before) {
             let pending = &self.scratch.walk_pending[self.scratch.walk_pending_pos.1 as usize..];
             for &(key, kind, index) in pending.iter().take_while(|entry| entry.0 < before) {
-                match self.walk_object(kind, index as usize) {
-                    Some((now, turn)) if now == key => {
-                        if turn {
-                            queue.push((key, kind, index as usize));
-                        }
-                    }
-                    _ => {
+                match self.walk_turn(kind, index as usize, key) {
+                    Some(true) => queue.push((key, kind, index as usize)),
+                    Some(false) => {}
+                    None => {
                         summary = false;
                         break;
                     }

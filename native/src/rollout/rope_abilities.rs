@@ -5,7 +5,7 @@ use crate::physics::rope::{Rope, RopeConfig};
 
 /// RopeHook.prefab's RopeAttachment is its updatable numbered 1, ahead of
 /// the DPhysicsCircle (2) and the RopeHook (3).
-const HOOK_ATTACHMENT_LOCAL: u32 = 1;
+pub(super) const HOOK_ATTACHMENT_LOCAL: u32 = 1;
 
 const ROPE_POOL: usize = 128;
 const MAX_SEGMENTS: usize = 40;
