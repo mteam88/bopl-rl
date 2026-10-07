@@ -186,6 +186,37 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     serially to the same result. `make env-bench` builds the same way.
     End to end (spec, 3 interleaved repeats): 347k to 360k sps (+3.7%),
     every candidate run above every incumbent run.
+21. **v8: eleven small exact cuts to the sim's instructions.** Each was
+    found in a callgrind or inline-aware perf profile, and each was checked
+    by its instruction count on the 30 pgo-train games. Together they take
+    the count from 14.49G to 12.41G (-14.4%):
+    - `Fix::checked_rem` skips the software fmod when |a| < 2|m|. A test
+      checks it bit for bit against `%`.
+    - `platform_pass` is inlined, and the Duplicator rope check moved out
+      of line.
+    - `platform_turns` finds a platform's first authored platform through a
+      per-pass map. Each hit is validated, and a miss falls back to the
+      linear find.
+    - Wall raycasts purge destroyed colliders once per run, not once per
+      cast.
+    - `platform_pairs` and the group rank sorts sort (key, index) pairs
+      unstably, not indices through a comparator.
+    - `updater_version` bumps only when Updater's list actually changes.
+    - `push_blasts` uses plain loops, not a chain of `flat_map`s.
+    - The Circle/Circle and Box/Box pair loops drop priors that end before
+      the current part starts on the sweep axis. The ranks rise along that
+      axis, so those pairs fail `swept_meet` anyway, and the order is
+      unchanged.
+    - `wall_group` reads a wall's own index, not a linear
+      `platform_entities` search per wall.
+    - `take_sweep` skips bounds for pool-owned rows. Only smoke-cloud and
+      blast rows are read back, which a debug_assert checks.
+    - `remove_destroyed_updatables` skips its retain over Updater's whole
+      list unless `destroy_fix` flagged an entry since the last one.
+    With 12 concurrent env_bench copies (sims/v8-pgo.so, test/100 x 2
+    rounds), sim us per decision goes from 27.9-32.1 to 25.0-26.7 (-10% to
+    -17%; other sessions' load made the two runs differ). The hash is
+    unchanged, and the exact gate passes with a debug-assertions candidate.
 
 
 ## Cold caches in the trainer

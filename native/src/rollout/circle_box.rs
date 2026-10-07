@@ -27,6 +27,43 @@ impl GroupPart {
     }
 }
 
+/// `group.sort_by_key(|part| part.rank)` without moving the parts about:
+/// the (rank, place) pairs are distinct, so an unstable sort of them gives
+/// the stable order, and the parts are gathered into it once.
+fn sort_by_rank(group: &mut Vec<GroupPart>) {
+    thread_local! {
+        static SCRATCH: std::cell::RefCell<(Vec<(SweepRank, u32)>, Vec<GroupPart>)> =
+            const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+    }
+    SCRATCH.with_borrow_mut(|(keys, parts)| {
+        keys.clear();
+        keys.extend(group.iter().enumerate().map(|(place, part)| (part.rank, place as u32)));
+        keys.sort_unstable();
+        parts.clear();
+        parts.extend(keys.iter().map(|&(_, place)| group[place as usize]));
+        std::mem::swap(group, parts);
+    });
+}
+
+/// The (prior, current) pairs of a rank-sorted group whose spans on the sweep
+/// axis can meet, in the full double loop's order. The ranks rise with the
+/// sweep-axis start, so a prior that ends at or before a part's start ends
+/// before every later part's too and leaves `live` for good: the pairs
+/// skipped are exactly ones `swept_meet` fails on that axis.
+fn sweep_pairs(group: &[GroupPart], sweep_x: bool, live: &mut Vec<u32>, mut each: impl FnMut(&GroupPart, &GroupPart)) {
+    let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+    live.clear();
+    for (k, current) in group.iter().enumerate() {
+        let Some(bounds) = current.bounds else { continue };
+        let start = axis(bounds[0]);
+        live.retain(|&j| group[j as usize].bounds.is_some_and(|b| start < axis(b[1])));
+        for &j in live.iter() {
+            each(&group[j as usize], current);
+        }
+        live.push(k as u32);
+    }
+}
+
 /// A DetPhysics collider, by the collection that owns it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Part {
@@ -208,19 +245,24 @@ impl RolloutWorld {
     /// Every Explosion-layer collider in this Simulate's pairs, circles or
     /// boxes.
     fn push_blasts(&self, parts: &mut Vec<Part>, circles: bool) {
-        let blasts = (0..self.grenade_explosions.len())
-            .map(Blast::Grenade)
-            .chain((0..self.missile_explosions.len()).map(Blast::Mine))
-            .chain((0..self.smoke_explosions.len()).map(Blast::Smoke))
-            .chain((0..self.meteor_smears.len()).map(Blast::Smear))
-            .chain((0..self.players.len()).flat_map(|p| (0..3).map(move |k| Blast::Drill(p, k))))
-            .chain((0..self.beam_pool.len()).map(Blast::Beam))
-            .chain((0..self.beam_orbs.len()).map(Blast::Orb));
-        for blast in blasts {
-            if matches!(blast, Blast::Orb(_)) == circles && self.blast_part(blast) {
+        let mut push = |blast: Blast| {
+            if self.blast_part(blast) {
                 parts.push(Part::Explosion(blast));
             }
+        };
+        // The orbs are the circles; the rest, boxes, in this order.
+        if circles {
+            (0..self.beam_orbs.len()).for_each(|i| push(Blast::Orb(i)));
+            return;
         }
+        (0..self.grenade_explosions.len()).for_each(|i| push(Blast::Grenade(i)));
+        (0..self.missile_explosions.len()).for_each(|i| push(Blast::Mine(i)));
+        (0..self.smoke_explosions.len()).for_each(|i| push(Blast::Smoke(i)));
+        (0..self.meteor_smears.len()).for_each(|i| push(Blast::Smear(i)));
+        for p in 0..self.players.len() {
+            (0..3).for_each(|k| push(Blast::Drill(p, k)));
+        }
+        (0..self.beam_pool.len()).for_each(|i| push(Blast::Beam(i)));
     }
 
     /// FlammableSmoke.OnCollide's test: the collider carries an Explosion
@@ -954,7 +996,7 @@ impl RolloutWorld {
         if !parts.is_empty() {
             sides.extend((0..self.platforms.len()).map(|wall| {
                 let entity = self.platform_entities[wall];
-                (self.collides(entity), self.entities[entity].layer, self.wall_swept_bounds(wall))
+                (self.wall_collides(wall), self.entities[entity].layer, self.wall_swept_bounds(wall))
             }));
         }
         for &part in parts {
@@ -1202,24 +1244,24 @@ impl RolloutWorld {
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
         group.extend(parts.iter().map(|&part| self.group_part(part, data)));
-        group.sort_by_key(|part| part.rank);
+        sort_by_rank(&mut group);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
-        for (k, current) in group.iter().enumerate() {
-            for prior in &group[..k] {
-                // A hook's pair with a hole is grapple_hook_pairs'.
-                if matches!((prior.part, current.part), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
-                    continue;
-                }
-                // SameCompositeAs: nodes of one platform share its composite.
-                if !prior.pairs(current, data) {
-                    continue;
-                }
-                if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
-                    contacts.push((prior.part, current.part, contact));
-                }
+        let mut live = std::mem::take(&mut self.scratch.sweep_live);
+        sweep_pairs(&group, self.sweep_x(), &mut live, |prior, current| {
+            // A hook's pair with a hole is grapple_hook_pairs'.
+            if matches!((prior.part, current.part), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
+                return;
             }
-        }
+            // SameCompositeAs: nodes of one platform share its composite.
+            if !prior.pairs(current, data) {
+                return;
+            }
+            if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
+                contacts.push((prior.part, current.part, contact));
+            }
+        });
+        self.scratch.sweep_live = live;
         parts.clear();
         parts.extend(group.iter().map(|part| part.part));
         self.scratch.group_parts = group;
@@ -1283,19 +1325,18 @@ impl RolloutWorld {
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
         group.extend(parts.iter().map(|&part| self.group_part(part, data)));
-        group.sort_by_key(|part| part.rank);
+        sort_by_rank(&mut group);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
-        for (k, current) in group.iter().enumerate() {
-            for prior in &group[..k] {
-                if !prior.pairs(current, data) {
-                    continue;
-                }
+        let mut live = std::mem::take(&mut self.scratch.sweep_live);
+        sweep_pairs(&group, self.sweep_x(), &mut live, |prior, current| {
+            if prior.pairs(current, data) {
                 if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
                     contacts.push((prior.part, current.part, contact));
                 }
             }
-        }
+        });
+        self.scratch.sweep_live = live;
         parts.clear();
         parts.extend(group.iter().map(|part| part.part));
         self.scratch.group_parts = group;

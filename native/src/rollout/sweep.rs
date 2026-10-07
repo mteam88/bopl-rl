@@ -117,11 +117,13 @@ impl RolloutWorld {
         self.arrows.iter().for_each(|arrow| mark(arrow.entity));
         self.thrown_items.iter().for_each(|item| mark(item.entity));
         self.players.iter().for_each(|slot| mark(Some(Self::hurtbox_entity(slot))));
+        // Only a smoke cloud's or a blast's row is read back (`swept_bounds`),
+        // and no pool above owns one, so an owned row keeps NOWHERE.
         let owned = &sweep.owned;
         sweep.rows.clear();
         sweep.rows.extend((0..self.entities.len()).map(|i| {
             if owned[i] {
-                self.current_bounds(Swept::Row(i), data)
+                NOWHERE
             } else {
                 self.row_collider(i).map_or_else(|| self.row_shape_bounds(i), collider_bounds)
             }
@@ -242,11 +244,18 @@ impl RolloutWorld {
             Swept::Part(Part::Arrow(i)) => sweep.arrows.get(i),
             Swept::Part(Part::Body(i)) => sweep.players.get(i),
             Swept::Part(Part::Clone(i)) => sweep.clones.get(i),
-            Swept::Part(Part::Cloud(i)) => self.smoke_clouds[i].entity.and_then(|entity| sweep.rows.get(entity)),
+            Swept::Part(Part::Cloud(i)) => self.smoke_clouds[i].entity.and_then(|entity| {
+                debug_assert!(!sweep.owned.get(entity).is_some_and(|&owned| owned));
+                sweep.rows.get(entity)
+            }),
             Swept::Part(Part::Explosion(Blast::Beam(i))) => {
                 return Some(self.beam_pool[i].swept_collider.map_or(NOWHERE, box_bounds));
             }
-            Swept::Part(Part::Explosion(blast)) => sweep.rows.get(self.blast_entity(blast)),
+            Swept::Part(Part::Explosion(blast)) => {
+                let entity = self.blast_entity(blast);
+                debug_assert!(!sweep.owned.get(entity).is_some_and(|&owned| owned));
+                sweep.rows.get(entity)
+            }
             // A trigger no group moves: SortAndSweep bounded it where it is.
             Swept::Part(Part::Hook(_) | Part::Hole(_) | Part::Line(_) | Part::Water) => {
                 return Some(self.current_bounds(collider, data::get()));
@@ -256,7 +265,10 @@ impl RolloutWorld {
             Swept::Arrow(i) => sweep.arrows.get(i),
             Swept::DuplicatedRock(i) => sweep.duplicated_rocks.get(i),
             Swept::Pickup(i) => sweep.pickups.get(i),
-            Swept::Row(i) => sweep.rows.get(i),
+            Swept::Row(i) => {
+                debug_assert!(!sweep.owned.get(i).is_some_and(|&owned| owned));
+                sweep.rows.get(i)
+            }
         };
         list.copied()
     }

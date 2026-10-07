@@ -664,6 +664,20 @@ pub(crate) trait Walls {
         distance: Fix,
         excluded: Option<usize>,
     ) -> Option<(usize, Fix, Vec2)>;
+    /// The same cast as one of a run that nothing else touches the world
+    /// between: once a purge finds nothing to drop (`clean`), the run's
+    /// later purges would not either and are skipped.
+    fn raycast_in_run(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        distance: Fix,
+        excluded: Option<usize>,
+        clean: &mut bool,
+    ) -> Option<(usize, Fix, Vec2)> {
+        let _ = clean;
+        self.raycast_to_closest_rounded_rect(origin, direction, distance, excluded)
+    }
 }
 
 /// Platforms with no destroyed collider to purge: the legacy World's, or a
@@ -789,6 +803,7 @@ impl Player {
     pub(crate) fn collision_rays_over(&mut self, walls: &mut impl Walls, dt: Fix) -> bool {
         let velocity = self.velocity + self.external_velocity;
         // PlayerPhysics.checkForWall, once per ray (PlayerPhysics.cs:410-446).
+        let mut clean = false;
         if let Some((index, position)) = crate::player_physics::collision_cast(
             self.position,
             velocity,
@@ -796,7 +811,7 @@ impl Player {
             dt,
             &mut |origin, direction, distance| {
                 walls
-                    .raycast_to_closest_rounded_rect(origin, direction, distance, None)
+                    .raycast_in_run(origin, direction, distance, None, &mut clean)
                     .map(|(index, _, point)| (index, point))
             },
         ) {
@@ -934,6 +949,7 @@ impl Player {
         let dt = self.fixed_delta_time;
         // maxMovementAllowed disables the own rounded rect around its three
         // raycasts (StickyRoundedRectangle.cs:441-468).
+        let mut clean = false;
         let allowed = crate::platform_motion::movement_limit(
             self.position,
             self.radius,
@@ -941,7 +957,7 @@ impl Player {
             dt,
             &mut |origin, direction, distance| {
                 walls
-                    .raycast_to_closest_rounded_rect(origin, direction, distance, Some(platform_index))
+                    .raycast_in_run(origin, direction, distance, Some(platform_index), &mut clean)
                     .map(|(_, near, _)| ((), near))
             },
         )

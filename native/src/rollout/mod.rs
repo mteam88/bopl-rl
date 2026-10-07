@@ -4719,6 +4719,7 @@ struct PlatformScratch {
     others: Vec<Vec2>,
     bounds: Vec<[Vec2; 2]>,
     active: Vec<usize>,
+    keyed: Vec<(Fix, usize)>,
     window: Vec<usize>,
     pairs: Vec<[usize; 2]>,
     callback_colliders: Vec<RoundedRect>,
@@ -4763,6 +4764,8 @@ struct PlatformScratch {
     cb_parts: Vec<Part>,
     /// A group's parts as its pair loop reads them.
     group_parts: Vec<circle_box::GroupPart>,
+    /// sweep_pairs' priors still open on the sweep axis.
+    sweep_live: Vec<u32>,
     /// The beam pool's slots DetPhysics simulated this pass: those live with
     /// an active box before UpdateBeams.
     beam_contacts: usize,
@@ -4797,6 +4800,9 @@ struct PlatformScratch {
     spawned_window: Option<std::ops::Range<u32>>,
     /// `run_spawned_before`'s turns: (updater hierarchy, kind, index).
     spawned_queue: Vec<(UpdaterKey, u8, usize)>,
+    /// The authored platform pass's platform per definition (usize::MAX:
+    /// none), found once per pass.
+    authored_platforms: Vec<usize>,
     /// Updater.UpdateSim's place in the pass's list, with the pass it
     /// belongs to: every updatable below the key has had its turn, run or
     /// skipped as disabled, and is not visited again until the next pass.
@@ -5069,6 +5075,9 @@ pub struct RolloutWorld {
     /// IsDestroyed set by `destroy_fix`. Updater removes the destroyed ones
     /// before its walk and at the frame's close (Updater.cs:289-296, 329-336).
     pub updater_list: Vec<(u32, u32, u32, bool)>,
+    /// Whether `destroy_fix` has flagged an `updater_list` entry since the
+    /// list last dropped its destroyed ones.
+    pub updater_list_destroyed: bool,
     /// Instantiations made during the updater phase by objects this port
     /// updates out of hierarchy order, as (object hierarchy, spawn).
     /// Updater runs them in hierarchy order, so a spawn by a lower object
@@ -5217,6 +5226,7 @@ impl RolloutWorld {
             next_spawn_hierarchy: 0,
             updater_batch: Vec::with_capacity(64),
             updater_list: Vec::with_capacity(1024),
+            updater_list_destroyed: false,
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
             entity_inverse_extents: Vec::with_capacity(192),
@@ -5339,6 +5349,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy = src.next_spawn_hierarchy;
         self.updater_batch.clone_from(&src.updater_batch);
         self.updater_list.clone_from(&src.updater_list);
+        self.updater_list_destroyed = src.updater_list_destroyed;
         self.scratch.updater_version += 1;
         self.entities.clone_from(&src.entities);
         self.entity_inverse_extents.clone_from(&src.entity_inverse_extents);
@@ -5447,6 +5458,7 @@ impl RolloutWorld {
             next_spawn_hierarchy: _,
             updater_batch: _,
             updater_list: _,
+            updater_list_destroyed: _,
             queued_spawns: _,
             entities: _,
             entity_inverse_extents: _,
@@ -5658,6 +5670,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy = hierarchy_cursor;
         self.updater_batch.clear();
         self.updater_list.clear();
+        self.updater_list_destroyed = false;
         self.scratch.updater_version += 1;
         let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
         let mut circle_entity = [usize::MAX; MAX_BODIES];
@@ -8589,6 +8602,7 @@ impl RolloutWorld {
         for entry in &mut self.updater_list {
             if (Some(entry.2) == owner && member.is_none_or(|number| entry.1 == number)) || children.contains(&entry.2) {
                 entry.3 = true;
+                self.updater_list_destroyed = true;
             }
         }
         if let Some(row) = row.and_then(|row| self.entities.get_mut(row)) {
@@ -8605,8 +8619,12 @@ impl RolloutWorld {
         batch.retain(|&(_, _, destroyed)| !destroyed);
         dotnet_sort::introspective_sort(&mut batch, |x, y| x.0.cmp(&y.0));
         let pass = self.tick;
-        self.updater_list.extend(batch.iter().map(|&(number, owner, _)| (pass, number, owner, false)));
-        self.scratch.updater_version += 1;
+        // A cached place stands until the list changes (not its destroyed
+        // flags, which no place reads): most passes append nothing.
+        if !batch.is_empty() {
+            self.updater_list.extend(batch.iter().map(|&(number, owner, _)| (pass, number, owner, false)));
+            self.scratch.updater_version += 1;
+        }
         batch.clear();
         self.updater_batch = batch;
     }
@@ -14667,8 +14685,15 @@ impl RolloutWorld {
     /// whether or not time is stopped, and again at the frame's close
     /// (Updater.cs:284-296, 329-336).
     fn remove_destroyed_updatables(&mut self) {
+        if !std::mem::take(&mut self.updater_list_destroyed) {
+            debug_assert!(!self.updater_list.iter().any(|entry| entry.3));
+            return;
+        }
+        let listed = self.updater_list.len();
         self.updater_list.retain(|entry| !entry.3);
-        self.scratch.updater_version += 1;
+        if self.updater_list.len() != listed {
+            self.scratch.updater_version += 1;
+        }
     }
 
     /// The frame's closing DestroyImmediate takes every object DestroyFix
@@ -25579,6 +25604,18 @@ impl RolloutWorld {
         updater_turn: Option<u32>,
     ) -> Option<(usize, Fix, Vec2)> {
         self.remove_destroyed_colliders();
+        self.closest_rounded_rect(origin, direction, distance, excluded, updater_turn)
+    }
+
+    /// `raycast_to_closest_rounded_rect` past its purge.
+    fn closest_rounded_rect(
+        &self,
+        origin: Vec2,
+        direction: Vec2,
+        distance: Fix,
+        excluded: Option<usize>,
+        updater_turn: Option<u32>,
+    ) -> Option<(usize, Fix, Vec2)> {
         let end = origin + direction * distance;
         let lo = Vec2::new(origin.x.min(end.x), origin.y.min(end.y));
         let hi = Vec2::new(origin.x.max(end.x), origin.y.max(end.y));
@@ -28071,6 +28108,17 @@ impl RolloutWorld {
     /// every pair builder and query here asks this. A circle or box answers
     /// through `detphysics_collider`, which knows what hides each kind; a
     /// rounded rect through its row.
+    /// `collides` for platform `wall`'s own row, whose one place in
+    /// `platform_entities` is `wall`.
+    pub(super) fn wall_collides(&self, wall: usize) -> bool {
+        let entity = self.platform_entities[wall];
+        debug_assert_eq!(self.platform_entities.iter().position(|&candidate| candidate == entity), Some(wall));
+        match self.entities[entity].kind {
+            0 | 1 => self.detphysics_collider(entity).is_some(),
+            _ => self.platform_is_active(wall),
+        }
+    }
+
     fn collides(&self, entity: usize) -> bool {
         let Some(row) = self.entities.get(entity) else {
             return false;
@@ -31900,10 +31948,11 @@ impl RolloutWorld {
     /// rebuilds it there and then (DetPhysics.cs:1588-1611). Index-stable, so
     /// any query may run it: a dropped platform keeps its storage, hidden and
     /// marked removed, until the next pass compacts it.
-    fn remove_destroyed_colliders(&mut self) {
+    /// Returns whether there was nothing to drop.
+    fn remove_destroyed_colliders(&mut self) -> bool {
         // Most queries find nothing to drop: one scan instead of four.
         if !self.entities.iter().any(|row| row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED) {
-            return;
+            return true;
         }
         let mut hidden = false;
         for kind in [0u32, 2, 1] {
@@ -31939,6 +31988,7 @@ impl RolloutWorld {
         if hidden {
             self.platforms_changed();
         }
+        false
     }
 
     /// A destroyed platform child's row: DestroyFix leaves one its wall's
@@ -33992,20 +34042,22 @@ impl RolloutWorld {
             [r.inner.center - extent, r.inner.center + extent]
         }));
         let bounds = &*bounds;
-        let active = &mut scratch.active;
-        active.clear();
-        active.extend(
+        // The active platforms by `(axis(a) - axis(b)).sign()`, then index.
+        // A difference is zero only when the two are equal, so that is how
+        // the minima compare (NaN a tie); the order is total, so sorting the
+        // (minimum, index) pairs gives it with no comparator calls.
+        let keyed = &mut scratch.keyed;
+        keyed.clear();
+        keyed.extend(
             platforms
                 .iter()
                 .enumerate()
-                .filter_map(|(index, platform)| platform.active.then_some(index)),
+                .filter_map(|(index, platform)| platform.active.then_some((axis(bounds[index][0]), index))),
         );
-        active.sort_by(|&a, &b| {
-            (axis(bounds[a][0]) - axis(bounds[b][0]))
-                .sign()
-                .cmp(&0)
-                .then(a.cmp(&b))
-        });
+        keyed.sort_unstable_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal).then(x.1.cmp(&y.1)));
+        let active = &mut scratch.active;
+        active.clear();
+        active.extend(keyed.iter().map(|&(_, index)| index));
         let pairs = &mut scratch.pairs;
         let window = &mut scratch.window;
         window.clear();
@@ -34646,14 +34698,21 @@ impl RolloutWorld {
     }
 
     /// Whether platform `i` updates in this run of `pass`.
+    #[inline]
     fn platform_updates_in(&self, i: usize, pass: PlatformPass) -> bool {
+        // Most platforms are in another pass: that test inline, the rest not.
+        self.platform_pass(i) == pass && self.platform_updates_in_pass(i, pass)
+    }
+
+    /// `platform_updates_in` for a platform of pass `pass`.
+    #[inline(never)]
+    fn platform_updates_in_pass(&self, i: usize, pass: PlatformPass) -> bool {
         let window = match pass {
             PlatformPass::Authored => &None,
             PlatformPass::Duplicated => &self.scratch.duplicates_window,
             PlatformPass::Spawned => &self.scratch.spawned_window,
         };
-        self.platform_pass(i) == pass
-            && (pass == PlatformPass::Authored || !self.updater_passed(self.platform_turn_key(i)))
+        (pass == PlatformPass::Authored || !self.updater_passed(self.platform_turn_key(i)))
             && self.platform_dynamics[i].appended <= self.tick
             && window.as_ref().is_none_or(|window| {
                 window.contains(&self.entities[self.platform_entities[i]].hierarchy)
@@ -34666,20 +34725,27 @@ impl RolloutWorld {
     /// instantiated before all of them (a hole only adds force, in any order).
     /// A rope let go during this pass still holds its place in the Updater
     /// list, so the copy keeps the same pass on both walks.
+    #[inline]
     fn platform_pass(&self, i: usize) -> PlatformPass {
         if self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some() {
-            let id = self.entities[self.platform_entities[i]].id;
-            if self.ropes.iter().all(|rope| {
-                !(rope.physics.enabled || rope.disabled_this_frame) || id < rope.segment_ids[0]
-            }) {
-                PlatformPass::Duplicated
-            } else {
-                PlatformPass::Spawned
-            }
+            self.duplicate_pass(i)
         } else if self.platform_defs[i] == usize::MAX {
             PlatformPass::Spawned
         } else {
             PlatformPass::Authored
+        }
+    }
+
+    /// `platform_pass` for Duplicator copy `i`.
+    #[inline(never)]
+    fn duplicate_pass(&self, i: usize) -> PlatformPass {
+        let id = self.entities[self.platform_entities[i]].id;
+        if self.ropes.iter().all(|rope| {
+            !(rope.physics.enabled || rope.disabled_this_frame) || id < rope.segment_ids[0]
+        }) {
+            PlatformPass::Duplicated
+        } else {
+            PlatformPass::Spawned
         }
     }
 
@@ -34695,14 +34761,37 @@ impl RolloutWorld {
         let order = &data.maps[self.map].update_order;
         let count = if pass == PlatformPass::Authored { order.len() } else { self.platforms.len() };
         let mut shook = false;
+        // A destroyed authored platform leaves the Updater list and the
+        // platform list both, so each definition is looked up among the live
+        // platforms. The map loads one authored platform per definition (a
+        // Duplicator copy keeps its source's, but is not authored), so one
+        // walk finds them all; an index a removal in this pass shifted fails
+        // the check and the definition is searched for again.
+        let mut authored = std::mem::take(&mut self.scratch.authored_platforms);
+        if pass == PlatformPass::Authored {
+            authored.clear();
+            authored.resize(data.maps[self.map].platforms.len(), usize::MAX);
+            for i in 0..self.platforms.len() {
+                let definition = self.platform_defs[i];
+                if definition < authored.len() && authored[definition] == usize::MAX && self.platform_pass(i) == pass {
+                    authored[definition] = i;
+                }
+            }
+        }
         for k in 0..count {
-            // A destroyed authored platform leaves the Updater list and the
-            // platform list both, so each definition is looked up among the
-            // live platforms.
             let i = if pass == PlatformPass::Authored {
-                let Some(i) = (0..self.platforms.len())
-                    .find(|&i| self.platform_defs[i] == order[k] && self.platform_pass(i) == pass)
-                else {
+                let definition = order[k];
+                let found = authored.get(definition).copied().unwrap_or(usize::MAX);
+                let i = if found < self.platforms.len() && self.platform_defs[found] == definition && self.platform_pass(found) == pass {
+                    Some(found)
+                } else {
+                    (0..self.platforms.len()).find(|&i| self.platform_defs[i] == definition && self.platform_pass(i) == pass)
+                };
+                debug_assert_eq!(
+                    i,
+                    (0..self.platforms.len()).find(|&i| self.platform_defs[i] == definition && self.platform_pass(i) == pass)
+                );
+                let Some(i) = i else {
                     continue;
                 };
                 i
@@ -34743,6 +34832,7 @@ impl RolloutWorld {
                 }
             }
         }
+        self.scratch.authored_platforms = authored;
         if shook {
             self.platforms_changed();
         }
@@ -39790,6 +39880,19 @@ impl Walls for RolloutWorld {
         excluded: Option<usize>,
     ) -> Option<(usize, Fix, Vec2)> {
         RolloutWorld::raycast_to_closest_rounded_rect(self, origin, direction, distance, excluded, None)
+    }
+    fn raycast_in_run(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        distance: Fix,
+        excluded: Option<usize>,
+        clean: &mut bool,
+    ) -> Option<(usize, Fix, Vec2)> {
+        if !*clean {
+            *clean = self.remove_destroyed_colliders();
+        }
+        self.closest_rounded_rect(origin, direction, distance, excluded, None)
     }
 }
 

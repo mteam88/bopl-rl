@@ -208,7 +208,18 @@ impl Fix {
         if rhs.0 == 0.0 {
             return Err(MathError::DivisionByZero);
         }
-        Ok(Self(self.0 % rhs.0))
+        // fmod is a software loop here. Below one period it is the identity,
+        // and below two it is |a| - m with a's sign, exact (Sterbenz): the
+        // remainders the game takes (an orientation by TAU, a phase by ONE)
+        // are nearly all one of these. NaN and infinities fail both tests.
+        let (a, m) = (self.0, rhs.0.abs());
+        Ok(Self(if a.abs() < m {
+            a
+        } else if a.abs() < 2.0 * m {
+            (a.abs() - m).copysign(a)
+        } else {
+            a % rhs.0
+        }))
     }
     pub fn sqrt(self) -> Result<Self, MathError> {
         if self.0 < 0.0 {
@@ -662,6 +673,37 @@ mod tests {
             Err(MathError::DivisionByZero)
         );
         assert_eq!((-Fix::ONE).sqrt(), Err(MathError::Domain));
+    }
+
+    #[test]
+    fn rem_matches_fmod_bit_for_bit() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let moduli = [Fix::TAU.0, Fix::PI.0, 1.0, 360.0, 0.37, 1e-300, f64::MIN_POSITIVE, 1e300, f64::MAX, f64::INFINITY, -2.0];
+        let mut values = vec![0.0, -0.0, f64::NAN, f64::INFINITY, -f64::INFINITY, f64::MIN_POSITIVE / 4.0, f64::MAX];
+        for &m in &moduli {
+            for scale in [-3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.0] {
+                let v: f64 = m * scale;
+                values.extend([v, v.next_up(), v.next_down()]);
+            }
+        }
+        for _ in 0..200_000 {
+            let m = moduli[(next() % moduli.len() as u64) as usize];
+            let unit = (next() >> 11) as f64 / (1u64 << 53) as f64;
+            values.push(m * (unit * 6.0 - 3.0));
+            values.push(f64::from_bits(next()));
+        }
+        for &a in &values {
+            for &m in &moduli {
+                let fast = Fix(a).checked_rem(Fix(m), true).unwrap().0;
+                assert_eq!(fast.to_bits(), (a % m).to_bits(), "{a:e} % {m:e}");
+            }
+        }
     }
 
     #[test]
