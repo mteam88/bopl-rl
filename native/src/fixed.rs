@@ -139,6 +139,21 @@ impl Fix {
     pub fn raw(self) -> i64 {
         round_i64(self.0 * SCALE)
     }
+    /// `raw` of each value. Inside +-2^30 every lane takes `round_i64`'s fast
+    /// path, which then vectorizes; a row's dozen fields convert in a few
+    /// packed instructions instead of a dozen scalar sequences.
+    #[inline]
+    pub fn raw_array<const N: usize>(values: [Self; N]) -> [i64; N] {
+        let scaled = values.map(|value| value.0 * SCALE);
+        let raws = if scaled.iter().fold(true, |fast, v| fast & (v.abs() < 4_611_686_018_427_387_904.0)) {
+            // SAFETY: |v| < 2^62, so the rounded value is finite and within i64.
+            scaled.map(|v| unsafe { v.round().to_int_unchecked::<i64>() })
+        } else {
+            scaled.map(round_i64)
+        };
+        debug_assert_eq!(raws, values.map(Self::raw));
+        raws
+    }
     pub const fn from_int(value: i64) -> Self {
         Self(value as f64)
     }

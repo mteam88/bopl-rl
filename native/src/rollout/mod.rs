@@ -39633,10 +39633,6 @@ impl RolloutWorld {
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
             let dynamics = &self.platform_dynamics[i];
-            // RlObservation publishes the DetPhysics box centre, not the
-            // FixTransform a held Boulder's LateUpdateSim moves on its own.
-            e.x = platform.collider.inner.center.x.raw();
-            e.y = platform.collider.inner.center.y.raw();
             let observed_body = if dynamics.attached_children == 0 {
                 &dynamics.body
             } else {
@@ -39647,8 +39643,6 @@ impl RolloutWorld {
             if e.flags & E_DESTROYED == 0 {
                 e.flags = platform_row_flags(platform, dynamics);
             }
-            e.vx = observed_body.velocity.x.raw();
-            e.vy = observed_body.velocity.y.raw();
             // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
             let right = platform.collider.inner.right;
             let up = platform.collider.inner.up;
@@ -39657,17 +39651,38 @@ impl RolloutWorld {
                 self.platform_entities[i],
                 platform.collider.inner.inverse_extents,
             );
-            e.right_x = right.x.raw();
-            e.right_y = right.y.raw();
-            e.up_x = up.x.raw();
-            e.up_y = up.y.raw();
-            e.radius = platform.collider.radius.raw();
             // RlObservation publishes PhysicsBody.orientation directly. The
             // collider basis is derived output and must not be converted back
             // into an angle (especially around the Q32 sine-table boundary).
-            e.rotation = observed_body.orientation.raw();
-            e.angular_velocity = observed_body.angular_velocity.raw();
-            e.inverse_mass = observed_body.inverse_mass.raw();
+            [
+                e.x,
+                e.y,
+                e.vx,
+                e.vy,
+                e.right_x,
+                e.right_y,
+                e.up_x,
+                e.up_y,
+                e.radius,
+                e.rotation,
+                e.angular_velocity,
+                e.inverse_mass,
+            ] = Fix::raw_array([
+                // The DetPhysics box centre, not the FixTransform a held
+                // Boulder's LateUpdateSim moves on its own.
+                platform.collider.inner.center.x,
+                platform.collider.inner.center.y,
+                observed_body.velocity.x,
+                observed_body.velocity.y,
+                right.x,
+                right.y,
+                up.x,
+                up.y,
+                platform.collider.radius,
+                observed_body.orientation,
+                observed_body.angular_velocity,
+                observed_body.inverse_mass,
+            ]);
         }
     }
 

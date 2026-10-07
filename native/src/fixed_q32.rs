@@ -43,6 +43,10 @@ impl Fix {
     pub const fn raw(self) -> i64 {
         self.0
     }
+    /// `raw` of each value, as the f64 type's packed conversion.
+    pub fn raw_array<const N: usize>(values: [Self; N]) -> [i64; N] {
+        values.map(Self::raw)
+    }
     pub const fn from_int(value: i64) -> Self {
         Self(value.wrapping_shl(32))
     }
