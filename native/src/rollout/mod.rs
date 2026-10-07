@@ -180,7 +180,7 @@ pub struct CPlayer {
     pub ability_time: i64,
 }
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct CEntity {
     pub id: u32,
     pub kind: u32,
@@ -1461,6 +1461,41 @@ fn set_box_row(row: &mut CEntity, center: Vec2, right: Vec2, up: Vec2) {
 /// A row's centre and velocity, converted together like `set_box_row`'s.
 fn set_moving_row(row: &mut CEntity, center: Vec2, velocity: Vec2) {
     [row.x, row.y, row.vx, row.vy] = Fix::raw_array([center.x, center.y, velocity.x, velocity.y]);
+}
+
+/// The Rock's circle row. `live` is the slime alive in its Rock form.
+fn rock_row(circle: &mut CEntity, slot: &PlayerSlot, live: bool, entered: bool, exit_position: Vec2) {
+    let rocking = slot.active == ActiveAbility::Rock;
+    let flags = if live { E_ACTIVE | E_ENABLED } else { E_ENABLED };
+    let publish = sync_form_row(circle, flags, rocking, entered, slot.base.id);
+    // A Blink tunnel or teleport disables the Rock's GameObject,
+    // so its body stops, but the collider still follows the
+    // transform the tunnel moves, at the Player.Scale an earlier
+    // Ability.UpdateSim this pass gave it.
+    if slot.blink_tunnel_active || slot.teleport_effect_active {
+        if rocking {
+            circle.x = slot.base.position.x.raw();
+            circle.y = slot.base.position.y.raw();
+            circle.radius = slot.rock_circle().circle_radius.raw();
+        }
+    } else if publish {
+        // BounceBall.ExitAbility leaves the Rock's FixTransform
+        // where its body ended (BounceBall.cs:231-240), and
+        // DetPhysics syncs the deactivated box there.
+        let position = if rocking { slot.base.position } else { exit_position };
+        set_moving_row(circle, position, slot.rock.body.velocity);
+        circle.radius = slot.rock_circle().circle_radius.raw();
+        circle.rotation = slot.rock.body.orientation.raw();
+        circle.angular_velocity = slot.rock.body.angular_velocity.raw();
+        circle.inverse_mass = slot.rock.body.inverse_mass.raw();
+    } else if let Some(s) = slot.form_entities.iter().position(|&e| e == slot.rock_entity) {
+        // DetPhysics keeps syncing the deactivated FixTransform:
+        // BounceBall.ExitAbility zeroed its rotation, a
+        // FreezeRayGun calling Ability.ExitAbility directly kept it
+        // (FreezeRayGun.cs:128). A Rock a pickup took the slot of
+        // keeps its row as it was.
+        circle.rotation = slot.forms[s].pose.orientation.rotation().raw();
+    }
 }
 
 /// A form box's flags: a trigger, active while its form is live.
@@ -3580,6 +3615,9 @@ pub struct PlayerSlot {
     pub form_frozen: Option<FrozenForm>,
     /// The form row `set_active_form` entered since the last row sync.
     pub form_entered: usize,
+    /// `active` when `refresh_actor_entities` last ran: a form entered or
+    /// left since moves the rows `actor_rows_fresh` vouches for.
+    pub rows_active: ActiveAbility,
     /// The ground it stood on was destroyed. Unity keeps the rider grounded
     /// until its own next update, then ungrounds it.
     pub ground_destroyed: Option<DestroyedGround>,
@@ -4192,6 +4230,14 @@ impl PlayerSlot {
     /// The FixTransform `frozen`'s form row publishes.
     fn frozen_pose(&self, frozen: FrozenForm) -> FormPose {
         self.forms[self.entity_slot(frozen.entity)].pose
+    }
+
+    /// Where a form box left this pass syncs out: the published exit
+    /// position, or the frozen pose a form that froze this pass ended at.
+    fn exit_position(&self, tick: u32) -> Vec2 {
+        self.form_frozen
+            .filter(|frozen| frozen.tick == tick)
+            .map_or(self.reported_position, |frozen| self.frozen_pose(frozen).position)
     }
 
 
@@ -5217,6 +5263,13 @@ pub struct RolloutWorld {
     /// clears it once its scan finds none, so it skips the scan until the
     /// next such write.
     destroyed_rows: bool,
+    /// Whether the actor rows still hold what `refresh_actor_entities` gives,
+    /// but for the Rock rows (`refresh_rock_rows`): set by the physics pass's
+    /// refresh; cleared when a tick starts, by a pickup grant and by the
+    /// observation that relies on it. With no form entered or left since
+    /// (`rows_active`), the observation that ends the tick skips the second
+    /// refresh; debug builds run it and check it changes nothing.
+    actor_rows_fresh: bool,
     /// Instantiations made during the updater phase by objects this port
     /// updates out of hierarchy order, as (object hierarchy, spawn).
     /// Updater runs them in hierarchy order, so a spawn by a lower object
@@ -5370,6 +5423,7 @@ impl RolloutWorld {
             updater_list: Vec::with_capacity(1024),
             updater_list_destroyed: false,
             destroyed_rows: true,
+            actor_rows_fresh: false,
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
             entity_inverse_extents: Vec::with_capacity(192),
@@ -5500,6 +5554,7 @@ impl RolloutWorld {
         self.updater_list.clone_from(&src.updater_list);
         self.updater_list_destroyed = src.updater_list_destroyed;
         self.destroyed_rows = src.destroyed_rows;
+        self.actor_rows_fresh = false;
         self.scratch.updater_version += 1;
         self.scratch.pending_quiet = None;
         self.entities.clone_from(&src.entities);
@@ -5614,6 +5669,7 @@ impl RolloutWorld {
             updater_list: _,
             updater_list_destroyed: _,
             destroyed_rows: _,
+            actor_rows_fresh: _,
             queued_spawns: _,
             entities: _,
             entity_inverse_extents: _,
@@ -6512,6 +6568,7 @@ impl RolloutWorld {
                 reported_tick: u32::MAX,
                 form_frozen: None,
                 form_entered: usize::MAX,
+                rows_active: ActiveAbility::None,
                 ground_destroyed: None,
                 bow: BowState::default(),
                 rock: RockState::default(),
@@ -6761,6 +6818,7 @@ impl RolloutWorld {
         self.tick = self.warmup;
         self.destroy_marked_objects();
         self.started = true;
+        self.actor_rows_fresh = false;
         self.observe_main();
         // Each slime's OldUpdate was its Player's setter on the last warmup
         // pass that ran it, which UpdatePlayer carries into the first game
@@ -7253,6 +7311,8 @@ impl RolloutWorld {
             self.pending_orphan_abilities
                 .push((slot.pending_ability_hierarchy[ability_slot], slot.abilities[ability_slot]));
         }
+        // A pickup the pass's callbacks grant swaps a form row out.
+        self.actor_rows_fresh = false;
         // The new slot is ready at once, and the future-clone loadout
         // follows it.
         let slot = &mut self.players[player_index];
@@ -8063,6 +8123,7 @@ impl RolloutWorld {
     /// session end checks.
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
+        self.actor_rows_fresh = false;
         // RlBridge hands the packets over before the tick; a player time is
         // stopped for keeps the one it had (Player.cs:623-641).
         for (index, action) in actions.iter().enumerate().take(self.player_count) {
@@ -8469,6 +8530,7 @@ impl RolloutWorld {
             }
         }
         self.refresh_actor_entities();
+        self.actor_rows_fresh = true;
         if self.intro_phase == 3 {
             self.platforms_tick(data, physics_dt);
         } else {
@@ -38447,7 +38509,22 @@ impl RolloutWorld {
 
     /// Update the entity table from live state (positions, flags).
     fn refresh_entities(&mut self) {
-        self.refresh_actor_entities();
+        let fresh = std::mem::take(&mut self.actor_rows_fresh);
+        if fresh && self.players.iter().all(|slot| slot.active == slot.rows_active) {
+            self.refresh_rock_rows();
+            #[cfg(debug_assertions)]
+            {
+                assert!(self.players.iter().all(|slot| slot.form_entered == usize::MAX));
+                let (entities, destroyed_rows) = (self.entities.clone(), self.destroyed_rows);
+                self.refresh_actor_entities();
+                assert!(
+                    self.entities == entities && self.destroyed_rows == destroyed_rows,
+                    "actor_rows_fresh: an actor row changed after the physics pass refreshed it"
+                );
+            }
+        } else {
+            self.refresh_actor_entities();
+        }
         self.refresh_spike_entities();
         self.refresh_engine_entities();
         self.refresh_tesla_entities();
@@ -39049,6 +39126,7 @@ impl RolloutWorld {
         }
         for index in 0..self.players.len() {
             let entered = std::mem::replace(&mut self.players[index].form_entered, usize::MAX);
+            self.players[index].rows_active = self.players[index].active;
             let slot = &self.players[index];
             let alive = slot.base.alive && slot.unspawned == 0;
             let choosing_respawn = slot.respawn_ticks > 0 || (slot.revival_effect_ticks > 0 && !slot.revival_hurtbox);
@@ -39084,10 +39162,7 @@ impl RolloutWorld {
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
             // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
             // the exit pass writes the published exit position.
-            let exit_position = slot
-                .form_frozen
-                .filter(|frozen| frozen.tick == self.tick)
-                .map_or(slot.reported_position, |frozen| slot.frozen_pose(frozen).position);
+            let exit_position = slot.exit_position(self.tick);
             let frozen = slot.form_frozen.filter(|frozen| {
                 frozen.tick == self.tick || (slot.teleport_effect_active && in_ability)
             });
@@ -39268,37 +39343,8 @@ impl RolloutWorld {
                 }
             }
             if slot.rock_entity != usize::MAX {
-                let circle = &mut self.entities[slot.rock_entity];
-                let flags = if alive && rocking { E_ACTIVE | E_ENABLED } else { E_ENABLED };
-                let publish = sync_form_row(circle, flags, rocking, entered == slot.rock_entity, slot.base.id);
-                // A Blink tunnel or teleport disables the Rock's GameObject,
-                // so its body stops, but the collider still follows the
-                // transform the tunnel moves, at the Player.Scale an earlier
-                // Ability.UpdateSim this pass gave it.
-                if slot.blink_tunnel_active || slot.teleport_effect_active {
-                    if rocking {
-                        circle.x = slot.base.position.x.raw();
-                        circle.y = slot.base.position.y.raw();
-                        circle.radius = slot.rock_circle().circle_radius.raw();
-                    }
-                } else if publish {
-                    // BounceBall.ExitAbility leaves the Rock's FixTransform
-                    // where its body ended (BounceBall.cs:231-240), and
-                    // DetPhysics syncs the deactivated box there.
-                    let position = if rocking { slot.base.position } else { exit_position };
-                    set_moving_row(circle, position, slot.rock.body.velocity);
-                    circle.radius = slot.rock_circle().circle_radius.raw();
-                    circle.rotation = slot.rock.body.orientation.raw();
-                    circle.angular_velocity = slot.rock.body.angular_velocity.raw();
-                    circle.inverse_mass = slot.rock.body.inverse_mass.raw();
-                } else if let Some(s) = slot.form_entities.iter().position(|&e| e == slot.rock_entity) {
-                    // DetPhysics keeps syncing the deactivated FixTransform:
-                    // BounceBall.ExitAbility zeroed its rotation, a
-                    // FreezeRayGun calling Ability.ExitAbility directly kept it
-                    // (FreezeRayGun.cs:128). A Rock a pickup took the slot of
-                    // keeps its row as it was.
-                    circle.rotation = slot.forms[s].pose.orientation.rotation().raw();
-                }
+                let entered = entered == slot.rock_entity;
+                rock_row(&mut self.entities[slot.rock_entity], slot, alive && rocking, entered, exit_position);
             }
             // The Rock in another slot, left the pass before, likewise.
             for (s, (&e, &ability)) in slot.form_entities.iter().zip(&slot.abilities).enumerate() {
@@ -39793,17 +39839,7 @@ impl RolloutWorld {
                 }
             }
         }
-        for slot in &self.players {
-            if slot.base.alive
-                && (slot.blink_tunnel_active || slot.teleport_effect_active)
-                && slot.active != ActiveAbility::None
-            {
-                let form = Self::hurtbox_entity(slot);
-                if form != usize::MAX {
-                    self.entities[form].flags &= !E_ACTIVE;
-                }
-            }
-        }
+        self.hide_tunnelled_forms();
         for arrow in &self.arrows {
             if !arrow.active || !arrow.registered {
                 continue;
@@ -39836,6 +39872,40 @@ impl RolloutWorld {
         }
     }
 
+
+    /// A Blink tunnel or a Teleport holding a live form's object deactivates it.
+    fn hide_tunnelled_forms(&mut self) {
+        for slot in &self.players {
+            if slot.base.alive
+                && (slot.blink_tunnel_active || slot.teleport_effect_active)
+                && slot.active != ActiveAbility::None
+            {
+                let form = Self::hurtbox_entity(slot);
+                if form != usize::MAX {
+                    self.entities[form].flags &= !E_ACTIVE;
+                }
+            }
+        }
+    }
+
+    /// The observation after a physics pass: the Rock rows, which publish
+    /// the live body that the rest of the pass still moves, and the tunnels'
+    /// deactivation over them; every other actor row is as that pass's
+    /// `refresh_actor_entities` left it.
+    fn refresh_rock_rows(&mut self) {
+        for slot in &self.players {
+            if slot.rock_entity == usize::MAX
+                || slot.slime_destroyed()
+                || slot.revival_clone_pending
+                || slot.stock_clone_pending
+            {
+                continue;
+            }
+            let live = slot.base.alive && slot.unspawned == 0 && slot.active == ActiveAbility::Rock;
+            rock_row(&mut self.entities[slot.rock_entity], slot, live, false, slot.exit_position(self.tick));
+        }
+        self.hide_tunnelled_forms();
+    }
 
     fn refresh_platform_entities(&mut self) {
         // The rows below are pure functions of platform state, which only
