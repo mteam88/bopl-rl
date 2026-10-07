@@ -9056,6 +9056,26 @@ impl RolloutWorld {
         self.updater_pass_to(updater_next(key));
     }
 
+    /// `updater_take_turn` for a key Updater has not passed: one appended
+    /// by this pass moves Updater's place to just past it.
+    #[inline]
+    fn updater_take_unpassed_turn(&mut self, key: UpdaterKey) {
+        debug_assert!(!self.updater_passed(key));
+        if key.0 > self.tick {
+            self.updater_take_turn(key);
+            return;
+        }
+        #[cfg(debug_assertions)]
+        let general = {
+            let cursor = self.scratch.updater_cursor;
+            self.updater_take_turn(key);
+            std::mem::replace(&mut self.scratch.updater_cursor, cursor)
+        };
+        self.scratch.updater_cursor = (self.tick, updater_next(key));
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(general, self.scratch.updater_cursor);
+    }
+
     /// Moves Updater's place up to `key`: everything below it has had its
     /// turn. It stops short of the updatables appended this pass, which take
     /// no turn in it.
@@ -9604,14 +9624,15 @@ impl RolloutWorld {
 
     fn smoke_clouds_integrate(&mut self, physics_dt: Fix) {
         for index in 0..self.smoke_clouds.len() {
-            // A cloud a Blink tunnel or Teleport effect deactivated is skipped
-            // by DetPhysics like any inactive GameObject, but RlObservation
-            // still exports its body's velocity, which a Shockwave pushed.
-            let hidden = self.blink_object_hidden(self.smoke_clouds[index].entity);
-            let cloud = &mut self.smoke_clouds[index];
+            let cloud = &self.smoke_clouds[index];
             if !cloud.active || !cloud.registered {
                 continue;
             }
+            // A cloud a Blink tunnel or Teleport effect deactivated is skipped
+            // by DetPhysics like any inactive GameObject, but RlObservation
+            // still exports its body's velocity, which a Shockwave pushed.
+            let hidden = self.blink_object_hidden(cloud.entity);
+            let cloud = &mut self.smoke_clouds[index];
             // Ignite disables the circle, and DetPhysics integrates only
             // active colliders (FlammableSmoke.cs:88). The row still shows
             // the body's velocity, which a Shockwave keeps pushing.
@@ -20752,8 +20773,7 @@ impl RolloutWorld {
     /// The walk queued it only if Updater had not passed it, and passes it
     /// whether the cloud updates or not.
     fn smoke_cloud_turn(&mut self, cloud_index: usize, key: UpdaterKey, data: &data::RolloutData, updater_dt: Fix) {
-        debug_assert!(!self.updater_passed(key));
-        self.updater_take_turn(key);
+        self.updater_take_unpassed_turn(key);
         let cloud = &self.smoke_clouds[cloud_index];
         if 100_000_000 + cloud.hierarchy_base != key.2 || !cloud.active {
             return;
@@ -20774,7 +20794,18 @@ impl RolloutWorld {
         // every walk here finds nothing: the next cloud's needs no doing
         // while the list stands and the cloud between did nothing but step.
         let mut still: Option<(UpdaterKey, u64, u64)> = None;
-        for (slot, &packed) in order.iter().enumerate() {
+        // Updater has passed every cloud listed below its place: the walks
+        // of the turns before this pass have run most of them.
+        let (cursor_tick, cursor) = self.scratch.updater_cursor;
+        let first = if cursor_tick == self.tick { order.partition_point(|&packed| packed < pack_keyed(cursor, 0)) } else { 0 };
+        #[cfg(debug_assertions)]
+        for &packed in &order[..first] {
+            let (listed, cloud_index) = unpack_keyed(packed);
+            let cloud = &self.smoke_clouds[cloud_index];
+            debug_assert_eq!(listed, self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
+            debug_assert!(self.updater_passed(listed));
+        }
+        for (slot, &packed) in order.iter().enumerate().skip(first) {
             let (listed, cloud_index) = unpack_keyed(packed);
             let cloud = &self.smoke_clouds[cloud_index];
             // A slot's listed key stands until a spawn or a change to
@@ -20812,7 +20843,7 @@ impl RolloutWorld {
                     still = None;
                     continue;
                 }
-                self.updater_take_turn(key);
+                self.updater_take_unpassed_turn(key);
                 if !self.smoke_cloud_update(cloud_index, data, updater_dt) {
                     still = None;
                 }
