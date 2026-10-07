@@ -8286,26 +8286,37 @@ impl RolloutWorld {
     fn slime_tail(&mut self, index: usize, dir: Vec2, suppressed: bool) {
         // The slime's SpriteAnimator holds while time is stopped for it
         // (SpriteAnimator.cs:85-102), and with it the animation callbacks.
-        let stopped_for = self.is_time_stopped_for(index);
-        let slot = &mut self.players[index];
         // SlimeController.suppressInput zeroes inputVector, fix and flag5
         // (SlimeController.cs:806-814), but `fix2` was already taken from the
         // stick, so a slime held still by a rewind still faces right on the
         // ground when the stick points into it.
         let pressed = dir;
         let dir = if suppressed { Vec2::ZERO } else { dir };
-        if !slot.base.alive
-            || slot.respawn_ticks > 0
-            || slot.revival_clone_pending
-            || slot.revival_effect_ticks > 0
-            || slot.obs_state == STATE_RAGDOLL
-            || slot.obs_state == STATE_BITING
-            || slot.active != ActiveAbility::None
-            || slot.base.dash.active
-        {
+        // One fold of plain loads rather than a branch per test.
+        let slot = &self.players[index];
+        let held = !slot.base.alive
+            | ((slot.respawn_ticks | slot.revival_effect_ticks) != 0)
+            | slot.revival_clone_pending
+            | (slot.obs_state == STATE_RAGDOLL)
+            | (slot.obs_state == STATE_BITING)
+            | (slot.active != ActiveAbility::None)
+            | slot.base.dash.active;
+        debug_assert_eq!(
+            held,
+            !slot.base.alive
+                || slot.respawn_ticks > 0
+                || slot.revival_clone_pending
+                || slot.revival_effect_ticks > 0
+                || slot.obs_state == STATE_RAGDOLL
+                || slot.obs_state == STATE_BITING
+                || slot.active != ActiveAbility::None
+                || slot.base.dash.active
+        );
+        if held {
             return;
         }
-        let animates = !stopped_for;
+        let animates = !self.is_time_stopped_for(index);
+        let slot = &mut self.players[index];
         Self::slime_state_switch(
             &mut slot.base,
             &mut slot.obs_state,
@@ -38546,13 +38557,19 @@ impl RolloutWorld {
     /// the start of its turn, unless it is gone or disabled.
     fn record_position_call(&mut self, body: usize) {
         let slot = &self.players[body];
-        if slot.base.alive
-            && !slot.slime_gone
-            && !slot.revival_clone_pending
-            && !slot.stock_clone_pending
-            && slot.unspawned == 0
-            && slot.unpublished_tick != Some(self.tick)
-        {
+        // The flags in one fold of plain loads, not a branch apiece.
+        let calls = slot.base.alive
+            & !(slot.slime_gone | slot.revival_clone_pending | slot.stock_clone_pending)
+            & (slot.unspawned == 0);
+        debug_assert_eq!(
+            calls,
+            slot.base.alive
+                && !slot.slime_gone
+                && !slot.revival_clone_pending
+                && !slot.stock_clone_pending
+                && slot.unspawned == 0
+        );
+        if calls && slot.unpublished_tick != Some(self.tick) {
             let key = self.entities.get(slot.body_entity).map_or(u32::MAX, |row| row.id);
             let count = slot.ability_count;
             let tag = self.scratch.updater_hierarchy;
@@ -39851,7 +39868,11 @@ impl RolloutWorld {
                 let kind = (entity.kind & 7) as usize;
                 let place = next[kind];
                 next[kind] = place.wrapping_add(1);
-                let row = &mut out[place];
+                // `next[kind]` runs from the kind's start through its count,
+                // all below `total`, the length `out` was just given.
+                debug_assert!(place < out.len());
+                // SAFETY: as above, checked in debug builds.
+                let row = unsafe { out.get_unchecked_mut(place) };
                 *row = *entity;
                 Self::gate_source_ability(&gate, row);
                 let observed = observed_ids.get(row.id as usize).map_or(0, |&id| id);
