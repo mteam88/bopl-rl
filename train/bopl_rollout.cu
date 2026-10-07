@@ -538,8 +538,6 @@ struct BrPlan {
     int tiles[BR_MAX_GROUPS + 1];
     BrActs* acts;        // [num_buffers]
     BrWt wt[BR_MAX_GROUPS];
-    // Packed v4 rows: the rays kernel runs on a side stream per buffer beside
-    // br4_sets, joined before the flat GEMM (the only reader of the rays).
 };
 
 static inline int br_pad8(int n) { return (n + 7) & ~7; }
@@ -996,8 +994,11 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         const float* host_rows = (const float*)vec->dev_observations + (long)start * BOPL_OBS_STRIDE;
         float* dense = puf_slice(rollouts.observations, t, start, rows).data;
         bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows);
-        // The terrain and rays of the rows with a scene. (A side stream
-        // beside br4_sets measured no faster, 2026-10-06.)
+        // The terrain and rays of the rows with a scene. (The rays on a side
+        // stream beside br4_sets, joined before the flat GEMM, measured no
+        // faster, 2026-10-06; again with br4_sets at 23.5 us, 2026-10-07
+        // (fwd_bench): 1 stream -5.5 us, 4 streams at once +2 us; the rays
+        // slow from 38 to 45 us beside the items and sets.)
         bopl4_rays_launch(vec->packed_dev + (long)start * BOPL4_PACK_P, dense, rows, stream);
         if (p.transport_check) bopl4_transport_check<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(dense, host_rows, rows, vec->transport_mismatch);
         obs = dense;
