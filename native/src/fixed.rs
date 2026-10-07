@@ -47,7 +47,9 @@ fn round_i64(v: f64) -> i64 {
     // so the checked path only handles what the fast one excludes.
     if v.abs() < 4_611_686_018_427_387_904.0 {
         // SAFETY: |v| < 2^62, so the rounded value is finite and within i64.
-        return unsafe { v.round().to_int_unchecked::<i64>() };
+        let raw = unsafe { round_biased(v).to_int_unchecked::<i64>() };
+        debug_assert_eq!(raw, v.round() as i64);
+        return raw;
     }
     let t = v as i64;
     let fraction = v - t as f64;
@@ -55,6 +57,51 @@ fn round_i64(v: f64) -> i64 {
     // the whole overshoot, never a panic).
     t.saturating_add((fraction >= 0.5) as i64)
         .saturating_sub((fraction <= -0.5) as i64)
+}
+
+/// The largest double below one half.
+const PRED_HALF: f64 = 0.499_999_999_999_999_94;
+
+/// `v + copysign(PRED_HALF, v)`, whose truncation is `v.round()` (half away
+/// from zero) for every finite `v`: it is LLVM's own x86 lowering of `round`,
+/// `trunc(v + copysign(pred(0.5), v))`. The conversions below truncate
+/// anyway, so they skip `round`'s separate truncation.
+#[inline(always)]
+fn round_biased(v: f64) -> f64 {
+    v + PRED_HALF.copysign(v)
+}
+
+/// The AVX-512 lanes of `Fix::raw_array`: `round_i64` of each lane of
+/// `v * SCALE`, and a mask of the lanes whose `vcvttpd2qq` came out as the
+/// integer indefinite `i64::MIN`, which is every lane outside i64 or NaN
+/// (and an exact `-2^63`, whose slow path gives the same `i64::MIN`). Every
+/// other lane is exact: below 2^63 the biased sum truncates to `round`.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512dq", target_feature = "avx512vl"))]
+mod lanes {
+    use super::{PRED_HALF, SCALE};
+    use std::arch::x86_64::*;
+
+    #[inline(always)]
+    pub(super) fn raw8(values: [f64; 8]) -> ([i64; 8], u8) {
+        // SAFETY: the target features are enabled at compile time (cfg above).
+        unsafe {
+            let v = _mm512_mul_pd(std::mem::transmute::<[f64; 8], __m512d>(values), _mm512_set1_pd(SCALE));
+            let biased = _mm512_add_pd(v, _mm512_or_pd(_mm512_and_pd(v, _mm512_set1_pd(-0.0)), _mm512_set1_pd(PRED_HALF)));
+            let q = _mm512_cvttpd_epi64(biased);
+            (std::mem::transmute::<__m512i, [i64; 8]>(q), _mm512_cmpeq_epi64_mask(q, _mm512_set1_epi64(i64::MIN)))
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn raw4(values: [f64; 4]) -> ([i64; 4], u8) {
+        // SAFETY: as `raw8`.
+        unsafe {
+            let v = _mm256_mul_pd(std::mem::transmute::<[f64; 4], __m256d>(values), _mm256_set1_pd(SCALE));
+            let biased = _mm256_add_pd(v, _mm256_or_pd(_mm256_and_pd(v, _mm256_set1_pd(-0.0)), _mm256_set1_pd(PRED_HALF)));
+            let q = _mm256_cvttpd_epi64(biased);
+            (std::mem::transmute::<__m256i, [i64; 4]>(q), _mm256_cmpeq_epi64_mask(q, _mm256_set1_epi64x(i64::MIN)))
+        }
+    }
 }
 
 /// `v.floor() as i64` without the libm call, by the same argument.
@@ -142,16 +189,53 @@ impl Fix {
     /// `raw` of each value. Inside +-2^30 every lane takes `round_i64`'s fast
     /// path, which then vectorizes; a row's dozen fields convert in a few
     /// packed instructions instead of a dozen scalar sequences.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512dq", target_feature = "avx512vl"))]
+    #[inline]
+    pub fn raw_array<const N: usize>(values: [Self; N]) -> [i64; N] {
+        // Up to twelve lanes in one zmm and one ymm, padded with zeros (which
+        // convert to 0, never the indefinite), with no trip through memory;
+        // any indefinite lane sends the whole array down the scalar path.
+        const { assert!(N <= 12) };
+        let lane = |i: usize| if i < N { values[i].0 } else { 0.0 };
+        let mut out = [0i64; 12];
+        let bad = if N <= 4 {
+            let (q, bad) = lanes::raw4(std::array::from_fn(lane));
+            out[..4].copy_from_slice(&q);
+            bad
+        } else {
+            let (q, mut bad) = lanes::raw8(std::array::from_fn(lane));
+            out[..8].copy_from_slice(&q);
+            if N > 8 {
+                let (q, high) = lanes::raw4(std::array::from_fn(|i| lane(i + 8)));
+                out[8..].copy_from_slice(&q);
+                bad |= high;
+            }
+            bad
+        };
+        if bad != 0 {
+            return Self::raw_array_cold(values);
+        }
+        let raws = std::array::from_fn(|i| out[i]);
+        debug_assert_eq!(raws, values.map(|value| (value.0 * SCALE).round() as i64));
+        raws
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512dq", target_feature = "avx512vl"))]
+    #[cold]
+    #[inline(never)]
+    fn raw_array_cold<const N: usize>(values: [Self; N]) -> [i64; N] {
+        values.map(Self::raw)
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512dq", target_feature = "avx512vl")))]
     #[inline]
     pub fn raw_array<const N: usize>(values: [Self; N]) -> [i64; N] {
         let scaled = values.map(|value| value.0 * SCALE);
         let raws = if scaled.iter().fold(true, |fast, v| fast & (v.abs() < 4_611_686_018_427_387_904.0)) {
             // SAFETY: |v| < 2^62, so the rounded value is finite and within i64.
-            scaled.map(|v| unsafe { v.round().to_int_unchecked::<i64>() })
+            scaled.map(|v| unsafe { round_biased(v).to_int_unchecked::<i64>() })
         } else {
             scaled.map(round_i64)
         };
-        debug_assert_eq!(raws, values.map(Self::raw));
+        debug_assert_eq!(raws, values.map(|value| (value.0 * SCALE).round() as i64));
         raws
     }
     pub const fn from_int(value: i64) -> Self {
@@ -811,6 +895,15 @@ mod tests {
             -1e30,
             f64::MAX,
             f64::MIN,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            9_223_372_036_854_775_808.0,
+            -9_223_372_036_854_775_808.0,
+            4_611_686_018_427_387_904.0,
+            -4_611_686_018_427_387_904.0,
+            9_223_372_036_854_774_784.0,
+            -9_223_372_036_854_774_784.0,
         ];
         for _ in 0..100_000 {
             state ^= state << 13;
@@ -825,6 +918,12 @@ mod tests {
         }
         for v in samples {
             assert_eq!(round_i64(v), v.round() as i64, "round {v:e}");
+            let lanes = [v, -v, v / SCALE, v.trunc() / SCALE, 0.5, -0.5, 1.0, v * 3.0, v / 7.0, -v / SCALE, 2.0, 3.0];
+            let fixes = lanes.map(Fix);
+            let reference = lanes.map(|lane| (lane * SCALE).round() as i64);
+            assert_eq!(Fix::raw_array(fixes), reference, "raw_array {v:e}");
+            assert_eq!(Fix::raw_array([fixes[0], fixes[2], fixes[3], fixes[9]]), [0, 2, 3, 9].map(|i| reference[i]), "raw_array4 {v:e}");
+            assert_eq!(Fix::raw_array([fixes[2], fixes[3], fixes[9], fixes[4], fixes[5]]), [2, 3, 9, 4, 5].map(|i| reference[i]), "raw_array5 {v:e}");
             assert_eq!(floor_i64(v), v.floor() as i64, "floor {v:e}");
         }
     }
