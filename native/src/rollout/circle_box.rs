@@ -273,6 +273,59 @@ pub(super) enum Blast {
 /// (Arrow.prefab m_Bits 2166016).
 const ARROW_STICK_TO: u32 = 2166016;
 
+/// Walls `walls_meeting` takes at a time.
+const WALL_GROUP: usize = 16;
+
+/// Bit 4k is set when wall k of `walls` (at most `WALL_GROUP`) meets `part`
+/// as `sweep::swept_meet` does: two walls per vector, each lane one of the
+/// four strict ordered compares (false on NaN, like the scalar `<`), and a
+/// wall meets when its four lanes all hold.
+#[inline]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "q32")))]
+fn walls_meeting(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
+    use std::arch::x86_64::{
+        _CMP_GT_OQ, _CMP_LT_OQ, __mmask8, _mm512_mask_cmp_pd_mask, _mm512_maskz_loadu_pd, _mm512_setr_pd,
+    };
+    const _: () = assert!(std::mem::size_of::<[Vec2; 2]>() == 4 * std::mem::size_of::<f64>());
+    debug_assert!(walls.len() <= WALL_GROUP);
+    let [low, high] = part.map(|v| [v.x.to_f64(), v.y.to_f64()]);
+    // A wall's lanes are low x, low y, high x, high y: its low edges below
+    // the part's high ones, its high edges above the part's low ones.
+    let lanes = walls.len() * 4;
+    let mut nibbles = 0u64;
+    // SAFETY: avx512f is a compile-time target feature here; `[Vec2; 2]` is
+    // four f64 (Vec2 is repr(C) of two repr(transparent) f64), and the load
+    // mask keeps every lane within `walls`.
+    unsafe {
+        let edges = _mm512_setr_pd(high[0], high[1], low[0], low[1], high[0], high[1], low[0], low[1]);
+        let base = walls.as_ptr().cast::<f64>();
+        let mut lane = 0;
+        while lane < lanes {
+            let load: __mmask8 = if lanes - lane >= 8 { 0xff } else { 0x0f };
+            let wall = _mm512_maskz_loadu_pd(load, base.add(lane));
+            let hits = _mm512_mask_cmp_pd_mask::<_CMP_LT_OQ>(load & 0x33, wall, edges)
+                | _mm512_mask_cmp_pd_mask::<_CMP_GT_OQ>(load & 0xcc, wall, edges);
+            nibbles |= u64::from(hits) << lane;
+            lane += 8;
+        }
+    }
+    let meets = nibbles & (nibbles >> 1) & (nibbles >> 2) & (nibbles >> 3) & 0x1111_1111_1111_1111;
+    debug_assert_eq!(meets, walls_meeting_scalar(walls, part));
+    meets
+}
+#[inline]
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "q32"))))]
+fn walls_meeting(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
+    walls_meeting_scalar(walls, part)
+}
+fn walls_meeting_scalar(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
+    debug_assert!(walls.len() <= WALL_GROUP);
+    walls
+        .iter()
+        .enumerate()
+        .fold(0, |meets, (wall, &bounds)| meets | (u64::from(sweep::swept_meet(part, bounds)) << (4 * wall)))
+}
+
 impl RolloutWorld {
     /// Its collider now, after the corrections of earlier groups.
     pub(super) fn part_collider(&self, part: Part) -> Collider {
@@ -1334,22 +1387,39 @@ impl RolloutWorld {
                 self.wall_swept_bounds(wall).map(|b| [b[0].x, b[0].y, b[1].x, b[1].y])
             );
         }
+        // A wall past the swept boxes meets every part's box.
+        let boxed_walls = swept_walls.len().min(self.platforms.len());
         for &part in parts {
             // SortAndSweep pairs on the bounds it took before any group
             // corrected anything; a part registered after it meets nothing
             // this pass (DetPhysics.cs:2169-2231).
             let Some(bounds) = self.swept_bounds(Swept::Part(part)) else { continue };
             let mut side: Option<(u32, Option<usize>, Collider)> = None;
-            for wall in 0..self.platforms.len() {
+            // The cheap box test first, sixteen walls at a time, then any wall
+            // past the swept boxes; in wall order.
+            let (mut next, mut first, mut meets, mut unboxed) = (0, 0, 0u64, boxed_walls);
+            loop {
+                let wall = if meets != 0 {
+                    let wall = first + meets.trailing_zeros() as usize / 4;
+                    meets &= meets - 1;
+                    wall
+                } else if next < boxed_walls {
+                    first = next;
+                    next = boxed_walls.min(next + WALL_GROUP);
+                    meets = walls_meeting(&swept_walls[first..next], bounds);
+                    continue;
+                } else if unboxed < self.platforms.len() {
+                    unboxed += 1;
+                    unboxed - 1
+                } else {
+                    break;
+                };
                 // SameCompositeAs: a child never meets its own platform. A wall
                 // meets parts only while DetPhysics.IsActive, which a wall
                 // destroyed before this pass also fails, having left in
                 // RemoveDestroyedColliders (DetPhysics.cs:1658-1665, 2731).
                 // SortAndSweep pairs only layers the Physics2D matrix lets
                 // collide (DetPhysics.cs:2183).
-                if swept_walls.get(wall).is_some_and(|&wall_bounds| !sweep::swept_meet(bounds, wall_bounds)) {
-                    continue;
-                }
                 let (layer, composite, collider) = *side.get_or_insert_with(|| {
                     (self.part_layer(part, data), self.part_composite(part), self.part_collider(part))
                 });
