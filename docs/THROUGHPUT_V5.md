@@ -264,6 +264,19 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     3.497G to 3.387G (-3.1%), and cycles (non-PGO, taskset, interleaved)
     drop by about 4%. The PGO env_bench sim goes from 15.60 to 15.15 us, the
     hash is unchanged, and the debug-assertions exact gate passes.
+25. **v11: an observation places each entity row once.** Found with a
+    cycles profile of the trainer itself (a PGO `.so` with frame pointers
+    via `--game`, perf on the live process), not the corpus: there
+    `publish_entities` was 3.2% of sim cycles for 1.9% of instructions,
+    half of it in the four-pass filtered fallback. A probe build counted
+    the trainer's calls: 77% find the table out of shape order (a dynamic
+    circle or box appended after the authored walls), none have rope rows.
+    Without rope rows every path was the same stable shape partition, so
+    it now counts each shape and places each row once, overwriting the
+    previous observation's rows instead of refilling. Rope rows keep the
+    old path. In the trainer profile the function falls to 2.57%; the PGO
+    env_bench sim goes from 16.01 to 15.67 us (200 games), the hash is
+    unchanged, and the debug-assertions exact gate passes.
 
 
 ## Cold caches in the trainer
@@ -363,6 +376,22 @@ sites, with no single structure to repack.
   `detphysics_collider`'s pool scans: exact (debug assertion over all 400
   games), 0.2% faster at the time. It was kept in v10 (item 24), where it
   is -1% instructions next to the smoke-cloud fast path.
+- A per-tick cache of `group_part` results in `SweepBounds` (2026-10-07,
+  on v10): +3.9% instructions. The linear find over the cache costs more
+  than the part lookups it replaces.
+- Hot/cold splitting the world's data (2026-10-07). IBS on the trainer
+  spreads the L2 misses over dozens of structures with no dominant one, so
+  there is no field set worth repacking.
+- Idle CPU in the trainer (2026-10-07, 1 Hz /proc/stat over a spec run):
+  ~91% busy, background included. Scheduling has at most a few % to give.
+  Per thread, the 11 env threads run 91-95% and the Python main thread
+  2.3%, so the 12th hardware thread is nearly free. A 12th env thread
+  (BOPL_ENV_THREADS=12, spec, 3 interleaved pairs) was neutral: +1.1%,
+  -1.4%, -0.2%, with stragglers up from ~75-190 to ~110-170 us.
+- Instruction cuts in tight, well-predicted scans (the `any()` in
+  `remove_destroyed_colliders`, 2.2% of v10's instructions) are the same
+  case as the "any live" bits above: they run from the op cache off the
+  critical path, so they do not move cycles in a front-end-bound sim.
 
 ## The writer on the GPU (2026-10-06)
 

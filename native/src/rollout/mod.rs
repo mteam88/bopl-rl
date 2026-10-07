@@ -37657,74 +37657,45 @@ impl RolloutWorld {
     /// circles, boxes, then rounded rectangles. Reuse the output allocation
     /// while preserving registration order inside each shape group.
     fn publish_entities(&self, out: &mut Vec<CEntity>) {
-        out.clear();
-        // Reset builds the fixed collider table in DetPhysics shape order.
-        // Most rollouts never append a lower-kind dynamic collider, so copy
-        // that table once rather than filtering and memmoving it four times.
-        // Detect the uncommon out-of-order append while copying and restart
-        // through the stable shape partitions in that case. Rope rows are an
-        // independent pool inserted between rounded rectangles and metadata.
-        let no_rope_rows = !self.ropes.iter().any(|rope| rope.physics.enabled);
-        if no_rope_rows && !self.ability_pickups.is_empty() {
-            // Dynamic pickups are circles appended after the authored boxes
-            // and rounded rectangles. Once one has existed, the optimistic
-            // ordered copy above would fail on every later observation and
-            // the old fallback copied all rows again in four filtered passes.
-            // Count without copying, then write each live row directly into
-            // its final stable shape partition.
-            let mut counts = [0usize; 5];
-            for entity in &self.entities {
-                if entity.flags & E_REMOVED == 0 {
-                    counts[entity.kind as usize] += 1;
-                }
+        // Rope rows are an independent pool, inserted between the rounded
+        // rectangles and the metadata rows.
+        if self.ropes.iter().any(|rope| rope.physics.enabled) {
+            out.clear();
+            for kind in [0, 1, 2] {
+                out.extend(self.entities.iter().filter(|e| e.kind == kind && e.flags & E_REMOVED == 0));
             }
-            let mut next = [0usize; 5];
-            for kind in 1..5 {
-                next[kind] = next[kind - 1] + counts[kind - 1];
+            self.append_rope_entities(out);
+            out.extend(self.entities.iter().filter(|e| e.kind == 4 && e.flags & E_REMOVED == 0));
+            return;
+        }
+        // Without them the live rows go out stably partitioned by shape. A
+        // dynamic collider of a lower shape appended after the table (most
+        // decisions have one) leaves the rows out of shape order, so count
+        // each shape, then place each row once. `out` still holds the last
+        // observation's rows, of about the same count, which are overwritten
+        // rather than cleared and refilled.
+        let mut counts = [0usize; 5];
+        for entity in &self.entities {
+            if entity.flags & E_REMOVED == 0 {
+                // No collider row is a rope segment (kind 3).
+                debug_assert!(matches!(entity.kind, 0 | 1 | 2 | 4));
+                counts[entity.kind as usize] += 1;
             }
-            out.resize(counts.iter().sum(), CEntity::default());
-            for &entity in &self.entities {
-                if entity.flags & E_REMOVED != 0 {
-                    continue;
-                }
+        }
+        let mut next = [0usize; 5];
+        for kind in 1..5 {
+            next[kind] = next[kind - 1] + counts[kind - 1];
+        }
+        let total = next[4] + counts[4];
+        out.truncate(total);
+        out.resize(total, CEntity::default());
+        for &entity in &self.entities {
+            if entity.flags & E_REMOVED == 0 {
                 let kind = entity.kind as usize;
                 out[next[kind]] = entity;
                 next[kind] += 1;
             }
-            return;
         }
-        if no_rope_rows {
-            let mut last_kind = 0;
-            let mut ordered = true;
-            for &entity in &self.entities {
-                if entity.flags & E_REMOVED != 0 {
-                    continue;
-                }
-                if entity.kind < last_kind {
-                    ordered = false;
-                    break;
-                }
-                last_kind = entity.kind;
-                out.push(entity);
-            }
-            if ordered {
-                return;
-            }
-            out.clear();
-        }
-        for kind in [0, 1, 2] {
-            out.extend(
-                self.entities
-                    .iter()
-                    .filter(|e| e.kind == kind && e.flags & E_REMOVED == 0),
-            );
-        }
-        self.append_rope_entities(out);
-        out.extend(
-            self.entities
-                .iter()
-                .filter(|e| e.kind == 4 && e.flags & E_REMOVED == 0),
-        );
     }
 
     fn flags(&self) -> u32 {
