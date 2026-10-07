@@ -4955,6 +4955,9 @@ struct PlatformScratch {
     /// Objects awaiting their Init: (hierarchy base, kind, index into its
     /// list; 3 * player + slot for a picked ability).
     pending_objects: Vec<(u32, PendingObject, usize)>,
+    /// `next_spawn_hierarchy` as of a `register_pending_objects` that left
+    /// nothing unregistered (None: not known).
+    pending_quiet: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -5485,6 +5488,7 @@ impl RolloutWorld {
         self.updater_list.clone_from(&src.updater_list);
         self.updater_list_destroyed = src.updater_list_destroyed;
         self.scratch.updater_version += 1;
+        self.scratch.pending_quiet = None;
         self.entities.clone_from(&src.entities);
         self.entity_inverse_extents.clone_from(&src.entity_inverse_extents);
         self.state_entities.clone_from(&src.state_entities);
@@ -19806,6 +19810,74 @@ impl RolloutWorld {
                 self.entities[entity].flags = E_REMOVED;
             }
         }
+        let mut pending = std::mem::take(&mut self.scratch.pending_objects);
+        pending.clear();
+        // Every object that can come up below was instantiated through
+        // `register_members`, which advances `next_spawn_hierarchy`, or was
+        // queued in a list or a player's flag. After a walk that left
+        // nothing waiting, the scan finds nothing until one of them moves.
+        let quiet = self.scratch.pending_quiet == Some(self.next_spawn_hierarchy) && self.nothing_queued_to_register();
+        if quiet {
+            #[cfg(debug_assertions)]
+            {
+                self.collect_pending_objects(data, &mut pending);
+                debug_assert!(pending.is_empty(), "an object came up for registration without advancing next_spawn_hierarchy");
+            }
+        } else {
+            self.collect_pending_objects(data, &mut pending);
+        }
+        pending.sort_unstable_by_key(|&(hierarchy_base, _, index)| (hierarchy_base, index));
+        for &(_, kind, index) in &pending {
+            match kind {
+                PendingObject::ShakablePlatform => self.update_surface_bounds(index),
+                PendingObject::GustWave => self.shockwave_init(false, index, data),
+                PendingObject::MeteorWave => self.shockwave_init(true, index, data),
+                PendingObject::DuplicatedItem => self.register_duplicated_item(index, data),
+                PendingObject::Arrow => self.register_arrow(index),
+                PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
+                PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
+                PendingObject::BlackHole => self.register_black_hole(index, data),
+                PendingObject::DuplicatedRock => self.register_duplicated_rock(index),
+                PendingObject::ClappedBlackHole => {
+                    if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
+                        self.spawn_black_hole(index, position, hierarchy, data);
+                    }
+                }
+                PendingObject::PickedAbility => {
+                    self.ensure_equipped_ability_registered(index / 3, index % 3, data)
+                }
+                PendingObject::OrphanAbility => {
+                    let (hierarchy_base, ability) = self.pending_orphan_abilities[index];
+                    self.push_ability_collider(ability, hierarchy_base, data);
+                }
+                PendingObject::Mine => self.register_mine(index, data),
+                PendingObject::GuidedMissile => self.register_guided_missile(index, data),
+                PendingObject::MissileExplosion => self.register_missile_explosion(index, data),
+                PendingObject::RevivalMarker => self.register_revival_marker(index, data),
+                PendingObject::TeleportMarker => self.register_teleport_marker(index, data),
+                PendingObject::TeslaLine => self.register_tesla_line(index, data),
+                PendingObject::GrenadeExplosion => self.register_grenade_explosion(index, data),
+                PendingObject::SmokeCloud => self.register_smoke_cloud(index, data),
+                PendingObject::SmokeExplosion => self.register_smoke_explosion(index, data),
+                PendingObject::RevivalClone => {
+                    let circles = self.register_revival_clone_circles(index, data);
+                    self.register_revival_clone_rest(index, circles, data);
+                }
+                PendingObject::StockClone => self.register_stock_clone(index, data),
+            }
+        }
+        self.pending_black_holes.clear();
+        self.pending_duplicated_rocks.clear();
+        self.pending_orphan_abilities.clear();
+        if !quiet {
+            self.scratch.pending_quiet =
+                (pending.is_empty() && !self.unregistered_objects_waiting()).then_some(self.next_spawn_hierarchy);
+        }
+        self.scratch.pending_objects = pending;
+    }
+
+    /// The objects `register_pending_objects` takes this pass, unsorted.
+    fn collect_pending_objects(&self, data: &data::RolloutData, pending: &mut Vec<(u32, PendingObject, usize)>) {
         let tick = self.tick;
         let pending_since = |active: bool, registered: bool, appended: u32| {
             active && !registered && appended <= tick
@@ -19814,8 +19886,6 @@ impl RolloutWorld {
         // HierarchyNumber less its local number. A spawned prefab's offset is
         // 100,000,000 past its base.
         let spawned = |base: u32| base.saturating_add(100_000_000);
-        let mut pending = std::mem::take(&mut self.scratch.pending_objects);
-        pending.clear();
         // ShakablePlatform.Init reruns the UpdateBounds a new platform's
         // StickyRoundedRectangle.Awake ran over the prefab or copied shape
         // (ShakablePlatform.cs:104-111). Its prefab's numbers are offset from
@@ -19959,50 +20029,50 @@ impl RolloutWorld {
                 pending.push((spawned(player.clone_player_hierarchy), PendingObject::StockClone, index));
             }
         }
-        pending.sort_unstable_by_key(|&(hierarchy_base, _, index)| (hierarchy_base, index));
-        for &(_, kind, index) in &pending {
-            match kind {
-                PendingObject::ShakablePlatform => self.update_surface_bounds(index),
-                PendingObject::GustWave => self.shockwave_init(false, index, data),
-                PendingObject::MeteorWave => self.shockwave_init(true, index, data),
-                PendingObject::DuplicatedItem => self.register_duplicated_item(index, data),
-                PendingObject::Arrow => self.register_arrow(index),
-                PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
-                PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
-                PendingObject::BlackHole => self.register_black_hole(index, data),
-                PendingObject::DuplicatedRock => self.register_duplicated_rock(index),
-                PendingObject::ClappedBlackHole => {
-                    if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
-                        self.spawn_black_hole(index, position, hierarchy, data);
-                    }
-                }
-                PendingObject::PickedAbility => {
-                    self.ensure_equipped_ability_registered(index / 3, index % 3, data)
-                }
-                PendingObject::OrphanAbility => {
-                    let (hierarchy_base, ability) = self.pending_orphan_abilities[index];
-                    self.push_ability_collider(ability, hierarchy_base, data);
-                }
-                PendingObject::Mine => self.register_mine(index, data),
-                PendingObject::GuidedMissile => self.register_guided_missile(index, data),
-                PendingObject::MissileExplosion => self.register_missile_explosion(index, data),
-                PendingObject::RevivalMarker => self.register_revival_marker(index, data),
-                PendingObject::TeleportMarker => self.register_teleport_marker(index, data),
-                PendingObject::TeslaLine => self.register_tesla_line(index, data),
-                PendingObject::GrenadeExplosion => self.register_grenade_explosion(index, data),
-                PendingObject::SmokeCloud => self.register_smoke_cloud(index, data),
-                PendingObject::SmokeExplosion => self.register_smoke_explosion(index, data),
-                PendingObject::RevivalClone => {
-                    let circles = self.register_revival_clone_circles(index, data);
-                    self.register_revival_clone_rest(index, circles, data);
-                }
-                PendingObject::StockClone => self.register_stock_clone(index, data),
-            }
-        }
-        self.pending_black_holes.clear();
-        self.pending_duplicated_rocks.clear();
-        self.pending_orphan_abilities.clear();
-        self.scratch.pending_objects = pending;
+    }
+
+    /// Nothing sits in the lists and player flags `collect_pending_objects`
+    /// reads besides the object pools.
+    fn nothing_queued_to_register(&self) -> bool {
+        self.pending_black_holes.is_empty()
+            && self.pending_duplicated_rocks.is_empty()
+            && self.pending_orphan_abilities.is_empty()
+            && self.players.iter().all(|player| {
+                player.pending_black_hole.is_none()
+                    && !player.revival_clone_pending
+                    && !player.stock_clone_pending
+                    && (player.ability_instantiated.iter().all(|&instantiated| instantiated)
+                        || !(self.ability_spawner_enabled || !self.ability_pickups.is_empty()))
+            })
+    }
+
+    /// Whether a pooled object `collect_pending_objects` may take on a later
+    /// pass, without another instantiation, is still unregistered: one
+    /// appended ahead of this pass, or a Tesla node whose line a carry or a
+    /// missing partner holds back.
+    fn unregistered_objects_waiting(&self) -> bool {
+        let tick = self.tick;
+        let waiting = |active: bool, registered: bool| active && !registered;
+        self.platform_dynamics
+            .iter()
+            .zip(&self.platforms)
+            .any(|(dynamics, platform)| platform.active && dynamics.appended > tick)
+            || self.gust_wave_slots().iter().any(|wave| waiting(wave.active, wave.registered))
+            || self.meteor_waves.iter().any(|wave| waiting(wave.active, wave.registered))
+            || self.thrown_items.iter().any(|item| {
+                (item.duplicated || item.ability == ABILITY_MINE) && waiting(item.active, item.entity.is_some())
+            })
+            || self.arrows.iter().any(|arrow| waiting(arrow.active, arrow.registered))
+            || self.ability_pickups.iter().any(|pickup| pickup.duplicated && waiting(pickup.active, pickup.entity.is_some()))
+            || self.abilityless_clones.iter().any(|clone| waiting(clone.active, clone.entity.is_some()))
+            || self.guided_missiles.iter().any(|missile| waiting(missile.active, missile.registered))
+            || self.missile_explosions.iter().any(|explosion| waiting(explosion.active, explosion.registered))
+            || self.revival_marker_pool.iter().any(|marker| waiting(marker.active, marker.registered))
+            || self.teleport_marker_pool.iter().any(|marker| waiting(marker.active, marker.registered))
+            || self.tesla_nodes.iter().any(|node| waiting(node.active, node.line_entity.is_some()))
+            || self.grenade_explosions.iter().any(|explosion| waiting(explosion.active, explosion.registered))
+            || self.smoke_clouds.iter().any(|cloud| waiting(cloud.active, cloud.registered))
+            || self.smoke_explosions.iter().any(|explosion| waiting(explosion.active, explosion.registered))
     }
 
     /// Grenade.Init on the pass after a held Grenade or Smoke payload was
