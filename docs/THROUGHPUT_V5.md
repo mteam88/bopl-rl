@@ -285,6 +285,18 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     without AVX-512; a debug assertion checks it against the scalar scan).
     c30 cycles fall 1.5%, and the PGO env_bench sim goes from 15.29 to
     15.04 us. The hash is unchanged, and the exact gate passes.
+27. **v13: fewer Updater key searches.** Every authored platform precedes
+    the runtime ones (only `reset` pushes authored rows; removal keeps the
+    order), so the runtime passes and `run_spawned_before` start their
+    platform walks at the first runtime platform. Five per-object loops
+    (wall and object tunnels, engines, Duplicator effects, shockwaves)
+    searched for the object's Updater key before testing whether it was
+    active, which it almost never is; they now test first, and the engine
+    order keys only the active engines. Measured on instructions, with
+    `BOPL_ENV_BENCH_SIM_ONLY=1` (a new env_bench switch that skips the
+    writers, so `perf stat` counts the sim alone; instruction counts are
+    deterministic, so a 1% change shows without noise): PGO sim -1.1%.
+    The hash is unchanged, and the exact gate passes.
 
 
 ## Cold caches in the trainer

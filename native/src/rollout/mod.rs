@@ -8809,7 +8809,7 @@ impl RolloutWorld {
         // after this pass or `before`'s, or (every kind here keeps Updater's
         // place) before the cursor's, is out without searching for its place.
         let live = |appended: u32| appended <= tick && appended <= before.0 && appended >= cursor.0;
-        for i in 0..self.platforms.len() {
+        for i in self.first_runtime_platform()..self.platforms.len() {
             // A platform's key leads with its `appended` too (updater_member_key).
             if self.platform_pass(i) != PlatformPass::Authored && live(self.platform_dynamics[i].appended) {
                 push(self.platform_turn_key(i), 0, i);
@@ -15517,16 +15517,21 @@ impl RolloutWorld {
         // RocketEngine.UpdateSim in hierarchy order: each flame lights the first
         // cloud it touches that no earlier engine has lit.
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.engines, |engine| self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base));
+        // An inactive engine takes no turn: only the active ones are keyed.
+        updater_order_where(&mut order, &self.engines, |engine| engine.active, |engine| {
+            self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base)
+        });
         for &engine_index in &order {
             let engine = &self.engines[engine_index];
-            let key = self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base);
             if !engine.active
                 || !hierarchy.contains(&(100_000_000 + engine.hierarchy_base))
                 || engine.macho_carried
                 || engine.appended > self.tick
-                || self.updater_passed(key)
             {
+                continue;
+            }
+            let key = self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base);
+            if self.updater_passed(key) {
                 continue;
             }
             // The spawned updatables registered before this engine have taken
@@ -22089,8 +22094,11 @@ impl RolloutWorld {
     /// One wave's Shockwave.UpdateSim turn.
     fn shockwave_step(&mut self, meteor: bool, wave_index: usize, data: &data::RolloutData) {
         let wave = if meteor { &self.meteor_waves[wave_index] } else { &self.gust_waves[wave_index] };
+        if !wave.active || !wave.registered {
+            return;
+        }
         let key = self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base);
-        if !wave.active || !wave.registered || self.updater_passed(key) {
+        if self.updater_passed(key) {
             return;
         }
         // The older updatables have taken their turns: a Poke Ball's
@@ -28881,12 +28889,14 @@ impl RolloutWorld {
     ) {
         for index in 0..self.blink_object_tunnels.len() {
             let tunnel = self.blink_object_tunnels[index];
-            let key = self.updater_key(tunnel.appended, 100_000_000 + tunnel.hierarchy);
             if !tunnel.active
                 || tunnel.appended > self.tick
                 || before.is_some_and(|before| tunnel.hierarchy >= before)
-                || self.updater_passed(key)
             {
+                continue;
+            }
+            let key = self.updater_key(tunnel.appended, 100_000_000 + tunnel.hierarchy);
+            if self.updater_passed(key) {
                 continue;
             }
             self.run_spawned_before(data, updater_dt, key);
@@ -29076,12 +29086,16 @@ impl RolloutWorld {
     ) {
         for platform_index in 0..self.platforms.len() {
             let state = &self.platform_dynamics[platform_index];
-            let key = self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy);
+            // Most walls have no tunnel: the key is searched for only once
+            // one is due.
             if !state.blink_tunnel_active
                 || state.blink_tunnel_appended > self.tick
                 || before.is_some_and(|before| state.blink_tunnel_hierarchy >= before)
-                || self.updater_passed(key)
             {
+                continue;
+            }
+            let key = self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy);
+            if self.updater_passed(key) {
                 continue;
             }
             // A spark node older than the tunnel reads its partners first, and
@@ -30018,12 +30032,14 @@ impl RolloutWorld {
         }
         for effect_index in 0..self.duplicate_platform_effects.len() {
             let effect = &self.duplicate_platform_effects[effect_index];
-            let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base);
             if !effect.active
                 || effect.appended > self.tick
-                || self.updater_passed(key)
                 || before.is_some_and(|before| effect.hierarchy_base >= before)
             {
+                continue;
+            }
+            let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base);
+            if self.updater_passed(key) {
                 continue;
             }
             // Each DuplicatePlatformEffect takes its own Updater turn, in list
@@ -34750,6 +34766,15 @@ impl RolloutWorld {
             .map_or((u32::MAX, u32::MAX, u32::MAX), |row| self.updater_member_key(appended, row.hierarchy))
     }
 
+    /// The first runtime platform. Reset loads the authored platforms and every
+    /// later one (spawned, a Duplicator copy) is appended, so they lead the
+    /// list, and no runtime platform's pass is ever `Authored`.
+    fn first_runtime_platform(&self) -> usize {
+        let first = self.platform_kinds.partition_point(|&kind| kind == PlatformPass::Authored);
+        debug_assert!(self.platform_kinds[first..].iter().all(|&kind| kind != PlatformPass::Authored));
+        first
+    }
+
     /// Whether platform `i` updates in this run of `pass`.
     #[inline]
     fn platform_updates_in(&self, i: usize, pass: PlatformPass) -> bool {
@@ -34828,17 +34853,21 @@ impl RolloutWorld {
         // walk finds them all; an index a removal in this pass shifted fails
         // the check and the definition is searched for again.
         let mut authored = std::mem::take(&mut self.scratch.authored_platforms);
+        let first_runtime = self.first_runtime_platform();
         if pass == PlatformPass::Authored {
             authored.clear();
             authored.resize(data.maps[self.map].platforms.len(), usize::MAX);
-            for i in 0..self.platforms.len() {
+            for i in 0..first_runtime {
                 let definition = self.platform_defs[i];
                 if definition < authored.len() && authored[definition] == usize::MAX && self.platform_pass(i) == pass {
                     authored[definition] = i;
                 }
             }
         }
-        for k in 0..count {
+        // The other passes skip the authored platforms; until one of theirs
+        // runs, nothing has moved.
+        let start = if pass == PlatformPass::Authored { 0 } else { first_runtime };
+        for k in start..count {
             let i = if pass == PlatformPass::Authored {
                 let definition = order[k];
                 let found = authored.get(definition).copied().unwrap_or(usize::MAX);

@@ -154,6 +154,9 @@ int main(int argc, char **argv) {
     /* BOPL_ENV_BENCH_EVICT_KB: between decisions, outside the timers, sweep
      * a buffer this large through the cache, as the trainer's env threads do
      * when they step the pool's other worlds between two of this one's. */
+    /* BOPL_ENV_BENCH_SIM_ONLY skips the writers, so `perf stat` counts the
+     * sim's instructions undiluted (the hash then covers the states alone). */
+    int sim_only=getenv("BOPL_ENV_BENCH_SIM_ONLY")!=NULL;
     const char *evict_env=getenv("BOPL_ENV_BENCH_EVICT_KB");
     size_t evict_bytes=evict_env?(size_t)atol(evict_env)*1024:0;
     unsigned char *evict=evict_bytes?calloc(1, evict_bytes):NULL;
@@ -192,6 +195,7 @@ int main(int argc, char **argv) {
             tick+=state->header.episode_ticks-before;
             decisions++;
             if (state->header.flags&BOPL_RL_TERMINAL) break;
+            if (sim_only) continue;
             const BoplRlState *old=bopl_state_copy_get(&delayed[cursor]);
             for (int k=0; k<2; k++) {
                 BoplPuffer *env=((decisions+k)&1)?lite:full; int phase=env==lite?P_LITE:P_FULL;
