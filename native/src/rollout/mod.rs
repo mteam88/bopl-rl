@@ -5085,6 +5085,16 @@ fn chooser_owner(player: usize) -> u32 {
 }
 
 /// `pool`'s indices in Updater order.
+/// The slots of `players` one at a time, past the loop vectorizer. Over a
+/// PlayerSlot's 24 KB stride LLVM turns a loop that stores one field into a
+/// predicated one of 32 to 64 lanes, every lane's test run however few bodies
+/// there are: some 260 to 390 instructions a pass for two. `black_box` hides
+/// each slot's address, which leaves the loop nothing to vectorize.
+#[inline(always)]
+fn each_slot<'a>(players: impl IntoIterator<Item = &'a mut PlayerSlot>) -> impl Iterator<Item = &'a mut PlayerSlot> {
+    players.into_iter().map(std::hint::black_box)
+}
+
 fn updater_order<T>(order: &mut Vec<usize>, pool: &[T], key: impl Fn(&T) -> UpdaterKey) {
     updater_order_where(order, pool, |_| true, key);
 }
@@ -8700,10 +8710,13 @@ impl RolloutWorld {
         self.platform_turns(data, updater_dt, PlatformPass::Authored);
         self.ability_spawner_tick(data, updater_dt);
         self.beam_inputs.clear();
-        for slot in &mut self.players {
-            slot.magnet.parry_registered = false;
+        // Only `magnet_try_pickup_item` sets a slot's, and the pass's with it.
+        if std::mem::take(&mut self.scratch.parries_registered) {
+            for slot in each_slot(&mut self.players) {
+                slot.magnet.parry_registered = false;
+            }
         }
-        self.scratch.parries_registered = false;
+        debug_assert!(!self.players.iter().any(|slot| slot.magnet.parry_registered));
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
@@ -9018,8 +9031,12 @@ impl RolloutWorld {
                 && !slot.slime_destroyed()
                 && registered(Self::hurtbox_entity(slot)))
             .then(|| slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
-            let slime_box = (slot.unspawned == 0 && !slot.slime_destroyed() && registered(slot.body_entity))
-                .then(|| self.entity_inverse_extents[slot.body_entity]);
+            // sync_boxes reads the slime's own box only while a form hides it.
+            let slime_box = (slot.active != ActiveAbility::None
+                && slot.unspawned == 0
+                && !slot.slime_destroyed()
+                && registered(slot.body_entity))
+            .then(|| self.entity_inverse_extents[slot.body_entity]);
             let forms = slot.form_entities.map(registered);
             self.players[index].sync_boxes(hurtbox, slime_box, forms);
         }
@@ -9106,7 +9123,7 @@ impl RolloutWorld {
         // The live PlayerPhysics.LateUpdateSim, the form's or the slime's,
         // ends clearing its jumpedThisFrame (PlayerPhysics.cs:163); a form
         // that jumped out is inactive by now and keeps it.
-        for slot in &mut self.players {
+        for slot in each_slot(&mut self.players) {
             slot.base.jumped_this_frame = false;
         }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
@@ -15934,6 +15951,9 @@ impl RolloutWorld {
     /// The frame's closing OnDestroyUpdatable loop, newest updatable first,
     /// for the nodes DestroyFix took mid-pass (Updater.cs:329-337).
     fn tesla_nodes_destroyed_drain(&mut self) {
+        if self.tesla_nodes.is_empty() {
+            return;
+        }
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.tesla_nodes, |node| self.updater_key(node.appended, 100_000_000 + node.hierarchy_base));
         for &node_index in order.iter().rev() {
@@ -16751,6 +16771,10 @@ impl RolloutWorld {
         updater_dt: Fix,
         hierarchy: std::ops::Range<u32>,
     ) {
+        // No engine, no turn: the walk below takes none and changes nothing.
+        if self.engines.is_empty() {
+            return;
+        }
         let end_time = data
             .engine
             .force
@@ -17003,6 +17027,10 @@ impl RolloutWorld {
                 true
             }
         });
+        // No node, no turn and no line to step.
+        if self.tesla_nodes.is_empty() {
+            return;
+        }
 
         self.tesla_nodes_update(data, updater_dt, u32::MAX);
 
@@ -31204,6 +31232,17 @@ impl RolloutWorld {
         deferred_spikes: Option<u32>,
         deferred_updaters: Option<u32>,
     ) {
+        // With no changer, only the deferred tails below run.
+        if self.scale_changers.is_empty() {
+            if let Some(from) = deferred_spikes {
+                self.spike_attacks_between(data, updater_dt, from, u32::MAX);
+            }
+            if let Some(from) = deferred_updaters {
+                self.ability_pickups_tick_remaining(data, updater_dt);
+                self.shockwaves_update(data, from..u32::MAX);
+            }
+            return;
+        }
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.scale_changers, |effect| {
             self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base)
@@ -36484,7 +36523,12 @@ impl RolloutWorld {
         }
         // A DynamicAbilityPickup older than one of these platforms raycasts
         // for ground at its own turn, before that platform's updaters move
-        // it. One newer than a live ScaleChanger keeps waiting for it.
+        // it. One newer than a live ScaleChanger keeps waiting for it. With
+        // no pickup, the walk runs whole.
+        if self.ability_pickups.is_empty() {
+            self.platform_updaters(data, updater_dt, PlatformPass::Spawned, window);
+            return;
+        }
         let newest = (self.first_runtime_platform()..self.platforms.len())
             .filter(|&i| {
                 self.platform_pass(i) == PlatformPass::Spawned
@@ -37215,6 +37259,9 @@ impl RolloutWorld {
     /// order: the first clone to update reports the player's position, and a
     /// clone may fill a slot freed below an older one.
     fn abilityless_clones_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        if self.abilityless_clones.is_empty() {
+            return;
+        }
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.abilityless_clones, |clone| self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base));
         for &clone_index in &order {
@@ -38488,7 +38535,7 @@ impl RolloutWorld {
             _ => false,
         });
         if own_calls {
-            for slot in &mut self.players[..self.player_count] {
+            for slot in each_slot(&mut self.players[..self.player_count]) {
                 slot.position_setter_last = u32::MAX;
             }
             for &(_, call, key, _) in &self.scratch.position_calls {
