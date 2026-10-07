@@ -277,36 +277,40 @@ const ARROW_STICK_TO: u32 = 2166016;
 const WALL_GROUP: usize = 16;
 
 /// Bit 4k is set when wall k of `walls` (at most `WALL_GROUP`) meets `part`
-/// as `sweep::swept_meet` does: two walls per vector, each lane one of the
-/// four strict ordered compares (false on NaN, like the scalar `<`), and a
-/// wall meets when its four lanes all hold.
+/// as `sweep::swept_meet` does: two walls per vector, each lane one strict
+/// ordered compare (false on NaN, like the scalar `<`), and a wall meets
+/// when its four lanes all hold. A high edge's `wall > low` is taken as
+/// `-wall < -low`: negation is exact and reverses the order, signed zeros
+/// and infinities included, and a NaN fails both.
 #[inline]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "q32")))]
 fn walls_meeting(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
-    use std::arch::x86_64::{
-        _CMP_GT_OQ, _CMP_LT_OQ, __mmask8, _mm512_mask_cmp_pd_mask, _mm512_maskz_loadu_pd, _mm512_setr_pd,
-    };
+    use std::arch::x86_64::*;
     const _: () = assert!(std::mem::size_of::<[Vec2; 2]>() == 4 * std::mem::size_of::<f64>());
     debug_assert!(walls.len() <= WALL_GROUP);
     let [low, high] = part.map(|v| [v.x.to_f64(), v.y.to_f64()]);
-    // A wall's lanes are low x, low y, high x, high y: its low edges below
-    // the part's high ones, its high edges above the part's low ones.
-    let lanes = walls.len() * 4;
+    let pairs = walls.len() / 2;
     let mut nibbles = 0u64;
     // SAFETY: avx512f is a compile-time target feature here; `[Vec2; 2]` is
-    // four f64 (Vec2 is repr(C) of two repr(transparent) f64), and the load
-    // mask keeps every lane within `walls`.
+    // four f64 (Vec2 is repr(C) of two repr(transparent) f64), every full
+    // load is two walls within `walls` and the last one's mask keeps its
+    // lanes within the odd wall.
     unsafe {
-        let edges = _mm512_setr_pd(high[0], high[1], low[0], low[1], high[0], high[1], low[0], low[1]);
+        // A wall's lanes are low x, low y, high x, high y: its low edges
+        // below the part's high ones, its negated high edges below the
+        // part's negated low ones.
+        const S: i64 = i64::MIN;
+        let signs = _mm512_setr_epi64(0, 0, S, S, 0, 0, S, S);
+        let edges = _mm512_setr_pd(high[0], high[1], -low[0], -low[1], high[0], high[1], -low[0], -low[1]);
+        let flipped = |wall: __m512d| _mm512_castsi512_pd(_mm512_xor_si512(_mm512_castpd_si512(wall), signs));
         let base = walls.as_ptr().cast::<f64>();
-        let mut lane = 0;
-        while lane < lanes {
-            let load: __mmask8 = if lanes - lane >= 8 { 0xff } else { 0x0f };
-            let wall = _mm512_maskz_loadu_pd(load, base.add(lane));
-            let hits = _mm512_mask_cmp_pd_mask::<_CMP_LT_OQ>(load & 0x33, wall, edges)
-                | _mm512_mask_cmp_pd_mask::<_CMP_GT_OQ>(load & 0xcc, wall, edges);
-            nibbles |= u64::from(hits) << lane;
-            lane += 8;
+        for pair in 0..pairs {
+            let wall = flipped(_mm512_loadu_pd(base.add(8 * pair)));
+            nibbles |= u64::from(_mm512_cmp_pd_mask::<_CMP_LT_OQ>(wall, edges)) << (8 * pair);
+        }
+        if walls.len() % 2 != 0 {
+            let wall = flipped(_mm512_maskz_loadu_pd(0x0f, base.add(8 * pairs)));
+            nibbles |= u64::from(_mm512_mask_cmp_pd_mask::<_CMP_LT_OQ>(0x0f, wall, edges)) << (8 * pairs);
         }
     }
     let meets = nibbles & (nibbles >> 1) & (nibbles >> 2) & (nibbles >> 3) & 0x1111_1111_1111_1111;
