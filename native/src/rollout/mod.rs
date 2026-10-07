@@ -4993,6 +4993,9 @@ struct PlatformScratch {
     /// Circle/Box group.
     circle_parts: Vec<(Part, u32)>,
     circle_ends: [u32; circle_box::CC_BLOCKS],
+    /// How many Smoke clouds the Circle/Circle group found parts, up to two
+    /// (`cloud_parts_present`); `circle_parts` leaves them out.
+    circle_clouds: u32,
     box_bodies: u32,
     circle_parts_tick: Option<u32>,
     /// sweep_pairs' priors still open on the sweep axis.

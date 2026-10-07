@@ -1074,6 +1074,48 @@ impl RolloutWorld {
         layer
     }
 
+    /// How many Smoke clouds are parts (`cloud_layer`), counted up to two:
+    /// all a `LayerSet` reads of them. Every cloud's row is on the cloud
+    /// layer, so the clouds themselves are taken only for a group they can
+    /// pair in (`push_cloud_parts`); over the test replays one pass in eight
+    /// with a cloud has any partner for one.
+    fn cloud_parts_present(&self, data: &data::RolloutData) -> u32 {
+        let mut count = 0;
+        for i in 0..self.smoke_clouds.len() {
+            if self.cloud_layer(i, data).is_some() {
+                count += 1;
+                if count == 2 {
+                    break;
+                }
+            }
+        }
+        #[cfg(debug_assertions)]
+        {
+            let every = (0..self.smoke_clouds.len()).filter(|&i| self.cloud_layer(i, data).is_some()).count();
+            debug_assert_eq!(count as usize, every.min(2));
+        }
+        count
+    }
+
+    /// Every Smoke cloud that is a part, in the order the groups take them,
+    /// as a pair loop reads it.
+    fn push_cloud_parts(&self, group: &mut Vec<GroupPart>, sweep_x: bool, data: &data::RolloutData) {
+        let layer = data.smoke.cloud_layer;
+        for i in 0..self.smoke_clouds.len() {
+            if let Some(cloud_layer) = self.cloud_layer(i, data) {
+                debug_assert_eq!(cloud_layer, layer);
+                group.push(self.group_part(Part::Cloud(i), layer, sweep_x, data));
+            }
+        }
+    }
+
+    /// The clouds `push_cloud_parts` takes with their layers, for debug
+    /// assertions against the groups' every part.
+    #[cfg(debug_assertions)]
+    fn cloud_layered(&self, data: &data::RolloutData) -> Vec<(Part, u32)> {
+        (0..self.smoke_clouds.len()).filter_map(|i| self.cloud_layer(i, data).map(|layer| (Part::Cloud(i), layer))).collect()
+    }
+
     /// `collides` for a Smoke cloud's circle row. No node, rocket, spike,
     /// clone, pickup, arrow, item, lightning or hurtbox owns the row, so
     /// `detphysics_collider` would answer with `row_collider` after scanning
@@ -1097,8 +1139,10 @@ impl RolloutWorld {
         self.collides(entity).then_some(self.entities[entity].kind == 0)
     }
 
-    /// The Circle/Box group's circles, in its order.
-    fn push_circle_parts(&self, parts: &mut Vec<(Part, u32)>, data: &data::RolloutData) {
+    /// The Circle/Box group's circles, in its order, but for the Smoke
+    /// clouds: where in it they go, and how many there are up to two
+    /// (`cloud_parts_present`).
+    fn push_circle_parts(&self, parts: &mut Vec<(Part, u32)>, data: &data::RolloutData) -> (usize, u32) {
         for (i, item) in self.thrown_items.iter().enumerate() {
             if item.active
                 && self.child_registered(item.entity)
@@ -1132,11 +1176,7 @@ impl RolloutWorld {
                 parts.push(self.layered(Part::Hole(i), data));
             }
         }
-        for i in 0..self.smoke_clouds.len() {
-            if let Some(layer) = self.cloud_layer(i, data) {
-                parts.push((Part::Cloud(i), layer));
-            }
-        }
+        let clouds = (parts.len(), self.cloud_parts_present(data));
         for (i, rock) in self.duplicated_rocks.iter().enumerate() {
             if rock.active && !self.blink_object_hidden(rock.entity) {
                 parts.push(self.layered(Part::DuplicatedRock(i), data));
@@ -1163,6 +1203,7 @@ impl RolloutWorld {
             }
         }
         self.push_blasts(parts, true, data);
+        clouds
     }
 
     /// The Circle/Box group's boxes, which are the Box/Box group's parts:
@@ -1221,6 +1262,8 @@ impl RolloutWorld {
         let mut layered = std::mem::take(&mut self.scratch.cb_parts);
         layered.clear();
         let cached = self.scratch.circle_parts_tick.take() == Some(self.tick);
+        // The clouds' place among the circles, and how many, up to two.
+        let clouds;
         if cached {
             // The Circle/Circle group just took each of these kinds' parts,
             // and which slimes' boxes are parts: the same filters over flags
@@ -1248,7 +1291,8 @@ impl RolloutWorld {
                     layered.push(self.layered(Part::Hole(i), data));
                 }
             }
-            layered.extend_from_slice(block(CC_CLOUDS));
+            debug_assert!(block(CC_CLOUDS).is_empty());
+            clouds = (layered.len(), self.scratch.circle_clouds);
             layered.extend_from_slice(block(CC_DUPLICATED_ROCKS));
             layered.extend_from_slice(block(CC_PICKUPS));
             for rope in 0..self.ropes.len() {
@@ -1263,12 +1307,15 @@ impl RolloutWorld {
             #[cfg(debug_assertions)]
             {
                 let mut fresh = Vec::new();
-                self.push_circle_parts(&mut fresh, data);
+                let fresh_clouds = self.push_circle_parts(&mut fresh, data);
                 debug_assert!(fresh == layered);
+                debug_assert_eq!(fresh_clouds, clouds);
             }
         } else {
-            self.push_circle_parts(&mut layered, data);
+            clouds = self.push_circle_parts(&mut layered, data);
         }
+        let (cloud_at, cloud_count) = clouds;
+        let cloud_layer = data.smoke.cloud_layer;
         let circles = layered.len();
         self.push_box_parts(&mut layered, cached.then_some(self.scratch.box_bodies), data);
         let (circle_layers, box_layers) = layered.split_at(circles);
@@ -1282,15 +1329,23 @@ impl RolloutWorld {
         // water's, live, are triggers no group moves).
         let (mut circle_set, mut box_set) = (LayerSet::default(), LayerSet::default());
         circle_layers.iter().for_each(|&(_, layer)| circle_set.add(layer));
+        (0..cloud_count).for_each(|_| circle_set.add(cloud_layer));
         box_layers.iter().for_each(|&(_, layer)| box_set.add(layer));
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
-        group.extend(
-            circle_layers
-                .iter()
-                .filter(|&&(_, layer)| box_set.meets(layer, data))
-                .map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)),
-        );
+        let circle_group = |group: &mut Vec<GroupPart>, circles: &[(Part, u32)]| {
+            group.extend(
+                circles
+                    .iter()
+                    .filter(|&&(_, layer)| box_set.meets(layer, data))
+                    .map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)),
+            )
+        };
+        circle_group(&mut group, &circle_layers[..cloud_at]);
+        if cloud_count > 0 && box_set.meets(cloud_layer, data) {
+            self.push_cloud_parts(&mut group, sweep_x, data);
+        }
+        circle_group(&mut group, &circle_layers[cloud_at..]);
         let circles = group.len();
         let mut box_parts = std::mem::take(&mut self.scratch.box_parts);
         box_parts.clear();
@@ -1316,10 +1371,16 @@ impl RolloutWorld {
         {
             // Every part's pairs are the filtered groups'.
             debug_assert!(collision_matrix_symmetric(data));
+            // With every cloud among the circles.
+            let mut every_layered = layered.clone();
+            let every_clouds = self.cloud_layered(data);
+            debug_assert_eq!(every_clouds.len().min(2), cloud_count as usize);
+            let every_circles = circle_layers.len() + every_clouds.len();
+            every_layered.splice(cloud_at..cloud_at, every_clouds);
             let every_part: Vec<GroupPart> =
-                layered.iter().map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)).collect();
+                every_layered.iter().map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)).collect();
             let mut every = Vec::new();
-            let (circle_parts, box_parts) = every_part.split_at(circle_layers.len());
+            let (circle_parts, box_parts) = every_part.split_at(every_circles);
             self.circle_box_pairs(circle_parts, box_parts, data, &mut every);
             debug_assert!(every.iter().map(|c| (c.0, c.1, c.2)).eq(contacts.iter().map(|c| (c.0, c.1, c.2))));
         }
@@ -1665,11 +1726,9 @@ impl RolloutWorld {
             }
         }
         ends[CC_HOLES] = parts.len() as u32;
-        for i in 0..self.smoke_clouds.len() {
-            if let Some(layer) = self.cloud_layer(i, data) {
-                parts.push((Part::Cloud(i), layer));
-            }
-        }
+        // The clouds are taken only if they can pair (`cloud_parts_present`).
+        let cloud_count = self.cloud_parts_present(data);
+        let cloud_layer = data.smoke.cloud_layer;
         ends[CC_CLOUDS] = parts.len() as u32;
         // The slimes whose box the Circle/Box group takes, by bit.
         let mut box_bodies = 0u32;
@@ -1695,15 +1754,25 @@ impl RolloutWorld {
         // four parts in five, most of them Smoke clouds, have none.
         let mut layers = LayerSet::default();
         parts.iter().for_each(|&(_, layer)| layers.add(layer));
+        (0..cloud_count).for_each(|_| layers.add(cloud_layer));
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
-        group.extend(
-            parts
-                .iter()
-                .filter(|&&(_, layer)| layers.meets_other(layer, data))
-                .map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)),
-        );
+        let pairing = |group: &mut Vec<GroupPart>, parts: &[(Part, u32)]| {
+            group.extend(
+                parts
+                    .iter()
+                    .filter(|&&(_, layer)| layers.meets_other(layer, data))
+                    .map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)),
+            )
+        };
+        let cloud_at = ends[CC_CLOUDS] as usize;
+        pairing(&mut group, &parts[..cloud_at]);
+        if cloud_count > 0 && layers.meets_other(cloud_layer, data) {
+            self.push_cloud_parts(&mut group, sweep_x, data);
+        }
+        pairing(&mut group, &parts[cloud_at..]);
         self.scratch.circle_ends = ends;
+        self.scratch.circle_clouds = cloud_count;
         self.scratch.box_bodies = box_bodies;
         self.scratch.circle_parts_tick = Some(self.tick);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
@@ -1717,8 +1786,12 @@ impl RolloutWorld {
         {
             // Every part's pairs are the filtered group's.
             debug_assert!(collision_matrix_symmetric(data));
+            let mut every_layered = parts.clone();
+            let every_clouds = self.cloud_layered(data);
+            debug_assert_eq!(every_clouds.len().min(2), cloud_count as usize);
+            every_layered.splice(cloud_at..cloud_at, every_clouds);
             let mut every_part: Vec<GroupPart> =
-                parts.iter().map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)).collect();
+                every_layered.iter().map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)).collect();
             sort_by_rank(&mut every_part);
             let mut every = Vec::new();
             self.circle_circle_pairs(&every_part, data, &mut live, &mut every);
