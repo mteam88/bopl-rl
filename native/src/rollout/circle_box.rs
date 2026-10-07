@@ -137,6 +137,13 @@ fn sort_by_rank(group: &mut Vec<GroupPart>) {
     });
 }
 
+/// Whether two parts of a group pass `GroupPart::pairs`, which the pair loops
+/// act on only: a group with no such two builds no manifold, sorted or not.
+/// Over the test replays one Box/Box group in a hundred has two.
+fn any_pairs(group: &[GroupPart], data: &data::RolloutData) -> bool {
+    group.iter().enumerate().any(|(k, current)| group[..k].iter().any(|prior| prior.pairs(current, data)))
+}
+
 /// A prior still open in `sweep_pairs`: its end on the sweep axis, the
 /// layers its own collides with (`layers_collide`'s row), and its place in
 /// the group.
@@ -1807,6 +1814,7 @@ impl RolloutWorld {
         // are the first to move one.
         #[cfg(debug_assertions)]
         let live_walls: Vec<RoundedRect> = self.platforms.iter().map(|p| p.collider).collect();
+        let mut hits = std::mem::take(&mut self.scratch.callback_hits);
         for &(key, part, wall, contact) in &contacts {
             // collision.layer is the wall's own layer (DetPhysics.cs:2405-2437).
             let layer = self.entities[self.platform_entities[wall]].layer;
@@ -1827,20 +1835,26 @@ impl RolloutWorld {
                     _ => unreachable!(),
                 };
                 let collider = self.narrow_wall(walls, wall);
-                let untested = contact.is_none().then(|| self.wall_part_collider(part));
                 #[cfg(debug_assertions)]
                 let meets = contact.is_some() || eager.iter().find(|&&(k, _)| k == key).expect("an eager test").1;
-                self.scratch.callback_hits.push((
+                hits.push((
                     key,
                     CallbackHit::Squish {
                         slime,
                         wall,
                         collider,
-                        untested,
+                        untested: None,
                         #[cfg(debug_assertions)]
                         meets,
                     },
                 ));
+                // The untested collider is written into the queued squish, a
+                // field at a time: built apart and copied in, its copy reloads
+                // it across the stores that built it.
+                if contact.is_none() {
+                    let Some((_, CallbackHit::Squish { untested, .. })) = hits.last_mut() else { unreachable!() };
+                    self.write_wall_part_collider(part, untested);
+                }
                 continue;
             }
             let contact = contact.expect("only a slime's pair is untested");
@@ -1891,8 +1905,9 @@ impl RolloutWorld {
                 }
                 _ => continue,
             };
-            self.scratch.callback_hits.push((key, hit));
+            hits.push((key, hit));
         }
+        self.scratch.callback_hits = hits;
         #[cfg(debug_assertions)]
         for (wall, before) in live_walls.iter().enumerate() {
             let bits = |r: &RoundedRect| {
@@ -1932,12 +1947,45 @@ impl RolloutWorld {
 
     /// A wall group part's `part_collider`; a slime's from its hurtbox row.
     #[inline(always)]
+    #[cfg(debug_assertions)]
     fn wall_part_collider(&self, part: Part) -> Collider {
         let entity = match part {
             Part::Body(i) => Some(Self::hurtbox_entity(&self.players[i])),
             _ => None,
         };
         self.wall_part_collider_at(part, entity)
+    }
+
+    /// `*dst = Some(self.wall_part_collider(part))`, each variant written in
+    /// place.
+    #[inline(always)]
+    fn write_wall_part_collider(&self, part: Part, dst: &mut Option<Collider>) {
+        match part {
+            Part::Body(i) => {
+                let entity = Self::hurtbox_entity(&self.players[i]);
+                let row = self.entities[entity];
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                if row.kind == 0 {
+                    *dst = Some(Collider::Circle(Circle { center, radius: Fix::from_raw(row.radius) }));
+                } else {
+                    *dst = Some(Collider::Box(Self::row_box(&self.entity_inverse_extents, entity, row)));
+                }
+            }
+            _ => *dst = Some(self.part_collider(part)),
+        }
+        #[cfg(debug_assertions)]
+        {
+            let bits = |c: Option<Collider>| match c {
+                Some(Collider::Circle(c)) => vec![0, c.center.x.to_f64().to_bits(), c.center.y.to_f64().to_bits(), c.radius.to_f64().to_bits()],
+                Some(Collider::Box(b)) => [b.center, b.right, b.up, b.inverse_extents]
+                    .into_iter()
+                    .flat_map(|v| [v.x.to_f64().to_bits(), v.y.to_f64().to_bits()])
+                    .chain([1])
+                    .collect(),
+                _ => unreachable!(),
+            };
+            debug_assert_eq!(bits(*dst), bits(Some(self.wall_part_collider(part))));
+        }
     }
 
     /// `wall_part_collider` with a slime's `part_entity` (else unread).
@@ -2269,7 +2317,9 @@ impl RolloutWorld {
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
-        if group.len() > 1 {
+        // A group of a few parts with no two that pair (`any_pairs`) is left
+        // unsorted.
+        if group.len() > 1 && (group.len() > 8 || any_pairs(&group, data)) {
             sort_by_rank(&mut group);
             self.box_box_pairs(&group, data, &mut live, &mut contacts);
         }
