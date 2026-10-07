@@ -53,6 +53,10 @@ impl Fix {
     pub const fn to_int(self) -> i64 {
         self.0 >> 32
     }
+    /// `to_int().clamp(lo, hi)` (the f64 build clamps before the floor).
+    pub fn floor_clamp(self, lo: i64, hi: i64) -> i64 {
+        self.to_int().clamp(lo, hi)
+    }
     pub fn from_f32(value: f32) -> Self {
         Self((value * 4_294_967_296.0_f32) as i64)
     }

@@ -2001,8 +2001,10 @@ pub struct PlatformDynamics {
     pub transform_rotation: Option<Fix>,
     /// Tick on which Updater adds a body registered mid-tick and calls
     /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
-    /// position physics had already corrected on the spawn tick.
-    pub init_tick: Option<u32>,
+    /// position physics had already corrected on the spawn tick; 0 for
+    /// none (a pending one is a pass after its spawn pass, never 0), so
+    /// `init_tick > tick` is the whole "joins on a later pass" test.
+    pub init_tick: u32,
     /// The prefab whose component order runs the platform's updaters.
     pub prefab: PlatformPrefab,
     /// That prefab's updaters, `PlatformUpdater::pack`ed: what
@@ -6544,7 +6546,7 @@ impl RolloutWorld {
                 being_controlled: false,
                 home_position: intro_surface.center,
                 transform_rotation: None,
-                init_tick: None,
+                init_tick: 0,
                 prefab: PlatformPrefab::Scene,
                 updaters: data::PlatformUpdater::pack(&p.updaters),
                 appended: 0,
@@ -19545,7 +19547,7 @@ impl RolloutWorld {
             attach_count: 0,
             composite_position: position,
             transform_rotation: None,
-            init_tick: None,
+            init_tick: 0,
             prefab: PlatformPrefab::Boulder,
             updaters: data::PlatformUpdater::pack(&data.macho_throw.boulder_updaters),
             appended: self.tick + 1,
@@ -31144,7 +31146,7 @@ impl RolloutWorld {
         dynamics.shake_previous = Vec2::ZERO;
         // The clone's AnimateVelocity is not initialized by DuplicateObject;
         // it homes where this pass's integration left it, on the next pass.
-        dynamics.init_tick = Some(self.tick + 1);
+        dynamics.init_tick = self.tick + 1;
         dynamics.appended = self.tick + 1;
         // actAsFloatingPlatformThisFrame is private (AnimateVelocity.cs:52): a
         // copy floats only if an effect's cast finds it after it spawns.
@@ -31923,7 +31925,7 @@ impl RolloutWorld {
             being_controlled: false,
             home_position: position,
             transform_rotation: None,
-            init_tick: Some(self.tick + 1),
+            init_tick: self.tick + 1,
             prefab: PlatformPrefab::Resizable,
             updaters: data::PlatformUpdater::pack(&data::get().platform.spawn_updaters),
             appended: self.tick + 1,
@@ -35045,7 +35047,7 @@ impl RolloutWorld {
         let tick = self.tick;
         let dynamics = &mut self.platform_dynamics[i];
         // A body instantiated this pass joins the Updater on the next.
-        if dynamics.init_tick.is_some_and(|t| t > tick) {
+        if dynamics.init_tick > tick {
             return;
         }
         if self.sudden_death || dynamics.sudden_death_delay.is_some() {
@@ -35147,7 +35149,7 @@ impl RolloutWorld {
             // same number: `floor(-x) = -ceil(x)` differs from `-floor(x)` by
             // a raw unit whenever the product has a fraction, which is almost
             // every tick. Keep the descent negative from the start.
-            let steps = (elapsed * accel).to_int().clamp(0, 5);
+            let steps = (elapsed * accel).floor_clamp(0, 5);
             let scale = speed_scale * Fix::from_int(2 << steps);
             let speed = curve.evaluate(elapsed - delay);
             let drop = -speed * scale * updater_dt;
@@ -35156,11 +35158,14 @@ impl RolloutWorld {
             // A body without a home spring falls instead (AnimateVelocity.cs:137-141):
             // SetGravityScale writes the rounded rect's own body and a
             // composite's combined body.
-            let composite = dynamics.attached_children != 0;
-            let own = if composite { dynamics.root_body } else { dynamics.body };
-            if dynamics.speed <= Fix::ZERO && own.gravity_scale == Fix::ZERO {
-                dynamics.body.gravity_scale = Fix::ONE;
-                dynamics.root_body.gravity_scale = Fix::ONE;
+            // Nearly every platform has a home spring: that test first.
+            if dynamics.speed <= Fix::ZERO {
+                let composite = dynamics.attached_children != 0;
+                let own = if composite { dynamics.root_body } else { dynamics.body };
+                if own.gravity_scale == Fix::ZERO {
+                    dynamics.body.gravity_scale = Fix::ONE;
+                    dynamics.root_body.gravity_scale = Fix::ONE;
+                }
             }
         }
     }
@@ -35881,7 +35886,7 @@ impl RolloutWorld {
             dynamics = &mut self.platform_dynamics[i];
         }
         debug_assert!(self.platforms[i].active);
-        if !dynamics.init_tick.is_some_and(|t| t > tick) {
+        if dynamics.init_tick <= tick {
             if sudden_death || dynamics.sudden_death_delay.is_some() {
                 self.platform_sink(data, updater_dt, i);
                 dynamics = &mut self.platform_dynamics[i];
@@ -36001,8 +36006,8 @@ impl RolloutWorld {
     fn init_appended_springs(&mut self) {
         for i in 0..self.platforms.len() {
             let dynamics = &mut self.platform_dynamics[i];
-            if dynamics.init_tick == Some(self.tick) {
-                dynamics.init_tick = None;
+            if dynamics.init_tick != 0 && dynamics.init_tick == self.tick {
+                dynamics.init_tick = 0;
                 dynamics.home_position = self.platforms[i].surface.center;
                 dynamics.being_controlled = false;
                 dynamics.sudden_death_delay = None;

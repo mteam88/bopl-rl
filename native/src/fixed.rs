@@ -161,6 +161,18 @@ impl Fix {
     pub const fn to_int(self) -> i64 {
         floor_i64(self.0)
     }
+    /// `to_int().clamp(lo, hi)` for `lo <= hi`: floor commutes with the
+    /// clamp (both monotone, the bounds integers), and the floor of a value
+    /// inside `[lo, hi]` converts without `to_int`'s saturation fix-ups.
+    #[inline]
+    pub fn floor_clamp(self, lo: i64, hi: i64) -> i64 {
+        debug_assert!(lo <= hi && !self.0.is_nan());
+        let clamped = self.0.max(lo as f64).min(hi as f64).floor();
+        // SAFETY: `clamped` is an integer in `[lo, hi]`, within i64.
+        let value = unsafe { clamped.to_int_unchecked::<i64>() };
+        debug_assert_eq!(value, self.to_int().clamp(lo, hi));
+        value
+    }
     /// `(Fix)0.2f` in the reference: scale and truncate toward zero onto the
     /// Q32.32 grid, so authored thresholds are the same number in both
     /// representations.
