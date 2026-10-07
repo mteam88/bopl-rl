@@ -4858,12 +4858,11 @@ struct PlatformScratch {
     /// The Updater hierarchy of the SlimeController updating now: 0 before
     /// the slimes' turns, `u32::MAX` after them (DetPhysics' callbacks).
     updater_hierarchy: u32,
-    /// The Circle/Box group's colliders, circles first, and its manifolds.
-    cb_parts: Vec<Part>,
+    /// The Circle/Box group's colliders with their layers, circles first,
+    /// and its manifolds.
+    cb_parts: Vec<(Part, u32)>,
     /// A group's parts as its pair loop reads them.
     group_parts: Vec<circle_box::GroupPart>,
-    /// A group's parts with their layers.
-    cb_layered: Vec<(Part, u32)>,
     /// The Circle/Box group's boxes that can pair with another, for the
     /// Box/Box group of the pass stamped (`box_box_group`).
     box_parts: Vec<circle_box::GroupPart>,
