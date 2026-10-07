@@ -173,6 +173,19 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     on the others in its call, and the culling reach only grows. The hash
     and writer_bench's rows hash are unchanged. Full writer: 11.07 to
     10.49 us (-5.2%).
+20. **Clang builds the writer.** train/build.py compiled binding.c (the
+    writer) with gcc -O3 and no -march. Clang -O3 -march=znver4
+    -ffp-contract=off (no FMA contraction, so exact: same env_bench hash on
+    test/100 and all/400) runs it faster. With 12 concurrent env_bench
+    copies, the full writer goes from 16.0 to 14.2 us (-11%) and the lite
+    writer from 7.0 to 5.5 us (-22%). Clang alone gives about 6% and -march
+    the rest; gcc with -march gives 4%, and GCC PGO of the writer 1%.
+    Clang's OpenMP needs libomp, which the gcc-linked extension lacks, so
+    binding.c builds without -fopenmp. Its one parallel loop is the
+    single-buffer cpu_step/gpu_step fallback, not the env pool, and it runs
+    serially to the same result. `make env-bench` builds the same way.
+    End to end (spec, 3 interleaved repeats): 347k to 360k sps (+3.7%),
+    every candidate run above every incumbent run.
 
 
 ## Cold caches in the trainer
@@ -233,8 +246,8 @@ sites, with no single structure to repack.
 
 ## Open
 
-- End-to-end (`BOPL_BENCH_WORKLOAD=spec train/bench_shape.sh`, at
-  7e8c0f27): 344k sps, 258k learner. Still env-bound. In the pool c_step
+- End-to-end (`BOPL_BENCH_WORKLOAD=spec train/bench_shape.sh`): 344k sps,
+  258k learner at 7e8c0f27; 360k with the clang writer. Still env-bound. In the pool c_step
   is 60.7 us (sim 38.0, finish 20.8); 12 concurrent env_bench copies
   reproduce it (sim 38.1, full 16.6), so judge changes there too.
 - With the full writer, the writer is now 34% of the env step.

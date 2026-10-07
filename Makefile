@@ -244,12 +244,13 @@ $(OUT)/writer_bench: eval/writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/writer_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
-# The trainer's c_step phases timed over a replay corpus (eval/env_bench.c).
+# The trainer's c_step phases timed over a replay corpus (eval/env_bench.c),
+# with the writer built as train/build.py builds the trainer's.
 env-bench: $(OUT)/env_bench
 
 $(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
+	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
 $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)

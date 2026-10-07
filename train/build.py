@@ -44,8 +44,16 @@ subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=
 # diff -ruN against the pristine overlay: cd artifacts/rl && diff -ruN
 # pristine-src puffer-overlay).
 subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
-subprocess.run(["cc", "-O3", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-I" + str(overlay),
-                "-I" + str(ABI), "-c", str(HERE / "binding.c"), "-o", str(out / "bopl_binding.o")], check=True)
+# binding.c holds the observation writer (bopl_puffer.h). Clang with
+# -march=znver4 runs it 11% faster than gcc -O3 under a busy env pool (the
+# lite writer 22%); -ffp-contract=off keeps it exact (no FMA contraction;
+# same env_bench hash). The trainer only runs on the PowerSpec's Zen 4. No
+# -fopenmp: clang's OpenMP needs libomp, the extension links gcc's libgomp, and
+# the one parallel loop left (the single-buffer cpu_step/gpu_step fallback,
+# not the trainer's env pool) runs serially to the same result.
+subprocess.run(["clang", "-O3", "-march=znver4", "-ffp-contract=off", "-fPIC", "-DPRECISION_FLOAT",
+                "-I" + str(overlay), "-I" + str(ABI), "-c", str(HERE / "binding.c"), "-o", str(out / "bopl_binding.o")],
+               check=True)
 subprocess.run(["cc", "-O3", "-std=c11", "-Wall", "-Wextra", "-Werror", "-fPIC", "-c",
                 str(ABI / "bopl_rl.c"), "-o", str(out / "bopl_rl.o")], check=True)
 target = source / "pufferlib" / ("_C" + sysconfig.get_config_var("EXT_SUFFIX"))
