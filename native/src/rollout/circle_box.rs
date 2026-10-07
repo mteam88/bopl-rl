@@ -18,6 +18,17 @@ pub(super) struct GroupPart {
 }
 
 impl GroupPart {
+    /// Bit-for-bit equality, for debug assertions.
+    #[cfg(debug_assertions)]
+    fn same(&self, other: &GroupPart) -> bool {
+        let bits = |b: Option<[Vec2; 2]>| b.map(|b| [b[0].x, b[0].y, b[1].x, b[1].y].map(|v| v.to_f64().to_bits()));
+        self.part == other.part
+            && self.rank.0.to_f64().to_bits() == other.rank.0.to_f64().to_bits()
+            && (self.rank.1, self.rank.2) == (other.rank.1, other.rank.2)
+            && self.layer == other.layer
+            && self.composite == other.composite
+            && bits(self.bounds) == bits(other.bounds)
+    }
     /// Whether the group builds this pair's manifold: not SameCompositeAs,
     /// on layers the collision matrix pairs, and paired by SortAndSweep.
     fn pairs(&self, other: &GroupPart, data: &data::RolloutData) -> bool {
@@ -866,6 +877,46 @@ impl RolloutWorld {
         self.collides(entity).then_some(self.entities[entity].kind == 0)
     }
 
+    /// The Circle/Box group's boxes, which are the Box/Box group's parts:
+    /// rocket engine and spike boxes, Guided Missiles, lit lightning, slime,
+    /// form and clone boxes, the Explosion boxes and the water.
+    fn push_box_parts(&self, parts: &mut Vec<Part>) {
+        for (i, engine) in self.engines.iter().enumerate() {
+            if self.child_registered(engine.entity) {
+                parts.push(Part::Engine(i));
+            }
+        }
+        for (i, spike) in self.spike_attacks.iter().enumerate() {
+            if self.child_registered(spike.entity) {
+                parts.push(Part::Spike(i));
+            }
+        }
+        for i in 0..self.guided_missiles.len() {
+            if self.guided_missile_live(i) {
+                parts.push(Part::Missile(i));
+            }
+        }
+        for i in 0..self.tesla_nodes.len() {
+            if self.line_part(i) {
+                parts.push(Part::Line(i));
+            }
+        }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(false) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(false) {
+                parts.push(Part::Clone(i));
+            }
+        }
+        self.push_blasts(parts, false);
+        if !self.part_destroyed(Part::Water) {
+            parts.push(Part::Water);
+        }
+    }
+
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
@@ -937,46 +988,21 @@ impl RolloutWorld {
         }
         self.push_blasts(&mut parts, true);
         let circles = parts.len();
-        for (i, engine) in self.engines.iter().enumerate() {
-            if self.child_registered(engine.entity) {
-                parts.push(Part::Engine(i));
-            }
-        }
-        for (i, spike) in self.spike_attacks.iter().enumerate() {
-            if self.child_registered(spike.entity) {
-                parts.push(Part::Spike(i));
-            }
-        }
-        for i in 0..self.guided_missiles.len() {
-            if self.guided_missile_live(i) {
-                parts.push(Part::Missile(i));
-            }
-        }
-        for i in 0..self.tesla_nodes.len() {
-            if self.line_part(i) {
-                parts.push(Part::Line(i));
-            }
-        }
-        for i in 0..self.players.len() {
-            if self.body_part_circle(i) == Some(false) {
-                parts.push(Part::Body(i));
-            }
-        }
-        for i in 0..self.abilityless_clones.len() {
-            if self.clone_part_circle(i) == Some(false) {
-                parts.push(Part::Clone(i));
-            }
-        }
-        self.push_blasts(&mut parts, false);
-        if !self.part_destroyed(Part::Water) {
-            parts.push(Part::Water);
-        }
+        self.push_box_parts(&mut parts);
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
         group.extend(parts.iter().map(|&part| self.group_part(part, data)));
         let (circle_parts, box_parts) = group.split_at(circles);
+        // The Box/Box group that follows has these boxes for its parts, in
+        // this order, and its pairs read nothing this group's corrections
+        // move: the parts' membership flags, rows' layers and kinds,
+        // composites, and the boxes SortAndSweep took (a lightning's and the
+        // water's, live, are triggers no group moves).
+        self.scratch.box_parts.clear();
+        self.scratch.box_parts.extend_from_slice(box_parts);
+        self.scratch.box_parts_tick = Some(self.tick);
         for circle in circle_parts {
             for part in box_parts {
                 // SameCompositeAs: a node never meets its own platform's
@@ -1329,43 +1355,24 @@ impl RolloutWorld {
     pub(super) fn box_box_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
-        for (i, engine) in self.engines.iter().enumerate() {
-            if self.child_registered(engine.entity) {
-                parts.push(Part::Engine(i));
-            }
-        }
-        for (i, spike) in self.spike_attacks.iter().enumerate() {
-            if self.child_registered(spike.entity) {
-                parts.push(Part::Spike(i));
-            }
-        }
-        for i in 0..self.guided_missiles.len() {
-            if self.guided_missile_live(i) {
-                parts.push(Part::Missile(i));
-            }
-        }
-        for i in 0..self.tesla_nodes.len() {
-            if self.line_part(i) {
-                parts.push(Part::Line(i));
-            }
-        }
-        for i in 0..self.players.len() {
-            if self.body_part_circle(i) == Some(false) {
-                parts.push(Part::Body(i));
-            }
-        }
-        for i in 0..self.abilityless_clones.len() {
-            if self.clone_part_circle(i) == Some(false) {
-                parts.push(Part::Clone(i));
-            }
-        }
-        self.push_blasts(&mut parts, false);
-        if !self.part_destroyed(Part::Water) {
-            parts.push(Part::Water);
-        }
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
-        group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+        // The Circle/Box group just took these parts (`box_parts`).
+        if self.scratch.box_parts_tick.take() == Some(self.tick) {
+            group.extend_from_slice(&self.scratch.box_parts);
+            #[cfg(debug_assertions)]
+            {
+                self.push_box_parts(&mut parts);
+                debug_assert_eq!(parts.len(), group.len());
+                for (&part, taken) in parts.iter().zip(group.iter()) {
+                    debug_assert!(self.group_part(part, data).same(taken));
+                }
+                parts.clear();
+            }
+        } else {
+            self.push_box_parts(&mut parts);
+            group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+        }
         sort_by_rank(&mut group);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
