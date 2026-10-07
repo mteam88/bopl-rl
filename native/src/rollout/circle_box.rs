@@ -2119,18 +2119,19 @@ impl RolloutWorld {
         (0..cloud_count).for_each(|_| layers.add(cloud_layer));
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
-        let pairing = |group: &mut Vec<GroupPart>, parts: &[(Part, u32)]| {
-            group.extend(
-                parts
-                    .iter()
-                    .filter(|&&(_, layer)| layers.meets_other(layer, data))
-                    .map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)),
-            )
-        };
         let cloud_at = ends[CC_CLOUDS] as usize;
-        pairing(&mut group, &parts[..cloud_at]);
-        let cloud_place = group.len();
-        pairing(&mut group, &parts[cloud_at..]);
+        let mut cloud_place = 0;
+        for (place, &(part, layer)) in parts.iter().enumerate() {
+            if place == cloud_at {
+                cloud_place = group.len();
+            }
+            if layers.meets_other(layer, data) {
+                group.push(self.group_part(part, layer, sweep_x, data));
+            }
+        }
+        if cloud_at == parts.len() {
+            cloud_place = group.len();
+        }
         if cloud_count > 0 && layers.meets_other(cloud_layer, data) {
             let partners = Self::cloud_partners(&group, data);
             self.insert_cloud_parts(&mut group, cloud_place, partners, sweep_x, data);
