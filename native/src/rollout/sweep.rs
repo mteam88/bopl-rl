@@ -348,8 +348,17 @@ impl RolloutWorld {
         }
     }
 
+    /// This pass's SortAndSweep boxes of the players' colliders, by player
+    /// (`swept_bounds` of a `Part::Body` or `Part::Rock`); None before the
+    /// pass's sweep, where `swept_bounds` takes each where it is.
     #[inline(always)]
-    fn swept_bounds_inlined(&self, collider: Swept) -> Option<[Vec2; 2]> {
+    pub(super) fn swept_players(&self) -> Option<&[[Vec2; 2]]> {
+        let sweep = self.scratch.sweep.as_deref().filter(|sweep| sweep.tick == Some(self.tick))?;
+        Some(&sweep.players)
+    }
+
+    #[inline(always)]
+    pub(super) fn swept_bounds_inlined(&self, collider: Swept) -> Option<[Vec2; 2]> {
         let Some(sweep) = self.scratch.sweep.as_deref().filter(|sweep| sweep.tick == Some(self.tick)) else {
             return Some(self.current_bounds(collider, data::get()));
         };

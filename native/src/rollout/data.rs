@@ -1385,6 +1385,9 @@ pub struct MapDef {
     /// 270), not by their order in the scene file.
     pub update_order: Vec<usize>,
     pub water: Option<(Vec2, Vec2, u32)>,
+    /// The water's box (`water_box`), as SortAndSweep bounds the static
+    /// trigger every pass.
+    pub water_bounds: Option<[Vec2; 2]>,
     pub level_type: u32,
     pub team_spawns: Vec<Vec2>,
     pub teammate_spacing: Fix,
@@ -2507,6 +2510,11 @@ fn body(raw: &RawBody, orientation: Fix) -> crate::physics::Body {
     }
 }
 
+/// The scene's water DPhysicsBox, from its `MapDef::water`.
+pub fn water_box((position, extents, _): (Vec2, Vec2, u32)) -> crate::geometry::OrientedBox {
+    crate::geometry::OrientedBox::from_basis(position, Vec2::RIGHT, surface_extents(extents))
+}
+
 /// The perimeter extents `StickyRoundedRectangle.UpdateBounds` derives from a
 /// collider built with these half-extents: `One / (One / extents)` per axis
 /// (`DPhysicsRoundedRect.CalcExtents`, `Box.UpdateExtents`).
@@ -2654,13 +2662,12 @@ fn map_def(raw: &RawMap) -> MapDef {
     ];
     let mut update_order: Vec<usize> = (0..platforms.len()).collect();
     update_order.sort_by_key(|&i| platforms[i].hierarchy);
+    let water = raw.water.as_ref().map(|water| (water.position.get(), water.extents.get(), water.hierarchy));
     MapDef {
         platforms,
         update_order,
-        water: raw
-            .water
-            .as_ref()
-            .map(|water| (water.position.get(), water.extents.get(), water.hierarchy)),
+        water,
+        water_bounds: water.map(|water| crate::physics::shape::Collider::Box(water_box(water)).bounds()),
         level_type: raw.session.level_type,
         team_spawns,
         teammate_spacing: Fix::from_raw(raw.session.teammate_spacing),
