@@ -9531,10 +9531,10 @@ impl RolloutWorld {
         Some(pending.get(pos as usize).copied().unwrap_or((u32::MAX, u32::MAX, u32::MAX)))
     }
 
-    /// Checks that a walk to `before` the summary skips would queue nothing
-    /// but smoke clouds.
+    /// Checks that a walk to `before` the summary skips would queue nothing,
+    /// or with `clouds` nothing but smoke clouds.
     #[cfg(debug_assertions)]
-    fn check_walk_skip(&self, cursor: UpdaterKey, before: UpdaterKey) {
+    fn check_walk_skip(&self, cursor: UpdaterKey, before: UpdaterKey, clouds: bool) {
         self.check_walk_pending(cursor);
         let tick = self.tick;
         let mut full = Vec::new();
@@ -9544,6 +9544,12 @@ impl RolloutWorld {
             }
         });
         debug_assert!(full.is_empty(), "the walk summary skipped {full:?}");
+        for cloud in &self.smoke_clouds {
+            if !clouds && cloud.active && cloud.appended <= tick {
+                let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
+                debug_assert!(key < cursor || key >= before, "a walk skipped a smoke cloud at {key:?}");
+            }
+        }
     }
 
     /// Checks `walk_pending`, while it stands, against a fresh scan: it
@@ -9583,19 +9589,50 @@ impl RolloutWorld {
     /// each of their objects first runs this walk to its own turn.
     #[inline]
     fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: UpdaterKey) {
-        // Nearly every walk finds nothing, and with no smoke cloud and no
-        // player object on the summary tells so without a scan.
-        if self.smoke_clouds.is_empty() && self.scratch.walk_awake & WALK_PLAYERS == 0 {
+        // Nearly every walk finds nothing, and with no player object on the
+        // summary tells so without a scan, and the smoke clouds' keys.
+        if self.scratch.walk_awake & WALK_PLAYERS == 0 {
             let tick = self.tick;
             let cursor = if self.scratch.updater_cursor.0 == tick { self.scratch.updater_cursor.1 } else { (0, 0, 0) };
-            if self.walk_pending_next(cursor).is_some_and(|next| next >= before) {
+            if self.walk_pending_next(cursor).is_some_and(|next| next >= before)
+                && (self.smoke_clouds.is_empty() || self.no_cloud_before(cursor, before))
+            {
                 #[cfg(debug_assertions)]
-                self.check_walk_skip(cursor, before);
+                self.check_walk_skip(cursor, before, false);
                 self.updater_pass_to(before);
                 return;
             }
         }
         self.spawned_walk_before(data, updater_dt, before);
+    }
+
+    /// Whether no smoke cloud slot, on or off, is keyed in [cursor, before).
+    #[inline(never)]
+    fn no_cloud_before(&mut self, cursor: UpdaterKey, before: UpdaterKey) -> bool {
+        self.refresh_cloud_keys();
+        let from = self.cloud_walk_from(cursor);
+        self.scratch.cloud_keys.get(from).is_none_or(|&packed| unpack_keyed(packed).0 >= before)
+    }
+
+    /// The first slot in `cloud_keys` at or past Updater's place `cursor`
+    /// on this pass, from where the last walk this pass started
+    /// (`cloud_walk`), which it moves on to there.
+    #[inline(always)]
+    fn cloud_walk_from(&mut self, cursor: UpdaterKey) -> usize {
+        let tick = self.tick;
+        let clouds = &self.scratch.cloud_keys;
+        let start = pack_keyed(cursor, 0);
+        let epoch = self.scratch.cloud_keys_epoch;
+        let (walk_tick, walk_epoch, walk_from) = self.scratch.cloud_walk;
+        let from = if walk_tick == tick && walk_epoch == epoch {
+            let from = walk_from as usize;
+            from + clouds[from..].iter().position(|&packed| packed >= start).unwrap_or(clouds.len() - from)
+        } else {
+            clouds.partition_point(|&packed| packed < start)
+        };
+        debug_assert_eq!(from, clouds.partition_point(|&packed| packed < start));
+        self.scratch.cloud_walk = (tick, epoch, from as u32);
+        from
     }
 
     /// `run_spawned_before`'s walk, past its summary test.
@@ -9646,19 +9683,8 @@ impl RolloutWorld {
         // runs this walk: only those keyed in [cursor, before) can queue.
         // The place the last walk this pass started from is where to look
         // on from (`cloud_walk`).
-        let clouds = &self.scratch.cloud_keys;
-        let start = pack_keyed(cursor, 0);
-        let epoch = self.scratch.cloud_keys_epoch;
-        let (walk_tick, walk_epoch, walk_from) = self.scratch.cloud_walk;
-        let from = if walk_tick == tick && walk_epoch == epoch {
-            let from = walk_from as usize;
-            from + clouds[from..].iter().position(|&packed| packed >= start).unwrap_or(clouds.len() - from)
-        } else {
-            clouds.partition_point(|&packed| packed < start)
-        };
-        debug_assert_eq!(from, clouds.partition_point(|&packed| packed < start));
-        self.scratch.cloud_walk = (tick, epoch, from as u32);
-        for &packed in &clouds[from..] {
+        let from = self.cloud_walk_from(cursor);
+        for &packed in &self.scratch.cloud_keys[from..] {
             let (key, i) = unpack_keyed(packed);
             if key >= if AHEAD { ahead } else { before } {
                 break;
@@ -9682,7 +9708,7 @@ impl RolloutWorld {
         if summary {
             #[cfg(debug_assertions)]
             {
-                self.check_walk_skip(cursor, before);
+                self.check_walk_skip(cursor, before, true);
                 let mut full_busy = false;
                 self.walk_scan(tick, awake, &mut |key, kind, _| {
                     full_busy |= kind & WALK_SUMMARY_ONLY == 0 && AHEAD && key.0 <= tick && key > before && key < ahead;
