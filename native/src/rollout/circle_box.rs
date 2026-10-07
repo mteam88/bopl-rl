@@ -498,14 +498,11 @@ impl RolloutWorld {
     /// A wall's place in SortAndSweep's order, from the collider the
     /// broadphase bounded.
     pub(super) fn wall_rank(&self, platform: usize) -> SweepRank {
-        let swept = self
-            .scratch
-            .callback_colliders
-            .get(platform)
-            .filter(|_| self.scratch.callback_tick == Some(self.tick))
-            .copied()
-            .unwrap_or_else(|| self.circle_collider(platform));
-        let min = Collider::RoundedRect(swept).bounds()[0];
+        // `callback_bounds` holds the box of each `callback_colliders` wall.
+        let min = match self.scratch.callback_bounds.get(platform).filter(|_| self.scratch.callback_tick == Some(self.tick)) {
+            Some(bounds) => bounds[0],
+            None => Collider::RoundedRect(self.circle_collider(platform)).bounds()[0],
+        };
         let entity = Some(self.platform_entities[platform]);
         sweep_rank(&self.entities, if self.sweep_x() { min.x } else { min.y }, entity)
     }
@@ -1222,6 +1219,10 @@ impl RolloutWorld {
             }
         }
         contacts.sort_by_key(|&(key, ..)| key);
+        // A wall `walls` leaves out is read live up to the resolutions, which
+        // are the first to move one.
+        #[cfg(debug_assertions)]
+        let live_walls: Vec<RoundedRect> = self.platforms.iter().map(|p| p.collider).collect();
         for &(key, part, wall, contact) in &contacts {
             // collision.layer is the wall's own layer (DetPhysics.cs:2405-2437).
             let layer = self.entities[self.platform_entities[wall]].layer;
@@ -1290,6 +1291,14 @@ impl RolloutWorld {
                 _ => continue,
             };
             self.scratch.callback_hits.push((key, hit));
+        }
+        #[cfg(debug_assertions)]
+        for (wall, before) in live_walls.iter().enumerate() {
+            let bits = |r: &RoundedRect| {
+                [r.inner.center.x, r.inner.center.y, r.inner.right.x, r.inner.right.y, r.inner.up.x, r.inner.up.y, r.radius]
+                    .map(|v| v.to_f64().to_bits())
+            };
+            debug_assert_eq!(bits(before), bits(&self.platforms[wall].collider));
         }
         for &(_, part, wall, contact) in &contacts {
             self.resolve_part_wall(part, wall, contact);

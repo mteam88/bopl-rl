@@ -4818,9 +4818,11 @@ struct PlatformScratch {
     callback_colliders: Vec<RoundedRect>,
     /// Their bounding boxes, as SortAndSweep took them, by wall.
     callback_bounds: Vec<[Vec2; 2]>,
-    /// The walls as the Box/RoundedRect narrow phase copies them, after the
-    /// RoundedRect/RoundedRect positional corrections.
-    box_callback_colliders: Vec<RoundedRect>,
+    /// Every wall, active or not, as `platform_pairs` last sorted them: by
+    /// its `callback_bounds` low edge on the sweep axis, then by index. Each
+    /// pass sorts afresh from the last pass's order, which the walls seldom
+    /// change; any order of the walls gives the same sort.
+    wall_order: Vec<usize>,
     /// The walls when the Circle/RoundedRect narrow phase builds every
     /// manifold, before any of that group's corrections move them.
     circle_colliders: Vec<RoundedRect>,
@@ -7101,12 +7103,19 @@ impl RolloutWorld {
     /// The sweep axis, and the one SortAndSweep*_ropes sweeps: the rounded
     /// rectangles' share of the same variance, every RoundedRect's
     /// collider counted, active or not (sweepX_roundedRectanglesOnly).
+    #[inline(always)]
     fn sweep_axes(&self) -> (bool, bool) {
         // Simulate picks the axes once, from the colliders as integrated;
         // the corrections that follow do not change them for the pass.
         if self.scratch.callback_tick == Some(self.tick) {
             return (self.scratch.callback_sweep_x, self.scratch.callback_rounded_sweep_x);
         }
+        self.sweep_axes_now()
+    }
+
+    /// `sweep_axes` from the colliders where they are now.
+    #[inline(never)]
+    fn sweep_axes_now(&self) -> (bool, bool) {
         let mut mean = Vec2::ZERO;
         let mut active_count = 0usize;
         for platform in &self.platforms {
@@ -7115,13 +7124,29 @@ impl RolloutWorld {
                 active_count += 1;
             }
         }
-        for entity in self
-            .entities
-            .iter()
-            .filter(|entity| entity.kind < 2 && row_is_active(entity))
-        {
-            mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
-            active_count += 1;
+        // One scan of the rows sums the active circles and boxes and keeps,
+        // in row order, the registered ones' places for the spread; past
+        // the buffer's room, the spread scans the rows again.
+        const ROOM: usize = 64;
+        let mut registered = [Vec2::ZERO; ROOM];
+        let mut kept = 0;
+        for entity in self.entities.iter().filter(|entity| entity.kind < 2) {
+            let active = row_is_active(entity);
+            let live = entity.flags & E_REMOVED == 0;
+            if !(active || live) {
+                continue;
+            }
+            let position = Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            if active {
+                mean += position;
+                active_count += 1;
+            }
+            if live {
+                if kept < ROOM {
+                    registered[kept] = position;
+                }
+                kept += 1;
+            }
         }
         if active_count != 0 {
             mean = mean / Fix::from_int(active_count as i64);
@@ -7132,13 +7157,16 @@ impl RolloutWorld {
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
         let rounded_sweep_x = variance.x > variance.y;
-        for entity in self
-            .entities
-            .iter()
-            .filter(|entity| entity.kind < 2 && entity.flags & E_REMOVED == 0)
-        {
-            let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+        let mut spread = |position: Vec2| {
+            let delta = mean - position;
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        };
+        if kept <= ROOM {
+            registered[..kept].iter().for_each(|&position| spread(position));
+        } else {
+            for entity in self.entities.iter().filter(|entity| entity.kind < 2 && entity.flags & E_REMOVED == 0) {
+                spread(Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y)));
+            }
         }
         (variance.x > variance.y, rounded_sweep_x)
     }
@@ -34434,9 +34462,6 @@ impl RolloutWorld {
     /// and `scratch.callback_bounds` the platforms' boxes, just taken.
     fn platform_pairs(platforms: &[Platform], scratch: &mut PlatformScratch, sweep_x: bool) {
         scratch.pairs.clear();
-        if platforms.len() < 2 {
-            return;
-        }
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         // Each platform's box, from the collider it holds now.
@@ -34450,46 +34475,95 @@ impl RolloutWorld {
             );
         }
         debug_assert_eq!(bounds.len(), platforms.len());
-        // The sweep on the stack: the active platforms are a handful, so an
-        // insertion sort as they are read puts them in order (after every
-        // equal minimum, so by index among ties, the comparator's order
-        // without a NaN), and the window is compacted in place as it is
-        // walked. A NaN minimum or a crowd takes the general sweep.
+        // The sweep on the stack: the walls are a handful, so an insertion
+        // sort of last pass's order by (minimum, index), nearly sorted
+        // already, gives the comparator's order without a NaN (by index
+        // among equal minima), and the window is compacted in place as it
+        // is walked. A NaN minimum or a crowd takes the general sweep.
         const CAP: usize = 32;
-        let mut order = [(Fix::ZERO, 0usize); CAP];
-        let mut count = 0;
-        for (index, platform) in platforms.iter().enumerate() {
-            if !platform.active {
-                continue;
+        let count = platforms.len();
+        let order = &mut scratch.wall_order;
+        if order.len() != count {
+            order.clear();
+            order.extend(0..count);
+        }
+        let general = |scratch: &mut PlatformScratch| {
+            if count >= 2 {
+                Self::platform_sweep_pairs(
+                    platforms,
+                    &scratch.callback_bounds,
+                    sweep_x,
+                    &mut scratch.keyed,
+                    &mut scratch.window,
+                    &mut scratch.pairs,
+                );
             }
+        };
+        if count > CAP {
+            general(scratch);
+            return;
+        }
+        let mut keys = [(Fix::ZERO, 0usize); CAP];
+        let mut nan = false;
+        for (key, &index) in keys.iter_mut().zip(order.iter()) {
             let min = axis(bounds[index][0]);
-            if count == CAP || min.to_f64().is_nan() {
-                Self::platform_sweep_pairs(platforms, bounds, sweep_x, &mut scratch.keyed, &mut scratch.window, &mut scratch.pairs);
-                return;
-            }
-            let mut place = count;
-            while place > 0 && order[place - 1].0 > min {
-                order[place] = order[place - 1];
+            nan |= min.to_f64().is_nan();
+            *key = (min, index);
+        }
+        if nan {
+            general(scratch);
+            return;
+        }
+        let mut moved = false;
+        for k in 1..count {
+            let key = keys[k];
+            let mut place = k;
+            while place > 0 && (keys[place - 1].0 > key.0 || (keys[place - 1].0 == key.0 && keys[place - 1].1 > key.1)) {
+                keys[place] = keys[place - 1];
                 place -= 1;
             }
-            order[place] = (min, index);
-            count += 1;
+            if place != k {
+                keys[place] = key;
+                moved = true;
+            }
+        }
+        if moved {
+            for (slot, key) in order.iter_mut().zip(keys.iter()) {
+                *slot = key.1;
+            }
+        }
+        // The active walls' edges in that order, so the window walk reads
+        // its own arrays rather than each box by index.
+        let (mut low, mut high, mut other_low, mut other_high) = ([Fix::ZERO; CAP], [Fix::ZERO; CAP], [Fix::ZERO; CAP], [Fix::ZERO; CAP]);
+        let mut walls = [0usize; CAP];
+        let mut active = 0;
+        for &(min, index) in &keys[..count] {
+            if !platforms[index].active {
+                continue;
+            }
+            let b = bounds[index];
+            low[active] = min;
+            high[active] = axis(b[1]);
+            other_low[active] = other(b[0]);
+            other_high[active] = other(b[1]);
+            walls[active] = index;
+            active += 1;
         }
         let pairs = &mut scratch.pairs;
         let mut window = [0usize; CAP];
         let mut open = 0;
-        for &(min, b) in &order[..count] {
-            let (low, high) = (other(bounds[b][0]), other(bounds[b][1]));
+        for b in 0..active {
+            let (min, low_b, high_b) = (low[b], other_low[b], other_high[b]);
             let mut kept = 0;
             for w in 0..open {
                 let a = window[w];
-                if axis(bounds[a][1]) > min {
+                if high[a] > min {
                     window[kept] = a;
                     kept += 1;
                     // IdPair(active, current): the body that entered the
                     // sweep first is collider A (DetPhysics.cs:2169-2236).
-                    if !(other(bounds[a][1]) <= low || other(bounds[a][0]) >= high) {
-                        pairs.push([a, b]);
+                    if !(other_high[a] <= low_b || other_low[a] >= high_b) {
+                        pairs.push([walls[a], walls[b]]);
                     }
                 }
             }
@@ -34499,8 +34573,13 @@ impl RolloutWorld {
         #[cfg(debug_assertions)]
         {
             let mut swept = Vec::new();
-            Self::platform_sweep_pairs(platforms, bounds, sweep_x, &mut Vec::new(), &mut Vec::new(), &mut swept);
+            if count >= 2 {
+                Self::platform_sweep_pairs(platforms, bounds, sweep_x, &mut Vec::new(), &mut Vec::new(), &mut swept);
+            }
             debug_assert_eq!(swept, scratch.pairs);
+            let mut sorted: Vec<usize> = (0..count).collect();
+            sorted.sort_by_key(|&index| (axis(bounds[index][0]), index));
+            debug_assert_eq!(sorted, scratch.wall_order);
         }
     }
 
@@ -36801,10 +36880,6 @@ impl RolloutWorld {
                 }
             }
         }
-        scratch.box_callback_colliders.clear();
-        scratch
-            .box_callback_colliders
-            .extend(self.platforms.iter().map(|p| p.collider));
         // SortAndSweep bounds every collider here: the RoundedRect
         // corrections above moved the walls and composite roots, not their
         // children's colliders.
@@ -36855,9 +36930,9 @@ impl RolloutWorld {
                 parts.push(Part::Clone(i));
             }
         }
-        let walls = std::mem::take(&mut self.scratch.box_callback_colliders);
-        self.wall_group(GROUP_BOX_RR, &parts, &walls, data);
-        self.scratch.box_callback_colliders = walls;
+        // The walls as the narrow phase copies them are the walls now: nothing
+        // moves one from the corrections above until the group resolves.
+        self.wall_group(GROUP_BOX_RR, &parts, &[], data);
         self.scratch.wall_parts = parts;
 
         // Riders follow in game_tick's late phase. PlatformTransform itself is

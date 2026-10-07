@@ -146,21 +146,34 @@ impl RolloutWorld {
                 {
                     sweep.taken[i] = true;
                 }
-                rows[i] = self.row_collider(i).map_or_else(|| self.row_shape_bounds(i), collider_bounds);
+                // A row's own collider is its shape, so its box is the
+                // shape's whether or not the row is in DetPhysics.
+                rows[i] = self.row_shape_bounds(i);
+                debug_assert!(
+                    rows[i] == self.row_collider(i).map_or_else(|| self.row_shape_bounds(i), collider_bounds)
+                );
             }
         };
-        self.smoke_clouds.iter().for_each(|cloud| take(cloud.entity));
-        self.grenade_explosions.iter().for_each(|blast| take(blast.entity));
-        self.missile_explosions.iter().for_each(|blast| take(blast.entity));
-        self.smoke_explosions.iter().for_each(|blast| take(blast.entity));
-        self.meteor_smears.iter().for_each(|blast| take(blast.entity));
-        self.beam_orbs.iter().for_each(|orb| take(orb.entity));
+        // A row is read back only for a part of this pass's groups, and each
+        // of those needs its owner active (`cloud_part`, `blast_part`): a
+        // Drill's boxes only for the active slot of a player in Drill. Nothing
+        // between here and the groups activates a cloud, a blast or an orb or
+        // changes a player's ability, so the inactive ones are left untaken
+        // (debug builds check every row read was taken).
+        let live = |active: bool, entity: Option<usize>| entity.filter(|_| active);
+        self.smoke_clouds.iter().for_each(|cloud| take(live(cloud.active, cloud.entity)));
+        self.grenade_explosions.iter().for_each(|blast| take(live(blast.active, blast.entity)));
+        self.missile_explosions.iter().for_each(|blast| take(live(blast.active, blast.entity)));
+        self.smoke_explosions.iter().for_each(|blast| take(live(blast.active, blast.entity)));
+        self.meteor_smears.iter().for_each(|blast| take(live(blast.active, blast.entity)));
+        self.beam_orbs.iter().for_each(|orb| take(live(orb.active, orb.entity)));
         for slot in &self.players {
-            for hitboxes in &slot.drill_hitbox_entities {
-                for &entity in hitboxes {
-                    if entity != usize::MAX {
-                        take(Some(entity));
-                    }
+            if slot.active != ActiveAbility::Drill {
+                continue;
+            }
+            for &entity in &slot.drill_hitbox_entities[slot.active_slot] {
+                if entity != usize::MAX {
+                    take(Some(entity));
                 }
             }
         }
