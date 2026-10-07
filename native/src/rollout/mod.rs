@@ -3030,7 +3030,7 @@ pub enum PlatformPrefab {
     Boulder,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PlatformPass {
     Authored,
     Duplicated,
@@ -4716,7 +4716,6 @@ enum HoleTarget {
 /// are meaningless between ticks; never copied by `fork_from`).
 #[derive(Default)]
 struct PlatformScratch {
-    others: Vec<Vec2>,
     bounds: Vec<[Vec2; 2]>,
     active: Vec<usize>,
     keyed: Vec<(Fix, usize)>,
@@ -4946,6 +4945,10 @@ pub struct RolloutWorld {
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
     /// usize::MAX for spawned (ability) platforms.
     pub platform_defs: Vec<usize>,
+    /// Parallel to `platforms`: what each platform is, fixed when it is
+    /// pushed. `platform_pass` reads it here rather than from the far wider
+    /// `platform_dynamics`; a Duplicator copy's pass still depends on ropes.
+    platform_kinds: Vec<PlatformPass>,
     /// Parallel to `platforms`: index into the entity table.
     pub platform_entities: Vec<usize>,
     /// The scene water's row, registered with the map.
@@ -5154,6 +5157,7 @@ impl RolloutWorld {
             scratch: PlatformScratch::new(),
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
+            platform_kinds: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
             water_entity: None,
             arrows: Vec::with_capacity(64),
@@ -5270,6 +5274,7 @@ impl RolloutWorld {
         self.platform_rows_epoch = src.platform_rows_epoch;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
+        self.platform_kinds.clone_from(&src.platform_kinds);
         self.platform_entities.clone_from(&src.platform_entities);
         self.water_entity = src.water_entity;
         self.arrows.clone_from(&src.arrows);
@@ -5386,6 +5391,7 @@ impl RolloutWorld {
             scratch: _,
             platform_dynamics: _,
             platform_defs: _,
+            platform_kinds: _,
             platform_entities: _,
             water_entity: _,
             arrows: _,
@@ -5589,6 +5595,7 @@ impl RolloutWorld {
         self.platform_dynamics.clear();
         self.platforms_changed();
         self.platform_defs.clear();
+        self.platform_kinds.clear();
         self.platform_entities.clear();
         self.water_entity = None;
         self.entities.clear();
@@ -6181,6 +6188,7 @@ impl RolloutWorld {
             });
             self.platforms_changed();
             self.platform_defs.push(index);
+            self.platform_kinds.push(PlatformPass::Authored);
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
             if p.orbit.is_some() {
@@ -18986,6 +18994,7 @@ impl RolloutWorld {
             start_radius: radius,
         });
         self.platform_defs.push(usize::MAX);
+        self.platform_kinds.push(PlatformPass::Spawned);
         self.platform_entities.push(entity);
         self.platforms_changed();
         let state = MachoBoulder {
@@ -30410,6 +30419,7 @@ impl RolloutWorld {
         self.platforms.push(platform);
         self.platform_dynamics.push(dynamics);
         self.platform_defs.push(definition);
+        self.platform_kinds.push(PlatformPass::Duplicated);
         self.platform_entities.push(entity);
         // The copy's AntiLockPlatform orbits too, from its first waypoint
         // (AntiLockPlatform.cs:17-23).
@@ -31149,6 +31159,7 @@ impl RolloutWorld {
         });
         self.next_platform_id += 1;
         self.platform_defs.push(usize::MAX);
+        self.platform_kinds.push(PlatformPass::Spawned);
         self.platform_entities.push(entity);
         // CreatePlatform immediately calls ResizePlatform with the collider's
         // CalcExtents and radius after ManualInit (PlatformTransform.cs:164-165).
@@ -31336,6 +31347,7 @@ impl RolloutWorld {
         self.platforms.remove(index);
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
+        self.platform_kinds.remove(index);
         self.platform_entities.remove(index);
         self.platforms_changed();
         self.orbits.retain(|orbit| orbit.0 != index);
@@ -33977,21 +33989,14 @@ impl RolloutWorld {
         self.entities[entity].flags &= !E_ENABLED;
     }
 
-    /// Stable rounded-rectangle broad phase, matching the RR subset of the
-    /// generic DetPhysics sweep (strict touching-edge rejection included).
-    fn platform_pairs(platforms: &[Platform], entities: &[CEntity], scratch: &mut PlatformScratch) {
-        scratch.pairs.clear();
-        if platforms.len() < 2 {
-            return;
-        }
-        // DetPhysics picks the sweep axis from every registered collider:
-        // the mean over the active ones, the spread over all of them,
-        // including frozen inactive hurtboxes (DetPhysics.cs:2827-2894).
-        // Beam trace rows are not colliders.
-        // Rounded rectangles have just integrated; the other rows were
-        // synced by `refresh_actor_entities`.
-        let others = &mut scratch.others;
-        others.clear();
+    /// The sweep axis as DetPhysics picks it from every registered
+    /// collider: the mean over the active ones, the spread over all of them,
+    /// including frozen inactive hurtboxes (DetPhysics.cs:2827-2894); beam
+    /// trace rows are not colliders. `sweep_axes` computes the same; this
+    /// copy checks it where `platform_pairs` used to compute its own.
+    #[cfg(debug_assertions)]
+    fn platform_sweep_x(platforms: &[Platform], entities: &[CEntity]) -> bool {
+        let mut others = Vec::new();
         others.extend(
             entities
                 .iter()
@@ -34028,7 +34033,17 @@ impl RolloutWorld {
             let delta = mean - Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y));
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
-        let sweep_x = variance.x > variance.y;
+        variance.x > variance.y
+    }
+
+    /// Stable rounded-rectangle broad phase, matching the RR subset of the
+    /// generic DetPhysics sweep (strict touching-edge rejection included).
+    /// `sweep_x` is `sweep_axes().0`, taken just before with nothing moved.
+    fn platform_pairs(platforms: &[Platform], scratch: &mut PlatformScratch, sweep_x: bool) {
+        scratch.pairs.clear();
+        if platforms.len() < 2 {
+            return;
+        }
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         let bounds = &mut scratch.bounds;
@@ -34727,12 +34742,19 @@ impl RolloutWorld {
     /// list, so the copy keeps the same pass on both walks.
     #[inline]
     fn platform_pass(&self, i: usize) -> PlatformPass {
-        if self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some() {
-            self.duplicate_pass(i)
-        } else if self.platform_defs[i] == usize::MAX {
-            PlatformPass::Spawned
-        } else {
-            PlatformPass::Authored
+        debug_assert_eq!(
+            self.platform_kinds[i],
+            if self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some() {
+                PlatformPass::Duplicated
+            } else if self.platform_defs[i] == usize::MAX {
+                PlatformPass::Spawned
+            } else {
+                PlatformPass::Authored
+            }
+        );
+        match self.platform_kinds[i] {
+            PlatformPass::Duplicated => self.duplicate_pass(i),
+            kind => kind,
         }
     }
 
@@ -36236,7 +36258,11 @@ impl RolloutWorld {
 
         // RR-only sweep/narrow-phase. Contacts are all captured before any
         // impulse or correction, just like DetPhysics' collision buffer.
-        Self::platform_pairs(&self.platforms, &self.entities, scratch);
+        #[cfg(debug_assertions)]
+        if self.platforms.len() >= 2 && self.platforms.iter().any(|platform| platform.active) {
+            debug_assert_eq!(sweep_x, Self::platform_sweep_x(&self.platforms, &self.entities));
+        }
+        Self::platform_pairs(&self.platforms, scratch, sweep_x);
         scratch.contacts.clear();
         for &[a, b] in &scratch.pairs {
             if let Some(contact) = crate::physics::contact::rounded_rounded(

@@ -231,6 +231,24 @@ sim was the C#-order Updater scheduler from the fidelity merge.
     squared distance is not below the best so far. sqrt and the radius
     subtraction are monotone, so the chosen sample is unchanged, NaN
     included. The writer gets about 0.3% faster, and the hash is unchanged.
+23. **v9: platform bookkeeping and read-back-only sweep rows.** On the 30
+    pgo-train games, instructions fall from 12.42G to 11.71G (-5.7%).
+    - `platform_kinds` keeps each platform's `PlatformPass` next to the
+      platform list, updated wherever a platform is pushed, removed or
+      cleared, so `platform_pass` is a load, not a derivation. A
+      debug_assert checks it against the old derivation. This saves 1%.
+    - `platform_pairs` takes its sweep axis from `sweep_axes`, which
+      platforms_tick has just computed from the same centers, rather than
+      recomputing the mean and variance. A debug build checks that the two
+      agree.
+    - `take_sweep` fills only the rows `swept_bounds` reads back (smoke
+      clouds, the blast boxes, Meteor smears, beam orbs and Drill
+      hitboxes), not one per entity. A debug-only `taken` mask asserts
+      that every row read was filled. Together with the axis reuse, this
+      saves another 4.8%.
+    The hash is unchanged, and the debug-assertions exact gate passes
+    (12,400 games). In the trainer (3 interleaved repeats at load ~12),
+    the sim time moves within noise.
 
 
 ## Cold caches in the trainer

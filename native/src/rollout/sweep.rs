@@ -39,6 +39,9 @@ pub(super) struct SweepBounds {
     rows: Vec<[Vec2; 2]>,
     /// take_sweep's rows some pool could own.
     owned: Vec<bool>,
+    /// The rows take_sweep bounded; `rows` holds NOWHERE for the rest.
+    #[cfg(debug_assertions)]
+    taken: Vec<bool>,
 }
 
 /// A box that overlaps nothing, for a collider out of the sweep.
@@ -118,16 +121,39 @@ impl RolloutWorld {
         self.thrown_items.iter().for_each(|item| mark(item.entity));
         self.players.iter().for_each(|slot| mark(Some(Self::hurtbox_entity(slot))));
         // Only a smoke cloud's or a blast's row is read back (`swept_bounds`),
-        // and no pool above owns one, so an owned row keeps NOWHERE.
+        // and no pool above owns one, so an owned row keeps NOWHERE. Rows
+        // are only ever appended, so one a cloud or blast takes later in the
+        // pass is past `rows` and reads None either way: bound just the rows
+        // those pools hold now.
         let owned = &sweep.owned;
-        sweep.rows.clear();
-        sweep.rows.extend((0..self.entities.len()).map(|i| {
-            if owned[i] {
-                NOWHERE
-            } else {
-                self.row_collider(i).map_or_else(|| self.row_shape_bounds(i), collider_bounds)
+        let rows = &mut sweep.rows;
+        rows.clear();
+        rows.resize(self.entities.len(), NOWHERE);
+        #[cfg(debug_assertions)]
+        {
+            sweep.taken.clear();
+            sweep.taken.resize(self.entities.len(), false);
+        }
+        let mut take = |entity: Option<usize>| {
+            if let Some(i) = entity.filter(|&i| i < owned.len() && !owned[i]) {
+                rows[i] = self.row_collider(i).map_or_else(|| self.row_shape_bounds(i), collider_bounds);
+                #[cfg(debug_assertions)]
+                {
+                    sweep.taken[i] = true;
+                }
             }
-        }));
+        };
+        self.smoke_clouds.iter().for_each(|cloud| take(cloud.entity));
+        self.grenade_explosions.iter().for_each(|blast| take(blast.entity));
+        self.missile_explosions.iter().for_each(|blast| take(blast.entity));
+        self.smoke_explosions.iter().for_each(|blast| take(blast.entity));
+        self.meteor_smears.iter().for_each(|blast| take(blast.entity));
+        self.beam_orbs.iter().for_each(|orb| take(orb.entity));
+        for slot in &self.players {
+            for &entity in slot.drill_hitbox_entities.iter().flatten() {
+                take(Some(entity).filter(|&entity| entity != usize::MAX));
+            }
+        }
     }
 
     /// The collider's bounding box where it is now.
@@ -246,6 +272,8 @@ impl RolloutWorld {
             Swept::Part(Part::Clone(i)) => sweep.clones.get(i),
             Swept::Part(Part::Cloud(i)) => self.smoke_clouds[i].entity.and_then(|entity| {
                 debug_assert!(!sweep.owned.get(entity).is_some_and(|&owned| owned));
+                #[cfg(debug_assertions)]
+                debug_assert!(sweep.taken.get(entity).is_none_or(|&taken| taken));
                 sweep.rows.get(entity)
             }),
             Swept::Part(Part::Explosion(Blast::Beam(i))) => {
@@ -254,6 +282,8 @@ impl RolloutWorld {
             Swept::Part(Part::Explosion(blast)) => {
                 let entity = self.blast_entity(blast);
                 debug_assert!(!sweep.owned.get(entity).is_some_and(|&owned| owned));
+                #[cfg(debug_assertions)]
+                debug_assert!(sweep.taken.get(entity).is_none_or(|&taken| taken));
                 sweep.rows.get(entity)
             }
             // A trigger no group moves: SortAndSweep bounded it where it is.
@@ -267,6 +297,8 @@ impl RolloutWorld {
             Swept::Pickup(i) => sweep.pickups.get(i),
             Swept::Row(i) => {
                 debug_assert!(!sweep.owned.get(i).is_some_and(|&owned| owned));
+                #[cfg(debug_assertions)]
+                debug_assert!(sweep.taken.get(i).is_none_or(|&taken| taken));
                 sweep.rows.get(i)
             }
         };
