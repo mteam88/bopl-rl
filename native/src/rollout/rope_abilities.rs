@@ -1953,6 +1953,7 @@ impl RolloutWorld {
                     // enabled bit clears (RlObservation.cs:115-117).
                     self.entities[entity].flags =
                         (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
+                    self.destroyed_rows = true;
                 }
                 self.destroy_fix_hook_parts(rope_index);
                 return;
@@ -1983,6 +1984,7 @@ impl RolloutWorld {
                     // Hitbox-only teardown, as for a wall (RopeHook.cs:182-189).
                     self.entities[entity].flags =
                         (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
+                    self.destroyed_rows = true;
                 }
                 self.destroy_fix_hook_parts(rope_index);
                 return;
@@ -2006,6 +2008,7 @@ impl RolloutWorld {
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
                     self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                    self.destroyed_rows = true;
                 }
                 self.destroy_fix_hook(rope_index);
                 return;
@@ -2031,6 +2034,7 @@ impl RolloutWorld {
                     // before the hitbox-only teardown (RopeHook.cs:144-150), so
                     // activeInHierarchy goes with it.
                     self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                    self.destroyed_rows = true;
                 }
                 self.destroy_fix_hook(rope_index);
                 return;
@@ -2076,6 +2080,7 @@ impl RolloutWorld {
         if let Some(entity) = rope.hook_entity {
             // Hitbox-only teardown, as for a wall (RopeHook.cs:182-189).
             self.entities[entity].flags = (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
+            self.destroyed_rows = true;
         }
         self.destroy_fix_hook_parts(rope_index);
     }

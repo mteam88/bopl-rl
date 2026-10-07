@@ -5206,6 +5206,11 @@ pub struct RolloutWorld {
     /// Whether `destroy_fix` has flagged an `updater_list` entry since the
     /// list last dropped its destroyed ones.
     pub updater_list_destroyed: bool,
+    /// Whether a row may be `E_DESTROYED` and not `E_REMOVED`: every write
+    /// that can leave one so sets it, and `remove_destroyed_colliders`
+    /// clears it once its scan finds none, so it skips the scan until the
+    /// next such write.
+    destroyed_rows: bool,
     /// Instantiations made during the updater phase by objects this port
     /// updates out of hierarchy order, as (object hierarchy, spawn).
     /// Updater runs them in hierarchy order, so a spawn by a lower object
@@ -5358,6 +5363,7 @@ impl RolloutWorld {
             updater_batch: Vec::with_capacity(64),
             updater_list: Vec::with_capacity(1024),
             updater_list_destroyed: false,
+            destroyed_rows: true,
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
             entity_inverse_extents: Vec::with_capacity(192),
@@ -5487,6 +5493,7 @@ impl RolloutWorld {
         self.updater_batch.clone_from(&src.updater_batch);
         self.updater_list.clone_from(&src.updater_list);
         self.updater_list_destroyed = src.updater_list_destroyed;
+        self.destroyed_rows = src.destroyed_rows;
         self.scratch.updater_version += 1;
         self.scratch.pending_quiet = None;
         self.entities.clone_from(&src.entities);
@@ -5600,6 +5607,7 @@ impl RolloutWorld {
             updater_batch: _,
             updater_list: _,
             updater_list_destroyed: _,
+            destroyed_rows: _,
             queued_spawns: _,
             entities: _,
             entity_inverse_extents: _,
@@ -5818,6 +5826,7 @@ impl RolloutWorld {
         self.updater_batch.clear();
         self.updater_list.clear();
         self.updater_list_destroyed = false;
+        self.destroyed_rows = true;
         self.scratch.updater_version += 1;
         let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
         let mut circle_entity = [usize::MAX; MAX_BODIES];
@@ -7159,6 +7168,7 @@ impl RolloutWorld {
                 state.active = false;
                 if let Some(entity) = state.entity {
                     self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    self.destroyed_rows = true;
                 }
                 let (owner, entity) = (state.hierarchy_base, state.entity);
                 self.destroy_fix(owner, None, entity);
@@ -7251,6 +7261,7 @@ impl RolloutWorld {
             state.active = false;
             if let Some(entity) = state.entity {
                 self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                self.destroyed_rows = true;
             }
             let (owner, entity) = (state.hierarchy_base, state.entity);
             self.destroy_fix(owner, None, entity);
@@ -8571,6 +8582,7 @@ impl RolloutWorld {
             if std::mem::take(&mut line.pending) {
                 let row = &mut self.entities[line.entity];
                 row.flags = destroyed_flags(row.flags);
+                self.destroyed_rows = true;
             }
         }
         self.arbitrate_player_positions();
@@ -9483,6 +9495,7 @@ impl RolloutWorld {
         if let Some(entity) = entity {
             let row = &mut self.entities[entity];
             row.flags = if by_callback { destroyed_flags(row.flags) } else { E_REMOVED };
+            self.destroyed_rows = true;
             row.owner = 0;
         }
         self.destroy_fix(owner, None, entity);
@@ -14799,6 +14812,7 @@ impl RolloutWorld {
             self.entities[entity].owner = 0;
             if !deferred {
                 self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                self.destroyed_rows = true;
             }
             self.destroyed_tesla_lines.push(DestroyedTeslaLine {
                 entity,
@@ -14825,6 +14839,7 @@ impl RolloutWorld {
         self.tesla_nodes[node_index].macho_carried = false;
         if let Some(entity) = self.tesla_nodes[node_index].entity {
             self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
+            self.destroyed_rows = true;
         }
         self.platforms_changed();
     }
@@ -14835,6 +14850,7 @@ impl RolloutWorld {
         let (owner, entity) = (node.hierarchy_base, node.entity);
         if let Some(entity) = entity {
             self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
+            self.destroyed_rows = true;
         }
         self.destroy_fix(owner, None, entity);
     }
@@ -15173,6 +15189,7 @@ impl RolloutWorld {
         let (owner, entity) = (self.engines[engine_index].hierarchy_base, self.engines[engine_index].entity);
         if let Some(entity) = entity {
             self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
+            self.destroyed_rows = true;
         }
         self.destroy_fix(owner, None, entity);
         self.platforms_changed();
@@ -15461,6 +15478,7 @@ impl RolloutWorld {
         let (owner, entity) = (self.spike_attacks[spike_index].hierarchy_base, self.spike_attacks[spike_index].entity);
         if let Some(entity) = entity {
             self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
+            self.destroyed_rows = true;
         }
         self.destroy_fix(owner, None, entity);
         self.platforms_changed();
@@ -17065,6 +17083,7 @@ impl RolloutWorld {
                     self.black_holes[other_index].active = false;
                     if let Some(entity) = other.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                        self.destroyed_rows = true;
                     }
                     self.destroy_fix(other.hierarchy_base, None, other.entity);
                 }
@@ -17095,6 +17114,7 @@ impl RolloutWorld {
                 if let Some(entity) = entity.filter(|_| alive && route.callback()) {
                     let row = &mut self.entities[entity];
                     row.flags = E_DESTROYED | E_TRIGGER | (row.flags & E_FIX_DESTROYED);
+                    self.destroyed_rows = true;
                     row.owner = 0;
                 }
             }
@@ -17109,6 +17129,7 @@ impl RolloutWorld {
                 let composite = if children != 0 { E_COMPOSITE } else { 0 };
                 let row = &mut self.entities[self.platform_entities[platform_index]];
                 row.flags = destroyed_flags(row.flags) | composite;
+                self.destroyed_rows = true;
                 self.mark_wall_nodes_destroyed(platform_index);
             }
             _ if inverse_mass <= Fix::ZERO => {}
@@ -17120,6 +17141,7 @@ impl RolloutWorld {
                     if let Some(entity) = arrow.entity {
                         let row = &mut self.entities[entity];
                         row.flags = destroyed_flags(row.flags);
+                        self.destroyed_rows = true;
                         row.owner = 0;
                         set_moving_row(row, arrow.position, arrow.velocity);
                         row.rotation = arrow.rotation.raw();
@@ -17134,6 +17156,7 @@ impl RolloutWorld {
                     pickup.active = false;
                     if let Some(entity) = pickup.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                        self.destroyed_rows = true;
                     }
                     let (owner, entity) = (pickup.hierarchy_base, pickup.entity);
                     self.destroy_fix(owner, None, entity);
@@ -17157,6 +17180,7 @@ impl RolloutWorld {
                     if let Some(entity) = entity {
                         let row = &mut self.entities[entity];
                         row.flags = destroyed_flags(row.flags);
+                        self.destroyed_rows = true;
                         row.owner = 0;
                     }
                     self.destroy_fix(owner, None, entity);
@@ -17169,6 +17193,7 @@ impl RolloutWorld {
                     rock.active = false;
                     if let Some(entity) = rock.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                        self.destroyed_rows = true;
                     }
                     let (owner, entity) = (rock.hierarchy_base, rock.entity);
                     self.destroy_fix(owner, None, entity);
@@ -17188,6 +17213,7 @@ impl RolloutWorld {
                     cloud.registered = false;
                     if let Some(entity) = cloud.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                        self.destroyed_rows = true;
                     }
                     let (owner, entity) = (cloud.hierarchy_base, cloud.entity);
                     self.destroy_fix(owner, None, entity);
@@ -20642,6 +20668,7 @@ impl RolloutWorld {
                 && self.entities[effect.entity].flags & (E_REMOVED | E_DESTROYED) == 0
             {
                 self.entities[effect.entity].flags = effect.restore_flags;
+                self.destroyed_rows |= effect.restore_flags & E_DESTROYED != 0;
                 self.teleport_object_effects[index].revealed_tick = Some(self.tick);
                 if let Some(platform_index) = self
                     .platform_entities
@@ -29217,6 +29244,7 @@ impl RolloutWorld {
             if tunnel.age > tunnel.duration {
                 if self.entities[tunnel.entity].flags & (E_REMOVED | E_DESTROYED) == 0 {
                     self.entities[tunnel.entity].flags = tunnel.restore_flags;
+                    self.destroyed_rows |= tunnel.restore_flags & E_DESTROYED != 0;
                 }
                 self.blink_object_tunnels[index].active = false;
                 self.blink_object_tunnels[index].released_tick = Some(self.tick);
@@ -31914,6 +31942,7 @@ impl RolloutWorld {
         if let Some(entity) = self.arrows[index].entity {
             let row = &mut self.entities[entity];
             row.flags = destroyed_flags(row.flags);
+            self.destroyed_rows = true;
             row.owner = 0;
             set_moving_row(row, position, body.velocity);
             row.rotation = body.orientation.raw();
@@ -32087,6 +32116,7 @@ impl RolloutWorld {
             } else {
                 E_REMOVED
             };
+            self.destroyed_rows = true;
         }
         let missile = &self.guided_missiles[index];
         self.destroy_fix(missile.hierarchy_base, None, missile.entity);
@@ -32324,10 +32354,13 @@ impl RolloutWorld {
     /// marked removed, until the next pass compacts it.
     /// Returns whether there was nothing to drop.
     fn remove_destroyed_colliders(&mut self) -> bool {
-        // Most queries find nothing to drop: one scan instead of four.
-        let pending = any_destroyed_unremoved(&self.entities);
+        // Most queries find nothing to drop: no scan while no write has
+        // left a row destroyed since the last one that found none, and one
+        // scan instead of four otherwise.
+        let pending = self.destroyed_rows && any_destroyed_unremoved(&self.entities);
         debug_assert_eq!(pending, self.entities.iter().any(|row| row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED));
         if !pending {
+            self.destroyed_rows = false;
             return true;
         }
         let mut hidden = false;
@@ -33563,6 +33596,7 @@ impl RolloutWorld {
         if let Some(entity) = entity {
             let row = &mut self.entities[entity];
             row.flags = if by_callback { destroyed_flags(row.flags) } else { E_REMOVED };
+            self.destroyed_rows = true;
             row.owner = 0;
         }
         self.destroy_fix(owner, None, entity);
@@ -33751,6 +33785,7 @@ impl RolloutWorld {
                     && let (Some(entity), Some(flags)) = (self.smoke_clouds[oldest].entity, flags)
                 {
                     self.entities[entity].flags = destroyed_flags(flags);
+                    self.destroyed_rows = true;
                 }
             }
 
@@ -36423,6 +36458,7 @@ impl RolloutWorld {
         if let Some(entity) = entity.filter(|_| killed && alive && route.callback()) {
             let row = &mut self.entities[entity];
             row.flags = E_DESTROYED | E_TRIGGER | (row.flags & E_FIX_DESTROYED);
+            self.destroyed_rows = true;
             row.owner = 0;
         }
         killed
@@ -37429,6 +37465,7 @@ impl RolloutWorld {
                 let row = &mut self.entities[entity];
                 if callback {
                     row.flags = destroyed_flags(row.flags);
+                    self.destroyed_rows = true;
                     row.owner = 0;
                 } else {
                     row.flags = removed_flags(row.flags);
@@ -37538,6 +37575,7 @@ impl RolloutWorld {
                     } else {
                         removed_flags(row.flags)
                     };
+                    self.destroyed_rows = true;
                     row.owner = 0;
                 }
             }
@@ -37581,6 +37619,7 @@ impl RolloutWorld {
                 let row = &mut self.entities[e];
                 if callback {
                     row.flags = destroyed_flags(row.flags);
+                    self.destroyed_rows = true;
                     row.owner = 0;
                 } else {
                     row.flags = removed_flags(row.flags);
@@ -38150,10 +38189,12 @@ impl RolloutWorld {
         let total = next[4] + counts[4];
         out.truncate(total);
         out.resize(total, CEntity::default());
-        for &entity in &self.entities {
+        // By reference: a removed row is skipped on its flags alone, and a
+        // live one is copied once, straight into its place.
+        for entity in &self.entities {
             if entity.flags & E_REMOVED == 0 {
                 let kind = entity.kind as usize;
-                out[next[kind]] = entity;
+                out[next[kind]] = *entity;
                 next[kind] += 1;
             }
         }
@@ -38843,6 +38884,7 @@ impl RolloutWorld {
             let body_was_active = body.flags & E_ACTIVE != 0;
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
+                self.destroyed_rows = true;
             } else if teleporting {
                 body.flags = E_ENABLED | E_TRIGGER;
             } else if choosing_respawn {
