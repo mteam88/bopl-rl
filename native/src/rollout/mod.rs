@@ -6891,7 +6891,7 @@ impl RolloutWorld {
         // spawned its copy, which the ground raycast may meet. Runtime-spawned
         // platforms take their updaters after every pickup, so an effect
         // registered after one of them keeps its place behind it.
-        let first_spawned = (0..self.platforms.len())
+        let first_spawned = (self.first_runtime_platform()..self.platforms.len())
             .filter(|&i| self.platforms[i].active && self.platform_pass(i) == PlatformPass::Spawned)
             .map(|i| self.entities[self.platform_entities[i]].hierarchy.saturating_sub(100_000_000))
             .min()
@@ -8189,7 +8189,9 @@ impl RolloutWorld {
         // Updater turn, after everything instantiated before it: an older
         // pickup's vibration draws ahead of the copy's shake, and an older
         // clone moves before the copy's spring reads it.
-        let newest_copy = (0..self.platforms.len())
+        // The authored platforms lead the list and are in neither runtime
+        // pass (first_runtime_platform).
+        let newest_copy = (self.first_runtime_platform()..self.platforms.len())
             .filter(|&i| self.platform_updates_in(i, PlatformPass::Duplicated))
             .map(|i| self.platform_turn_key(i))
             .max();
@@ -8289,7 +8291,7 @@ impl RolloutWorld {
         // Updater turn, after everything instantiated before it: a spark node
         // older than a Boulder draws its lightning before the Boulder's
         // DestroyIfOutsideSceneBounds destroys the node with it.
-        let newest_spawned = (0..self.platforms.len())
+        let newest_spawned = (self.first_runtime_platform()..self.platforms.len())
             .filter(|&i| self.platform_updates_in(i, PlatformPass::Spawned))
             .map(|i| self.platform_turn_key(i))
             .max();
@@ -35055,7 +35057,7 @@ impl RolloutWorld {
         // A DynamicAbilityPickup older than one of these platforms raycasts
         // for ground at its own turn, before that platform's updaters move
         // it. One newer than a live ScaleChanger keeps waiting for it.
-        let newest = (0..self.platforms.len())
+        let newest = (self.first_runtime_platform()..self.platforms.len())
             .filter(|&i| {
                 self.platform_pass(i) == PlatformPass::Spawned
                     && !self.updater_passed(self.platform_turn_key(i))
