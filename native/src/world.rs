@@ -402,6 +402,58 @@ impl BoundsChunk {
         max_y: [f64::NEG_INFINITY; BOUNDS_LANES],
         min_y: [f64::INFINITY; BOUNDS_LANES],
     };
+    /// Lane `lane` set to `collider.bounds()` widened by `margin`.
+    #[inline]
+    fn set_lane(&mut self, lane: usize, collider: &RoundedRect, margin: Fix) {
+        #[cfg(all(target_arch = "x86_64", not(feature = "q32")))]
+        {
+            use std::arch::x86_64::{
+                _mm_add_pd, _mm_and_pd, _mm_castsi128_pd, _mm_cvtsd_f64, _mm_loadu_pd, _mm_set1_epi64x,
+                _mm_set1_pd, _mm_sub_pd, _mm_unpackhi_pd,
+            };
+            // `bounds()` on both axes at once: `Vec2` is `repr(C)` over two
+            // `Fix`, each a transparent `f64`, and every operation is the
+            // same IEEE one in the same order, lane by lane (sse2 is part of
+            // x86_64).
+            let inner = &collider.inner;
+            // SAFETY: each pointer is to a `Vec2`, two contiguous f64.
+            let (max, min) = unsafe {
+                let magnitude = _mm_castsi128_pd(_mm_set1_epi64x(i64::MAX));
+                let center = _mm_loadu_pd((&raw const inner.center).cast::<f64>());
+                let right = _mm_and_pd(_mm_loadu_pd((&raw const inner.right).cast::<f64>()), magnitude);
+                let up = _mm_and_pd(_mm_loadu_pd((&raw const inner.up).cast::<f64>()), magnitude);
+                let extent = _mm_add_pd(_mm_add_pd(right, up), _mm_set1_pd(collider.radius.to_f64()));
+                let margin = _mm_set1_pd(margin.to_f64());
+                (
+                    _mm_add_pd(_mm_add_pd(center, extent), margin),
+                    _mm_sub_pd(_mm_sub_pd(center, extent), margin),
+                )
+            };
+            // SAFETY: plain sse2 lane reads.
+            unsafe {
+                self.max_x[lane] = _mm_cvtsd_f64(max);
+                self.max_y[lane] = _mm_cvtsd_f64(_mm_unpackhi_pd(max, max));
+                self.min_x[lane] = _mm_cvtsd_f64(min);
+                self.min_y[lane] = _mm_cvtsd_f64(_mm_unpackhi_pd(min, min));
+            }
+            #[cfg(debug_assertions)]
+            {
+                let bounds = collider.bounds();
+                debug_assert_eq!(self.max_x[lane].to_bits(), (bounds.max.x + margin).to_f64().to_bits());
+                debug_assert_eq!(self.min_x[lane].to_bits(), (bounds.min.x - margin).to_f64().to_bits());
+                debug_assert_eq!(self.max_y[lane].to_bits(), (bounds.max.y + margin).to_f64().to_bits());
+                debug_assert_eq!(self.min_y[lane].to_bits(), (bounds.min.y - margin).to_f64().to_bits());
+            }
+        }
+        #[cfg(not(all(target_arch = "x86_64", not(feature = "q32"))))]
+        {
+            let bounds = collider.bounds();
+            self.max_x[lane] = (bounds.max.x + margin).to_f64();
+            self.min_x[lane] = (bounds.min.x - margin).to_f64();
+            self.max_y[lane] = (bounds.max.y + margin).to_f64();
+            self.min_y[lane] = (bounds.min.y - margin).to_f64();
+        }
+    }
     /// Lane bits of the boxes meeting `[lo, hi]`, as one 8-bit mask: four
     /// ordered vector compares (a NaN lane never hits, like the scalar `<=`).
     #[inline]
@@ -531,19 +583,19 @@ impl PlatformBounds {
             "platform count exceeds the candidate mask"
         );
         let margin = Fix::from_f64(1e-6);
+        let mut chunks = self.chunks.borrow_mut();
+        // A chunk's lanes past the platforms stay `EMPTY`: the lanes in use
+        // are all rewritten below, and the rest only change with the count.
+        if self.len.get() != platforms.len() || chunks.len() != platforms.len().div_ceil(BOUNDS_LANES) {
+            chunks.clear();
+            chunks.resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
+        }
         self.len.set(platforms.len());
         self.stale.set(false);
-        let mut chunks = self.chunks.borrow_mut();
-        chunks.clear();
-        chunks.resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
-        for (index, platform) in platforms.iter().enumerate() {
-            let bounds = platform.collider.bounds();
-            let chunk = &mut chunks[index / BOUNDS_LANES];
-            let lane = index % BOUNDS_LANES;
-            chunk.max_x[lane] = (bounds.max.x + margin).to_f64();
-            chunk.min_x[lane] = (bounds.min.x - margin).to_f64();
-            chunk.max_y[lane] = (bounds.max.y + margin).to_f64();
-            chunk.min_y[lane] = (bounds.min.y - margin).to_f64();
+        for (chunk, group) in chunks.iter_mut().zip(platforms.chunks(BOUNDS_LANES)) {
+            for (lane, platform) in group.iter().enumerate() {
+                chunk.set_lane(lane, &platform.collider, margin);
+            }
         }
     }
     /// The bits of `mask` whose platforms' bounds meet `[lo, hi]`, with the

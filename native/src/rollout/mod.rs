@@ -41510,12 +41510,15 @@ impl Walls for RolloutWorld {
     fn cast_in_run(&mut self, run: &mut crate::world::RayRun, origin: Vec2, direction: Vec2, distance: Fix) -> Option<(usize, Fix, Vec2)> {
         if !run.clean {
             run.clean = self.remove_destroyed_colliders();
-            let mut mask = self.platforms.terrain().candidates(run.lo, run.hi);
+            // The excluded platform (a moving body's own ground, nearly
+            // always in its box) leaves the mask before the liveness tests.
+            let excluded = run.excluded.map_or(0, |platform| 1u64.checked_shl(platform as u32).unwrap_or(0));
+            let mut mask = self.platforms.terrain().candidates(run.lo, run.hi) & !excluded;
             let mut live = 0;
             while mask != 0 {
                 let platform = mask.trailing_zeros() as usize;
                 mask &= mask - 1;
-                if self.platform_is_active(platform) && run.excluded != Some(platform) {
+                if self.platform_is_active(platform) {
                     live |= 1 << platform;
                 }
             }
