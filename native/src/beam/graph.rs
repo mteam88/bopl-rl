@@ -173,6 +173,37 @@ impl Graph {
     }
 
     pub fn step_into(&mut self, input: &[Beam], caster: &mut Caster<'_>, snapshot: &mut Snapshot) {
+        // A pass with no beams after a pass with none (or a fresh graph) is a
+        // fixed point: the last one already emptied the mapping, crossings,
+        // records and `snapshot` and reset every role and reflection flag,
+        // and with nothing to map or cast it would rebuild exactly that.
+        if input.is_empty() && self.previous_count == 0 {
+            #[cfg(debug_assertions)]
+            self.check_idle_step(caster, snapshot);
+            return;
+        }
+        self.step_full(input, caster, snapshot);
+    }
+
+    /// `step_full` from this idle state leaves it unchanged; its scratch list
+    /// of the last pass's reflected ids is rebuilt before any read.
+    #[cfg(debug_assertions)]
+    fn check_idle_step(&self, caster: &mut Caster<'_>, snapshot: &Snapshot) {
+        let (mut graph, mut fresh) = (self.clone(), snapshot.clone());
+        graph.step_full(&[], caster, &mut fresh);
+        assert!(graph.previous_reflected.is_empty());
+        assert_eq!(format!("{:?}", fresh), format!("{:?}", snapshot));
+        assert_eq!(graph.roles, self.roles);
+        assert_eq!(graph.parents, self.parents);
+        assert_eq!(graph.was_reflected, self.was_reflected);
+        assert_eq!(graph.reflected, self.reflected);
+        assert_eq!(graph.mapping, self.mapping);
+        assert_eq!(format!("{:?}", (&graph.crossing, &graph.previous)), format!("{:?}", (&self.crossing, &self.previous)));
+        assert_eq!((graph.count, graph.initial, graph.previous_count), (self.count, self.initial, self.previous_count));
+        assert_eq!(format!("{:?}", &graph.bodies[..4]), format!("{:?}", &self.bodies[..4]));
+    }
+
+    fn step_full(&mut self, input: &[Beam], caster: &mut Caster<'_>, snapshot: &mut Snapshot) {
         self.count = input.len();
         self.bodies[..self.count].copy_from_slice(input);
         self.previous_reflected.clear();

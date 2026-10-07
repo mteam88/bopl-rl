@@ -4989,6 +4989,25 @@ fn updater_order<T>(order: &mut Vec<usize>, pool: &[T], key: impl Fn(&T) -> Upda
 /// Each key is taken once (`updater_key` searches Updater's list), then the
 /// (key, slot) pairs, all distinct, sort to the order sorting by key gives.
 fn updater_order_where<T>(order: &mut Vec<usize>, pool: &[T], keep: impl Fn(&T) -> bool, key: impl Fn(&T) -> UpdaterKey) {
+    // Most pools hold none or one most passes: no key to compare. (`key`
+    // only reads, filling `updater_batch_place`'s version-checked cache.)
+    if pool.len() <= 1 {
+        order.clear();
+        if pool.first().is_some_and(&keep) {
+            order.push(0);
+        }
+        #[cfg(debug_assertions)]
+        {
+            let mut keyed = Vec::new();
+            keyed_updater_order(&mut keyed, pool, keep, key);
+            debug_assert_eq!(&keyed, order);
+        }
+        return;
+    }
+    keyed_updater_order(order, pool, keep, key);
+}
+
+fn keyed_updater_order<T>(order: &mut Vec<usize>, pool: &[T], keep: impl Fn(&T) -> bool, key: impl Fn(&T) -> UpdaterKey) {
     thread_local! {
         static KEYED: std::cell::RefCell<Vec<(UpdaterKey, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
     }
@@ -5226,6 +5245,8 @@ struct PlatformScratch {
     wall_parts: Vec<(Part, [Vec2; 2])>,
     wall_contacts: Vec<(CallbackKey, Part, usize, Contact)>,
     item_order: Vec<usize>,
+    /// Whether a magnet's parry registered this pass (`parry_registered`).
+    parries_registered: bool,
     cc_contacts: Vec<(Part, Part, Contact)>,
     /// Each arrow's StickTo contacts in the Circle/Circle and Circle/Box
     /// groups, by callback key.
@@ -5357,6 +5378,7 @@ impl PlatformScratch {
     fn new() -> Self {
         PlatformScratch {
             item_order: Vec::with_capacity(192),
+            parries_registered: false,
             cc_contacts: Vec::with_capacity(256),
             wall_contacts: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
@@ -5577,6 +5599,13 @@ pub struct RolloutWorld {
     /// clears it once its scan finds none, so it skips the scan until the
     /// next such write.
     destroyed_rows: bool,
+    /// Whether a platform's `init_tick` may be pending (non-zero): every
+    /// write of one sets it, and `init_appended_springs` clears it once its
+    /// scan leaves none, skipping the scan until the next.
+    springs_pending: bool,
+    /// Whether a row may carry `E_FIX_DESTROYED`: both writes of it set
+    /// this, and `destroy_marked_objects` clears it with the rows' bits.
+    fix_destroyed_rows: bool,
     /// Whether the actor rows still hold what `refresh_actor_entities` gives,
     /// but for the Rock rows (`refresh_rock_rows`): set by the physics pass's
     /// refresh; cleared when a tick starts, by a pickup grant and by the
@@ -5737,6 +5766,8 @@ impl RolloutWorld {
             updater_list: Vec::with_capacity(1024),
             updater_list_destroyed: false,
             destroyed_rows: true,
+            springs_pending: true,
+            fix_destroyed_rows: true,
             actor_rows_fresh: false,
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
@@ -5868,6 +5899,8 @@ impl RolloutWorld {
         self.updater_list.clone_from(&src.updater_list);
         self.updater_list_destroyed = src.updater_list_destroyed;
         self.destroyed_rows = src.destroyed_rows;
+        self.springs_pending = src.springs_pending;
+        self.fix_destroyed_rows = src.fix_destroyed_rows;
         self.actor_rows_fresh = false;
         self.scratch.updater_version += 1;
         self.scratch.pending_quiet = None;
@@ -5983,6 +6016,8 @@ impl RolloutWorld {
             updater_list: _,
             updater_list_destroyed: _,
             destroyed_rows: _,
+            springs_pending: _,
+            fix_destroyed_rows: _,
             actor_rows_fresh: _,
             queued_spawns: _,
             entities: _,
@@ -6203,6 +6238,8 @@ impl RolloutWorld {
         self.updater_list.clear();
         self.updater_list_destroyed = false;
         self.destroyed_rows = true;
+        self.springs_pending = true;
+        self.fix_destroyed_rows = true;
         self.scratch.updater_version += 1;
         let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
         let mut circle_entity = [usize::MAX; MAX_BODIES];
@@ -8517,6 +8554,7 @@ impl RolloutWorld {
         for slot in &mut self.players {
             slot.magnet.parry_registered = false;
         }
+        self.scratch.parries_registered = false;
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
@@ -8555,7 +8593,18 @@ impl RolloutWorld {
         for (index, value) in player_key[..player_count].iter_mut().enumerate() {
             *value = self.player_turn_key(index);
         }
-        player_order[..player_count].sort_by_key(|&index| (player_key[index], index));
+        // The (key, index) pairs are distinct, so any sort gives sort_by_key's
+        // order; the walk mostly keeps index order, which insertion keeps.
+        for k in 1..player_count {
+            let index = player_order[k];
+            let mut j = k;
+            while j > 0 && (player_key[player_order[j - 1]], player_order[j - 1]) > (player_key[index], index) {
+                player_order[j] = player_order[j - 1];
+                j -= 1;
+            }
+            player_order[j] = index;
+        }
+        debug_assert!(player_order[..player_count].is_sorted_by_key(|&index| (player_key[index], index)));
         // A Black Hole, Poke Ball or Tack spawned before a stock-respawned
         // slime sits ahead of it in the Updater: a hole's pull lands before
         // that slime's PlayerBody damps and integrates the external velocity,
@@ -8977,13 +9026,28 @@ impl RolloutWorld {
                 base.align(platform);
             }
         }
-        let beam_purge = self.beams_late_tick(data);
+        // The forms the bodies are in: the Beam, Magnet, MachoThrow and
+        // BounceBall LateUpdateSims below each run only for a body in its
+        // form, and none of these passes puts one into a form.
+        let forms = self.players.iter().fold(0u64, |forms, slot| forms | 1 << slot.active as u64);
+        let in_form = |world: &Self, form: ActiveAbility| {
+            let any = forms & 1 << form as u64 != 0;
+            debug_assert!(any || !world.players.iter().any(|slot| slot.active == form));
+            any
+        };
+        let beam_purge = if in_form(self, ActiveAbility::Beam) { self.beams_late_tick(data) } else { None };
         self.ropes_late();
-        self.magnets_late(data);
-        self.macho_late_tick(data);
+        if in_form(self, ActiveAbility::Magnet) {
+            self.magnets_late(data);
+        }
+        if in_form(self, ActiveAbility::Throw) {
+            self.macho_late_tick(data);
+        }
         self.mines_late_tick(data, beam_purge);
         self.ropes_late_on_older_mines();
-        self.rocks_late_tick(data);
+        if in_form(self, ActiveAbility::Rock) {
+            self.rocks_late_tick(data);
+        }
         for index in 0..self.players.len() {
             self.exited_ability(index, data);
         }
@@ -9179,6 +9243,7 @@ impl RolloutWorld {
         }
         if let Some(row) = row.and_then(|row| self.entities.get_mut(row)) {
             row.flags |= E_FIX_DESTROYED;
+            self.fix_destroyed_rows = true;
         }
     }
 
@@ -15718,9 +15783,12 @@ impl RolloutWorld {
     /// removal comes first (Updater.cs:329-336).
     fn destroy_marked_objects(&mut self) {
         self.remove_destroyed_updatables();
-        for row in &mut self.entities {
-            row.flags &= !E_FIX_DESTROYED;
+        if std::mem::take(&mut self.fix_destroyed_rows) {
+            for row in &mut self.entities {
+                row.flags &= !E_FIX_DESTROYED;
+            }
         }
+        debug_assert!(self.entities.iter().all(|row| row.flags & E_FIX_DESTROYED == 0));
         for hold in std::mem::take(&mut self.scratch.retired_holds) {
             match hold {
                 RetiredHold::Body { body, entity } => {
@@ -16335,6 +16403,9 @@ impl RolloutWorld {
         from: u32,
         to: u32,
     ) {
+        if self.spike_attacks.is_empty() {
+            return;
+        }
         let mut order = std::mem::take(&mut self.scratch.spike_order);
         order.clear();
         order.extend(
@@ -17381,51 +17452,36 @@ impl RolloutWorld {
     fn black_holes_tick(&mut self, data: &data::RolloutData, dt: Fix) {
         // DestroyFix casualties remain visible for their callback frame and
         // leave DetPhysics at the start of the following simulation pass.
-        for entity in self
-            .black_holes
-            .iter()
-            .filter(|hole| !hole.active)
-            .filter_map(|hole| hole.entity)
-            .chain(
-                self.duplicated_rocks
-                    .iter()
-                    .filter(|rock| !rock.active)
-                    .filter_map(|rock| rock.entity),
-            )
-            .chain(
-                self.revival_marker_pool
-                    .iter()
-                    .filter(|marker| !marker.active)
-                    .filter_map(|marker| marker.entity),
-            )
-            .chain(
-                self.teleport_marker_pool
-                    .iter()
-                    .filter(|marker| !marker.active)
-                    .filter_map(|marker| marker.entity),
-            )
-            .chain(
-                self.spike_attacks
-                    .iter()
-                    .filter(|spike| !spike.active)
-                    .filter_map(|spike| spike.entity),
-            )
-            .chain(
-                self.engines
-                    .iter()
-                    .filter(|engine| !engine.active)
-                    .filter_map(|engine| engine.entity),
-            )
-            .chain(
-                self.tesla_nodes
-                    .iter()
-                    .filter(|node| !node.active)
-                    .filter_map(|node| node.entity),
-            )
-        {
-            if self.entities[entity].flags & E_DESTROYED != 0 {
-                self.entities[entity].flags = E_REMOVED;
+        // Each pool on its own loop: most are empty most passes.
+        let entities = &mut self.entities;
+        let mut drop_destroyed = |active: bool, entity: Option<usize>| {
+            if !active
+                && let Some(entity) = entity
+                && entities[entity].flags & E_DESTROYED != 0
+            {
+                entities[entity].flags = E_REMOVED;
             }
+        };
+        for hole in &self.black_holes {
+            drop_destroyed(hole.active, hole.entity);
+        }
+        for rock in &self.duplicated_rocks {
+            drop_destroyed(rock.active, rock.entity);
+        }
+        for marker in &self.revival_marker_pool {
+            drop_destroyed(marker.active, marker.entity);
+        }
+        for marker in &self.teleport_marker_pool {
+            drop_destroyed(marker.active, marker.entity);
+        }
+        for spike in &self.spike_attacks {
+            drop_destroyed(spike.active, spike.entity);
+        }
+        for engine in &self.engines {
+            drop_destroyed(engine.active, engine.entity);
+        }
+        for node in &self.tesla_nodes {
+            drop_destroyed(node.active, node.entity);
         }
         self.black_holes_update(data, dt, 0..u32::MAX);
     }
@@ -21594,6 +21650,12 @@ impl RolloutWorld {
     /// its turn this pass, in hierarchy order, each after the older
     /// updatables it follows in the Updater.
     fn teleport_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        // A player's effect is a `WALK_PLAYERS` object: with none of those
+        // on and no object effect, the first walk finds none.
+        if !self.walk_may(WALK_PLAYERS) && self.teleport_object_effects.is_empty() {
+            debug_assert!(!self.players.iter().any(|slot| slot.teleport_effect_active));
+            return;
+        }
         loop {
             let tick = self.tick;
             let players = (self.players.iter().enumerate())
@@ -25734,6 +25796,7 @@ impl RolloutWorld {
             &mut hits,
         );
         self.players[index].magnet.parry_registered = true;
+        self.scratch.parries_registered = true;
         self.players[index].magnet.parry_circle = pickup_circle;
 
         // The nearest hit FixTransform, the first of equals, past a wall that
@@ -26097,6 +26160,10 @@ impl RolloutWorld {
     /// before DetPhysics. Every pickup attempt contributes one circle, even
     /// when its dynamic-object query finds nothing.
     fn magnet_parries_tick(&mut self, data: &data::RolloutData) {
+        if !self.scratch.parries_registered {
+            debug_assert!(!self.players.iter().any(|slot| slot.magnet.parry_registered));
+            return;
+        }
         for first in 0..self.players.len() {
             if !self.players[first].magnet.parry_registered {
                 continue;
@@ -31751,6 +31818,7 @@ impl RolloutWorld {
         // The clone's AnimateVelocity is not initialized by DuplicateObject;
         // it homes where this pass's integration left it, on the next pass.
         dynamics.init_tick = self.tick + 1;
+        self.springs_pending = true;
         dynamics.appended = self.tick + 1;
         // actAsFloatingPlatformThisFrame is private (AnimateVelocity.cs:52): a
         // copy floats only if an effect's cast finds it after it spawns.
@@ -32505,6 +32573,7 @@ impl RolloutWorld {
             pd.spawn_extents * scale,
             false,
         ));
+        self.springs_pending = true;
         self.platform_dynamics.push(PlatformDynamics {
             definition: None,
             registered: (
@@ -32952,6 +33021,7 @@ impl RolloutWorld {
         }
         if let Some(entity) = entity {
             self.entities[entity].flags |= E_FIX_DESTROYED;
+            self.fix_destroyed_rows = true;
         }
         if let Some(entity) = self.arrows[index].entity {
             let row = &mut self.entities[entity];
@@ -33827,7 +33897,11 @@ impl RolloutWorld {
     /// during the walk stays listed, its UpdateSim skipped, until the frame's
     /// closing removal (Updater.cs:289-303, 329-336).
     fn thrown_item_listed(&self, item: &ThrownItem) -> bool {
-        self.updater_pass_batch(item.appended).iter().any(|entry| entry.2 == item.hierarchy_base)
+        // The search `updater_key` makes for the item's place, cached with it.
+        let owner = item.hierarchy_base;
+        let listed = self.updater_batch_place(&self.scratch.owner_positions, item.appended, owner, |entry| entry.2 == owner).is_some();
+        debug_assert_eq!(listed, self.updater_pass_batch(item.appended).iter().any(|entry| entry.2 == owner));
+        listed
     }
 
     /// Each thrown item's turn in Updater's walk (Updater.cs:298-303), after
@@ -36619,6 +36693,11 @@ impl RolloutWorld {
     /// the new home on this pass (AnimateVelocity.cs:74-93, 126-137;
     /// Updater.cs:264-287).
     fn init_appended_springs(&mut self) {
+        if !self.springs_pending {
+            debug_assert!(self.platform_dynamics[..self.platforms.len()].iter().all(|dynamics| dynamics.init_tick == 0));
+            return;
+        }
+        let mut pending = false;
         for i in 0..self.platforms.len() {
             let dynamics = &mut self.platform_dynamics[i];
             if dynamics.init_tick != 0 && dynamics.init_tick == self.tick {
@@ -36627,7 +36706,9 @@ impl RolloutWorld {
                 dynamics.being_controlled = false;
                 dynamics.sudden_death_delay = None;
             }
+            pending |= dynamics.init_tick != 0;
         }
+        self.springs_pending = pending;
     }
 
     /// BoplBody.UpdateSim, at BoplBody's place in the prefab: the hold's
@@ -39244,6 +39325,35 @@ impl RolloutWorld {
         // `if (!gameInProgress) return;` (GameSessionHandler.cs:513-516)
         // guards the whole result block, so a decided round never re-enters
         // it.
+        if !self.game_in_progress {
+            return;
+        }
+        // Nearly every pass two teams are still in, which decides nothing:
+        // the first one in and any other still in tell so.
+        if self.player_count > 1 {
+            let players = &self.players[..self.player_count];
+            let first = players.iter().find(|p| !p.out).map(|p| p.team);
+            if first.is_some_and(|team| players.iter().any(|p| !p.out && p.team != team)) {
+                // The reference's distinct teams in are at least two, so it
+                // takes neither result branch.
+                #[cfg(debug_assertions)]
+                {
+                    let mut teams: Vec<u32> = players.iter().filter(|p| !p.out).map(|p| p.team).collect();
+                    teams.sort_unstable();
+                    teams.dedup();
+                    debug_assert!(teams.len() > 1);
+                }
+                for body in self.player_count..self.players.len() {
+                    self.players[body].won = self.players[self.players[body].owner].won;
+                }
+                return;
+            }
+        }
+        self.session_result_tick_reference();
+    }
+
+    /// `session_result_tick` without the contested-pass shortcut.
+    fn session_result_tick_reference(&mut self) {
         if !self.game_in_progress {
             return;
         }
