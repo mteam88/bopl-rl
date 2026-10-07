@@ -5226,14 +5226,14 @@ enum CallbackHit {
     SpikeShove { spike: usize, target: Part, point: Vec2 },
     /// PlayerCollision.OnCollide of a slime's, form's or abilityless clone's
     /// collider with a wall-layer rounded rect, whose collider the manifold
-    /// copied (PlayerCollision.cs:326-347). `untested` is the slime's box
-    /// where the group queued the pair without testing it (`wall_group`):
-    /// the squish then acts only if the box meets the collider.
+    /// copied (PlayerCollision.cs:326-347). `untested` is the slime's
+    /// collider where the group queued the pair without testing it
+    /// (`wall_group`): the squish then acts only if it meets the wall.
     Squish {
         slime: Slime,
         wall: usize,
         collider: RoundedRect,
-        untested: Option<OrientedBox>,
+        untested: Option<Collider>,
         /// Whether the pair met, tested when it was queued.
         #[cfg(debug_assertions)]
         meets: bool,
@@ -35594,7 +35594,7 @@ impl RolloutWorld {
                 meets,
             } => {
                 #[cfg(debug_assertions)]
-                debug_assert!(untested.map_or(meets, |inner| crate::physics::contact::box_rounded_meets(inner, collider) == meets));
+                debug_assert!(untested.map_or(meets, |shape| circle_box::slime_wall_meets(shape, collider) == meets));
                 self.squish(slime, wall, collider, untested)
             }
             CallbackHit::BlackHole { hole, target, inverse_mass } => {
@@ -37958,7 +37958,7 @@ impl RolloutWorld {
     /// OnCollide after Simulate has stepped the ropes and every group
     /// resolved (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer
     /// detaches its rope only after this pass's rope step.
-    fn squish(&mut self, slime: Slime, wall: usize, collider: RoundedRect, untested: Option<OrientedBox>) {
+    fn squish(&mut self, slime: Slime, wall: usize, collider: RoundedRect, untested: Option<Collider>) {
         let (ignored, squishable, ground_destroyed) = match slime {
             Slime::Player(index) => {
                 let slot = &self.players[index];
@@ -37977,7 +37977,7 @@ impl RolloutWorld {
             || ground_destroyed
             || base.ground == Some(self.platforms[wall].id)
             || !collider.overlaps(base.position)
-            || untested.is_some_and(|inner| !crate::physics::contact::box_rounded_meets(inner, collider))
+            || untested.is_some_and(|shape| !circle_box::slime_wall_meets(shape, collider))
         {
             return;
         }
