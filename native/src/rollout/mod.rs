@@ -3940,6 +3940,42 @@ fn rock_scale_bounds() -> (Fix, Fix) {
     (Fix::from_f32(0.3), Fix::from_int(4))
 }
 
+/// The per-ability PlayerSlot field that aliases the selected form row, as
+/// `form_alias` borrows it or `form_alias_row` reads it.
+macro_rules! form_alias_field {
+    ($slot:expr, $ability:expr, $($borrow:tt)*) => {
+        match $ability {
+            ABILITY_DASH => Some($($borrow)* $slot.dash_entity),
+            ABILITY_BOW => Some($($borrow)* $slot.bow_entity),
+            ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL
+            | ABILITY_MISSILE => Some($($borrow)* $slot.throw_entity),
+            ABILITY_MINE => Some($($borrow)* $slot.mine_entity),
+            ABILITY_PUSH => Some($($borrow)* $slot.push_entity),
+            ABILITY_FREEZE => Some($($borrow)* $slot.freeze_entity),
+            ABILITY_BLINK => Some($($borrow)* $slot.blink_entity),
+            ABILITY_GROWTH_RAY => Some($($borrow)* $slot.growth_ray_entity),
+            ABILITY_SHRINK_RAY => Some($($borrow)* $slot.shrink_ray_entity),
+            ABILITY_DUPLICATOR => Some($($borrow)* $slot.duplicator_entity),
+            ABILITY_MAGNET => Some($($borrow)* $slot.magnet_entity),
+            ABILITY_SPIKE => Some($($borrow)* $slot.spike_entity),
+            ABILITY_ENGINE => Some($($borrow)* $slot.engine_entity),
+            ABILITY_TESLA => Some($($borrow)* $slot.tesla_entity),
+            ABILITY_METEOR => Some($($borrow)* $slot.meteor_entity),
+            ABILITY_BLACK_HOLE => Some($($borrow)* $slot.black_hole_entity),
+            ABILITY_THROW => Some($($borrow)* $slot.macho_throw_entity),
+            ABILITY_DRILL => Some($($borrow)* $slot.drill_entity),
+            ABILITY_BEAM => Some($($borrow)* $slot.beam_entity),
+            ABILITY_ROLL => Some($($borrow)* $slot.roll_entity),
+            ABILITY_GUST => Some($($borrow)* $slot.gust_entity),
+            ABILITY_REVIVAL => Some($($borrow)* $slot.revival_entity),
+            ABILITY_PLATFORM => Some($($borrow)* $slot.circle_entity),
+            ABILITY_TIME_STOP => Some($($borrow)* $slot.time_stop_entity),
+            ABILITY_ROCK => Some($($borrow)* $slot.rock_entity),
+            _ => None,
+        }
+    };
+}
+
 impl PlayerSlot {
     /// PlayerPhysics.UpdateScale on slot `s`'s live form body: its radius
     /// follows the form box's Scale by `new / prevScal`
@@ -4243,35 +4279,12 @@ impl PlayerSlot {
 
     /// The per-ability field that aliases the selected form row.
     fn form_alias(&mut self, ability: u32) -> Option<&mut usize> {
-        Some(match ability {
-            ABILITY_DASH => &mut self.dash_entity,
-            ABILITY_BOW => &mut self.bow_entity,
-            ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL
-            | ABILITY_MISSILE => &mut self.throw_entity,
-            ABILITY_MINE => &mut self.mine_entity,
-            ABILITY_PUSH => &mut self.push_entity,
-            ABILITY_FREEZE => &mut self.freeze_entity,
-            ABILITY_BLINK => &mut self.blink_entity,
-            ABILITY_GROWTH_RAY => &mut self.growth_ray_entity,
-            ABILITY_SHRINK_RAY => &mut self.shrink_ray_entity,
-            ABILITY_DUPLICATOR => &mut self.duplicator_entity,
-            ABILITY_MAGNET => &mut self.magnet_entity,
-            ABILITY_SPIKE => &mut self.spike_entity,
-            ABILITY_ENGINE => &mut self.engine_entity,
-            ABILITY_TESLA => &mut self.tesla_entity,
-            ABILITY_METEOR => &mut self.meteor_entity,
-            ABILITY_BLACK_HOLE => &mut self.black_hole_entity,
-            ABILITY_THROW => &mut self.macho_throw_entity,
-            ABILITY_DRILL => &mut self.drill_entity,
-            ABILITY_BEAM => &mut self.beam_entity,
-            ABILITY_ROLL => &mut self.roll_entity,
-            ABILITY_GUST => &mut self.gust_entity,
-            ABILITY_REVIVAL => &mut self.revival_entity,
-            ABILITY_PLATFORM => &mut self.circle_entity,
-            ABILITY_TIME_STOP => &mut self.time_stop_entity,
-            ABILITY_ROCK => &mut self.rock_entity,
-            _ => return None,
-        })
+        form_alias_field!(self, ability, &mut)
+    }
+
+    /// The row `form_alias` holds.
+    fn form_alias_row(&self, ability: u32) -> Option<usize> {
+        form_alias_field!(self, ability,)
     }
 
     /// Ability.EnterAbility runs on the prefab of the slot that was cast, so
@@ -37226,6 +37239,39 @@ impl RolloutWorld {
     /// ever; this corrects the pass when the rule hands it to another of the
     /// player's SlimeControllers than they did.
     fn arbitrate_player_positions(&mut self) {
+        // Most passes each player's own body is its one caller and the
+        // publisher: it wins and nothing is overridden.
+        let mut called = 0u32;
+        let own_calls = self.scratch.position_calls.iter().all(|&(_, call, _, _)| match call {
+            PositionCall::Body(body) => {
+                let own = self.players[body].owner == body
+                    && called & (1 << body) == 0
+                    && self.scratch.clone_publisher[body].is_none_or(|publisher| publisher == call);
+                called |= 1 << body;
+                own
+            }
+            _ => false,
+        });
+        if own_calls {
+            for slot in &mut self.players[..self.player_count] {
+                slot.position_setter_last = u32::MAX;
+            }
+            for &(_, call, key, _) in &self.scratch.position_calls {
+                if let PositionCall::Body(body) = call {
+                    self.players[body].position_setter_last = key;
+                }
+            }
+            if !cfg!(debug_assertions) {
+                return;
+            }
+        }
+        // Debug builds arbitrate the shortcut's passes too and check it.
+        let shortcut = own_calls.then(|| {
+            self.players[..self.player_count]
+                .iter()
+                .map(|slot| (slot.position_setter_last, slot.position_override))
+                .collect::<Vec<_>>()
+        });
         // The Rust runs the clones as a batch; the Updater interleaves them
         // with the bodies by hierarchy.
         self.scratch.position_calls.sort_by_key(|&(tag, _, _, _)| tag);
@@ -37276,6 +37322,16 @@ impl RolloutWorld {
                 PositionCall::Gone(_) => continue,
             };
             self.players[owner].position_override = Some((self.tick, position));
+        }
+        if let Some(shortcut) = shortcut {
+            assert!(
+                self.players[..self.player_count]
+                    .iter()
+                    .zip(&shortcut)
+                    .all(|(slot, &(last, position_override))| slot.position_setter_last == last
+                        && slot.position_override == position_override),
+                "arbitrate_player_positions: the own-calls shortcut disagrees"
+            );
         }
     }
 
@@ -39106,13 +39162,21 @@ impl RolloutWorld {
             }
             for s in 0..3 {
                 let row = slot.form_entities[s];
+                if row == usize::MAX {
+                    continue;
+                }
                 let ability = slot.abilities[s];
-                if row != usize::MAX
-                    && slot.form_alias(ability).is_some_and(|alias| *alias != row)
+                if slot.form_alias_row(ability).is_some_and(|alias| alias != row)
                     && self.entities[row].flags & E_DESTROYED == 0
                     && !(ability == ABILITY_PLATFORM && slot.platform_hurtbox_disabled[s])
                 {
                     self.entities[row].flags = (self.entities[row].flags | E_ENABLED) & !E_ACTIVE;
+                }
+                // A Rock in another slot, left a pass before, keeps syncing
+                // its form's FixTransform like the Rock row below; no other
+                // write this refresh reaches its row.
+                if ability == ABILITY_ROCK && row != slot.rock_entity && self.entities[row].flags & E_ACTIVE == 0 {
+                    self.entities[row].rotation = slot.forms[s].pose.orientation.rotation().raw();
                 }
             }
         }
@@ -39121,8 +39185,25 @@ impl RolloutWorld {
         // only deactivates them and they keep the pose Drill.UpdateSim last
         // gave them (HitboxCombo.UpdateHitBoxPositionsAndScale), so SyncAll
         // places them whether or not their slime was destroyed this pass.
+        // Their flags follow the live Drill, for a slime still standing.
         for slot in &self.players {
-            place_drill_hitbox_rows(&mut self.entities, &self.entity_inverse_extents, slot, data);
+            if slot.drill_hitbox_entities[slot.active_slot].iter().all(|&entity| entity == usize::MAX) {
+                continue;
+            }
+            place_drill_hitbox_rows_held(&mut self.entities, &self.entity_inverse_extents, slot, data);
+            if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
+                continue;
+            }
+            let flags = if slot.active == ActiveAbility::Drill && slot.drill.phase != 0 {
+                E_ACTIVE | E_ENABLED | E_TRIGGER
+            } else {
+                E_ENABLED | E_TRIGGER
+            };
+            for &entity in &slot.drill_hitbox_entities[slot.active_slot] {
+                if entity != usize::MAX {
+                    self.entities[entity].flags = flags;
+                }
+            }
         }
         for index in 0..self.players.len() {
             let entered = std::mem::replace(&mut self.players[index].form_entered, usize::MAX);
@@ -39345,16 +39426,6 @@ impl RolloutWorld {
             if slot.rock_entity != usize::MAX {
                 let entered = entered == slot.rock_entity;
                 rock_row(&mut self.entities[slot.rock_entity], slot, alive && rocking, entered, exit_position);
-            }
-            // The Rock in another slot, left the pass before, likewise.
-            for (s, (&e, &ability)) in slot.form_entities.iter().zip(&slot.abilities).enumerate() {
-                if ability == ABILITY_ROCK
-                    && e != usize::MAX
-                    && e != slot.rock_entity
-                    && self.entities[e].flags & E_ACTIVE == 0
-                {
-                    self.entities[e].rotation = slot.forms[s].pose.orientation.rotation().raw();
-                }
             }
             if slot.roll_entity != usize::MAX {
                 let circle = &mut self.entities[slot.roll_entity];
@@ -39802,17 +39873,6 @@ impl RolloutWorld {
                     set_box_row(box_row, center, collider.right, collider.up);
                     box_row.rotation = rotation.raw();
                 }
-            }
-            let drill_hitboxes_active = drilling && slot.drill.phase != 0;
-            for &entity in &slot.drill_hitbox_entities[slot.active_slot] {
-                if entity == usize::MAX {
-                    continue;
-                }
-                self.entities[entity].flags = if drill_hitboxes_active {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
             }
             if slot.time_stop_entity != usize::MAX {
                 let circle = &mut self.entities[slot.time_stop_entity];
