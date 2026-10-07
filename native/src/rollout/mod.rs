@@ -4782,12 +4782,13 @@ enum HoleTarget {
 /// are meaningless between ticks; never copied by `fork_from`).
 #[derive(Default)]
 struct PlatformScratch {
-    bounds: Vec<[Vec2; 2]>,
     active: Vec<usize>,
     keyed: Vec<(Fix, usize)>,
     window: Vec<usize>,
     pairs: Vec<[usize; 2]>,
     callback_colliders: Vec<RoundedRect>,
+    /// Their bounding boxes, as SortAndSweep took them, by wall.
+    callback_bounds: Vec<[Vec2; 2]>,
     /// The walls as the Box/RoundedRect narrow phase copies them, after the
     /// RoundedRect/RoundedRect positional corrections.
     box_callback_colliders: Vec<RoundedRect>,
@@ -4839,10 +4840,6 @@ struct PlatformScratch {
     /// manifolds in sweep order: (key, part, wall, contact).
     wall_parts: Vec<Part>,
     wall_contacts: Vec<(CallbackKey, Part, usize, Contact)>,
-    /// Per wall, what every part of the group asks of it: whether it
-    /// collides, its layer, and the bounds SortAndSweep took (None: no
-    /// callback collider this pass, so every part's bounds meet it).
-    wall_sides: Vec<(bool, u32, Option<[Vec2; 2]>)>,
     item_order: Vec<usize>,
     cc_contacts: Vec<(Part, Part, Contact)>,
     /// Each arrow's StickTo contacts in the Circle/Circle and Circle/Box
@@ -34247,7 +34244,8 @@ impl RolloutWorld {
 
     /// Stable rounded-rectangle broad phase, matching the RR subset of the
     /// generic DetPhysics sweep (strict touching-edge rejection included).
-    /// `sweep_x` is `sweep_axes().0`, taken just before with nothing moved.
+    /// `sweep_x` is `sweep_axes().0`, taken just before with nothing moved,
+    /// and `scratch.callback_bounds` the platforms' boxes, just taken.
     fn platform_pairs(platforms: &[Platform], scratch: &mut PlatformScratch, sweep_x: bool) {
         scratch.pairs.clear();
         if platforms.len() < 2 {
@@ -34255,17 +34253,17 @@ impl RolloutWorld {
         }
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
-        let bounds = &mut scratch.bounds;
-        bounds.clear();
-        bounds.extend(platforms.iter().map(|platform| {
-            let r = platform.collider;
-            let extent = Vec2::new(
-                r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
-                r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
+        // Each platform's box, from the collider it holds now.
+        let bounds = &scratch.callback_bounds;
+        #[cfg(debug_assertions)]
+        for (platform, b) in platforms.iter().zip(bounds.iter()) {
+            let fresh = Collider::RoundedRect(platform.collider).bounds();
+            debug_assert_eq!(
+                [b[0].x, b[0].y, b[1].x, b[1].y].map(|v| v.to_f64().to_bits()),
+                [fresh[0].x, fresh[0].y, fresh[1].x, fresh[1].y].map(|v| v.to_f64().to_bits())
             );
-            [r.inner.center - extent, r.inner.center + extent]
-        }));
-        let bounds = &*bounds;
+        }
+        debug_assert_eq!(bounds.len(), platforms.len());
         // The active platforms by `(axis(a) - axis(b)).sign()`, then index.
         // A difference is zero only when the two are equal, so that is how
         // the minima compare (NaN a tie); the order is total, so sorting the
@@ -36478,6 +36476,10 @@ impl RolloutWorld {
         scratch
             .callback_colliders
             .extend(self.platforms.iter().map(|p| p.collider));
+        scratch.callback_bounds.clear();
+        scratch
+            .callback_bounds
+            .extend(scratch.callback_colliders.iter().map(|&r| Collider::RoundedRect(r).bounds()));
 
         // RR-only sweep/narrow-phase. Contacts are all captured before any
         // impulse or correction, just like DetPhysics' collision buffer.

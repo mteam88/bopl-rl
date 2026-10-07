@@ -1015,36 +1015,47 @@ impl RolloutWorld {
     pub(super) fn wall_group(&mut self, group: u8, parts: &[Part], walls: &[RoundedRect], data: &data::RolloutData) {
         let mut contacts = std::mem::take(&mut self.scratch.wall_contacts);
         contacts.clear();
-        // Nothing below moves until every manifold is built, so each wall's
-        // side of the pair tests is taken once, not once per part.
-        let mut sides = std::mem::take(&mut self.scratch.wall_sides);
-        sides.clear();
-        if !parts.is_empty() {
-            sides.extend((0..self.platforms.len()).map(|wall| {
-                let entity = self.platform_entities[wall];
-                (self.wall_collides(wall), self.entities[entity].layer, self.wall_swept_bounds(wall))
-            }));
+        // Nothing below moves until every manifold is built. The walls'
+        // swept boxes were taken with the callback colliders, once per pass
+        // (`callback_bounds`); a wall past them, or every wall when no
+        // callback colliders were taken this pass, meets every part's box.
+        // The pair tests are pure, so the cheap box test goes first and a
+        // part's layer, composite and collider are taken only once a wall
+        // passes it; its rank only for a manifold.
+        let swept_walls: &[[Vec2; 2]] = if self.scratch.callback_tick == Some(self.tick) {
+            &self.scratch.callback_bounds
+        } else {
+            &[]
+        };
+        #[cfg(debug_assertions)]
+        for wall in 0..self.platforms.len() {
+            debug_assert_eq!(
+                swept_walls.get(wall).map(|b| [b[0].x, b[0].y, b[1].x, b[1].y]),
+                self.wall_swept_bounds(wall).map(|b| [b[0].x, b[0].y, b[1].x, b[1].y])
+            );
         }
         for &part in parts {
-            let collider = self.part_collider(part);
             // SortAndSweep pairs on the bounds it took before any group
             // corrected anything; a part registered after it meets nothing
             // this pass (DetPhysics.cs:2169-2231).
             let Some(bounds) = self.swept_bounds(Swept::Part(part)) else { continue };
-            let rank = self.part_rank(part);
-            let layer = self.part_layer(part, data);
-            let composite = self.part_composite(part);
-            for (wall, &(collides, wall_layer, wall_bounds)) in sides.iter().enumerate() {
+            let mut side: Option<(u32, Option<usize>, Collider)> = None;
+            for wall in 0..self.platforms.len() {
                 // SameCompositeAs: a child never meets its own platform. A wall
                 // meets parts only while DetPhysics.IsActive, which a wall
                 // destroyed before this pass also fails, having left in
                 // RemoveDestroyedColliders (DetPhysics.cs:1658-1665, 2731).
                 // SortAndSweep pairs only layers the Physics2D matrix lets
                 // collide (DetPhysics.cs:2183).
-                if !collides
-                    || !data.layers_collide(layer, wall_layer)
-                    || composite == Some(wall)
-                    || !wall_bounds.is_none_or(|wall_bounds| sweep::swept_meet(bounds, wall_bounds))
+                if swept_walls.get(wall).is_some_and(|&wall_bounds| !sweep::swept_meet(bounds, wall_bounds)) {
+                    continue;
+                }
+                let (layer, composite, collider) = *side.get_or_insert_with(|| {
+                    (self.part_layer(part, data), self.part_composite(part), self.part_collider(part))
+                });
+                if composite == Some(wall)
+                    || !self.wall_collides(wall)
+                    || !data.layers_collide(layer, self.entities[self.platform_entities[wall]].layer)
                 {
                     continue;
                 }
@@ -1059,12 +1070,15 @@ impl RolloutWorld {
                     Collider::RoundedRect(_) => unreachable!(),
                 };
                 if let Some(contact) = contact {
+                    // `part_rank`, from the box just taken.
+                    let low = if self.sweep_x() { bounds[0].x } else { bounds[0].y };
+                    let rank = sweep_rank(&self.entities, low, self.part_entity(part));
+                    debug_assert!(rank == self.part_rank(part));
                     let (later, earlier) = sweep_pair(rank, self.wall_rank(wall));
                     contacts.push(((group, later, earlier), part, wall, contact));
                 }
             }
         }
-        self.scratch.wall_sides = sides;
         contacts.sort_by_key(|&(key, ..)| key);
         for &(key, part, wall, contact) in &contacts {
             // collision.layer is the wall's own layer (DetPhysics.cs:2405-2437).
@@ -1146,6 +1160,7 @@ impl RolloutWorld {
 
     /// The bounds SortAndSweep took of a wall, before this pass's
     /// RoundedRect/RoundedRect corrections; None if it bounded none this pass.
+    #[cfg(debug_assertions)]
     fn wall_swept_bounds(&self, wall: usize) -> Option<[Vec2; 2]> {
         self.scratch
             .callback_colliders
