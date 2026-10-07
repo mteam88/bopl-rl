@@ -2141,6 +2141,13 @@ impl RolloutWorld {
     }
 
     pub(super) fn ropes_late(&mut self) {
+        // A body's or clone's rope indexes the pool: with none, no body
+        // holds one and there is no rope to place.
+        if self.ropes.is_empty() {
+            debug_assert!(self.players.iter().all(|slot| slot.rope.is_none()));
+            debug_assert!(self.abilityless_clones.iter().all(|clone| clone.grip.rope.is_none()));
+            return;
+        }
         for player in 0..self.players.len() {
             let Some(rope_index) = self.players[player].rope else {
                 continue;

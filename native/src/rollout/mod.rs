@@ -5606,6 +5606,14 @@ pub struct RolloutWorld {
     /// Whether a row may carry `E_FIX_DESTROYED`: both writes of it set
     /// this, and `destroy_marked_objects` clears it with the rows' bits.
     fix_destroyed_rows: bool,
+    /// Whether `remove_destroyed_colliders` may have hidden a platform row
+    /// (E_REMOVED | E_DESTROYED) the start-of-pass compaction has not yet
+    /// dropped. A platform row is otherwise E_DESTROYED only while unremoved,
+    /// which `destroyed_rows` covers.
+    hidden_platform_rows: bool,
+    /// Whether `session_result_tick` last found two teams still in, and no
+    /// player's `out` or `team` has been written since: the result stands.
+    result_contested: bool,
     /// Whether the actor rows still hold what `refresh_actor_entities` gives,
     /// but for the Rock rows (`refresh_rock_rows`): set by the physics pass's
     /// refresh; cleared when a tick starts, by a pickup grant and by the
@@ -5768,6 +5776,8 @@ impl RolloutWorld {
             destroyed_rows: true,
             springs_pending: true,
             fix_destroyed_rows: true,
+            hidden_platform_rows: true,
+            result_contested: false,
             actor_rows_fresh: false,
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
@@ -5901,6 +5911,8 @@ impl RolloutWorld {
         self.destroyed_rows = src.destroyed_rows;
         self.springs_pending = src.springs_pending;
         self.fix_destroyed_rows = src.fix_destroyed_rows;
+        self.hidden_platform_rows = src.hidden_platform_rows;
+        self.result_contested = src.result_contested;
         self.actor_rows_fresh = false;
         self.scratch.updater_version += 1;
         self.scratch.pending_quiet = None;
@@ -6018,6 +6030,8 @@ impl RolloutWorld {
             destroyed_rows: _,
             springs_pending: _,
             fix_destroyed_rows: _,
+            hidden_platform_rows: _,
+            result_contested: _,
             actor_rows_fresh: _,
             queued_spawns: _,
             entities: _,
@@ -6240,6 +6254,8 @@ impl RolloutWorld {
         self.destroyed_rows = true;
         self.springs_pending = true;
         self.fix_destroyed_rows = true;
+        self.hidden_platform_rows = true;
+        self.result_contested = false;
         self.scratch.updater_version += 1;
         let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
         let mut circle_entity = [usize::MAX; MAX_BODIES];
@@ -7773,6 +7789,7 @@ impl RolloutWorld {
         slot.eating = clone.eating;
         slot.pass_start = pass_start;
         self.players[body] = slot;
+        self.result_contested = false;
         self.scratch.walk_awake |= WALK_PLAYERS;
         let retired = &mut self.abilityless_clones[clone_index];
         let grip = retired.grip;
@@ -8492,11 +8509,17 @@ impl RolloutWorld {
         // DestroyFix from a BlackHole wall callback leaves the rounded body
         // visible as destroyed for that contact pass. DetPhysics removes it
         // at the beginning of the following simulation pass.
-        for platform_index in (0..self.platforms.len()).rev() {
-            let entity = self.platform_entities[platform_index];
-            if self.entities[entity].flags & E_DESTROYED != 0 {
-                self.remove_platform(platform_index, false);
+        // With no row destroyed unremoved and none hidden, none is a
+        // platform's.
+        if std::mem::take(&mut self.hidden_platform_rows) | self.destroyed_rows {
+            for platform_index in (0..self.platforms.len()).rev() {
+                let entity = self.platform_entities[platform_index];
+                if self.entities[entity].flags & E_DESTROYED != 0 {
+                    self.remove_platform(platform_index, false);
+                }
             }
+        } else {
+            debug_assert!(self.platform_entities.iter().all(|&entity| self.entities[entity].flags & E_DESTROYED == 0));
         }
         // Hitboxes a collision kill left on run their updater once more, find
         // their Drill destroyed with the slime and destroy themselves
@@ -21957,6 +21980,11 @@ impl RolloutWorld {
     /// Fires every pending TeleportIndicator, each after the updatables
     /// listed before it.
     fn teleport_pending_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        // A pending marker indexes the pool: with none, none is pending.
+        if self.teleport_marker_pool.is_empty() {
+            debug_assert!(self.players.iter().all(|slot| slot.teleport_pending_marker.is_none()));
+            return;
+        }
         for owner in 0..self.players.len() {
             let Some(marker_index) = self.players[owner].teleport_pending_marker else {
                 continue;
@@ -33459,6 +33487,7 @@ impl RolloutWorld {
                     // start-of-pass compaction and keeps the refresh from
                     // rewriting it.
                     self.entities[entity].flags = E_REMOVED | E_DESTROYED;
+                    self.hidden_platform_rows = true;
                     self.platforms[platform].active = false;
                     hidden = true;
                     continue;
@@ -37402,6 +37431,7 @@ impl RolloutWorld {
     fn player_kill(&mut self, owner: usize, killer: u32, cause: u32) {
         let tick = self.tick;
         let players = self.player_count as u32;
+        self.result_contested = false;
         let player = &mut self.players[owner];
         if player.won {
             return;
@@ -38478,6 +38508,7 @@ impl RolloutWorld {
             return None;
         }
         self.players.push(self.players[0].clone());
+        self.result_contested = false;
         self.scratch.walk_awake |= WALK_PLAYERS;
         Some(self.players.len() - 1)
     }
@@ -38756,6 +38787,7 @@ impl RolloutWorld {
             last.take_player_state(&self.players[owner]);
             last.slime_gone = false;
             self.players[owner] = last;
+            self.result_contested = false;
             self.scratch.walk_awake |= WALK_PLAYERS;
             if self.players[owner].form_flag_body == index {
                 self.players[owner].form_flag_body = owner;
@@ -38902,6 +38934,7 @@ impl RolloutWorld {
                 clone.revival_clone_position = self.revival_marker_pool[marker].position;
                 clone.revival_clone_id = revived_count;
                 self.players[body] = clone;
+                self.result_contested = false;
                 self.scratch.walk_awake |= WALK_PLAYERS;
                 revived[revived_count] = body;
                 revived_count += 1;
@@ -39332,8 +39365,11 @@ impl RolloutWorld {
         // the first one in and any other still in tell so.
         if self.player_count > 1 {
             let players = &self.players[..self.player_count];
-            let first = players.iter().find(|p| !p.out).map(|p| p.team);
-            if first.is_some_and(|team| players.iter().any(|p| !p.out && p.team != team)) {
+            if !self.result_contested {
+                let first = players.iter().find(|p| !p.out).map(|p| p.team);
+                self.result_contested = first.is_some_and(|team| players.iter().any(|p| !p.out && p.team != team));
+            }
+            if self.result_contested {
                 // The reference's distinct teams in are at least two, so it
                 // takes neither result branch.
                 #[cfg(debug_assertions)]
