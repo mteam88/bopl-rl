@@ -478,6 +478,13 @@ third of the env step. Matthew chose the full writer on the GPU, in FP32.
   was under varying host load. The rays run inline on the main stream. A
   side stream beside the set encoders measured no faster (0.95x), so it was
   not kept.
+- **The whole row on the GPU (pack mode 4, 2026-10-07).** The rest of the v4
+  row (players, slimes, walls, items, the enemy pick) is now encoded on the
+  device from the shipped state, by `train/bopl_rows_v4.h`, a source shared
+  with the CPU writer. `eval/encode_check` compares it with the CPU rows:
+  3,142,224 rows, 0 mismatched, and the writer hashes are unchanged. A quiet
+  A/B on v15 put trainer sps at 552k to 601k (+7.3%; +10.8% on v10). An
+  earlier "neutral" reading was contaminated by concurrent benches.
 
 ## Open
 
