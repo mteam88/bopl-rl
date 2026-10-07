@@ -5148,15 +5148,16 @@ struct PlatformScratch {
     cloud_walk: (u32, u64, u32),
     /// `smoke_tick`'s copy of `cloud_keys`, its order for the pass.
     cloud_order: Vec<u128>,
-    /// The walk summary: the keys, sorted, of every object `walk_scan`
-    /// found that a walk could queue on its pass (appended by it), as of
+    /// The walk summary: the keys, sorted, with kind and index, of every
+    /// object `walk_scan` found that a walk could queue on its pass
+    /// (appended by it), as of
     /// the last scan, at Updater list version `walk_pending_version` (0 or
     /// u64::MAX: none). Its objects are listed, and an object a spawn brings
     /// is appended on the next pass, which changes the list; so it stands,
     /// as a superset, for later passes too, while the list stands and no
     /// object comes on without a spawn (`walk_pending_stale`).
     /// `walk_pending_pos` is (pass, the first key Updater has not passed).
-    walk_pending: Vec<UpdaterKey>,
+    walk_pending: Vec<(UpdaterKey, u8, u32)>,
     walk_pending_version: u64,
     walk_pending_pos: (u32, u32),
     #[cfg(debug_assertions)]
@@ -9500,7 +9501,84 @@ impl RolloutWorld {
                     push(self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base), 41, i);
                 }
             }
-        }        quiet
+        }
+        quiet
+    }
+
+    /// Object `index` of `walk_scan` kind `kind` as it stands: its key, if
+    /// it has one there, and whether the scan would queue it now (given the
+    /// key is in range). None for the player objects, or past the pool.
+    fn walk_object(&self, kind: u8, index: usize) -> Option<(UpdaterKey, bool)> {
+        let tick = self.tick;
+        let live = |appended: u32| appended <= tick;
+        let keyed = |appended: u32, base: u32| self.updater_key(appended, 100_000_000 + base);
+        macro_rules! pooled {
+            ($pool:expr, |$o:ident| $on:expr) => {{
+                let $o = $pool.get(index)?;
+                Some((keyed($o.appended, $o.hierarchy_base), $on && live($o.appended)))
+            }};
+        }
+        match kind {
+            0 => {
+                if index < self.first_runtime_platform() || index >= self.platforms.len() {
+                    return None;
+                }
+                let turn = self.platform_pass(index) != PlatformPass::Authored && live(self.platform_dynamics[index].appended);
+                Some((self.platform_turn_key(index), turn))
+            }
+            1 => pooled!(self.black_holes, |o| o.active),
+            2 => {
+                let item = self.thrown_items.get(index)?;
+                Some((keyed(item.appended, item.hierarchy_base), live(item.appended) && self.thrown_item_listed(item)))
+            }
+            4 => pooled!(self.portals, |o| o.active),
+            5 => pooled!(self.ability_pickups, |o| true),
+            6 => pooled!(self.engines, |o| o.active),
+            16 => pooled!(self.tesla_nodes, |o| true),
+            8 => {
+                let rope = self.ropes.get(index)?;
+                Some((self.rope_key(index), rope.physics.enabled))
+            }
+            29 => {
+                let rope = self.ropes.get(index)?;
+                Some((self.rope_attachment_key(index), rope.physics.enabled && rope.attach[0].parent.is_some()))
+            }
+            30 => {
+                let rope = self.ropes.get(index / 2)?;
+                Some((self.rope_end_attachment_key(index / 2, index % 2)?, rope.physics.enabled))
+            }
+            40 => pooled!(self.portal_shots, |o| o.active),
+            10 => pooled!(self.scale_changers, |o| o.active),
+            11 => pooled!(self.duplicate_platform_effects, |o| o.active),
+            12 => pooled!(self.teleport_marker_pool, |o| o.active && o.registered),
+            13 => {
+                let state = self.platform_dynamics.get(index)?;
+                let key = keyed(state.blink_tunnel_appended, state.blink_tunnel_hierarchy);
+                Some((key, state.blink_tunnel_active && live(state.blink_tunnel_appended)))
+            }
+            17 => {
+                let tunnel = self.blink_object_tunnels.get(index)?;
+                Some((keyed(tunnel.appended, tunnel.hierarchy), tunnel.active && live(tunnel.appended)))
+            }
+            22 => {
+                let effect = self.teleport_object_effects.get(index)?;
+                Some((keyed(effect.appended, effect.hierarchy), effect.active && live(effect.appended)))
+            }
+            14 => pooled!(self.abilityless_clones, |o| o.active),
+            23 => {
+                let clone = self.abilityless_clones.get(index)?;
+                let key = keyed(clone.blink_tunnel_appended, clone.blink_tunnel_hierarchy);
+                Some((key, clone.blink_tunnel_active && live(clone.blink_tunnel_appended)))
+            }
+            24 => pooled!(self.spike_attacks, |o| o.active && !o.macho_carried),
+            25 => pooled!(self.gust_wave_slots(), |o| o.active),
+            26 => pooled!(self.meteor_waves, |o| o.active),
+            32 => pooled!(self.frozen_solids, |o| o.active),
+            31 => pooled!(self.arrows, |o| o.active && o.registered),
+            19 => pooled!(self.guided_missiles, |o| o.active && !self.blink_object_hidden(o.entity)),
+            41 => pooled!(self.revival_marker_pool, |o| o.active && o.registered),
+            _ => None,
+        }
     }
 
     /// An object `walk_scan` would find came on mid-pass without a spawn
@@ -9524,17 +9602,30 @@ impl RolloutWorld {
             pos = 0;
         }
         let pending = &scratch.walk_pending;
-        while (pos as usize) < pending.len() && pending[pos as usize] < cursor {
+        while (pos as usize) < pending.len() && pending[pos as usize].0 < cursor {
             pos += 1;
         }
         scratch.walk_pending_pos = (self.tick, pos);
-        Some(pending.get(pos as usize).copied().unwrap_or((u32::MAX, u32::MAX, u32::MAX)))
+        Some(pending.get(pos as usize).map_or((u32::MAX, u32::MAX, u32::MAX), |entry| entry.0))
     }
 
-    /// Checks that a walk to `before` the summary skips would queue nothing,
-    /// or with `clouds` nothing but smoke clouds.
+    /// Checks that a walk to `before` the summary skips would queue nothing.
     #[cfg(debug_assertions)]
-    fn check_walk_skip(&self, cursor: UpdaterKey, before: UpdaterKey, clouds: bool) {
+    fn check_walk_skip(&self, cursor: UpdaterKey, before: UpdaterKey) {
+        self.check_walk_queue(cursor, before, &[]);
+        let tick = self.tick;
+        for cloud in &self.smoke_clouds {
+            if cloud.active && cloud.appended <= tick {
+                let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
+                debug_assert!(key < cursor || key >= before, "a walk skipped a smoke cloud at {key:?}");
+            }
+        }
+    }
+
+    /// Checks that the scans of a walk to `before` would queue `queued`
+    /// (unsorted) and nothing else, but smoke clouds.
+    #[cfg(debug_assertions)]
+    fn check_walk_queue(&self, cursor: UpdaterKey, before: UpdaterKey, queued: &[(UpdaterKey, u8, usize)]) {
         self.check_walk_pending(cursor);
         let tick = self.tick;
         let mut full = Vec::new();
@@ -9543,13 +9634,10 @@ impl RolloutWorld {
                 full.push((key, kind, index));
             }
         });
-        debug_assert!(full.is_empty(), "the walk summary skipped {full:?}");
-        for cloud in &self.smoke_clouds {
-            if !clouds && cloud.active && cloud.appended <= tick {
-                let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
-                debug_assert!(key < cursor || key >= before, "a walk skipped a smoke cloud at {key:?}");
-            }
-        }
+        let mut queued = queued.to_vec();
+        queued.sort_unstable();
+        full.sort_unstable();
+        debug_assert_eq!(full, queued, "the walk summary queued otherwise than the scans");
     }
 
     /// Checks `walk_pending`, while it stands, against a fresh scan: it
@@ -9567,7 +9655,7 @@ impl RolloutWorld {
         debug_assert!(pending.is_sorted());
         let mut missing = Vec::new();
         self.walk_scan(tick, WALK_WALL_TUNNELS | WALK_WAVES, &mut |key, kind, index| {
-            if key.0 <= tick && key >= cursor && pending.binary_search(&key).is_err() {
+            if key.0 <= tick && key >= cursor && pending.binary_search_by_key(&key, |entry| entry.0).is_err() {
                 missing.push((key, kind & !WALK_SUMMARY_ONLY, index));
             }
         });
@@ -9598,7 +9686,7 @@ impl RolloutWorld {
                 && (self.smoke_clouds.is_empty() || self.no_cloud_before(cursor, before))
             {
                 #[cfg(debug_assertions)]
-                self.check_walk_skip(cursor, before, false);
+                self.check_walk_skip(cursor, before);
                 self.updater_pass_to(before);
                 return;
             }
@@ -9698,17 +9786,41 @@ impl RolloutWorld {
         // [cursor, before), and with AHEAD none in (before, ahead), they
         // queue nothing.
         let next = if awake & WALK_PLAYERS == 0 { self.walk_pending_next(cursor) } else { None };
-        let summary = next.is_some_and(|next| next >= before);
+        let mut summary = next.is_some();
+        // The summary's objects keyed in [cursor, before) are the only ones
+        // the scans could queue: those still where it found them, with the
+        // same key, queue if they take a turn now. One gone from its slot
+        // (another's key there) sends the walk to the scans.
+        let marked = queue.len();
+        if next.is_some_and(|next| next < before) {
+            let pending = &self.scratch.walk_pending[self.scratch.walk_pending_pos.1 as usize..];
+            for &(key, kind, index) in pending.iter().take_while(|entry| entry.0 < before) {
+                match self.walk_object(kind, index as usize) {
+                    Some((now, turn)) if now == key => {
+                        if turn {
+                            queue.push((key, kind, index as usize));
+                        }
+                    }
+                    _ => {
+                        summary = false;
+                        break;
+                    }
+                }
+            }
+            if !summary {
+                queue.truncate(marked);
+            }
+        }
         if AHEAD && summary {
             let pending = &self.scratch.walk_pending[self.scratch.walk_pending_pos.1 as usize..];
-            if pending.iter().find(|&&key| key > before).is_some_and(|&key| key < ahead) {
+            if pending.iter().find(|entry| entry.0 > before).is_some_and(|entry| entry.0 < ahead) {
                 busy.set(true);
             }
         }
         if summary {
             #[cfg(debug_assertions)]
             {
-                self.check_walk_skip(cursor, before, true);
+                self.check_walk_queue(cursor, before, &queue[marked..]);
                 let mut full_busy = false;
                 self.walk_scan(tick, awake, &mut |key, kind, _| {
                     full_busy |= kind & WALK_SUMMARY_ONLY == 0 && AHEAD && key.0 <= tick && key > before && key < ahead;
@@ -9723,12 +9835,12 @@ impl RolloutWorld {
                 // turn's own walk may come before the queue's later turns,
                 // and the next pass starts over.
                 if key.0 <= tick {
-                    pending.push(key);
+                    pending.push((key, kind & !WALK_SUMMARY_ONLY, index as u32));
                 }
                 push(&mut queue, key, kind, index);
             });
             pending.sort_unstable();
-            let pos = pending.partition_point(|&key| key < cursor);
+            let pos = pending.partition_point(|entry| entry.0 < cursor);
             self.scratch.walk_pending = pending;
             self.scratch.walk_pending_pos = (tick, pos as u32);
             self.scratch.walk_pending_version = self.scratch.updater_version;
