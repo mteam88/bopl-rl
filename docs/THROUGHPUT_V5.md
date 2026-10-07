@@ -213,6 +213,24 @@ sites, with no single structure to repack.
   ticks independent and 107 dependent, 41 and 55 without the sqrt. The
   zmm sqrt (~14 ticks each) sets the floor.
 
+- BOLT (llvm-bolt with an LBR profile of env_bench, on top of PGO):
+  exact, 2.8% slower solo. I-cache misses fell only 4.5% and op-cache
+  misses 2%: the sim's code misses are capacity, not layout.
+- `opt-level = "s"`: 12.5% slower; `opt-level = 2`: 6.8% slower.
+- Fewer env threads to dodge SMT contention: 12 busy copies on 6 cores
+  give 19% more decisions than 6 copies, so the pool keeps all threads.
+- Stage-major batching (each sim stage runs over k worlds before the
+  next stage): exact. Solo 4.5% faster, but with 12 busy copies only 2-3%
+  at k = 2 and 4 and worse at k = 8. I-cache misses halve while L1d
+  refills rise 39%. Not worth reworking the pool around it.
+- Prefetching the next world's hot regions before stepping it recovers
+  about 2% of a 12% world-cycling tax. In the trainer, data dominates the
+  misses (about 48 KB of L2 misses per env step, against 30 KB of code),
+  spread over many structures.
+- Answering a player's own hurtbox in `body_part_circle` without
+  `detphysics_collider`'s pool scans: exact (debug assertion over all 400
+  games), 0.2% faster. Not worth the special case.
+
 ## Open
 
 - End-to-end (`BOPL_BENCH_WORKLOAD=spec train/bench_shape.sh`, at
