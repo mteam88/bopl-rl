@@ -5714,7 +5714,8 @@ pub struct RolloutWorld {
     pub guided_missiles: Vec<GuidedMissile>,
     pub missile_explosions: Vec<MissileExplosion>,
     pub grenade_explosions: Vec<GrenadeExplosion>,
-    pub smoke_clouds: Vec<SmokeCloud>,
+    /// Unchecked: a pool, cleared only by `reset`; every index is a slot.
+    pub smoke_clouds: Unchecked<SmokeCloud>,
     pub smoke_explosions: Vec<SmokeExplosion>,
     pub time_stop_effects: Vec<TimeStopEffect>,
     pub spike_attacks: Vec<SpawnedSpike>,
@@ -5944,7 +5945,7 @@ impl RolloutWorld {
             guided_missiles: Vec::with_capacity(64),
             missile_explosions: Vec::with_capacity(64),
             grenade_explosions: Vec::with_capacity(64),
-            smoke_clouds: Vec::with_capacity(64),
+            smoke_clouds: Unchecked(Vec::with_capacity(64)),
             smoke_explosions: Vec::with_capacity(64),
             time_stop_effects: Vec::with_capacity(8),
             spike_attacks: Vec::with_capacity(32),
