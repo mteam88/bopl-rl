@@ -1110,6 +1110,7 @@ impl RestMemo {
 
 /// What a smoke cloud's update reads besides the cloud and its row, for
 /// one walk: the floor, and the enter animation's last frame.
+#[derive(Clone, Copy)]
 struct SteadyCloud {
     floor: Fix,
     last_end: u32,
@@ -21497,7 +21498,8 @@ impl RolloutWorld {
         // every walk here finds nothing: the next cloud's needs no doing
         // while the list stands and the cloud between did nothing but step.
         let mut still: Option<(UpdaterKey, u64, u64)> = None;
-        let steady = SteadyCloud::new(self, data);
+        // Read at the first turn: most passes here take none.
+        let mut steady = None;
         // Updater has passed every cloud listed below its place: the walks
         // of the turns before this pass have run most of them.
         let (cursor_tick, cursor) = self.scratch.updater_cursor;
@@ -21548,6 +21550,7 @@ impl RolloutWorld {
                     continue;
                 }
                 self.updater_take_unpassed_turn(key);
+                let steady = *steady.get_or_insert_with(|| SteadyCloud::new(self, data));
                 if !self.steady_cloud_update(&steady, cloud_index, key, data, updater_dt)
                     && !self.smoke_cloud_update(cloud_index, data, updater_dt)
                 {
