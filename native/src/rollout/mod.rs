@@ -40258,9 +40258,19 @@ impl RolloutWorld {
         for (slot, (id, bits)) in self.players.iter().zip(held.ids.iter_mut().zip(&mut held.bits)) {
             *id = slot.base.id;
             if Self::slime_listed(slot) {
-                for s in 0..slot.ability_count.min(3) {
-                    debug_assert!(slot.abilities[s] < 64);
-                    *bits |= 1 << (slot.abilities[s] & 63);
+                // Written out for its at most three slots: as a loop, LLVM
+                // vectorizes it into a masked 4-8-lane OR reduction that
+                // costs more per body than the three scalar ORs.
+                let (count, abilities) = (slot.ability_count, &slot.abilities);
+                debug_assert!(abilities[..count.min(3)].iter().all(|&ability| ability < 64));
+                if count > 0 {
+                    *bits |= 1 << (abilities[0] & 63);
+                }
+                if count > 1 {
+                    *bits |= 1 << (abilities[1] & 63);
+                }
+                if count > 2 {
+                    *bits |= 1 << (abilities[2] & 63);
                 }
             }
             held.count += 1;
