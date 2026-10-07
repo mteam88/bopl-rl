@@ -16,7 +16,7 @@
 #include "env_bench.c"
 #include <cuda_runtime_api.h>
 
-void bopl4_rays_init(void);
+void bopl4_rays_init(const float *packed, long slots);
 void bopl4_rays_launch(const float *packed, float *dense, int rows, cudaStream_t stream);
 
 enum { BATCH=1024, MAX_ABLATIONS=8 };
@@ -113,12 +113,12 @@ int main(int argc, char **argv) {
     if (!n) { fprintf(stderr, "no .rep files in %s\n", argv[2]); return 1; }
 
     int failures=0;
-    bopl4_rays_init();
     batch_slots=malloc((size_t)BATCH*BOPL4_PACK_P*sizeof(float));
     batch_ref=malloc((size_t)BATCH*BOPL4_OBS_SIZE*sizeof(float));
     batch_out=malloc((size_t)BATCH*BOPL_OBS_STRIDE*sizeof(float));
     cuda_check(cudaMalloc((void**)&d_slots, (size_t)BATCH*BOPL4_PACK_P*sizeof(float)), "malloc");
     cuda_check(cudaMalloc((void**)&d_dense, (size_t)BATCH*BOPL_OBS_STRIDE*sizeof(float)), "malloc");
+    bopl4_rays_init(d_slots, BATCH);
 
     char error[512], log[64]; snprintf(log, sizeof(log), "/tmp/encode-check-%d.log", (int)getpid());
     BoplRl *world=bopl_rl_open(argv[1], "/dev/null", log, 30000, error, sizeof(error));
@@ -197,7 +197,7 @@ int main(int argc, char **argv) {
                     memcpy(batch_ref+(size_t)batch_n*BOPL4_OBS_SIZE, scratch_ref[k]+(size_t)a*BOPL_OBS_STRIDE, BOPL4_OBS_SIZE*sizeof(float));
                     batch_info[batch_n]=(RowInfo){g, ablations[k], a, decisions};
                     if (++batch_n==BATCH) {
-                        if (launches==8) { time_launch(256); time_launch(384); }
+                        if (launches==8) { time_launch(128); time_launch(256); time_launch(384); }
                         flush(names);
                     }
                 }
