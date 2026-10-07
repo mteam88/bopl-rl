@@ -779,21 +779,46 @@ static void bopl4_census_note(BoplPuffer *env, const Bopl4Census *c) {
     for (int ability=1; ability<BOPL_ABILITY_COUNT; ability++)
         if (c->source_counts[ability-1]) env->counters.entity_rows[ability]+=c->source_counts[ability-1];
 }
-/* What the shipped rows of one encode share: the slimes' sinf and cosf, and
- * the overflow census when no player is invisible (flags bit 4: then
- * bopl_spatial_hidden is 0 for every pair, so every observer sees the same
- * entities and slimes and the census is the state's). Found by the first
- * shipped row (state NULL until then). */
+/* What the rows of one encode share when they ship their state, found by
+ * the first row that tries (state NULL until then):
+ * - The entities shipped (runs of entity indices, in order): every one but
+ *   the dead (not active, or destroyed). A dead entity is in no row: never
+ *   visible (bopl_entity_visible), so neither kept, counted nor among the
+ *   nearest, and no wall or water (bopl4_scene_class), so the GPU writes the
+ *   same row without it, and a state crowded with dead bodies fits a slot.
+ *   Only rope pieces see their neighbours (a rope group is a run of them,
+ *   bopl4_entity_kept), so a state with a rope ships every entity.
+ * - The slimes' sinf and cosf.
+ * - The overflow census when no player is invisible (flags bit 4: then
+ *   bopl_spatial_hidden is 0 for every pair, so every observer sees the
+ *   same entities and slimes and the census is the state's). */
 typedef struct {
     const BoplRlState *state;
-    int shared_census, census_ready;
+    int fits, shared_census, census_ready;
+    uint32_t shipped, runs, run_begin[BOPL4_ENTITIES], run_count[BOPL4_ENTITIES];
     Bopl4Census census;
     float trig[2*BOPL4_SLIMES];
 } Bopl4Shared;
 static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
+    uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
     shared->state=state; shared->census_ready=0; shared->shared_census=1;
     for (uint32_t i=0; i<state->header.player_count; i++) if (state->players[i].flags&4) shared->shared_census=0;
-    for (uint32_t i=0; i<state->header.slime_count; i++) bopl4_sincos(&state->slimes[i], &shared->trig[2*i], &shared->trig[2*i+1]);
+    uint32_t shipped=0, runs=0, ropes=0;
+    for (uint32_t i=0; i<entities; i++) {
+        const BoplRlEntity *entity=&state->entities[i];
+        ropes|=entity->kind==3;
+        if ((entity->flags&(BOPL_ENTITY_ACTIVE|BOPL_ENTITY_DESTROYED))!=BOPL_ENTITY_ACTIVE || shipped>BOPL4_ENTITIES) continue;
+        if (shipped<BOPL4_ENTITIES) {
+            if (runs && shared->run_begin[runs-1]+shared->run_count[runs-1]==i) shared->run_count[runs-1]++;
+            else { shared->run_begin[runs]=i; shared->run_count[runs]=1; runs++; }
+        }
+        shipped++;
+    }
+    if (ropes) { shipped=entities; runs=1; shared->run_begin[0]=0; shared->run_count[0]=entities; }
+    shared->shipped=shipped; shared->runs=runs;
+    shared->fits=shipped<=BOPL4_ENTITIES && slimes<=BOPL4_SLIMES && bopl4_state_words(shipped, slimes)<=BOPL4_PACK_P;
+    if (shared->fits)
+        for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &shared->trig[2*i], &shared->trig[2*i+1]);
 }
 static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a, Bopl4Shared *shared) {
     if (!shared->shared_census) { Bopl4Census c; bopl4_census(state, a, &c); bopl4_census_note(env, &c); return; }
@@ -808,9 +833,10 @@ static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a, Bo
 static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, int count_overflow, Bopl4Shared *shared) {
     if (!bopl4_defer || bopl4_state_count==BOPL_MAX_PLAYERS) return 0;
     float *obs=bopl_obs_row(env, a), *slot=bopl4_pack_slot(env, obs);
-    uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
-    if (!slot || entities>BOPL4_ENTITIES || slimes>BOPL4_SLIMES || bopl4_state_words(entities, slimes)>BOPL4_PACK_P) return 0;
+    if (!slot) return 0;
     if (shared->state!=state) bopl4_shared_init(shared, state);
+    if (!shared->fits) return 0;
+    uint32_t entities=shared->shipped, slimes=state->header.slime_count;
     if (bopl4_check_rows()) {
         /* The CPU's row as well, for the transport check (rays included). */
         bopl4_defer=0; bopl_encode_v4_row(env, state, a, count_overflow); bopl4_defer=1;
@@ -831,10 +857,15 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     head->max_episode_ticks=env->config.max_episode_ticks;
     head->words=(uint32_t)bopl4_state_words(entities, slimes); head->entity_count=entities; head->slime_count=slimes;
     char *out=(char*)(slot+BOPL4_STATE_OFFSET);
+    BoplRlHeader *header=(BoplRlHeader*)out;
     memcpy(out, &state->header, sizeof(state->header)); out+=sizeof(state->header);
+    header->entity_count=entities;   /* the entities shipped (bopl4_entity_kept reads the count) */
     memcpy(out, state->players, sizeof(state->players)); out+=sizeof(state->players);
     const BoplRlEntity *shipped=(const BoplRlEntity*)out;
-    memcpy(out, state->entities, (size_t)entities*sizeof(BoplRlEntity)); out+=(size_t)entities*sizeof(BoplRlEntity);
+    for (uint32_t r=0; r<shared->runs; r++) {
+        memcpy(out, &state->entities[shared->run_begin[r]], (size_t)shared->run_count[r]*sizeof(BoplRlEntity));
+        out+=(size_t)shared->run_count[r]*sizeof(BoplRlEntity);
+    }
     memcpy(out, state->slimes, (size_t)slimes*sizeof(BoplRlSlime)); out+=(size_t)slimes*sizeof(BoplRlSlime);
     float *trig=(float*)out;
     memcpy(trig, shared->trig, (size_t)slimes*2*sizeof(float));
