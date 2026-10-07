@@ -558,6 +558,33 @@ impl std::ops::DerefMut for Platforms {
     }
 }
 
+/// Indexing by one platform index skips the bounds check in release builds;
+/// debug builds keep it. Every platform index the sim forms is below the
+/// platform count. Ranges and everything else go through the `Vec`.
+impl std::ops::Index<usize> for Platforms {
+    type Output = Platform;
+    #[inline(always)]
+    #[track_caller]
+    fn index(&self, index: usize) -> &Platform {
+        debug_assert!(index < self.list.len(), "platform index {index} out of {}", self.list.len());
+        // SAFETY: every platform index is below the count, which debug
+        // builds check above.
+        unsafe { self.list.get_unchecked(index) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for Platforms {
+    #[inline(always)]
+    #[track_caller]
+    fn index_mut(&mut self, index: usize) -> &mut Platform {
+        debug_assert!(index < self.list.len(), "platform index {index} out of {}", self.list.len());
+        // As `deref_mut`: a platform may move.
+        self.bounds.invalidate();
+        // SAFETY: as for `index`.
+        unsafe { self.list.get_unchecked_mut(index) }
+    }
+}
+
 impl Platforms {
     pub fn with_capacity(capacity: usize) -> Self {
         Vec::with_capacity(capacity).into()

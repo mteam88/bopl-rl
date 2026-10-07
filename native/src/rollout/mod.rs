@@ -3770,66 +3770,86 @@ impl Default for RevivalCircles {
     }
 }
 
-/// The bodies' slots, a `Vec` but for indexing by one body index, which skips
-/// the bounds check in release builds; debug builds keep it. Every body index
-/// the sim forms is one of these slots: a turn's or an iteration's, a row's
-/// owner, a player's own. Ranges and everything else go through the `Vec`.
-#[derive(Clone, Default)]
-pub struct Bodies(pub Vec<PlayerSlot>);
+/// A `Vec` but for indexing by one index, which skips the bounds check in
+/// release builds; debug builds keep it. Only a table every one of whose
+/// single indices the sim forms is in range by construction uses it (each
+/// field says why). Ranges, `get` and everything else go through the `Vec`.
+pub struct Unchecked<T>(pub Vec<T>);
 
-impl std::ops::Deref for Bodies {
-    type Target = Vec<PlayerSlot>;
+impl<T: Clone> Clone for Unchecked<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.0.clone_from(&source.0);
+    }
+}
+
+impl<T> Default for Unchecked<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+/// The bodies' slots. Every body index the sim forms is one of these slots:
+/// a turn's or an iteration's, a row's owner, a player's own.
+pub type Bodies = Unchecked<PlayerSlot>;
+
+impl<T> std::ops::Deref for Unchecked<T> {
+    type Target = Vec<T>;
     #[inline(always)]
-    fn deref(&self) -> &Vec<PlayerSlot> {
+    fn deref(&self) -> &Vec<T> {
         &self.0
     }
 }
 
-impl std::ops::DerefMut for Bodies {
+impl<T> std::ops::DerefMut for Unchecked<T> {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Vec<PlayerSlot> {
+    fn deref_mut(&mut self) -> &mut Vec<T> {
         &mut self.0
     }
 }
 
-impl std::ops::Index<usize> for Bodies {
-    type Output = PlayerSlot;
+impl<T> std::ops::Index<usize> for Unchecked<T> {
+    type Output = T;
     #[inline(always)]
-    fn index(&self, index: usize) -> &PlayerSlot {
-        debug_assert!(index < self.0.len(), "body index {index} out of {}", self.0.len());
-        // SAFETY: every body index is below the slot count (see `Bodies`),
-        // which debug builds check above.
+    #[track_caller]
+    fn index(&self, index: usize) -> &T {
+        debug_assert!(index < self.0.len(), "unchecked index {index} out of {}", self.0.len());
+        // SAFETY: every index of an `Unchecked` table is in range (see the
+        // field), which debug builds check above.
         unsafe { self.0.get_unchecked(index) }
     }
 }
 
-impl std::ops::IndexMut<usize> for Bodies {
+impl<T> std::ops::IndexMut<usize> for Unchecked<T> {
     #[inline(always)]
-    fn index_mut(&mut self, index: usize) -> &mut PlayerSlot {
-        debug_assert!(index < self.0.len(), "body index {index} out of {}", self.0.len());
+    #[track_caller]
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        debug_assert!(index < self.0.len(), "unchecked index {index} out of {}", self.0.len());
         // SAFETY: as for `index`.
         unsafe { self.0.get_unchecked_mut(index) }
     }
 }
 
-macro_rules! bodies_range_index {
+macro_rules! unchecked_range_index {
     ($($range:ty),*) => {$(
-        impl std::ops::Index<$range> for Bodies {
-            type Output = [PlayerSlot];
+        impl<T> std::ops::Index<$range> for Unchecked<T> {
+            type Output = [T];
             #[inline(always)]
-            fn index(&self, range: $range) -> &[PlayerSlot] {
+            fn index(&self, range: $range) -> &[T] {
                 &self.0[range]
             }
         }
-        impl std::ops::IndexMut<$range> for Bodies {
+        impl<T> std::ops::IndexMut<$range> for Unchecked<T> {
             #[inline(always)]
-            fn index_mut(&mut self, range: $range) -> &mut [PlayerSlot] {
+            fn index_mut(&mut self, range: $range) -> &mut [T] {
                 &mut self.0[range]
             }
         }
     )*};
 }
-bodies_range_index!(
+unchecked_range_index!(
     std::ops::Range<usize>,
     std::ops::RangeTo<usize>,
     std::ops::RangeFrom<usize>,
@@ -3838,17 +3858,17 @@ bodies_range_index!(
     std::ops::RangeToInclusive<usize>
 );
 
-impl<'a> IntoIterator for &'a Bodies {
-    type Item = &'a PlayerSlot;
-    type IntoIter = std::slice::Iter<'a, PlayerSlot>;
+impl<'a, T> IntoIterator for &'a Unchecked<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
     }
 }
 
-impl<'a> IntoIterator for &'a mut Bodies {
-    type Item = &'a mut PlayerSlot;
-    type IntoIter = std::slice::IterMut<'a, PlayerSlot>;
+impl<'a, T> IntoIterator for &'a mut Unchecked<T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter_mut()
     }
@@ -5653,19 +5673,21 @@ pub struct RolloutWorld {
     /// Buffers of the platform physics stage, kept between ticks so a level
     /// with moving platforms does not allocate on every tick.
     scratch: PlatformScratch,
-    /// Parallel to `platforms`: rigid body and home spring state.
-    pub platform_dynamics: Vec<PlatformDynamics>,
+    /// Parallel to `platforms`: rigid body and home spring state. This and
+    /// the other tables parallel to `platforms` are `Unchecked`, as
+    /// `platforms` is: every platform index the sim forms is below the count.
+    pub platform_dynamics: Unchecked<PlatformDynamics>,
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
     /// usize::MAX for spawned (ability) platforms.
-    pub platform_defs: Vec<usize>,
+    pub platform_defs: Unchecked<usize>,
     /// Parallel to `platforms`: what each platform is, fixed when it is
     /// pushed. `platform_pass` reads it here rather than from the far wider
     /// `platform_dynamics`; a Duplicator copy's pass still depends on ropes.
-    platform_kinds: Vec<PlatformPass>,
+    platform_kinds: Unchecked<PlatformPass>,
     /// How many of `platform_kinds` lead it as `Authored`.
     authored_platforms: usize,
     /// Parallel to `platforms`: index into the entity table.
-    pub platform_entities: Vec<usize>,
+    pub platform_entities: Unchecked<usize>,
     /// The scene water's row, registered with the map.
     pub water_entity: Option<usize>,
     pub arrows: Vec<Arrow>,
@@ -5894,18 +5916,18 @@ impl RolloutWorld {
             tick: 0,
             episode_ticks: 0,
             rng: Random::new(1),
-            players: Bodies(Vec::with_capacity(MAX_BODIES)),
+            players: Unchecked(Vec::with_capacity(MAX_BODIES)),
             player_count: 0,
             body_template: None,
             platforms: Platforms::with_capacity(64),
             platform_epoch: 1,
             platform_rows_epoch: 0,
             scratch: PlatformScratch::new(),
-            platform_dynamics: Vec::with_capacity(64),
-            platform_defs: Vec::with_capacity(64),
-            platform_kinds: Vec::with_capacity(64),
+            platform_dynamics: Unchecked(Vec::with_capacity(64)),
+            platform_defs: Unchecked(Vec::with_capacity(64)),
+            platform_kinds: Unchecked(Vec::with_capacity(64)),
             authored_platforms: 0,
-            platform_entities: Vec::with_capacity(64),
+            platform_entities: Unchecked(Vec::with_capacity(64)),
             water_entity: None,
             arrows: Vec::with_capacity(64),
             landed_arrows: Vec::new(),
