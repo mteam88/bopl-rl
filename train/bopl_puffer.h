@@ -791,7 +791,9 @@ static void bopl4_census_note(BoplPuffer *env, const Bopl4Census *c) {
  * - The slimes' sinf and cosf.
  * - The overflow census when no player is invisible (flags bit 4: then
  *   bopl_spatial_hidden is 0 for every pair, so every observer sees the
- *   same entities and slimes and the census is the state's). */
+ *   same entities and slimes and the census is the state's). Without a
+ *   rope as well, the census is the shipped scan's: every live entity is
+ *   visible and kept, every slime visible. */
 typedef struct {
     const BoplRlState *state;
     int fits, shared_census, census_ready;
@@ -804,11 +806,15 @@ static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
     shared->state=state; shared->census_ready=0; shared->shared_census=1;
     for (uint32_t i=0; i<state->header.player_count; i++) if (state->players[i].flags&4) shared->shared_census=0;
     uint32_t shipped=0, runs=0, ropes=0;
+    Bopl4Census *c=&shared->census;
+    if (shared->shared_census) memset(c->source_counts, 0, sizeof(c->source_counts));
     for (uint32_t i=0; i<entities; i++) {
         const BoplRlEntity *entity=&state->entities[i];
         ropes|=entity->kind==3;
         if ((entity->flags&(BOPL_ENTITY_ACTIVE|BOPL_ENTITY_DESTROYED))!=BOPL_ENTITY_ACTIVE || shipped>BOPL4_ENTITIES) continue;
         if (shipped<BOPL4_ENTITIES) {
+            uint32_t source=entity->reserved[0];
+            if (shared->shared_census && source>0 && source<=BOPL_ABILITY_COUNT) c->source_counts[source-1]++;
             if (runs && shared->run_begin[runs-1]+shared->run_count[runs-1]==i) shared->run_count[runs-1]++;
             else { shared->run_begin[runs]=i; shared->run_count[runs]=1; runs++; }
         }
@@ -817,8 +823,13 @@ static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
     if (ropes) { shipped=entities; runs=1; shared->run_begin[0]=0; shared->run_count[0]=entities; }
     shared->shipped=shipped; shared->runs=runs;
     shared->fits=shipped<=BOPL4_ENTITIES && slimes<=BOPL4_SLIMES && bopl4_state_words(shipped, slimes)<=BOPL4_PACK_P;
-    if (shared->fits)
-        for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &shared->trig[2*i], &shared->trig[2*i+1]);
+    if (!shared->fits) return;
+    for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &shared->trig[2*i], &shared->trig[2*i+1]);
+    if (shared->shared_census && !ropes) {
+        c->count=(int)shipped; c->visible_slimes=(int)slimes; c->visible_slots=0;
+        for (uint32_t i=0; i<slimes; i++) c->visible_slots+=bopl_slime_inventory(&state->slimes[i]);
+        shared->census_ready=1;
+    }
 }
 static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a, Bopl4Shared *shared) {
     if (!shared->shared_census) { Bopl4Census c; bopl4_census(state, a, &c); bopl4_census_note(env, &c); return; }
