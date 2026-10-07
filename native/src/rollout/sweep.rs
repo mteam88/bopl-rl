@@ -276,10 +276,9 @@ impl RolloutWorld {
     /// The collider's bounding box in this pass's SortAndSweep; None for one
     /// registered after it, which meets nothing until the next pass.
     pub(super) fn swept_bounds(&self, collider: Swept) -> Option<[Vec2; 2]> {
-        let sweep = &self.scratch.sweep;
-        if sweep.tick != Some(self.tick) {
+        let Some(sweep) = self.scratch.sweep.as_deref().filter(|sweep| sweep.tick == Some(self.tick)) else {
             return Some(self.current_bounds(collider, data::get()));
-        }
+        };
         let list = match collider {
             Swept::Part(Part::Item(i)) => sweep.items.get(i),
             Swept::Part(Part::Shot(i)) => sweep.shots.get(i),

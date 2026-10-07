@@ -5045,8 +5045,10 @@ struct PlatformScratch {
     /// sweepX_roundedRectanglesOnly, chosen with it.
     callback_rounded_sweep_x: bool,
     contacts: Vec<(usize, usize, Contact)>,
-    /// Every collider's bounding box in this pass's SortAndSweep.
-    sweep: sweep::SweepBounds,
+    /// Every collider's bounding box in this pass's SortAndSweep, boxed so
+    /// `take_sweep` takes and returns it without moving its lists; None
+    /// before the first pass.
+    sweep: Option<Box<sweep::SweepBounds>>,
     /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
     /// ground, where an older Mine's LateUpdateSim still finds it.
     before_ground_follow: [Vec2; MAX_BODIES],
@@ -8716,9 +8718,9 @@ impl RolloutWorld {
         if self.intro_phase == 3 {
             self.platforms_tick(data, physics_dt);
         } else {
-            let mut sweep = std::mem::take(&mut self.scratch.sweep);
+            let mut sweep = self.scratch.sweep.take().unwrap_or_default();
             self.take_sweep(&mut sweep, data);
-            self.scratch.sweep = sweep;
+            self.scratch.sweep = Some(sweep);
         }
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
@@ -37397,9 +37399,9 @@ impl RolloutWorld {
         // SortAndSweep bounds every collider here: the RoundedRect
         // corrections above moved the walls and composite roots, not their
         // children's colliders.
-        let mut sweep = std::mem::take(&mut scratch.sweep);
+        let mut sweep = scratch.sweep.take().unwrap_or_default();
         self.take_sweep(&mut sweep, data);
-        self.scratch.sweep = sweep;
+        self.scratch.sweep = Some(sweep);
 
         // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect,
         // against the walls those corrections moved. SpikeAttack and
