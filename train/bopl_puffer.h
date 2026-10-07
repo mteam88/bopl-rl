@@ -904,12 +904,15 @@ static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_ove
 /* The critic-only block of every v4 row from the undelayed state `now`
  * (bopl4_privileged); `actions` may be NULL (episode start). */
 static void bopl_encode_privileged(BoplPuffer *env, const BoplRlState *now, const BoplRlAction *actions) {
+    const BoplRlSlime *bodies[BOPL_MAX_PLAYERS]={0};
+    if (now) for (uint32_t i=0; i<now->header.player_count && i<BOPL_MAX_PLAYERS; i++)
+        bodies[i]=bopl_controlling_slime(now, now->players[i].id, bopl_fix(now->players[i].x), bopl_fix(now->players[i].y));
     for (int a=0; a<env->players; a++) {
         if (bopl_layout_of(env, a)!=4) continue;
         int enemy=-1;
         if (now) for (int i=0; i<env->players && enemy<0; i++)
             if (i!=a && now->players[i].team!=now->players[a].team) enemy=i;
-        bopl4_privileged(env, now, a, enemy>=0 && actions?&actions[enemy]:NULL,
+        bopl4_privileged(env, now, a, bodies, enemy>=0 && actions?&actions[enemy]:NULL,
                          enemy>=0?&env->hold_left[enemy]:NULL, enemy>=0?&env->held[enemy]:NULL);
     }
 }

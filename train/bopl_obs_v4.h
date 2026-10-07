@@ -192,21 +192,22 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
 /* The critic-only block of player a's v4 row from the undelayed `state`:
  * the primary enemy's true state and its latch (held buttons, hold left, last
  * aim; NULLs when unknown), and the observer's own undelayed position and
- * velocity next to the delayed one the actor sees. */
-static void bopl4_privileged(BoplPuffer *env, const BoplRlState *state, int a,
+ * velocity next to the delayed one the actor sees. bodies[i]: player i's
+ * controlling slime (bopl_controlling_slime at its position), found once
+ * for every row of the state. */
+static void bopl4_privileged(BoplPuffer *env, const BoplRlState *state, int a, const BoplRlSlime *const *bodies,
                              const BoplRlAction *enemy_action, const int *enemy_hold_left, const uint16_t *enemy_held) {
     float *out=bopl_obs_row(env, a)+BOPL4_OBS_PRIVILEGED_OFFSET;
     memset(out, 0, BOPL4_PRIVILEGED*sizeof(float));
     if (!state) return;
     const BoplRlPlayer *self=&state->players[a];
     double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
-    const BoplRlSlime *controller=bopl_controlling_slime(state, self->id, self_x, self_y);
-    const BoplRlPlayer *enemy=NULL;
+    const BoplRlSlime *controller=bodies[a];
+    const BoplRlPlayer *enemy=NULL; const BoplRlSlime *body=NULL;
     for (uint32_t i=0; i<state->header.player_count && !enemy; i++)
-        if (state->players[i].id!=self->id && state->players[i].team!=self->team) enemy=&state->players[i];
+        if (state->players[i].id!=self->id && state->players[i].team!=self->team) { enemy=&state->players[i]; body=bodies[i]; }
     if (enemy) {
         double x=bopl_fix(enemy->x), y=bopl_fix(enemy->y);
-        const BoplRlSlime *body=bopl_controlling_slime(state, enemy->id, x, y);
         out[0]=1; out[1]=bopl_clip((x-self_x)/64.0); out[2]=bopl_clip((y-self_y)/64.0);
         if (body) {
             out[3]=bopl_clip(bopl_fix(body->vx)/BOPL4_VELOCITY_SCALE); out[4]=bopl_clip(bopl_fix(body->vy)/BOPL4_VELOCITY_SCALE);
