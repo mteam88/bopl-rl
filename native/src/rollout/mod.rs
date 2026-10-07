@@ -15669,6 +15669,16 @@ impl RolloutWorld {
                 self.place_spike_attack(index);
             }
         }
+        // Nothing below to re-seat: skip the basis.
+        if !self.spike_attacks.iter().any(|spike| {
+            attached(spike.active, spike.macho_carried, spike.platform_index)
+                && spike.placed_tick == tick
+                && spike.placed_up.is_some()
+        }) && !self.engines.iter().any(|engine| attached(engine.active, engine.macho_carried, engine.platform_index))
+            && !self.tesla_nodes.iter().any(|node| attached(node.active, node.macho_carried, node.platform_index))
+        {
+            return;
+        }
         let parent_position = self.platforms[platform].surface.center;
         let inverse_basis =
             Vec2::angle(Fix::TAU - self.platform_dynamics[platform].body.orientation);
@@ -35341,63 +35351,68 @@ impl RolloutWorld {
         // platforms. The map loads one authored platform per definition (a
         // Duplicator copy keeps its source's, but is not authored), so one
         // walk finds them all, and it stands until an authored platform is
-        // removed; an index a removal in this pass shifted fails the check
-        // and the definition is searched for again.
+        // removed (which clears `authored_platforms_built`, also in this pass:
+        // the walk is then redone before the next definition is looked up).
         let mut authored = std::mem::take(&mut self.scratch.authored_platforms);
         let first_runtime = self.first_runtime_platform();
-        if pass == PlatformPass::Authored {
-            if !self.scratch.authored_platforms_built {
-                self.authored_platforms_into(data, &mut authored);
-                self.scratch.authored_platforms_built = true;
-            }
-            #[cfg(debug_assertions)]
-            {
-                let mut fresh = Vec::new();
-                self.authored_platforms_into(data, &mut fresh);
-                debug_assert_eq!(fresh, authored);
-            }
-        }
         // The other passes skip the authored platforms; until one of theirs
         // runs, nothing has moved.
         let start = if pass == PlatformPass::Authored { 0 } else { first_runtime };
         for k in start..count {
             let i = if pass == PlatformPass::Authored {
+                if !self.scratch.authored_platforms_built {
+                    self.authored_platforms_into(data, &mut authored);
+                    self.scratch.authored_platforms_built = true;
+                }
+                #[cfg(debug_assertions)]
+                {
+                    let mut fresh = Vec::new();
+                    self.authored_platforms_into(data, &mut fresh);
+                    debug_assert_eq!(fresh, authored);
+                }
                 let definition = order[k];
                 let found = authored.get(definition).copied().unwrap_or(usize::MAX);
-                let i = if found < self.platforms.len() && self.platform_defs[found] == definition && self.platform_pass(found) == pass {
-                    Some(found)
-                } else {
-                    (0..self.platforms.len()).find(|&i| self.platform_defs[i] == definition && self.platform_pass(i) == pass)
-                };
                 debug_assert_eq!(
-                    i,
+                    (found != usize::MAX).then_some(found),
                     (0..self.platforms.len()).find(|&i| self.platform_defs[i] == definition && self.platform_pass(i) == pass)
                 );
-                let Some(i) = i else {
+                if found == usize::MAX {
+                    continue;
+                }
+                // An authored platform is of this pass, and its pass has no
+                // window and no Updater key to wait for.
+                let updates = self.platform_dynamics[found].appended <= self.tick;
+                debug_assert_eq!(updates, self.platform_updates_in(found, pass));
+                if !updates {
+                    continue;
+                }
+                found
+            } else {
+                // platform_updates_in, keeping the key for the turn.
+                let i = k;
+                if self.platform_pass(i) != pass {
+                    debug_assert!(!self.platform_updates_in(i, pass));
+                    continue;
+                }
+                let window = match pass {
+                    PlatformPass::Duplicated => &self.scratch.duplicates_window,
+                    _ => &self.scratch.spawned_window,
+                };
+                let ready = window.as_ref().is_none_or(|window| {
+                    window.contains(&self.entities[self.platform_entities[i]].hierarchy)
+                }) && self.platform_dynamics[i].appended <= self.tick;
+                let key = if ready { Some(self.platform_turn_key(i)) } else { None };
+                let updates = key.is_some_and(|key| !self.updater_passed(key));
+                debug_assert_eq!(updates, self.platform_updates_in(i, pass));
+                let (true, Some(key)) = (updates, key) else {
                     continue;
                 };
-                i
-            } else {
-                k
-            };
-            // An authored platform found above is of this pass, and its pass
-            // has no window and no Updater key to wait for.
-            let updates = if pass == PlatformPass::Authored {
-                self.platform_dynamics[i].appended <= self.tick
-            } else {
-                self.platform_updates_in(i, pass)
-            };
-            debug_assert_eq!(updates, self.platform_updates_in(i, pass));
-            if !updates {
-                continue;
-            }
-            // A runtime platform's prefab takes its turn in Updater's walk,
-            // after everything listed before it.
-            if pass != PlatformPass::Authored {
-                let key = self.platform_turn_key(i);
+                // A runtime platform's prefab takes its turn in Updater's
+                // walk, after everything listed before it.
                 self.run_spawned_before(data, updater_dt, key);
                 self.updater_take_turn(key);
-            }
+                i
+            };
             let mut updaters = self.platform_dynamics[i].updaters;
             debug_assert_eq!(updaters, data::PlatformUpdater::pack(self.platform_updater_order(data, i)));
             while updaters != 0 {

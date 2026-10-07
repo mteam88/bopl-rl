@@ -16,7 +16,7 @@ pub struct Curve {
     pub post_wrap: i32,
 }
 fn modulo(a: Fix, b: Fix) -> Fix {
-    a.checked_rem(b, true)
+    a.checked_rem_fused(b)
         .expect("curve modulo division by zero")
 }
 impl Curve {

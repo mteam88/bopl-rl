@@ -165,6 +165,10 @@ impl Fix {
             result
         }))
     }
+    /// The f64 type's fused fmod; here, exactly `checked_rem(rhs, true)`.
+    pub fn checked_rem_fused(self, rhs: Self) -> Result<Self, MathError> {
+        self.checked_rem(rhs, true)
+    }
     pub fn checked_rem(self, rhs: Self, slow: bool) -> Result<Self, MathError> {
         if rhs.0 == 0 {
             return Err(MathError::DivisionByZero);

@@ -236,6 +236,26 @@ impl Fix {
             a % rhs.0
         }))
     }
+    /// `checked_rem(rhs, true)`, with the fmod beyond two periods done
+    /// exactly by a fused multiply-add where it can be: fmod's result is
+    /// always representable, so for the true quotient `q` the fused
+    /// `a - q * m` (one rounding of the exact value) *is* it. `trunc(a / m)`
+    /// is that quotient unless the division rounded across an integer, and
+    /// then the exact `a - q * m` falls outside `(0, m)`, as does its
+    /// rounding; a zero remainder (whose sign fmod takes from `a`), a
+    /// negative `a`, NaN and infinities take the fmod. Kept apart from
+    /// `checked_rem`, which inlines into the integrator.
+    pub fn checked_rem_fused(self, rhs: Self) -> Result<Self, MathError> {
+        let (a, m) = (self.0, rhs.0.abs());
+        if a > 0.0 && a >= 2.0 * m {
+            let r = (-(a / m).trunc()).mul_add(m, a);
+            if r > 0.0 && r < m {
+                debug_assert_eq!(r.to_bits(), (a % rhs.0).to_bits());
+                return Ok(Self(r));
+            }
+        }
+        self.checked_rem(rhs, true)
+    }
     pub fn sqrt(self) -> Result<Self, MathError> {
         if self.0 < 0.0 {
             return Err(MathError::Domain);
