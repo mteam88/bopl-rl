@@ -17,8 +17,6 @@ pub(super) enum Swept {
     Arrow(usize),
     DuplicatedRock(usize),
     Pickup(usize),
-    /// A row with no other owner here, such as an Explosion or an orb.
-    Row(usize),
 }
 
 /// Each collider's bounding box as SortAndSweep took it this pass.
@@ -80,25 +78,53 @@ impl RolloutWorld {
     /// first correction moves any of them.
     pub(super) fn take_sweep(&self, sweep: &mut SweepBounds, data: &data::RolloutData) {
         sweep.tick = Some(self.tick);
-        let fill = |list: &mut Vec<[Vec2; 2]>, count: usize, f: &dyn Fn(usize) -> [Vec2; 2]| {
+        let _ = data;
+        // Each list from its pool's own arm of `current_bounds`, which the
+        // fills call directly rather than through its match; debug builds
+        // compare every box with `current_bounds`.
+        fn fill(list: &mut Vec<[Vec2; 2]>, count: usize, f: impl Fn(usize) -> [Vec2; 2]) {
             list.clear();
             list.extend((0..count).map(f));
-        };
-        fill(&mut sweep.items, self.thrown_items.len(), &|i| self.current_bounds(Swept::Part(Part::Item(i)), data));
-        fill(&mut sweep.shots, self.portal_shots.len(), &|i| self.current_bounds(Swept::Part(Part::Shot(i)), data));
-        fill(&mut sweep.nodes, self.tesla_nodes.len(), &|i| self.current_bounds(Swept::Part(Part::Node(i)), data));
-        fill(&mut sweep.engines, self.engines.len(), &|i| self.current_bounds(Swept::Part(Part::Engine(i)), data));
-        fill(&mut sweep.spikes, self.spike_attacks.len(), &|i| self.current_bounds(Swept::Part(Part::Spike(i)), data));
-        fill(&mut sweep.missiles, self.guided_missiles.len(), &|i| {
-            self.current_bounds(Swept::Part(Part::Missile(i)), data)
+        }
+        let circle = |center: Vec2, radius: Fix| bounds(center, Vec2::new(radius, radius));
+        let table = &self.entity_inverse_extents;
+        fill(&mut sweep.items, self.thrown_items.len(), |i| {
+            circle(self.thrown_items[i].position, self.thrown_items[i].collider_radius)
         });
-        fill(&mut sweep.players, self.players.len(), &|i| self.current_bounds(Swept::Player(i), data));
-        fill(&mut sweep.clones, self.abilityless_clones.len(), &|i| self.current_bounds(Swept::Clone(i), data));
-        fill(&mut sweep.arrows, self.arrows.len(), &|i| self.current_bounds(Swept::Arrow(i), data));
-        fill(&mut sweep.duplicated_rocks, self.duplicated_rocks.len(), &|i| {
-            self.current_bounds(Swept::DuplicatedRock(i), data)
+        fill(&mut sweep.shots, self.portal_shots.len(), |i| {
+            circle(self.portal_shots[i].position, self.portal_shots[i].collider_radius)
         });
-        fill(&mut sweep.pickups, self.ability_pickups.len(), &|i| self.current_bounds(Swept::Pickup(i), data));
+        fill(&mut sweep.nodes, self.tesla_nodes.len(), |i| {
+            circle(self.tesla_nodes[i].collider_center, self.tesla_nodes[i].radius)
+        });
+        fill(&mut sweep.engines, self.engines.len(), |i| box_bounds(self.engines[i].rocket_box(table)));
+        fill(&mut sweep.spikes, self.spike_attacks.len(), |i| self.spike_bounds(i));
+        fill(&mut sweep.missiles, self.guided_missiles.len(), |i| box_bounds(self.guided_missiles[i].collider(table)));
+        fill(&mut sweep.players, self.players.len(), |i| self.player_bounds(i));
+        fill(&mut sweep.clones, self.abilityless_clones.len(), |i| self.clone_bounds(i));
+        fill(&mut sweep.arrows, self.arrows.len(), |i| self.arrow_bounds(i));
+        fill(&mut sweep.duplicated_rocks, self.duplicated_rocks.len(), |i| self.duplicated_rock_bounds(i));
+        fill(&mut sweep.pickups, self.ability_pickups.len(), |i| self.pickup_bounds(i));
+        #[cfg(debug_assertions)]
+        {
+            let bits = |b: &[Vec2; 2]| [b[0].x, b[0].y, b[1].x, b[1].y].map(|v| v.to_f64().to_bits());
+            let check = |list: &[[Vec2; 2]], f: &dyn Fn(usize) -> Swept| {
+                for (i, b) in list.iter().enumerate() {
+                    debug_assert_eq!(bits(b), bits(&self.current_bounds(f(i), data)));
+                }
+            };
+            check(&sweep.items, &|i| Swept::Part(Part::Item(i)));
+            check(&sweep.shots, &|i| Swept::Part(Part::Shot(i)));
+            check(&sweep.nodes, &|i| Swept::Part(Part::Node(i)));
+            check(&sweep.engines, &|i| Swept::Part(Part::Engine(i)));
+            check(&sweep.spikes, &|i| Swept::Part(Part::Spike(i)));
+            check(&sweep.missiles, &|i| Swept::Part(Part::Missile(i)));
+            check(&sweep.players, &|i| Swept::Player(i));
+            check(&sweep.clones, &|i| Swept::Clone(i));
+            check(&sweep.arrows, &|i| Swept::Arrow(i));
+            check(&sweep.duplicated_rocks, &|i| Swept::DuplicatedRock(i));
+            check(&sweep.pickups, &|i| Swept::Pickup(i));
+        }
         // `detphysics_collider` looks a row up in each pool that can own one
         // and falls back to `row_collider`; a row no pool names takes the
         // fallback directly. Only a smoke cloud's, a blast's or an orb's row
@@ -186,82 +212,106 @@ impl RolloutWorld {
 
     /// The collider's bounding box where it is now.
     fn current_bounds(&self, collider: Swept, data: &data::RolloutData) -> [Vec2; 2] {
+        let _ = data;
         match collider {
-            Swept::Part(Part::Spike(i))
-                if self.spike_attacks[i].platform_index >= self.platform_dynamics.len() =>
-            {
-                let center = self.spike_attacks[i].collider_center;
-                [center, center]
-            }
-            Swept::Part(Part::Rock(i)) => self.current_bounds(Swept::Player(i), data),
-            Swept::Part(Part::Pickup(i)) => self.current_bounds(Swept::Pickup(i), data),
-            Swept::Part(Part::DuplicatedRock(i)) => self.current_bounds(Swept::DuplicatedRock(i), data),
-            Swept::Part(Part::Arrow(i)) => self.current_bounds(Swept::Arrow(i), data),
-            Swept::Part(Part::Body(i)) => self.current_bounds(Swept::Player(i), data),
-            Swept::Part(Part::Clone(i)) => self.current_bounds(Swept::Clone(i), data),
+            Swept::Part(Part::Spike(i)) => self.spike_bounds(i),
+            Swept::Part(Part::Rock(i)) => self.player_bounds(i),
+            Swept::Part(Part::Pickup(i)) => self.pickup_bounds(i),
+            Swept::Part(Part::DuplicatedRock(i)) => self.duplicated_rock_bounds(i),
+            Swept::Part(Part::Arrow(i)) => self.arrow_bounds(i),
+            Swept::Part(Part::Body(i)) => self.player_bounds(i),
+            Swept::Part(Part::Clone(i)) => self.clone_bounds(i),
             Swept::Part(Part::Cloud(i)) => match self.smoke_clouds[i].entity {
-                Some(entity) => self.current_bounds(Swept::Row(entity), data),
+                Some(entity) => self.row_bounds(entity),
                 None => NOWHERE,
             },
             // DetPhysics swept a beam's box before UpdateBeams resized it.
             Swept::Part(Part::Explosion(Blast::Beam(i))) => {
                 self.beam_pool[i].swept_collider.map_or(NOWHERE, box_bounds)
             }
-            Swept::Part(Part::Explosion(blast)) => self.current_bounds(Swept::Row(self.blast_entity(blast)), data),
+            Swept::Part(Part::Explosion(blast)) => self.row_bounds(self.blast_entity(blast)),
             Swept::Part(part) => self.part_collider(part).bounds(),
-            Swept::Player(index) => {
-                let slot = &self.players[index];
-                if slot.active == ActiveAbility::Rock {
-                    // A Blink tunnel or teleport disables the form's
-                    // GameObject, taking its body out of DetPhysics.
-                    if slot.blink_tunnel_active || slot.teleport_effect_active {
-                        return NOWHERE;
-                    }
-                    // Ability.UpdateSim restores Player.Scale before
-                    // DetPhysics; BounceBall's pulse is applied only in the
-                    // later LateUpdate.
-                    let radius = slot.rock_circle().circle_radius;
-                    return bounds(slot.base.position, Vec2::new(radius, radius));
-                }
-                let entity = Self::hurtbox_entity(slot);
-                if matches!(slot.active, ActiveAbility::None | ActiveAbility::Dash)
-                    || entity >= self.entities.len()
-                {
-                    return box_bounds(slot.base.synced);
-                }
-                self.current_bounds(Swept::Row(entity), data)
+            Swept::Player(index) => self.player_bounds(index),
+            Swept::Clone(index) => self.clone_bounds(index),
+            Swept::Arrow(index) => self.arrow_bounds(index),
+            Swept::DuplicatedRock(index) => self.duplicated_rock_bounds(index),
+            Swept::Pickup(index) => self.pickup_bounds(index),
+        }
+    }
+
+    /// A spike's box; one whose wall is gone a point at its collider centre.
+    #[inline]
+    fn spike_bounds(&self, i: usize) -> [Vec2; 2] {
+        let spike = &self.spike_attacks[i];
+        if spike.platform_index >= self.platform_dynamics.len() {
+            let center = spike.collider_center;
+            return [center, center];
+        }
+        box_bounds(Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, *spike))
+    }
+
+    /// The player's registered Player-layer shape.
+    #[inline]
+    fn player_bounds(&self, index: usize) -> [Vec2; 2] {
+        let slot = &self.players[index];
+        if slot.active == ActiveAbility::Rock {
+            // A Blink tunnel or teleport disables the form's
+            // GameObject, taking its body out of DetPhysics.
+            if slot.blink_tunnel_active || slot.teleport_effect_active {
+                return NOWHERE;
             }
-            Swept::Clone(index) => {
-                // A clone's row that is inactive or tunnelled by Blink is out
-                // of DetPhysics.
-                let clone = &self.abilityless_clones[index];
-                match clone.entity {
-                    Some(entity) => self.detphysics_collider(entity).map_or(NOWHERE, collider_bounds),
-                    None => box_bounds(clone.base.synced),
-                }
-            }
-            Swept::Arrow(index) => {
-                let arrow = &self.arrows[index];
-                let radius = arrow.collider_radius;
-                bounds(arrow.position, Vec2::new(radius, radius))
-            }
-            Swept::DuplicatedRock(index) => {
-                let rock = &self.duplicated_rocks[index];
-                let radius = rock.collider_radius;
-                bounds(rock.position, Vec2::new(radius, radius))
-            }
-            Swept::Pickup(index) => {
-                let pickup = &self.ability_pickups[index];
-                bounds(pickup.synced_center, Vec2::new(pickup.radius, pickup.radius))
-            }
-            Swept::Row(entity) => {
-                // A slime's, form's or clone's collider is where DetPhysics
-                // last synced it, which an explicit sync since the export moves.
-                match self.detphysics_collider(entity) {
-                    Some(collider) => collider_bounds(collider),
-                    None => self.row_shape_bounds(entity),
-                }
-            }
+            // Ability.UpdateSim restores Player.Scale before
+            // DetPhysics; BounceBall's pulse is applied only in the
+            // later LateUpdate.
+            let radius = slot.rock_circle().circle_radius;
+            return bounds(slot.base.position, Vec2::new(radius, radius));
+        }
+        let entity = Self::hurtbox_entity(slot);
+        if matches!(slot.active, ActiveAbility::None | ActiveAbility::Dash) || entity >= self.entities.len() {
+            return box_bounds(slot.base.synced);
+        }
+        self.row_bounds(entity)
+    }
+
+    #[inline]
+    fn clone_bounds(&self, index: usize) -> [Vec2; 2] {
+        // A clone's row that is inactive or tunnelled by Blink is out
+        // of DetPhysics.
+        let clone = &self.abilityless_clones[index];
+        match clone.entity {
+            Some(entity) => self.detphysics_collider(entity).map_or(NOWHERE, collider_bounds),
+            None => box_bounds(clone.base.synced),
+        }
+    }
+
+    #[inline]
+    fn arrow_bounds(&self, index: usize) -> [Vec2; 2] {
+        let arrow = &self.arrows[index];
+        let radius = arrow.collider_radius;
+        bounds(arrow.position, Vec2::new(radius, radius))
+    }
+
+    #[inline]
+    fn duplicated_rock_bounds(&self, index: usize) -> [Vec2; 2] {
+        let rock = &self.duplicated_rocks[index];
+        let radius = rock.collider_radius;
+        bounds(rock.position, Vec2::new(radius, radius))
+    }
+
+    #[inline]
+    fn pickup_bounds(&self, index: usize) -> [Vec2; 2] {
+        let pickup = &self.ability_pickups[index];
+        bounds(pickup.synced_center, Vec2::new(pickup.radius, pickup.radius))
+    }
+
+    /// A row's box: a slime's, form's or clone's collider is where
+    /// DetPhysics last synced it, which an explicit sync since the export
+    /// moves.
+    #[inline]
+    fn row_bounds(&self, entity: usize) -> [Vec2; 2] {
+        match self.detphysics_collider(entity) {
+            Some(collider) => collider_bounds(collider),
+            None => self.row_shape_bounds(entity),
         }
     }
 
@@ -331,13 +381,6 @@ impl RolloutWorld {
             Swept::Arrow(i) => sweep.arrows.get(i),
             Swept::DuplicatedRock(i) => sweep.duplicated_rocks.get(i),
             Swept::Pickup(i) => sweep.pickups.get(i),
-            Swept::Row(i) => {
-                #[cfg(debug_assertions)]
-                debug_assert!(!sweep.owned.get(i).is_some_and(|&owned| owned));
-                #[cfg(debug_assertions)]
-                debug_assert!(sweep.taken.get(i).is_none_or(|&taken| taken));
-                sweep.rows.get(i)
-            }
         };
         list.copied()
     }
