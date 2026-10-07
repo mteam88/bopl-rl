@@ -3769,6 +3769,90 @@ impl Default for RevivalCircles {
     }
 }
 
+/// The bodies' slots, a `Vec` but for indexing by one body index, which skips
+/// the bounds check in release builds; debug builds keep it. Every body index
+/// the sim forms is one of these slots: a turn's or an iteration's, a row's
+/// owner, a player's own. Ranges and everything else go through the `Vec`.
+#[derive(Clone, Default)]
+pub struct Bodies(pub Vec<PlayerSlot>);
+
+impl std::ops::Deref for Bodies {
+    type Target = Vec<PlayerSlot>;
+    #[inline(always)]
+    fn deref(&self) -> &Vec<PlayerSlot> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Bodies {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Vec<PlayerSlot> {
+        &mut self.0
+    }
+}
+
+impl std::ops::Index<usize> for Bodies {
+    type Output = PlayerSlot;
+    #[inline(always)]
+    fn index(&self, index: usize) -> &PlayerSlot {
+        debug_assert!(index < self.0.len(), "body index {index} out of {}", self.0.len());
+        // SAFETY: every body index is below the slot count (see `Bodies`),
+        // which debug builds check above.
+        unsafe { self.0.get_unchecked(index) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for Bodies {
+    #[inline(always)]
+    fn index_mut(&mut self, index: usize) -> &mut PlayerSlot {
+        debug_assert!(index < self.0.len(), "body index {index} out of {}", self.0.len());
+        // SAFETY: as for `index`.
+        unsafe { self.0.get_unchecked_mut(index) }
+    }
+}
+
+macro_rules! bodies_range_index {
+    ($($range:ty),*) => {$(
+        impl std::ops::Index<$range> for Bodies {
+            type Output = [PlayerSlot];
+            #[inline(always)]
+            fn index(&self, range: $range) -> &[PlayerSlot] {
+                &self.0[range]
+            }
+        }
+        impl std::ops::IndexMut<$range> for Bodies {
+            #[inline(always)]
+            fn index_mut(&mut self, range: $range) -> &mut [PlayerSlot] {
+                &mut self.0[range]
+            }
+        }
+    )*};
+}
+bodies_range_index!(
+    std::ops::Range<usize>,
+    std::ops::RangeTo<usize>,
+    std::ops::RangeFrom<usize>,
+    std::ops::RangeFull,
+    std::ops::RangeInclusive<usize>,
+    std::ops::RangeToInclusive<usize>
+);
+
+impl<'a> IntoIterator for &'a Bodies {
+    type Item = &'a PlayerSlot;
+    type IntoIter = std::slice::Iter<'a, PlayerSlot>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Bodies {
+    type Item = &'a mut PlayerSlot;
+    type IntoIter = std::slice::IterMut<'a, PlayerSlot>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
+    }
+}
+
 #[derive(Clone)]
 pub struct PlayerSlot {
     pub base: Player,
@@ -5449,7 +5533,7 @@ pub struct RolloutWorld {
     pub tick: u32,
     pub episode_ticks: u32,
     pub rng: Random,
-    pub players: Vec<PlayerSlot>,
+    pub players: Bodies,
     /// Players in the session; `players` holds their own slots first, then any
     /// extra bodies.
     pub player_count: usize,
@@ -5708,7 +5792,7 @@ impl RolloutWorld {
             tick: 0,
             episode_ticks: 0,
             rng: Random::new(1),
-            players: Vec::with_capacity(MAX_BODIES),
+            players: Bodies(Vec::with_capacity(MAX_BODIES)),
             player_count: 0,
             body_template: None,
             platforms: Platforms::with_capacity(64),
@@ -38568,7 +38652,8 @@ impl RolloutWorld {
         if self.players.len() == MAX_BODIES {
             return None;
         }
-        self.players.push(self.players[0].clone());
+        let first = self.players[0].clone();
+        self.players.push(first);
         self.result_contested = false;
         self.scratch.walk_awake |= WALK_PLAYERS;
         Some(self.players.len() - 1)
