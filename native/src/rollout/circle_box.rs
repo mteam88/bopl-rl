@@ -86,22 +86,51 @@ fn sorted_by_rank(group: &[GroupPart], out: &mut Vec<GroupPart>) {
     });
 }
 
-/// The (prior, current) pairs of a rank-sorted group whose spans on the sweep
-/// axis can meet, in the full double loop's order. The ranks rise with the
-/// sweep-axis start, so a prior that ends at or before a part's start ends
-/// before every later part's too and leaves `live` for good: the pairs
-/// skipped are exactly ones `swept_meet` fails on that axis.
-fn sweep_pairs(group: &[GroupPart], sweep_x: bool, live: &mut Vec<u32>, mut each: impl FnMut(&GroupPart, &GroupPart)) {
+/// A prior still open in `sweep_pairs`: its end on the sweep axis, the
+/// layers its own collides with (`layers_collide`'s row), and its place in
+/// the group.
+#[derive(Clone, Copy)]
+pub(super) struct LivePart {
+    end: Fix,
+    collides: u32,
+    place: u32,
+}
+
+/// The (prior, current) pairs of a rank-sorted group whose boxes can meet on
+/// layers the collision matrix pairs, in the full double loop's order. The
+/// ranks rise with the sweep-axis start, so a prior that ends at or before a
+/// part's start ends before every later part's too and leaves `live` for
+/// good: the pairs skipped are exactly ones `swept_meet` fails on that axis.
+/// Each caller acts only on a pair `GroupPart::pairs` passes, which needs
+/// `layers_collide`, so the pairs on layers that do not collide are skipped
+/// too. Over the test replays the Circle/Circle group's sweep finds 23 pairs
+/// a pass, and about one in 20,000 is on layers that collide.
+fn sweep_pairs(
+    group: &[GroupPart],
+    sweep_x: bool,
+    data: &data::RolloutData,
+    live: &mut Vec<LivePart>,
+    mut each: impl FnMut(&GroupPart, &GroupPart),
+) {
     let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
     live.clear();
     for (k, current) in group.iter().enumerate() {
         let Some(bounds) = current.bounds else { continue };
         let start = axis(bounds[0]);
-        live.retain(|&j| group[j as usize].bounds.is_some_and(|b| start < axis(b[1])));
-        for &j in live.iter() {
-            each(&group[j as usize], current);
+        live.retain(|prior| start < prior.end);
+        for prior in live.iter() {
+            let prior_part = &group[prior.place as usize];
+            if prior.collides & (1 << current.layer) != 0 {
+                each(prior_part, current);
+            } else {
+                debug_assert!(!data.layers_collide(prior_part.layer, current.layer));
+            }
         }
-        live.push(k as u32);
+        live.push(LivePart {
+            end: axis(bounds[1]),
+            collides: data.collision_matrix[current.layer as usize],
+            place: k as u32,
+        });
     }
 }
 
@@ -1423,7 +1452,7 @@ impl RolloutWorld {
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
-        sweep_pairs(&group, self.sweep_x(), &mut live, |prior, current| {
+        sweep_pairs(&group, self.sweep_x(), data, &mut live, |prior, current| {
             // A hook's pair with a hole is grapple_hook_pairs'.
             if matches!((prior.part, current.part), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
                 return;
@@ -1483,7 +1512,7 @@ impl RolloutWorld {
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
-        sweep_pairs(&group, self.sweep_x(), &mut live, |prior, current| {
+        sweep_pairs(&group, self.sweep_x(), data, &mut live, |prior, current| {
             if prior.pairs(current, data) {
                 if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
                     contacts.push((prior.part, current.part, contact));

@@ -4839,7 +4839,7 @@ struct PlatformScratch {
     circle_ends: [u32; circle_box::CC_BLOCKS],
     circle_parts_tick: Option<u32>,
     /// sweep_pairs' priors still open on the sweep axis.
-    sweep_live: Vec<u32>,
+    sweep_live: Vec<circle_box::LivePart>,
     /// The beam pool's slots DetPhysics simulated this pass: those live with
     /// an active box before UpdateBeams.
     beam_contacts: usize,
