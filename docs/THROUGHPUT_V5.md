@@ -284,6 +284,9 @@ sites, with no single structure to repack.
   exact, 2.8% slower solo. I-cache misses fell only 4.5% and op-cache
   misses 2%: the sim's code misses are capacity, not layout.
 - `opt-level = "s"`: 12.5% slower; `opt-level = 2`: 6.8% slower.
+  Re-measured on v8 with PGO and 12 busy copies (2026-10-07): `s` neutral
+  (28.19 -> 28.09 us), `2` 3% slower, `-C inline-threshold=100` neutral.
+  Shrinking code does not buy back the I-cache misses.
 - Fewer env threads to dodge SMT contention: 12 busy copies on 6 cores
   give 19% more decisions than 6 copies, so the pool keeps all threads.
 - Stage-major batching (each sim stage runs over k worlds before the
