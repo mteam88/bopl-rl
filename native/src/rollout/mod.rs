@@ -8223,7 +8223,8 @@ impl RolloutWorld {
         // slime that cast it appended it the next pass (Updater.cs:258-282),
         // and the walk runs it at its place in the list, ahead of a form
         // listed after it (Updater.cs:298-303).
-        for index in 0..self.players.len() {
+        let effects = if self.walk_may(WALK_PLAYERS) { self.players.len() } else { 0 };
+        for index in 0..effects {
             for effect_slot in 0..3 {
                 let effect = self.players[index].gold_mushroom[effect_slot];
                 if !effect.active || effect.appended > self.tick {
@@ -8877,6 +8878,17 @@ impl RolloutWorld {
             awake |= WALK_PLAYERS;
         }
         awake
+    }
+
+    /// Whether the `WALK_*` scan `bit` may find something on. A per-kind
+    /// pass that skips its scan of that pool when not loses nothing: each
+    /// of its turns needs an object on, so with none on none runs, nothing
+    /// changes, and none turns on.
+    #[inline]
+    fn walk_may(&self, bit: u8) -> bool {
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.walk_awake_now() & !self.scratch.walk_awake, 0, "a walk scan woke unflagged");
+        self.scratch.walk_awake & bit != 0
     }
 
     /// Updater.UpdateSim for every runtime-spawned updatable ahead of
@@ -19795,14 +19807,16 @@ impl RolloutWorld {
                 pending.push((offset, PendingObject::ShakablePlatform, index));
             }
         }
-        for (index, wave) in self.gust_wave_slots().iter().enumerate() {
-            if pending_since(wave.active, wave.registered, wave.appended) {
-                pending.push((spawned(wave.hierarchy_base), PendingObject::GustWave, index));
+        if self.walk_may(WALK_WAVES) {
+            for (index, wave) in self.gust_wave_slots().iter().enumerate() {
+                if pending_since(wave.active, wave.registered, wave.appended) {
+                    pending.push((spawned(wave.hierarchy_base), PendingObject::GustWave, index));
+                }
             }
-        }
-        for (index, wave) in self.meteor_waves.iter().enumerate() {
-            if pending_since(wave.active, wave.registered, wave.appended) {
-                pending.push((spawned(wave.hierarchy_base), PendingObject::MeteorWave, index));
+            for (index, wave) in self.meteor_waves.iter().enumerate() {
+                if pending_since(wave.active, wave.registered, wave.appended) {
+                    pending.push((spawned(wave.hierarchy_base), PendingObject::MeteorWave, index));
+                }
             }
         }
         // A Duplicator copy's item collider registers at its Init, ahead of
@@ -21880,6 +21894,9 @@ impl RolloutWorld {
     /// everything listed before it: a Poke Ball older than the particle has
     /// tested the clone before ReSpawn makes it vulnerable.
     fn revival_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        if !self.walk_may(WALK_PLAYERS) {
+            return;
+        }
         for index in 0..self.players.len() {
             let Some(key) = self.revival_key(index) else {
                 continue;
@@ -22228,6 +22245,9 @@ impl RolloutWorld {
     /// Shockwave.UpdateSim for the Gust and Meteor waves with hierarchy in
     /// `hierarchy`, in hierarchy order.
     fn shockwaves_update(&mut self, data: &data::RolloutData, hierarchy: std::ops::Range<u32>) {
+        if !self.walk_may(WALK_WAVES) {
+            return;
+        }
         let mut order = std::mem::take(&mut self.scratch.wave_order);
         order.clear();
         for meteor in [false, true] {
@@ -29085,6 +29105,9 @@ impl RolloutWorld {
     /// after the older updatables: a release draws from the shared RNG and
     /// picks among the walls left active.
     fn blink_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        if !self.walk_may(WALK_PLAYERS) {
+            return;
+        }
         loop {
             let tick = self.tick;
             let next = (self.players.iter().enumerate())
@@ -29241,6 +29264,9 @@ impl RolloutWorld {
         updater_dt: Fix,
         before: Option<u32>,
     ) {
+        if !self.walk_may(WALK_WALL_TUNNELS) {
+            return;
+        }
         for platform_index in 0..self.platforms.len() {
             let state = &self.platform_dynamics[platform_index];
             // Most walls have no tunnel: the key is searched for only once
