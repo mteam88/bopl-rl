@@ -163,7 +163,253 @@ pub fn box_box(a: OrientedBox, b: OrientedBox) -> Option<Contact> {
     contact.point = contact_point(fa, fb, na, nb, contact.normal);
     Some(contact)
 }
+/// `Ord::min(acc, value)` as `projection`'s fold takes it: the accumulated
+/// value on a tie (so a signed zero stays where the fold leaves it) and on a
+/// NaN `value`.
+#[inline(always)]
+fn fold_min(acc: Fix, value: Fix) -> Fix {
+    std::hint::select_unpredictable(acc > value, value, acc)
+}
+/// `Ord::max(acc, value)`: the new value on a tie or a NaN.
+#[inline(always)]
+fn fold_max(acc: Fix, value: Fix) -> Fix {
+    std::hint::select_unpredictable(acc > value, acc, value)
+}
+#[inline(always)]
+fn dot(ax: Fix, ay: Fix, p: Vec2) -> Fix {
+    ax * p.x + ay * p.y
+}
+/// `projection` of two points, given their dot products in order.
+#[inline(always)]
+fn span2(d0: Fix, d1: Fix) -> (Fix, Fix) {
+    (fold_min(d0, d1), fold_max(d0, d1))
+}
+/// `projection` of four points, given their dot products in order.
+#[inline(always)]
+fn span4(d0: Fix, d1: Fix, d2: Fix, d3: Fix) -> (Fix, Fix) {
+    (
+        fold_min(fold_min(fold_min(d0, d1), d2), d3),
+        fold_max(fold_max(fold_max(d0, d1), d2), d3),
+    )
+}
+/// `sat`'s forward and backward overlaps of `inflate`d projections.
+#[inline(always)]
+fn overlaps(pa: (Fix, Fix), ra: Fix, pb: (Fix, Fix), rb: Fix) -> (Fix, Fix) {
+    ((pa.1 + ra) - (pb.0 - rb), (pb.1 + rb) - (pa.0 - ra))
+}
+/// `collision_face` of corners `c` along `direction` whose corner scores
+/// (`direction.dot(c[i])`) are `s`.
+#[inline(always)]
+fn collision_face_scored(c: [Vec2; 4], s: [Fix; 4], direction: Vec2, inverse: Vec2) -> ([Vec2; 2], Vec2) {
+    // The original's `find` panics when no score is >= all (a NaN).
+    #[allow(clippy::eq_op)]
+    let nan = (s[0] != s[0]) | (s[1] != s[1]) | (s[2] != s[2]) | (s[3] != s[3]);
+    if nan {
+        collision_face_nan();
+    }
+    // First maximum: the pairwise firsts, the later pair only if strictly
+    // greater, as the in-order search picks without a NaN.
+    let low = s[1] > s[0];
+    let high = s[3] > s[2];
+    let low_score = if low { s[1] } else { s[0] };
+    let high_score = if high { s[3] } else { s[2] };
+    let upper = high_score > low_score;
+    // index = 2 * upper + (upper ? high : low); vertical on bit 1, horizontal on bit 0.
+    let bottom = if upper { high } else { low };
+    let (v0, v1) = if upper { (c[3], c[2]) } else { (c[0], c[1]) };
+    let (h0, h1) = if bottom { (c[1], c[3]) } else { (c[2], c[0]) };
+    let half = Fix::from_f32(0.5);
+    let (ix, iy) = (inverse.x * half, inverse.y * half);
+    let vnormal = (v1 - v0).perp() * iy;
+    let hnormal = (h1 - h0).perp() * ix;
+    if vnormal.dot(direction).abs() > hnormal.dot(direction).abs() {
+        ([v0, v1], vnormal)
+    } else {
+        ([h0, h1], hnormal)
+    }
+}
+/// Keeps the enclosing `if` a branch rather than a select: the choice is
+/// usually predictable, and a predicted branch lets the work after it start
+/// before the comparison resolves (an empty block LLVM cannot speculate).
+#[inline(always)]
+fn branch() {
+    // SAFETY: no instructions; only an optimization barrier for if-conversion.
+    unsafe { std::arch::asm!("", options(nomem, nostack, preserves_flags)) }
+}
+#[cold]
+#[inline(never)]
+fn collision_face_nan() -> ! {
+    panic!("called `Option::unwrap()` on a `None` value")
+}
+/// PhysTools' RoundedRect/RoundedRect SAT, bit for bit as
+/// `rounded_rounded_reference` computes it, with the same arithmetic in the
+/// same order:
+/// - any failing axis returns None, so the four face axes are tested
+///   most-often-failing first (up of `a`, up of `b`, right of `a`, right of
+///   `b`) and the contact takes their overlaps in the original order after;
+/// - projections, `collision_face` and `contact_point` are inlined on scalars.
 pub fn rounded_rounded(a: RoundedRect, b: RoundedRect) -> Option<Contact> {
+    let result = rounded_rounded_fast(a, b);
+    #[cfg(debug_assertions)]
+    {
+        let bits = |c: &Option<Contact>| {
+            c.map(|c| [c.penetration, c.normal.x, c.normal.y, c.point.x, c.point.y].map(|v| v.bits()))
+        };
+        debug_assert_eq!(bits(&result), bits(&rounded_rounded_reference(a, b)));
+    }
+    result
+}
+#[inline(always)]
+fn rounded_rounded_fast(a: RoundedRect, b: RoundedRect) -> Option<Contact> {
+    let ca = corners(a.inner);
+    let cb = corners(b.inner);
+    let (ra, rb) = (a.radius, b.radius);
+    let axes = [
+        a.inner.right * a.inner.inverse_extents.x,
+        a.inner.up * a.inner.inverse_extents.y,
+        b.inner.right * b.inner.inverse_extents.x,
+        b.inner.up * b.inner.inverse_extents.y,
+    ];
+    let failed = |o: (Fix, Fix)| o.0 < Fix::ZERO || o.1 < Fix::ZERO;
+    let (x, y) = (axes[1].x, axes[1].y);
+    let o1 = overlaps(
+        span2(dot(x, y, ca[0]), dot(x, y, ca[1])),
+        ra,
+        span4(dot(x, y, cb[0]), dot(x, y, cb[1]), dot(x, y, cb[2]), dot(x, y, cb[3])),
+        rb,
+    );
+    if failed(o1) {
+        return None;
+    }
+    let (x, y) = (axes[3].x, axes[3].y);
+    let o3 = overlaps(
+        span4(dot(x, y, ca[0]), dot(x, y, ca[1]), dot(x, y, ca[2]), dot(x, y, ca[3])),
+        ra,
+        span2(dot(x, y, cb[0]), dot(x, y, cb[1])),
+        rb,
+    );
+    if failed(o3) {
+        return None;
+    }
+    let (x, y) = (axes[0].x, axes[0].y);
+    let o0 = overlaps(
+        span2(dot(x, y, ca[0]), dot(x, y, ca[2])),
+        ra,
+        span4(dot(x, y, cb[0]), dot(x, y, cb[1]), dot(x, y, cb[2]), dot(x, y, cb[3])),
+        rb,
+    );
+    if failed(o0) {
+        return None;
+    }
+    let (x, y) = (axes[2].x, axes[2].y);
+    let o2 = overlaps(
+        span4(dot(x, y, ca[0]), dot(x, y, ca[1]), dot(x, y, ca[2]), dot(x, y, ca[3])),
+        ra,
+        span2(dot(x, y, cb[0]), dot(x, y, cb[2])),
+        rb,
+    );
+    if failed(o2) {
+        return None;
+    }
+    // `sat`'s updates in axis order, from MAX along axes[0].
+    let mut penetration = Fix::MAX;
+    let mut normal = axes[0];
+    for (o, axis) in [(o0, axes[0]), (o1, axes[1]), (o2, axes[2]), (o3, axes[3])] {
+        if o.0 < penetration && o.0 < o.1 {
+            branch();
+            penetration = o.0;
+            normal = axis;
+        }
+        if o.1 < penetration {
+            branch();
+            penetration = o.1;
+            normal = -axis;
+        }
+    }
+    let (x, y) = (normal.x, normal.y);
+    let sa = [dot(x, y, ca[0]), dot(x, y, ca[1]), dot(x, y, ca[2]), dot(x, y, ca[3])];
+    let (x, y) = (-normal.x, -normal.y);
+    let sb = [dot(x, y, cb[0]), dot(x, y, cb[1]), dot(x, y, cb[2]), dot(x, y, cb[3])];
+    let (mut fa, na) = collision_face_scored(ca, sa, normal, a.inner.inverse_extents);
+    let (mut fb, nb) = collision_face_scored(cb, sb, -normal, b.inner.inverse_extents);
+    // The first strictly least squared length below MAX, as a tournament.
+    let deltas = [fa[0] - fb[0], fa[0] - fb[1], fa[1] - fb[1], fa[1] - fb[0]];
+    let squared = deltas.map(|d| {
+        let s = d.length_squared();
+        if s < Fix::MAX { s } else { Fix::MAX }
+    });
+    let pick = |l: (Fix, usize), r: (Fix, usize)| if r.0 < l.0 { r } else { l };
+    let (mut smallest, closest) = pick(pick((squared[0], 0), (squared[1], 1)), pick((squared[2], 2), (squared[3], 3)));
+    let mut nearest = deltas[closest];
+    if !(smallest < Fix::MAX) {
+        smallest = Fix::MAX;
+        nearest = Vec2::ZERO;
+    }
+    // Identical corners divide by zero in the source; do not silently normalize safely.
+    let axis = nearest / smallest.sqrt().unwrap();
+    let (x, y) = (axis.x, axis.y);
+    let (forward, backward) = overlaps(
+        span4(dot(x, y, ca[0]), dot(x, y, ca[1]), dot(x, y, ca[2]), dot(x, y, ca[3])),
+        ra,
+        span4(dot(x, y, cb[0]), dot(x, y, cb[1]), dot(x, y, cb[2]), dot(x, y, cb[3])),
+        rb,
+    );
+    if forward < Fix::ZERO || backward < Fix::ZERO {
+        return None;
+    }
+    if forward < penetration && forward < backward {
+        branch();
+        penetration = forward;
+        normal = axis;
+    }
+    if backward < penetration {
+        branch();
+        penetration = backward;
+        normal = -axis;
+    }
+    for point in &mut fa {
+        *point += normal * a.radius;
+    }
+    for point in &mut fb {
+        *point -= normal * b.radius;
+    }
+    Some(Contact {
+        penetration,
+        normal,
+        point: contact_point_inline(fa, fb, na, nb, normal),
+    })
+}
+#[inline(always)]
+fn clip_inline(reference: [Vec2; 2], mut incident: [Vec2; 2], normal: Vec2, penetration: Vec2) -> Vec2 {
+    let tangent = normal.perp_cw();
+    let min = tangent.dot(reference[0]);
+    let max = tangent.dot(reference[1]);
+    for point in &mut incident {
+        let distance = tangent.dot(*point);
+        if distance < min {
+            *point += (min - distance) * tangent;
+        } else if distance > max {
+            *point -= (distance - max) * tangent;
+        }
+    }
+    if penetration.dot(incident[0]) > penetration.dot(incident[1]) {
+        incident[0]
+    } else {
+        incident[1]
+    }
+}
+#[inline(always)]
+fn contact_point_inline(a: [Vec2; 2], b: [Vec2; 2], normal_a: Vec2, normal_b: Vec2, normal: Vec2) -> Vec2 {
+    if normal_a.dot(normal).abs() > normal_b.dot(normal).abs() {
+        clip_inline(a, b, normal_a, -normal)
+    } else {
+        clip_inline(b, a, normal_b, normal)
+    }
+}
+/// The source's RoundedRect/RoundedRect SAT, step for step: what
+/// `rounded_rounded` reproduces bit for bit.
+#[cfg(any(debug_assertions, test))]
+pub fn rounded_rounded_reference(a: RoundedRect, b: RoundedRect) -> Option<Contact> {
     let ca = corners(a.inner);
     let cb = corners(b.inner);
     let axes = [
