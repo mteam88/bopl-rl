@@ -1094,6 +1094,44 @@ impl RolloutWorld {
         collides.then_some(row.kind == 0)
     }
 
+    /// The players whose `body_part_circle` collider is a circle, and those
+    /// whose is a box, by bit.
+    fn body_part_bits(&self) -> (u32, u32) {
+        debug_assert!(self.players.len() <= 32);
+        let (mut circles, mut boxes) = (0u32, 0u32);
+        for i in 0..self.players.len() {
+            match self.body_part_circle(i) {
+                Some(true) => circles |= 1 << i,
+                Some(false) => boxes |= 1 << i,
+                None => {}
+            }
+        }
+        (circles, boxes)
+    }
+
+    /// `body_part_bits` for the Box/RoundedRect group, which opens a pass's
+    /// groups, kept for the Circle/RoundedRect and Circle/Circle groups:
+    /// nothing between them enables, disables or moves a slime's or form's
+    /// collider into another pool, and the callbacks that do wait for the
+    /// queue (`queue_collide`).
+    pub(super) fn fresh_body_parts(&mut self) -> (u32, u32) {
+        let bits = self.body_part_bits();
+        self.scratch.body_parts = Some(bits);
+        bits
+    }
+
+    /// The pass's `body_part_bits`, as the Box/RoundedRect group took them
+    /// (`fresh_body_parts`), or taken now on a pass without that group.
+    pub(super) fn pass_body_parts(&mut self) -> (u32, u32) {
+        match self.scratch.body_parts {
+            Some(bits) => {
+                debug_assert_eq!(bits, self.body_part_bits());
+                bits
+            }
+            None => self.fresh_body_parts(),
+        }
+    }
+
     /// Whether a Tesla node's circle is a part of the Circle/Circle group, or
     /// of the Circle/Box group. A node whose platform went inactive earlier
     /// in this pass is skipped by DetPhysics' Circle/Circle group, though its
@@ -2024,18 +2062,15 @@ impl RolloutWorld {
         // circle, or a slime's or other form's circle or box (`body_part_circle`,
         // which takes no Rock); the slimes whose box the Circle/Box group
         // takes stay for it.
-        let (mut rocks, mut circle_bodies, mut box_bodies) = (0u32, 0u32, 0u32);
+        // Its last group to read them, it ends the pass's (`pass_body_parts`).
+        let (circle_bodies, box_bodies) = self.pass_body_parts();
+        self.scratch.body_parts = None;
+        let mut rocks = 0u32;
         debug_assert!(self.players.len() <= 32);
         for i in 0..self.players.len() {
             if self.players[i].active == ActiveAbility::Rock {
                 debug_assert_eq!(self.body_part_circle(i), None);
                 rocks |= (self.hittable(i) as u32) << i;
-            } else {
-                match self.body_part_circle(i) {
-                    Some(true) => circle_bodies |= 1 << i,
-                    Some(false) => box_bodies |= 1 << i,
-                    None => {}
-                }
             }
         }
         let each_bit = |parts: &mut Vec<(Part, u32)>, mut bits: u32, part: fn(usize) -> Part| {

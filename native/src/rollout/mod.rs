@@ -5382,6 +5382,9 @@ struct PlatformScratch {
     circle_clouds: u32,
     box_bodies: u32,
     circle_parts_tick: Option<u32>,
+    /// `body_part_bits` as this pass's Box/RoundedRect group took them, for
+    /// the Circle/RoundedRect and Circle/Circle groups; None outside a pass.
+    body_parts: Option<(u32, u32)>,
     /// sweep_pairs' priors still open on the sweep axis.
     sweep_live: Vec<circle_box::LivePart>,
     /// The beam pool's slots DetPhysics simulated this pass: those live with
@@ -9178,6 +9181,7 @@ impl RolloutWorld {
             let mut sweep = self.scratch.sweep.take().unwrap_or_default();
             self.take_sweep(&mut sweep, data);
             self.scratch.sweep = Some(sweep);
+            self.scratch.body_parts = None;
         }
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
@@ -35524,10 +35528,10 @@ impl RolloutWorld {
                 self.push_swept(&mut parts, Part::Hole(i));
             }
         }
-        for i in 0..self.players.len() {
-            if self.body_part_circle(i) == Some(true) {
-                self.push_swept(&mut parts, Part::Body(i));
-            }
+        let (mut circles, _) = self.pass_body_parts();
+        while circles != 0 {
+            self.push_swept(&mut parts, Part::Body(circles.trailing_zeros() as usize));
+            circles &= circles - 1;
         }
         for i in 0..self.abilityless_clones.len() {
             if self.clone_part_circle(i) == Some(true) {
@@ -38537,10 +38541,12 @@ impl RolloutWorld {
                 self.push_swept(&mut parts, Part::Missile(i));
             }
         }
-        for i in 0..self.players.len() {
-            if self.body_part_circle(i) == Some(false) {
-                self.push_swept(&mut parts, Part::Body(i));
-            }
+        // The slimes' and forms' circles and boxes hold for the pass: the
+        // Circle/RoundedRect and Circle/Circle groups take them from here.
+        let (_, mut boxes) = self.fresh_body_parts();
+        while boxes != 0 {
+            self.push_swept(&mut parts, Part::Body(boxes.trailing_zeros() as usize));
+            boxes &= boxes - 1;
         }
         for i in 0..self.abilityless_clones.len() {
             if self.clone_part_circle(i) == Some(false) {
