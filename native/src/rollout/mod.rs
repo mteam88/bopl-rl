@@ -212,6 +212,40 @@ pub struct CEntity {
 /// registration order among the live colliders, which one kind's rows keep.
 type SweepRank = (Fix, u32, usize);
 
+/// What `gate_published_source_abilities` reads off the live slimes, once per
+/// observation.
+struct SourceGate {
+    held: HeldAbilities,
+    live_forms: [u32; MAX_BODIES * 3],
+    any_platform: bool,
+    drill_hitbox_layer: u32,
+}
+
+/// The abilities in the listed slimes' slots (`live_slime_abilities`): one bit
+/// per ability id for each body, and the body's player id.
+struct HeldAbilities {
+    ids: [u32; MAX_BODIES],
+    bits: [u64; MAX_BODIES],
+    count: usize,
+}
+
+impl HeldAbilities {
+    /// `player_holds`: whether any listed body of player `id` holds
+    /// `ability`, a real ability (never `ABILITY_NULL`).
+    fn holds(&self, id: u32, ability: u32) -> bool {
+        debug_assert!(ability != ABILITY_NULL && ability < 64);
+        let bit = 1u64 << (ability & 63);
+        self.ids[..self.count].iter().zip(&self.bits[..self.count]).any(|(&body, &bits)| body == id && bits & bit != 0)
+    }
+
+    /// Whether any listed body holds `ability`.
+    fn any(&self, ability: u32) -> bool {
+        debug_assert!(ability != ABILITY_NULL && ability < 64);
+        let bit = 1u64 << (ability & 63);
+        self.bits[..self.count].iter().any(|&bits| bits & bit != 0)
+    }
+}
+
 fn sweep_rank(entities: &[CEntity], min: Fix, entity: Option<usize>) -> SweepRank {
     let entity = entity.unwrap_or(usize::MAX);
     (min, entities.get(entity).map_or(u32::MAX, |row| row.kind), entity)
@@ -38603,9 +38637,7 @@ impl RolloutWorld {
     fn observe_main(&mut self) {
         self.refresh_entities();
         let mut entities = std::mem::take(&mut self.state_entities);
-        self.publish_entities(&mut entities);
-        self.gate_published_source_abilities(&mut entities);
-        self.number_observed(&mut entities);
+        self.publish_observed(&mut entities);
         self.state_entities = entities;
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
@@ -38634,9 +38666,7 @@ impl RolloutWorld {
     fn observe_sample(&mut self) {
         self.refresh_entities();
         let mut entities = std::mem::take(&mut self.sample_entities);
-        self.publish_entities(&mut entities);
-        self.gate_published_source_abilities(&mut entities);
-        self.number_observed(&mut entities);
+        self.publish_observed(&mut entities);
         self.sample_entities = entities;
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
@@ -38743,6 +38773,93 @@ impl RolloutWorld {
         }
     }
 
+    /// `publish_entities`, `gate_published_source_abilities` and
+    /// `number_observed` in one pass over the table: each live row is copied
+    /// into its place, gated and renumbered there. A row whose id the
+    /// observation has not numbered yet keeps its internal id for a second,
+    /// short pass that numbers those rows in published order, as
+    /// `number_observed` would. The rope layout, and a pass that would number
+    /// more rows than that list holds, take the three passes instead.
+    fn publish_observed(&mut self, out: &mut Vec<CEntity>) {
+        #[cfg(debug_assertions)]
+        let numbering = (self.observed_ids.clone(), self.last_observed_id);
+        if !self.publish_observed_fused(out) {
+            self.publish_entities(out);
+            self.gate_published_source_abilities(out);
+            self.number_observed(out);
+            return;
+        }
+        #[cfg(debug_assertions)]
+        {
+            let fused = (out.clone(), std::mem::replace(&mut self.observed_ids, numbering.0), self.last_observed_id);
+            self.last_observed_id = numbering.1;
+            let mut full = Vec::new();
+            self.publish_entities(&mut full);
+            self.gate_published_source_abilities(&mut full);
+            self.number_observed(&mut full);
+            assert!(
+                fused.0 == full && fused.1 == self.observed_ids && fused.2 == self.last_observed_id,
+                "publish_observed: the fused pass differs from publish, gate and number"
+            );
+        }
+    }
+
+    /// The fused pass of `publish_observed`; false, with nothing numbered,
+    /// where it does not apply.
+    fn publish_observed_fused(&mut self, out: &mut Vec<CEntity>) -> bool {
+        if self.ropes.iter().any(|rope| rope.physics.enabled) {
+            return false;
+        }
+        let gate = self.source_gate();
+        let mut counts = [0usize; 5];
+        for entity in &self.entities {
+            if entity.flags & E_REMOVED == 0 {
+                debug_assert!(matches!(entity.kind, 0 | 1 | 2 | 4));
+                // Bounded by the table's length: no overflow check.
+                counts[entity.kind as usize] = counts[entity.kind as usize].wrapping_add(1);
+            }
+        }
+        let mut next = [0usize; 5];
+        for kind in 1..5 {
+            next[kind] = next[kind - 1] + counts[kind - 1];
+        }
+        let total = next[4] + counts[4];
+        out.truncate(total);
+        out.resize(total, CEntity::default());
+        let mut pending = [0u32; 32];
+        let mut pending_count = 0usize;
+        let observed_ids = &self.observed_ids[..];
+        for entity in &self.entities {
+            if entity.flags & E_REMOVED == 0 {
+                let kind = entity.kind as usize;
+                let place = next[kind];
+                next[kind] = place.wrapping_add(1);
+                let row = &mut out[place];
+                *row = *entity;
+                Self::gate_source_ability(&gate, row);
+                let observed = observed_ids.get(row.id as usize).map_or(0, |&id| id);
+                if observed != 0 {
+                    row.id = observed;
+                } else {
+                    if pending_count < pending.len() {
+                        pending[pending_count] = place as u32;
+                    }
+                    pending_count += 1;
+                }
+            }
+        }
+        if pending_count > pending.len() {
+            return false;
+        }
+        let pending = &mut pending[..pending_count];
+        pending.sort_unstable();
+        for &place in pending.iter() {
+            let internal = out[place as usize].id;
+            out[place as usize].id = self.observed_id(internal);
+        }
+        true
+    }
+
     fn flags(&self) -> u32 {
         let mut flags = 0;
         if self.terminal {
@@ -38809,6 +38926,15 @@ impl RolloutWorld {
             }
         }
         held
+    }
+
+    /// `live_slime_abilities()[body][s]` for the body in `slot`.
+    fn listed_ability(slot: &PlayerSlot, s: usize) -> u32 {
+        if Self::slime_listed(slot) && s < slot.ability_count.min(3) {
+            slot.abilities[s]
+        } else {
+            ABILITY_NULL
+        }
     }
 
     /// Whether any listed slime of player `id` holds `ability`: the
@@ -38914,8 +39040,129 @@ impl RolloutWorld {
         }
     }
 
+    /// What `gate_source_ability` reads, gathered once per observation.
+    fn source_gate(&self) -> SourceGate {
+        let held = self.held_abilities();
+        let mut live_forms = [u32::MAX; MAX_BODIES * 3];
+        for (slot, forms) in self.players.iter().zip(live_forms.chunks_mut(3)) {
+            if Self::slime_listed(slot) {
+                for (id, &entity) in forms.iter_mut().zip(&slot.form_entities) {
+                    if entity != usize::MAX {
+                        *id = self.entities[entity].id;
+                    }
+                }
+            }
+        }
+        SourceGate {
+            any_platform: held.any(ABILITY_PLATFORM),
+            held,
+            live_forms,
+            drill_hitbox_layer: data::get().drill.hitbox_layer,
+        }
+    }
+
+    /// `live_slime_abilities` as one ability bit set per body, beside the
+    /// body's player id: `player_holds` without the slot scans. Every ability
+    /// id is below `ABILITY_COUNT`, so one word holds them.
+    fn held_abilities(&self) -> HeldAbilities {
+        let mut held = HeldAbilities { ids: [0; MAX_BODIES], bits: [0; MAX_BODIES], count: 0 };
+        for (slot, (id, bits)) in self.players.iter().zip(held.ids.iter_mut().zip(&mut held.bits)) {
+            *id = slot.base.id;
+            if Self::slime_listed(slot) {
+                for s in 0..slot.ability_count.min(3) {
+                    debug_assert!(slot.abilities[s] < 64);
+                    *bits |= 1 << (slot.abilities[s] & 63);
+                }
+            }
+            held.count += 1;
+        }
+        #[cfg(debug_assertions)]
+        {
+            let reference = self.live_slime_abilities();
+            for ability in 1..64 {
+                assert_eq!(held.any(ability), reference.iter().any(|slots| slots.contains(&ability)));
+                for slot in &self.players {
+                    assert_eq!(
+                        held.holds(slot.base.id, ability),
+                        Self::player_holds(&self.players, &reference, slot.base.id, ability)
+                    );
+                }
+            }
+        }
+        held
+    }
+
+    /// `gate_published_source_abilities` for one published row, which still
+    /// carries its internal id.
+    #[inline(always)]
+    fn gate_source_ability(gate: &SourceGate, row: &mut CEntity) {
+        // `Collider` reads the owner off the same FixTransform
+        // (sim/Gameplay/RlObservation.cs:110), so a row whose GameObject
+        // DestroyFix took this pass publishes no owner either.
+        if row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0 {
+            row.owner = 0;
+        }
+        if row.reserved[0] == ABILITY_NULL {
+            return;
+        }
+        // `RlObservation.Entity` (sim/Gameplay/RlObservation.cs:224-229)
+        // wraps every metadata lookup -- source ability, timer, clock and
+        // the component flag bits -- in `if (transform != null)`. A row
+        // the reference reports as DESTROYED with `activeInHierarchy`
+        // clear is one whose `FixTransform` has gone with its GameObject
+        // (`Collider` derives bit 0 from `transform != null &&
+        // transform.gameObject.activeInHierarchy`, :113-114), so the
+        // reference publishes a source of 0 for it however the collider
+        // was credited while it lived. The port's own table keeps the id:
+        // an ability collider is reused when the ability is cast again.
+        if row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0 {
+            row.reserved[0] = ABILITY_NULL;
+            return;
+        }
+        if row.flags & E_PICKUP != 0 {
+            return;
+        }
+        if row.kind == 1 && row.layer == gate.drill_hitbox_layer && row.reserved[0] == ABILITY_DRILL
+        {
+            // `HitboxCombo.SpawnHitboxesIfNotYetSpawned` creates each box
+            // with `FixTransform.InstantiateFixed`
+            // (sim/Gameplay/HitboxCombo.cs:52), so the object is a scene
+            // root: it carries `DPhysicsBox` and `Hitbox` and nothing
+            // else. `Drill` is a `MonoUpdatable`/`IAbilityComponent`
+            // (sim/Gameplay/Drill.cs:6), not an `AbilityMonoBehaviour`,
+            // and it is not in the parent chain anyway, so
+            // `RlObservation.SourceAbility`'s direct/parent lookup
+            // (sim/Gameplay/RlObservation.cs:188-191) finds nothing and
+            // its final loop only credits smoke, spark and projectile
+            // (:203-219). The reference always publishes 0 here. The
+            // internal marker has to stay on `self.entities`: it is what
+            // `refresh_entity_metadata` keys `E_HITBOX` off.
+            row.reserved[0] = ABILITY_NULL;
+        } else if row.kind == 2 && row.reserved[0] == ABILITY_PLATFORM {
+            // The only rounded rectangle credited to Platform is a
+            // ResizablePlatform the ability spawned.
+            if !gate.any_platform {
+                row.reserved[0] = ABILITY_NULL;
+            }
+        } else if row.layer == LAYER_PLAYER {
+            // An ability prefab's box: `AbilityId` finds its component
+            // only in a listed slime's `abilities`, so a prefab
+            // AddAdditionalAbility replaced publishes 0 even while the
+            // slime holds the same ability in another slot.
+            if !gate.live_forms.contains(&row.id) {
+                row.reserved[0] = ABILITY_NULL;
+            }
+        } else if row.owner != 0
+            && !gate.held.holds(row.owner, row.reserved[0])
+        {
+            row.reserved[0] = ABILITY_NULL;
+        }
+    }
+
     fn refresh_entity_metadata(&mut self) {
-        let held = self.live_slime_abilities();
+        let held = self.held_abilities();
+        #[cfg(debug_assertions)]
+        let held_slots = self.live_slime_abilities();
         let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in &mut self.entities {
             row.flags &= !E_COMPONENT_METADATA;
@@ -39011,7 +39258,7 @@ impl RolloutWorld {
                 // slot of any listed slime whose GetPlayerId() is the row's
                 // owner (RlObservation.cs:201-217), so a second body's Bow
                 // counts for a shot the other body fired.
-                row.reserved[0] = if Self::player_holds(&self.players, &held, row.owner, ABILITY_BOW) {
+                row.reserved[0] = if held.holds(row.owner, ABILITY_BOW) {
                     ABILITY_BOW
                 } else {
                     ABILITY_NULL
@@ -39051,13 +39298,18 @@ impl RolloutWorld {
                 // copy's Grenade is re-initialized with no thrower
                 // (ShootDuplicator.cs:290-296).
                 let thrower = &self.players[item.owner];
+                #[cfg(debug_assertions)]
+                assert_eq!(
+                    Self::listed_ability(thrower, item.ability_slot),
+                    held_slots[item.owner][item.ability_slot]
+                );
                 row.reserved[0] = if !item.duplicated
                     && thrower.ability_generation[item.ability_slot] == item.ability_generation
-                    && held[item.owner][item.ability_slot] == item.ability
+                    && Self::listed_ability(thrower, item.ability_slot) == item.ability
                 {
                     item.ability
                 } else if row.flags & E_PROJECTILE != 0
-                    && Self::player_holds(&self.players, &held, row.owner, ABILITY_BOW)
+                    && held.holds(row.owner, ABILITY_BOW)
                 {
                     // With no thrower to credit, SourceAbility's last loop
                     // credits any Projectile to a live slime of the row's
