@@ -38811,15 +38811,17 @@ impl RolloutWorld {
             return false;
         }
         let gate = self.source_gate();
-        let mut counts = [0usize; 5];
+        // Kind-indexed by `kind & 7`: every row's kind is 0..=4.
+        let mut counts = [0usize; 8];
         for entity in &self.entities {
             if entity.flags & E_REMOVED == 0 {
                 debug_assert!(matches!(entity.kind, 0 | 1 | 2 | 4));
                 // Bounded by the table's length: no overflow check.
-                counts[entity.kind as usize] = counts[entity.kind as usize].wrapping_add(1);
+                let kind = (entity.kind & 7) as usize;
+                counts[kind] = counts[kind].wrapping_add(1);
             }
         }
-        let mut next = [0usize; 5];
+        let mut next = [0usize; 8];
         for kind in 1..5 {
             next[kind] = next[kind - 1] + counts[kind - 1];
         }
@@ -38831,7 +38833,7 @@ impl RolloutWorld {
         let observed_ids = &self.observed_ids[..];
         for entity in &self.entities {
             if entity.flags & E_REMOVED == 0 {
-                let kind = entity.kind as usize;
+                let kind = (entity.kind & 7) as usize;
                 let place = next[kind];
                 next[kind] = place.wrapping_add(1);
                 let row = &mut out[place];
@@ -39196,12 +39198,18 @@ impl RolloutWorld {
                     row.flags |= ability_collider_flags(ABILITY_ROCK);
                 }
             }
-            for entity in slot.form_entities.into_iter().chain([slot.meteor_entity]) {
-                if entity != usize::MAX
-                    && slot.kills_on_contact(entity)
-                    && self.entities[entity].flags & E_DESTROYED == 0
-                {
-                    self.entities[entity].flags |= E_CONTACT_DAMAGE;
+            // `kills_on_contact` needs a lethal Roll slot or a landing
+            // Meteor; nearly every slot has neither.
+            if (0..3).any(|s| slot.abilities[s] == ABILITY_ROLL && slot.roll_lethal[s])
+                || (slot.active == ActiveAbility::Meteor && slot.meteor.phase == 3)
+            {
+                for entity in slot.form_entities.into_iter().chain([slot.meteor_entity]) {
+                    if entity != usize::MAX
+                        && slot.kills_on_contact(entity)
+                        && self.entities[entity].flags & E_DESTROYED == 0
+                    {
+                        self.entities[entity].flags |= E_CONTACT_DAMAGE;
+                    }
                 }
             }
             for entities in &slot.drill_hitbox_entities {
@@ -40680,6 +40688,7 @@ impl RolloutWorld {
         player_time_scale: Fix,
         sudden_death: bool,
     ) {
+        let simulation_time = (Fix::from_int(i64::from(tick)) * DT).raw();
         state.header = CHeader {
             version: ABI_VERSION,
             tick,
@@ -40689,9 +40698,9 @@ impl RolloutWorld {
             entity_count: entities.len() as u32,
             warmup_ticks: warmup,
             slime_count: slimes.len() as u32,
-            simulation_time: (Fix::from_int(i64::from(tick)) * DT).raw(),
+            simulation_time,
             player_time_scale: player_time_scale.raw(),
-            simulation_time_since_level_loaded: (Fix::from_int(i64::from(tick)) * DT).raw(),
+            simulation_time_since_level_loaded: simulation_time,
             sudden_death: u32::from(sudden_death),
             reserved: 0,
         };
@@ -40749,6 +40758,13 @@ impl RolloutWorld {
             } else {
                 slot.base.position
             };
+            let [x, y, scale, invisible_time, ability_time] = Fix::raw_array([
+                position.x,
+                position.y,
+                slot.player_scale,
+                slot.invisible_time,
+                slot.ability_time,
+            ]);
             state.players[i] = CPlayer {
                 id: slot.base.id,
                 team: slot.team,
@@ -40758,11 +40774,11 @@ impl RolloutWorld {
                 kills: slot.kills,
                 deaths: slot.deaths,
                 cause_of_death: slot.cause_of_death,
-                x: position.x.raw(),
-                y: position.y.raw(),
-                scale: slot.player_scale.raw(),
-                invisible_time: slot.invisible_time.raw(),
-                ability_time: slot.ability_time.raw(),
+                x,
+                y,
+                scale,
+                invisible_time,
+                ability_time,
             };
             state.telemetry[i] = slot.telemetry;
         }
