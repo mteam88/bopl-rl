@@ -282,31 +282,41 @@ typedef struct {
     const BoplRlPlayer *player; const BoplRlSlime *slime;
     int known; double x, y, vx, vy;
 } Bopl4Enemy;
-/* hidden, bodies: per player index, bopl_spatial_hidden from self and
- * bopl_controlling_slime at the player's position, when the caller has them
- * (the GPU writer finds them a thread a player); NULL: found here. */
-BOPL4D_FN Bopl4Enemy bopl4_primary_enemy_of(const BoplRlState *state, const BoplRlPlayer *self, double self_x, double self_y,
-                                            const int *hiddens, const BoplRlSlime *const *bodies) {
+/* Player i as the primary enemy's candidate, given whether it is hidden
+ * from self and its controlling slime (bopl_controlling_slime at its
+ * position): 0 when it is no enemy, else 1 with *candidate and its squared
+ * distance. The GPU writer finds the candidates a thread a player. */
+BOPL4D_FN int bopl4_enemy_candidate(const BoplRlState *state, const BoplRlPlayer *self, double self_x, double self_y, uint32_t i,
+                                    int hidden, const BoplRlSlime *slime, Bopl4Enemy *candidate, double *distance) {
+    const BoplRlPlayer *player=&state->players[i];
+    if (player->id==self->id || player->team==self->team) return 0;
+    double x=bopl_fix(player->x), y=bopl_fix(player->y);
+    double dx=x-self_x, dy=y-self_y;
+    *distance=dx*dx+dy*dy;
+    candidate->player=player; candidate->slime=hidden?NULL:slime; candidate->known=!hidden;
+    candidate->x=x; candidate->y=y; candidate->vx=slime?bopl_fix(slime->vx):0.0; candidate->vy=slime?bopl_fix(slime->vy):0.0;
+    return 1;
+}
+/* Take the candidate when it is the first, or known where the best is not,
+ * or as known and nearer. */
+BOPL4D_FN void bopl4_enemy_consider(Bopl4Enemy *best, double *best_distance, const Bopl4Enemy *candidate, double distance) {
+    if (!best->player || candidate->known>best->known || (candidate->known==best->known && distance<*best_distance)) {
+        *best=*candidate; *best_distance=distance;
+    }
+}
+BOPL4D_FN Bopl4Enemy bopl4_primary_enemy(const BoplRlState *state, const BoplRlPlayer *self, double self_x, double self_y) {
     Bopl4Enemy best; memset(&best, 0, sizeof(best));
     double best_distance=0.0;
     for (uint32_t i=0; i<state->header.player_count; i++) {
         const BoplRlPlayer *player=&state->players[i];
         if (player->id==self->id || player->team==self->team) continue;
-        int hidden=hiddens?hiddens[i]:bopl_spatial_hidden(state, player->id, self->id);
-        double x=bopl_fix(player->x), y=bopl_fix(player->y);
-        const BoplRlSlime *slime=bodies?bodies[i]:bopl_controlling_slime(state, player->id, x, y);
-        double dx=x-self_x, dy=y-self_y, distance=dx*dx+dy*dy;
-        int candidate_known=!hidden;
-        if (!best.player || candidate_known>best.known || (candidate_known==best.known && distance<best_distance)) {
-            best.player=player; best.slime=hidden?NULL:slime; best.known=candidate_known;
-            best.x=x; best.y=y; best.vx=slime?bopl_fix(slime->vx):0.0; best.vy=slime?bopl_fix(slime->vy):0.0;
-            best_distance=distance;
-        }
+        int hidden=bopl_spatial_hidden(state, player->id, self->id);
+        const BoplRlSlime *slime=bopl_controlling_slime(state, player->id, bopl_fix(player->x), bopl_fix(player->y));
+        Bopl4Enemy candidate; double distance;
+        bopl4_enemy_candidate(state, self, self_x, self_y, i, hidden, slime, &candidate, &distance);
+        bopl4_enemy_consider(&best, &best_distance, &candidate, distance);
     }
     return best;
-}
-BOPL4D_FN Bopl4Enemy bopl4_primary_enemy(const BoplRlState *state, const BoplRlPlayer *self, double self_x, double self_y) {
-    return bopl4_primary_enemy_of(state, self, self_x, self_y, NULL, NULL);
 }
 /* The eighth of the circle (atan2(dy, dx)+pi)*8/(2 pi) falls in, clamped to
  * 0-7. Away from the octant edges (the axes and diagonals) it is read off the
@@ -373,37 +383,46 @@ BOPL4D_FN void bopl4_global_block(float *obs, const BoplRlState *state, const Bo
  * distance) and the nearest ability slots of the visible and the two
  * controlling bodies (slot_indices: slime*3+slot; the observer's first, then
  * the enemy's), with the visible slime and slot counts. */
-/* bopl4_slime_pass with, per slime, bopl4_slime_seen's hidden and distance
- * when the caller has them (the GPU writer, a thread a slime); NULL: found here. */
-BOPL4D_FN double bopl4_slime_seen(const BoplRlState *state, const BoplRlSlime *slime, const BoplRlPlayer *self,
-                                  double self_x, double self_y, int *hidden) {
-    *hidden=bopl_spatial_hidden(state, slime->owner, self->id);
+/* What the slime pass needs of a slime apart from the two controlling
+ * bodies: whether it is hidden from self, its squared distance, and its
+ * usable ability slots (bit per slot) with their priorities before the
+ * controlling bodies' offsets. The GPU writer finds them a thread a slime. */
+typedef struct { double distance, priority[3]; int hidden, slots; } Bopl4SlimeSeen;
+BOPL4D_FN void bopl4_slime_seen(const BoplRlState *state, const BoplRlSlime *slime, const BoplRlPlayer *self,
+                                double self_x, double self_y, Bopl4SlimeSeen *seen) {
+    seen->hidden=bopl_spatial_hidden(state, slime->owner, self->id);
     double dx=bopl_fix(slime->x)-self_x, dy=bopl_fix(slime->y)-self_y;
-    return dx*dx+dy*dy;
+    double distance=dx*dx+dy*dy;
+    seen->distance=distance; seen->slots=0;
+    for (int slot=0; slot<3; slot++) {
+        uint32_t id=slime->abilities[slot], flags=slime->ability_flags[slot];
+        seen->priority[slot]=0.0;
+        if (!(flags&1) || id==0 || id>BOPL_ABILITY_COUNT) continue;
+        seen->slots|=1<<slot;
+        seen->priority[slot]=distance+slot*1.0e-9;
+    }
 }
+/* seens: per slime, bopl4_slime_seen, when the caller has them; NULL: found here. */
 BOPL4D_FN void bopl4_slime_pass_of(const BoplRlState *state, const BoplRlPlayer *self, double self_x, double self_y,
-                                   const BoplRlSlime *controller, const BoplRlSlime *enemy_controller,
-                                   const int *hiddens, const double *seen_distances,
+                                   const BoplRlSlime *controller, const BoplRlSlime *enemy_controller, const Bopl4SlimeSeen *seens,
                                    uint32_t *nearby_slimes, int *slime_count, uint32_t *slot_indices, int *slot_count,
                                    int *visible_slimes, int *visible_slots) {
     double slime_distances[BOPL4_SLIMES], slot_distances[BOPL4_SLOTS];
     *slime_count=*slot_count=*visible_slimes=*visible_slots=0;
     for (uint32_t i=0; i<state->header.slime_count; i++) {
         const BoplRlSlime *slime=&state->slimes[i];
-        int hidden;
-        double distance;
-        if (hiddens) { hidden=hiddens[i]; distance=seen_distances[i]; }
-        else distance=bopl4_slime_seen(state, slime, self, self_x, self_y, &hidden);
+        Bopl4SlimeSeen local;
+        const Bopl4SlimeSeen *seen=seens?&seens[i]:&local;
+        if (!seens) bopl4_slime_seen(state, slime, self, self_x, self_y, &local);
         int forced=slime==controller || slime==enemy_controller;
-        if (hidden && !forced) continue;
-        if (!hidden) {
-            bopl_nearest(nearby_slimes, slime_distances, slime_count, BOPL4_SLIMES, i, distance);
+        if (seen->hidden && !forced) continue;
+        if (!seen->hidden) {
+            bopl_nearest(nearby_slimes, slime_distances, slime_count, BOPL4_SLIMES, i, seen->distance);
             (*visible_slimes)++;
         }
         for (int slot=0; slot<3; slot++) {
-            uint32_t id=slime->abilities[slot], flags=slime->ability_flags[slot];
-            if (!(flags&1) || id==0 || id>BOPL_ABILITY_COUNT) continue;
-            double priority=distance+slot*1.0e-9;
+            if (!(seen->slots>>slot&1)) continue;
+            double priority=seen->priority[slot];
             if (slime==controller) priority-=1.0e12; else if (slime==enemy_controller) priority-=1.0e11;
             bopl_nearest(slot_indices, slot_distances, slot_count, BOPL4_SLOTS, i*3u+(uint32_t)slot, priority);
             (*visible_slots)++;
@@ -414,7 +433,7 @@ BOPL4D_FN void bopl4_slime_pass(const BoplRlState *state, const BoplRlPlayer *se
                                 const BoplRlSlime *controller, const BoplRlSlime *enemy_controller,
                                 uint32_t *nearby_slimes, int *slime_count, uint32_t *slot_indices, int *slot_count,
                                 int *visible_slimes, int *visible_slots) {
-    bopl4_slime_pass_of(state, self, self_x, self_y, controller, enemy_controller, NULL, NULL,
+    bopl4_slime_pass_of(state, self, self_x, self_y, controller, enemy_controller, NULL,
                         nearby_slimes, slime_count, slot_indices, slot_count, visible_slimes, visible_slots);
 }
 /* Whether entity k is kept for the row (rope thinning, visibility), from
@@ -611,17 +630,24 @@ BOPL4D_FN void bopl4_scene_head(Bopl4Scene *s, int ablation, double x, double y,
  * uy, ex, ey; *lethal (layer 16) and *skew (rotated, not orthogonal). The
  * scene keeps the first BOPL4F_WALLS candidates in entity order. */
 enum { BOPL4_SCENE_NONE=0, BOPL4_SCENE_WATER=1, BOPL4_SCENE_AXIS=2, BOPL4_SCENE_ROT=3 };
-BOPL4D_FN int bopl4_scene_entity(const BoplRlEntity *e, float *w, double *top, int *lethal, int *skew) {
+/* In three steps for the GPU writer, which spreads a wall's square roots and
+ * quotients over threads: bopl4_scene_class (none, water with *top, or a
+ * wall), the axes' unit vectors (bopl4_axis_length and a quotient per
+ * component, kept when the length is over 1e-6), then bopl4_scene_wall. */
+enum { BOPL4_SCENE_WALL=4 };
+BOPL4D_FN int bopl4_scene_class(const BoplRlEntity *e, double *top) {
     if (!(e->flags&1) || (e->flags&4)) return BOPL4_SCENE_NONE;
     if (e->layer==BOPL4_WATER_LAYER) {
         *top=bopl_fix(e->y)+fabs(bopl_fix(e->up_y))+fabs(bopl_fix(e->right_y));
         return BOPL4_SCENE_WATER;
     }
     if (e->kind!=2 || !(e->layer==11 || e->layer==16 || e->layer==21)) return BOPL4_SCENE_NONE;
-    double rx=bopl_fix(e->right_x), ry=bopl_fix(e->right_y), ux=bopl_fix(e->up_x), uy=bopl_fix(e->up_y);
-    double ex=sqrt(rx*rx+ry*ry), ey=sqrt(ux*ux+uy*uy);
-    if (ex>1e-6) { rx/=ex; ry/=ex; } else { rx=1; ry=0; }
-    if (ey>1e-6) { ux/=ey; uy/=ey; } else { ux=-ry; uy=rx; }
+    return BOPL4_SCENE_WALL;
+}
+BOPL4D_FN double bopl4_axis_length(double x, double y) { return sqrt(x*x+y*y); }
+/* The wall from its axes' unit vectors (r, u) and lengths (ex, ey). */
+BOPL4D_FN int bopl4_scene_wall(const BoplRlEntity *e, double rx, double ry, double ux, double uy, double ex, double ey,
+                               float *w, int *lethal, int *skew) {
     *lethal=e->layer==16;
     int straight=(rx==1||rx==-1) && ry==0 && ux==0 && (uy==1||uy==-1);
     int turned=rx==0 && (ry==1||ry==-1) && (ux==1||ux==-1) && uy==0;
@@ -634,6 +660,15 @@ BOPL4D_FN int bopl4_scene_entity(const BoplRlEntity *e, float *w, double *top, i
     w[3]=(float)rx; w[4]=(float)ry; w[5]=(float)ux; w[6]=(float)uy; w[7]=(float)ex; w[8]=(float)ey;
     *skew=fabs(rx*ux+ry*uy)>1e-9;
     return BOPL4_SCENE_ROT;
+}
+BOPL4D_FN int bopl4_scene_entity(const BoplRlEntity *e, float *w, double *top, int *lethal, int *skew) {
+    int kind=bopl4_scene_class(e, top);
+    if (kind!=BOPL4_SCENE_WALL) return kind;
+    double rx=bopl_fix(e->right_x), ry=bopl_fix(e->right_y), ux=bopl_fix(e->up_x), uy=bopl_fix(e->up_y);
+    double ex=bopl4_axis_length(rx, ry), ey=bopl4_axis_length(ux, uy);
+    if (ex>1e-6) { rx/=ex; ry/=ex; } else { rx=1; ry=0; }
+    if (ey>1e-6) { ux/=ey; uy/=ey; } else { ux=-ry; uy=rx; }
+    return bopl4_scene_wall(e, rx, ry, ux, uy, ex, ey, w, lethal, skew);
 }
 /* Store wall candidate w (bopl4_scene_entity) as aligned wall k or rotated wall k. */
 BOPL4D_FN void bopl4_scene_axis(Bopl4Scene *s, int k, const float *w, int lethal) {

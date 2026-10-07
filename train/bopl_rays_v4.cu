@@ -140,17 +140,22 @@ __device__ static void br4_scene_prepare(Br4Shared& sh) {
 // (FP64 at 1/64 rate: a dependent DFMA is ~63 cycles, a division or square
 // root ~650), so the work is cut into short independent items over many
 // threads, one kind of item per warp (a warp runs one function):
-//   P1  per (row, entity): the scene's wall candidate and the circle; per
-//       (row, entity): kept, the distance and the counts (integers: any
-//       order sums alike); per (row, slime): its circle, whether it is
-//       hidden and its distance; per (row, player): whether it is hidden and
-//       its controlling body
+//   S   the scene's own threads, beside P1 and P2 (only P3 reads it): per
+//       (row, entity, component) bopl4_scene_entity's steps, a wall's axis
+//       lengths and unit vectors a square root and a quotient a thread,
+//       then the wall in the entity's first thread
+//   P1  the other threads, per (row, entity): the circle; per (row,
+//       entity): kept, the distance and the counts (integers: any
+//       order sums alike); per (row, slime): its circle and what the slime
+//       pass needs of it (bopl4_slime_seen); per (row, player): its
+//       controlling body and the player as the primary enemy's candidate
+//       (a named barrier among these threads ends it)
 //   P2  per row (a lane each): the observer, its body, the primary enemy, the
 //       scene's head and the slime pass, from P1's; per (row, entity): the
 //       nearest, every kept entity at its rank by (distance, index), which is
 //       bopl_nearest's stable order (there are at most BOPL4_ENTITIES),
 //       unless a distance is NaN, when the row runs bopl_nearest as written
-//   P3  a warp per row places the scene's circles (the nearest entities',
+//   P3  (every thread) a warp per row places the scene's circles (the nearest entities',
 //       then the nearby slimes', by a ballot's prefix), a warp per row its
 //       walls (the first BOPL4F_WALLS candidates in entity order, likewise)
 //       and water; the unused set slots zeroed; then what the row items
@@ -158,7 +163,11 @@ __device__ static void br4_scene_prepare(Br4Shared& sh) {
 // The previous and critic blocks come from the slot as the host wrote them,
 // except critic 43 and 44, which read the opponent block. The scene goes to
 // the row's Bopl4Scene in global memory for the rays.
-constexpr int BR4E_ROWS = 4, BR4E_THREADS = 256, BR4E_SEGS = 7, BR4E_KINDS = 4;
+// The scene's threads (four an entity: a square root and a quotient each) and the others.
+constexpr int BR4E_ROWS = 1, BR4E_SCENE = 4 * BOPL4_ENTITIES * BR4E_ROWS, BR4E_REST = 128, BR4E_THREADS = BR4E_SCENE + BR4E_REST;
+constexpr int BR4E_SEGS = 7, BR4E_KINDS = 4;
+static_assert(BR4E_SCENE % 32 == 0, "the scene's warps are whole");
+static_assert(BR4E_REST >= 3 * 32 && BR4E_ROWS <= 32, "P2's warps");
 // What the row items (br4_items) read of a row, left in global memory by
 // bopl4_encode_rows; enemy.player points into this st.
 struct Br4Meta {
@@ -179,8 +188,10 @@ struct Br4ERow : Br4Meta {
     int E, S, P, time_stop, nan;
     float aim_dx, aim_dy;
     const BoplRlSlime* bodies[BOPL4_PLAYERS];   // per player: bopl_controlling_slime
-    int hidden[BOPL4_PLAYERS], slime_hidden[BOPL4_SLIMES];
-    double slime_distance[BOPL4_SLIMES];
+    Bopl4Enemy candidate[BOPL4_PLAYERS];        // per player: bopl4_enemy_candidate
+    double candidate_distance[BOPL4_PLAYERS], body_vx[BOPL4_PLAYERS], body_vy[BOPL4_PLAYERS];
+    int is_candidate[BOPL4_PLAYERS];
+    Bopl4SlimeSeen seen[BOPL4_SLIMES];
     double distance[BOPL4_ENTITIES], top[BOPL4_ENTITIES];
     float wall[BOPL4_ENTITIES][9], ecirc[BOPL4_ENTITIES][5], scirc[BOPL4_SLIMES][5];
     int32_t ecls[BOPL4_ENTITIES], scls[BOPL4_SLIMES];
@@ -208,7 +219,7 @@ __device__ __forceinline__ unsigned long long br4e_or(unsigned long long v) {
     return v;
 }
 
-__global__ void __launch_bounds__(BR4E_THREADS) bopl4_encode_rows(const float* __restrict__ packed, float* __restrict__ dense, int rows,
+__global__ void __launch_bounds__(BR4E_THREADS, 3) bopl4_encode_rows(const float* __restrict__ packed, float* __restrict__ dense, int rows,
                                                                 Bopl4Scene* __restrict__ scenes, Br4Meta* __restrict__ metas,
                                                                 int* __restrict__ counts) {
     __shared__ Br4EShared sh;
@@ -235,7 +246,7 @@ __global__ void __launch_bounds__(BR4E_THREADS) bopl4_encode_rows(const float* _
             w.sectors = (const unsigned char*)(w.trig + 2 * w.S);
             w.out = dense + (long)r * BOPL_OBS_STRIDE;
             w.scene = scenes + r;
-            memset(&w.c, 0, sizeof(w.c));
+            for (int i = 0; i < (int)(sizeof(w.c) / 4); i++) ((int32_t*)&w.c)[i] = 0;   // words: memset would store bytes
             w.time_stop = BOPL4_ENTITIES; w.nan = 0;
         }
     }
@@ -267,105 +278,140 @@ __global__ void __launch_bounds__(BR4E_THREADS) bopl4_encode_rows(const float* _
     }
     __syncthreads();
 
-    // P1
-    for (int i = t; i < sh.off[BR4E_KINDS * BR4E_ROWS]; i += BR4E_THREADS) {
-        int at = 0;
-        while (sh.off[at + 1] <= i) at++;
-        const int q = at / BR4E_ROWS, k = i - sh.off[at];
-        if (k >= sh.cnt[at]) continue;   // the padding to the next kind's warp
-        Br4ERow& w = sh.row[at % BR4E_ROWS];
-        const BoplRlState* state = &w.st;
-        const BoplRlPlayer* self = &state->players[w.a];
-        if (q == 0) {
-            // Entity k's part of the scene and its circle.
-            const BoplRlEntity* entity = &state->entities[k];
-            double top = 0.0; int lethal = 0, skew = 0;
-            w.kind[k] = (unsigned char)bopl4_scene_entity(entity, w.wall[k], &top, &lethal, &skew);
-            w.top[k] = top; w.lethal[k] = (unsigned char)lethal; w.skew[k] = (unsigned char)skew;
-            int32_t cls = 0;
-            w.ehas[k] = (unsigned char)bopl4_entity_circle(entity, self, w.ecirc[k], &cls);
-            w.ecls[k] = cls;
-        } else if (q == 1) {
-            // The entity pass.
-            const BoplRlEntity* entity = &state->entities[k];
-            const int kept = bopl4_entity_kept(state, (uint32_t)k, self->id);
-            w.kept[k] = (unsigned char)kept;
-            if (kept) {
-                double distance = bopl_surface_distance(entity, bopl_fix(self->x), bopl_fix(self->y));
-                if (entity->flags & BOPL_ENTITY_PICKUP) distance -= 1.0e12;
-                w.distance[k] = distance;
-                if (distance != distance) w.nan = 1;
-                atomicAdd(&w.c.active_count, 1);
-                const uint32_t source = entity->reserved[0];
-                if (source > 0 && source <= BOPL_ABILITY_COUNT) atomicAdd(&w.c.source_counts[source - 1], 1);
-                if (entity->inverse_mass > 0) {
-                    atomicAdd(&w.c.n_nonstatic, 1);
-                    atomicAdd(&w.c.sectors[w.sectors[k]], 1);
-                }
-                if (entity->flags & BOPL_ENTITY_PICKUP) atomicAdd(&w.c.n_pickup, 1);
-                if (state->header.player_time_scale == 0 && (entity->flags & BOPL_ENTITY_TIMER_KNOWN) && entity->clock_rate > 0)
-                    atomicMin(&w.time_stop, k);
-            }
-        } else if (q == 2) {
-            // Slime k: its circle, whether it is hidden, its distance.
-            const BoplRlSlime* slime = &state->slimes[k];
-            int32_t cls = 0;
-            w.shas[k] = (unsigned char)bopl4_slime_circle(state, slime, self, w.scirc[k], &cls);
-            w.scls[k] = cls;
-            w.slime_distance[k] = bopl4_slime_seen(state, slime, self, bopl_fix(self->x), bopl_fix(self->y), &w.slime_hidden[k]);
-        } else {
-            // Player k: whether it is hidden from the observer, its controlling body.
-            const BoplRlPlayer* player = &state->players[k];
-            w.hidden[k] = bopl_spatial_hidden(state, player->id, self->id);
-            w.bodies[k] = bopl_controlling_slime(state, player->id, bopl_fix(player->x), bopl_fix(player->y));
+    if (t < BR4E_SCENE) {
+        // Entity k's part of the scene (walls and water), beside P1 and P2 (only P3 reads it): bopl4_scene_entity's
+        // steps, a wall's axis lengths and unit vectors over four threads, component j each, then the wall in the first.
+        const int lr = t / (4 * BOPL4_ENTITIES), k = t % (4 * BOPL4_ENTITIES) >> 2, j = t & 3;
+        Br4ERow& w = sh.row[lr];
+        const int on = sh.valid[lr] && k < w.E;
+        const BoplRlEntity* e = on ? &w.st.entities[k] : nullptr;
+        int kind = BOPL4_SCENE_NONE;
+        double top = 0.0, length = 0.0, unit = 0.0;
+        if (on && (kind = bopl4_scene_class(e, &top)) == BOPL4_SCENE_WALL) {
+            const double x = bopl_fix(j < 2 ? e->right_x : e->up_x), y = bopl_fix(j < 2 ? e->right_y : e->up_y);
+            length = bopl4_axis_length(x, y);
+            if (length > 1e-6) unit = (j & 1 ? y : x) / length;
         }
-    }
-    __syncthreads();
-
-    // P2
-    if (warp == 0) {
-        if (lane < BR4E_ROWS && sh.valid[lane]) {
-            // The observer, its body, the primary enemy, the scene's head, the slime pass.
-            Br4ERow& w = sh.row[lane];
-            const BoplRlState* state = &w.st;
-            const BoplRlPlayer* self = &state->players[w.a];
-            const double self_x = bopl_fix(self->x), self_y = bopl_fix(self->y);
-            const BoplRlSlime* controller = w.bodies[w.a];
-            w.x = self_x; w.y = self_y; w.controller = controller;
-            w.vx = controller ? bopl_fix(controller->vx) : 0.0; w.vy = controller ? bopl_fix(controller->vy) : 0.0;
-            w.enemy = bopl4_primary_enemy_of(state, self, self_x, self_y, w.hidden, w.bodies);
-            w.enemy_controller = w.enemy.player ? w.bodies[w.enemy.player - state->players] : NULL;
-            bopl4_scene_head(w.scene, w.ablation, self_x, self_y, w.vx, w.vy, (w.flags & BOPL4_STATE_AIMED) != 0, w.aim_dx, w.aim_dy, &w.enemy);
-            int visible_slots;
-            bopl4_slime_pass_of(state, self, self_x, self_y, controller, w.enemy_controller, w.slime_hidden, w.slime_distance,
-                                w.nearby, &w.slime_count, w.slots, &w.slot_count, &w.c.visible_slimes, &visible_slots);
-        }
-    } else if (warp == 1) {
-        if (lane < BR4E_ROWS && sh.valid[lane]) {
-            // The counts' rest; the nearest if a distance is NaN.
-            Br4ERow& w = sh.row[lane];
-            w.c.count = w.c.active_count;
-            if (w.time_stop < BOPL4_ENTITIES) { w.c.time_stop_known = 1; w.c.time_stop_remaining = w.st.entities[w.time_stop].reserved[1]; }
-            if (w.nan) {
-                double distances[BOPL4_ENTITIES];
-                int count = 0;
-                for (int k = 0; k < w.E; k++) if (w.kept[k]) bopl_nearest(w.nearest, distances, &count, BOPL4_ENTITIES, (uint32_t)k, w.distance[k]);
+        const double u1 = __shfl_down_sync(0xffffffffu, unit, 1), u2 = __shfl_down_sync(0xffffffffu, unit, 2);
+        const double u3 = __shfl_down_sync(0xffffffffu, unit, 3), ey = __shfl_down_sync(0xffffffffu, length, 2);
+        if (on && j == 0) {
+            int lethal = 0, skew = 0;
+            if (kind == BOPL4_SCENE_WALL) {
+                const double ex = length;
+                double rx, ry, ux, uy;
+                if (ex > 1e-6) { rx = unit; ry = u1; } else { rx = 1; ry = 0; }
+                if (ey > 1e-6) { ux = u2; uy = u3; } else { ux = -ry; uy = rx; }
+                kind = bopl4_scene_wall(e, rx, ry, ux, uy, ex, ey, w.wall[k], &lethal, &skew);
             }
+            w.kind[k] = (unsigned char)kind; w.top[k] = top; w.lethal[k] = (unsigned char)lethal; w.skew[k] = (unsigned char)skew;
         }
     } else {
-        // The nearest: every kept entity at its rank by (distance, index).
-        const int at0 = BR4E_ROWS, i0 = sh.off[at0];   // the entity pass's items
-        for (int i = t - 64; i < sh.off[2 * BR4E_ROWS] - i0; i += BR4E_THREADS - 64) {
-            int at = at0;
-            while (sh.off[at + 1] <= i + i0) at++;
-            const int k = i + i0 - sh.off[at];
-            Br4ERow& w = sh.row[at - at0];
-            if (k >= sh.cnt[at] || w.nan || !w.kept[k]) continue;
-            const unsigned long long d = br4e_key(w.distance[k]);
-            int rank = 0;
-            for (int j = 0; j < w.E; j++)
-                if (w.kept[j]) { const unsigned long long e = br4e_key(w.distance[j]); rank += e < d || (e == d && j < k); }
-            w.nearest[rank] = (uint32_t)k;
+        const int u = t - BR4E_SCENE, uwarp = u >> 5;   // the thread and warp among the others
+        // P1
+        for (int i = u; i < sh.off[BR4E_KINDS * BR4E_ROWS]; i += BR4E_REST) {
+            int at = 0;
+            while (sh.off[at + 1] <= i) at++;
+            const int q = at / BR4E_ROWS, k = i - sh.off[at];
+            if (k >= sh.cnt[at]) continue;   // the padding to the next kind's warp
+            Br4ERow& w = sh.row[at % BR4E_ROWS];
+            const BoplRlState* state = &w.st;
+            const BoplRlPlayer* self = &state->players[w.a];
+            if (q == 0) {
+                // Entity k's circle.
+                const BoplRlEntity* entity = &state->entities[k];
+                int32_t cls = 0;
+                w.ehas[k] = (unsigned char)bopl4_entity_circle(entity, self, w.ecirc[k], &cls);
+                w.ecls[k] = cls;
+            } else if (q == 1) {
+                // The entity pass.
+                const BoplRlEntity* entity = &state->entities[k];
+                const int kept = bopl4_entity_kept(state, (uint32_t)k, self->id);
+                w.kept[k] = (unsigned char)kept;
+                if (kept) {
+                    double distance = bopl_surface_distance(entity, bopl_fix(self->x), bopl_fix(self->y));
+                    if (entity->flags & BOPL_ENTITY_PICKUP) distance -= 1.0e12;
+                    w.distance[k] = distance;
+                    if (distance != distance) w.nan = 1;
+                    atomicAdd(&w.c.active_count, 1);
+                    const uint32_t source = entity->reserved[0];
+                    if (source > 0 && source <= BOPL_ABILITY_COUNT) atomicAdd(&w.c.source_counts[source - 1], 1);
+                    if (entity->inverse_mass > 0) {
+                        atomicAdd(&w.c.n_nonstatic, 1);
+                        atomicAdd(&w.c.sectors[w.sectors[k]], 1);
+                    }
+                    if (entity->flags & BOPL_ENTITY_PICKUP) atomicAdd(&w.c.n_pickup, 1);
+                    if (state->header.player_time_scale == 0 && (entity->flags & BOPL_ENTITY_TIMER_KNOWN) && entity->clock_rate > 0)
+                        atomicMin(&w.time_stop, k);
+                }
+            } else if (q == 2) {
+                // Slime k: its circle, what the slime pass needs of it.
+                const BoplRlSlime* slime = &state->slimes[k];
+                int32_t cls = 0;
+                w.shas[k] = (unsigned char)bopl4_slime_circle(state, slime, self, w.scirc[k], &cls);
+                w.scls[k] = cls;
+                bopl4_slime_seen(state, slime, self, bopl_fix(self->x), bopl_fix(self->y), &w.seen[k]);
+            } else {
+                // Player k: its controlling body and its velocity, and the player as the primary enemy's candidate.
+                const BoplRlPlayer* player = &state->players[k];
+                const int hidden = bopl_spatial_hidden(state, player->id, self->id);
+                const BoplRlSlime* body = bopl_controlling_slime(state, player->id, bopl_fix(player->x), bopl_fix(player->y));
+                w.bodies[k] = body;
+                w.body_vx[k] = body ? bopl_fix(body->vx) : 0.0; w.body_vy[k] = body ? bopl_fix(body->vy) : 0.0;
+                w.is_candidate[k] = bopl4_enemy_candidate(state, self, bopl_fix(self->x), bopl_fix(self->y), (uint32_t)k, hidden, body,
+                                                          &w.candidate[k], &w.candidate_distance[k]);
+            }
+        }
+        br4_bar(1, BR4E_REST);
+
+        // P2
+        if (uwarp == 0) {
+            if (lane < BR4E_ROWS && sh.valid[lane]) {
+                // The observer, its body, the primary enemy, the scene's head, the slime pass.
+                Br4ERow& w = sh.row[lane];
+                const BoplRlState* state = &w.st;
+                const BoplRlPlayer* self = &state->players[w.a];
+                const double self_x = bopl_fix(self->x), self_y = bopl_fix(self->y);
+                const BoplRlSlime* controller = w.bodies[w.a];
+                w.x = self_x; w.y = self_y; w.controller = controller;
+                w.vx = w.body_vx[w.a]; w.vy = w.body_vy[w.a];
+                Bopl4Enemy enemy{};   // zero, as bopl4_primary_enemy's memset (in registers)
+                double enemy_distance = 0.0;
+                for (int i = 0; i < w.P; i++)
+                    if (w.is_candidate[i]) bopl4_enemy_consider(&enemy, &enemy_distance, &w.candidate[i], w.candidate_distance[i]);
+                w.enemy = enemy;
+                w.enemy_controller = w.enemy.player ? w.bodies[w.enemy.player - state->players] : NULL;
+                bopl4_scene_head(w.scene, w.ablation, self_x, self_y, w.vx, w.vy, (w.flags & BOPL4_STATE_AIMED) != 0, w.aim_dx, w.aim_dy, &w.enemy);
+                int visible_slots;
+                bopl4_slime_pass_of(state, self, self_x, self_y, controller, w.enemy_controller, w.seen,
+                                    w.nearby, &w.slime_count, w.slots, &w.slot_count, &w.c.visible_slimes, &visible_slots);
+            }
+        } else if (uwarp == 1) {
+            if (lane < BR4E_ROWS && sh.valid[lane]) {
+                // The counts' rest; the nearest if a distance is NaN.
+                Br4ERow& w = sh.row[lane];
+                w.c.count = w.c.active_count;
+                if (w.time_stop < BOPL4_ENTITIES) { w.c.time_stop_known = 1; w.c.time_stop_remaining = w.st.entities[w.time_stop].reserved[1]; }
+                if (w.nan) {
+                    double distances[BOPL4_ENTITIES];
+                    int count = 0;
+                    for (int k = 0; k < w.E; k++) if (w.kept[k]) bopl_nearest(w.nearest, distances, &count, BOPL4_ENTITIES, (uint32_t)k, w.distance[k]);
+                }
+            }
+        } else {
+            // The nearest: every kept entity at its rank by (distance, index).
+            const int at0 = BR4E_ROWS, i0 = sh.off[at0];   // the entity pass's items
+            for (int i = u - 64; i < sh.off[2 * BR4E_ROWS] - i0; i += BR4E_REST - 64) {
+                int at = at0;
+                while (sh.off[at + 1] <= i + i0) at++;
+                const int k = i + i0 - sh.off[at];
+                Br4ERow& w = sh.row[at - at0];
+                if (k >= sh.cnt[at] || w.nan || !w.kept[k]) continue;
+                const unsigned long long d = br4e_key(w.distance[k]);
+                int rank = 0;
+                for (int j = 0; j < w.E; j++)
+                    if (w.kept[j]) { const unsigned long long e = br4e_key(w.distance[j]); rank += e < d || (e == d && j < k); }
+                w.nearest[rank] = (uint32_t)k;
+            }
         }
     }
     __syncthreads();
