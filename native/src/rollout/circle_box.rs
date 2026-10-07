@@ -6,6 +6,22 @@
 use super::*;
 use super::rope_abilities::HookTarget;
 
+/// The Circle/Circle group's kinds, in the order it takes their parts.
+const CC_ITEMS: usize = 0;
+const CC_NODES: usize = 1;
+const CC_SHOTS: usize = 2;
+const CC_ROCKS: usize = 3;
+const CC_PICKUPS: usize = 4;
+const CC_DUPLICATED_ROCKS: usize = 5;
+const CC_HOOKS: usize = 6;
+const CC_ARROWS: usize = 7;
+const CC_HOLES: usize = 8;
+const CC_CLOUDS: usize = 9;
+const CC_BODIES: usize = 10;
+const CC_CLONES: usize = 11;
+const CC_ORBS: usize = 12;
+pub(super) const CC_BLOCKS: usize = 13;
+
 /// A part as a group's pair loop reads it, taken once per part rather than
 /// once per pair: nothing the loop reads moves until every manifold is built.
 #[derive(Clone, Copy)]
@@ -53,6 +69,20 @@ fn sort_by_rank(group: &mut Vec<GroupPart>) {
         parts.clear();
         parts.extend(keys.iter().map(|&(_, place)| group[place as usize]));
         std::mem::swap(group, parts);
+    });
+}
+
+/// `sort_by_rank` into `out`, leaving `group` as it was.
+fn sorted_by_rank(group: &[GroupPart], out: &mut Vec<GroupPart>) {
+    thread_local! {
+        static KEYS: std::cell::RefCell<Vec<(SweepRank, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    KEYS.with_borrow_mut(|keys| {
+        keys.clear();
+        keys.extend(group.iter().enumerate().map(|(place, part)| (part.rank, place as u32)));
+        keys.sort_unstable();
+        out.clear();
+        out.extend(keys.iter().map(|&(_, place)| group[place as usize]));
     });
 }
 
@@ -877,52 +907,8 @@ impl RolloutWorld {
         self.collides(entity).then_some(self.entities[entity].kind == 0)
     }
 
-    /// The Circle/Box group's boxes, which are the Box/Box group's parts:
-    /// rocket engine and spike boxes, Guided Missiles, lit lightning, slime,
-    /// form and clone boxes, the Explosion boxes and the water.
-    fn push_box_parts(&self, parts: &mut Vec<Part>) {
-        for (i, engine) in self.engines.iter().enumerate() {
-            if self.child_registered(engine.entity) {
-                parts.push(Part::Engine(i));
-            }
-        }
-        for (i, spike) in self.spike_attacks.iter().enumerate() {
-            if self.child_registered(spike.entity) {
-                parts.push(Part::Spike(i));
-            }
-        }
-        for i in 0..self.guided_missiles.len() {
-            if self.guided_missile_live(i) {
-                parts.push(Part::Missile(i));
-            }
-        }
-        for i in 0..self.tesla_nodes.len() {
-            if self.line_part(i) {
-                parts.push(Part::Line(i));
-            }
-        }
-        for i in 0..self.players.len() {
-            if self.body_part_circle(i) == Some(false) {
-                parts.push(Part::Body(i));
-            }
-        }
-        for i in 0..self.abilityless_clones.len() {
-            if self.clone_part_circle(i) == Some(false) {
-                parts.push(Part::Clone(i));
-            }
-        }
-        self.push_blasts(parts, false);
-        if !self.part_destroyed(Part::Water) {
-            parts.push(Part::Water);
-        }
-    }
-
-    /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
-    /// PositionalCorrection on each side's own inverse mass; every pair
-    /// queues both sides' OnCollide, which run after the last group.
-    pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) {
-        let mut parts = std::mem::take(&mut self.scratch.cb_parts);
-        parts.clear();
+    /// The Circle/Box group's circles, in its order.
+    fn push_circle_parts(&self, parts: &mut Vec<Part>) {
         for (i, item) in self.thrown_items.iter().enumerate() {
             if item.active
                 && self.child_registered(item.entity)
@@ -986,14 +972,115 @@ impl RolloutWorld {
                 parts.push(Part::Clone(i));
             }
         }
-        self.push_blasts(&mut parts, true);
-        let circles = parts.len();
-        self.push_box_parts(&mut parts);
-        let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
-        contacts.clear();
+        self.push_blasts(parts, true);
+    }
+
+    /// The Circle/Box group's boxes, which are the Box/Box group's parts:
+    /// rocket engine and spike boxes, Guided Missiles, lit lightning, slime,
+    /// form and clone boxes, the Explosion boxes and the water.
+    fn push_box_parts(&self, parts: &mut Vec<Part>) {
+        for (i, engine) in self.engines.iter().enumerate() {
+            if self.child_registered(engine.entity) {
+                parts.push(Part::Engine(i));
+            }
+        }
+        for (i, spike) in self.spike_attacks.iter().enumerate() {
+            if self.child_registered(spike.entity) {
+                parts.push(Part::Spike(i));
+            }
+        }
+        for i in 0..self.guided_missiles.len() {
+            if self.guided_missile_live(i) {
+                parts.push(Part::Missile(i));
+            }
+        }
+        for i in 0..self.tesla_nodes.len() {
+            if self.line_part(i) {
+                parts.push(Part::Line(i));
+            }
+        }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(false) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(false) {
+                parts.push(Part::Clone(i));
+            }
+        }
+        self.push_blasts(parts, false);
+        if !self.part_destroyed(Part::Water) {
+            parts.push(Part::Water);
+        }
+    }
+
+    /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
+    /// PositionalCorrection on each side's own inverse mass; every pair
+    /// queues both sides' OnCollide, which run after the last group.
+    pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) {
+        let mut parts = std::mem::take(&mut self.scratch.cb_parts);
+        parts.clear();
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
+        if self.scratch.circle_parts_tick.take() == Some(self.tick) {
+            // The Circle/Circle group just took each of these kinds' parts:
+            // the same filters over flags nothing since has changed, and
+            // GroupParts that read only the boxes SortAndSweep took, rows'
+            // kinds and layers, none of which its corrections move. Its
+            // nodes are a subset of these (`node_part`), and a hole's and a
+            // hook's boxes are live, so those three kinds are taken afresh.
+            let taken = std::mem::take(&mut self.scratch.circle_parts);
+            let ends = self.scratch.circle_ends;
+            let block = |kind: usize| {
+                let start = if kind == 0 { 0 } else { ends[kind - 1] as usize };
+                &taken[start..ends[kind] as usize]
+            };
+            group.extend_from_slice(block(CC_ITEMS));
+            group.extend_from_slice(block(CC_SHOTS));
+            for i in 0..self.tesla_nodes.len() {
+                if self.node_part(i, false) {
+                    group.push(self.group_part(Part::Node(i), data));
+                }
+            }
+            group.extend_from_slice(block(CC_ROCKS));
+            group.extend_from_slice(block(CC_ARROWS));
+            for (i, hole) in self.black_holes.iter().enumerate() {
+                if hole.active && !self.blink_object_hidden(hole.entity) {
+                    group.push(self.group_part(Part::Hole(i), data));
+                }
+            }
+            group.extend_from_slice(block(CC_CLOUDS));
+            group.extend_from_slice(block(CC_DUPLICATED_ROCKS));
+            group.extend_from_slice(block(CC_PICKUPS));
+            for rope in 0..self.ropes.len() {
+                if self.hook_live(rope) {
+                    group.push(self.group_part(Part::Hook(rope), data));
+                }
+            }
+            group.extend_from_slice(block(CC_BODIES));
+            group.extend_from_slice(block(CC_CLONES));
+            group.extend_from_slice(block(CC_ORBS));
+            self.scratch.circle_parts = taken;
+            #[cfg(debug_assertions)]
+            {
+                self.push_circle_parts(&mut parts);
+                debug_assert_eq!(parts.len(), group.len());
+                for (&part, taken) in parts.iter().zip(group.iter()) {
+                    debug_assert!(self.group_part(part, data).same(taken));
+                }
+                parts.clear();
+            }
+        } else {
+            self.push_circle_parts(&mut parts);
+            group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+            parts.clear();
+        }
+        let circles = group.len();
+        self.push_box_parts(&mut parts);
         group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+        let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
+        contacts.clear();
         let (circle_parts, box_parts) = group.split_at(circles);
         // The Box/Box group that follows has these boxes for its parts, in
         // this order, and its pairs read nothing this group's corrections
@@ -1244,6 +1331,8 @@ impl RolloutWorld {
     pub(super) fn circle_circle_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
+        // Where each kind's parts end in `parts`, for the Circle/Box group.
+        let mut ends = [0u32; CC_BLOCKS];
         for (i, item) in self.thrown_items.iter().enumerate() {
             if item.active
                 && self.child_registered(item.entity)
@@ -1252,66 +1341,85 @@ impl RolloutWorld {
                 parts.push(Part::Item(i));
             }
         }
+        ends[CC_ITEMS] = parts.len() as u32;
         for i in 0..self.tesla_nodes.len() {
             if self.node_part(i, true) {
                 parts.push(Part::Node(i));
             }
         }
+        ends[CC_NODES] = parts.len() as u32;
         for (i, shot) in self.portal_shots.iter().enumerate() {
             if shot.active && shot.registered && !self.blink_object_hidden(shot.entity) {
                 parts.push(Part::Shot(i));
             }
         }
+        ends[CC_SHOTS] = parts.len() as u32;
         for i in 0..self.players.len() {
             if self.players[i].active == ActiveAbility::Rock && self.hittable(i) {
                 parts.push(Part::Rock(i));
             }
         }
+        ends[CC_ROCKS] = parts.len() as u32;
         for (i, pickup) in self.ability_pickups.iter().enumerate() {
             if pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity) {
                 parts.push(Part::Pickup(i));
             }
         }
+        ends[CC_PICKUPS] = parts.len() as u32;
         for (i, rock) in self.duplicated_rocks.iter().enumerate() {
             if rock.active && !self.blink_object_hidden(rock.entity) {
                 parts.push(Part::DuplicatedRock(i));
             }
         }
+        ends[CC_DUPLICATED_ROCKS] = parts.len() as u32;
         for rope in 0..self.ropes.len() {
             if self.hook_live(rope) {
                 parts.push(Part::Hook(rope));
             }
         }
+        ends[CC_HOOKS] = parts.len() as u32;
         for i in 0..self.arrows.len() {
             if self.arrow_registered(i) {
                 parts.push(Part::Arrow(i));
             }
         }
+        ends[CC_ARROWS] = parts.len() as u32;
         for (i, hole) in self.black_holes.iter().enumerate() {
             if hole.active && !self.blink_object_hidden(hole.entity) {
                 parts.push(Part::Hole(i));
             }
         }
+        ends[CC_HOLES] = parts.len() as u32;
         for i in 0..self.smoke_clouds.len() {
             if self.cloud_part(i) {
                 parts.push(Part::Cloud(i));
             }
         }
+        ends[CC_CLOUDS] = parts.len() as u32;
         for i in 0..self.players.len() {
             if self.body_part_circle(i) == Some(true) {
                 parts.push(Part::Body(i));
             }
         }
+        ends[CC_BODIES] = parts.len() as u32;
         for i in 0..self.abilityless_clones.len() {
             if self.clone_part_circle(i) == Some(true) {
                 parts.push(Part::Clone(i));
             }
         }
+        ends[CC_CLONES] = parts.len() as u32;
         self.push_blasts(&mut parts, true);
+        ends[CC_ORBS] = parts.len() as u32;
+        // The parts in the order taken stay for the Circle/Box group
+        // (`circle_parts`); the pair loop reads them in rank order.
+        let mut taken = std::mem::take(&mut self.scratch.circle_parts);
+        taken.clear();
+        taken.extend(parts.iter().map(|&part| self.group_part(part, data)));
         let mut group = std::mem::take(&mut self.scratch.group_parts);
-        group.clear();
-        group.extend(parts.iter().map(|&part| self.group_part(part, data)));
-        sort_by_rank(&mut group);
+        sorted_by_rank(&taken, &mut group);
+        self.scratch.circle_parts = taken;
+        self.scratch.circle_ends = ends;
+        self.scratch.circle_parts_tick = Some(self.tick);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
@@ -1329,8 +1437,6 @@ impl RolloutWorld {
             }
         });
         self.scratch.sweep_live = live;
-        parts.clear();
-        parts.extend(group.iter().map(|part| part.part));
         self.scratch.group_parts = group;
         // PrepareCollisionCallBacks queues every pair's callbacks before the
         // first ResolveCollision (DetPhysics.cs:3068-3071), the
@@ -1385,8 +1491,6 @@ impl RolloutWorld {
             }
         });
         self.scratch.sweep_live = live;
-        parts.clear();
-        parts.extend(group.iter().map(|part| part.part));
         self.scratch.group_parts = group;
         for &(a, b, contact) in &contacts {
             let (later, earlier) = sweep_pair(self.part_rank(a), self.part_rank(b));

@@ -4834,6 +4834,11 @@ struct PlatformScratch {
     /// stamped (`box_box_group`).
     box_parts: Vec<circle_box::GroupPart>,
     box_parts_tick: Option<u32>,
+    /// The Circle/Circle group's parts in the order it took them, where
+    /// each of its kinds ends, and the pass, for the Circle/Box group.
+    circle_parts: Vec<circle_box::GroupPart>,
+    circle_ends: [u32; circle_box::CC_BLOCKS],
+    circle_parts_tick: Option<u32>,
     /// sweep_pairs' priors still open on the sweep axis.
     sweep_live: Vec<u32>,
     /// The beam pool's slots DetPhysics simulated this pass: those live with
