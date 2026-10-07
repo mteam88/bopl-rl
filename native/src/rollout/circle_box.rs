@@ -89,10 +89,23 @@ fn collision_matrix_symmetric(data: &data::RolloutData) -> bool {
     (0..32).all(|a| (0..32).all(|b| data.layers_collide(a, b) == data.layers_collide(b, a)))
 }
 
-/// `group.sort_by_key(|part| part.rank)` without moving the parts about:
-/// the (rank, place) pairs are distinct, so an unstable sort of them gives
-/// the stable order, and the parts are gathered into it once.
+/// `group.sort_by_key(|part| part.rank)`. A group of a few parts, as most
+/// are, takes an insertion sort, which moves a part only past a greater rank;
+/// a larger one is sorted without moving the parts about: the (rank, place)
+/// pairs are distinct, so an unstable sort of them gives the stable order,
+/// and the parts are gathered into it once.
 fn sort_by_rank(group: &mut Vec<GroupPart>) {
+    if group.len() <= 8 {
+        for k in 1..group.len() {
+            let mut j = k;
+            while j > 0 && group[j - 1].rank > group[j].rank {
+                group.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        debug_assert!(group.is_sorted_by_key(|part| part.rank));
+        return;
+    }
     thread_local! {
         static SCRATCH: std::cell::RefCell<(Vec<(SweepRank, u32)>, Vec<GroupPart>)> =
             const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
@@ -319,9 +332,9 @@ impl RolloutWorld {
             Blast::Smear(i) => self.meteor_smears[i].active,
             Blast::Drill(p, k) => {
                 let slot = &self.players[p];
-                self.hittable(p)
-                    && slot.active == ActiveAbility::Drill
+                slot.active == ActiveAbility::Drill
                     && slot.drill.phase != 0
+                    && self.hittable(p)
                     && slot.drill_hitbox_entities[slot.active_slot][k] != usize::MAX
             }
             Blast::Beam(i) => {
@@ -897,11 +910,14 @@ impl RolloutWorld {
         }
         // `collides` would find this slot's hurtbox only after scanning every
         // other collider pool; the row is a circle or box, so it is
-        // `hurtbox_collider`'s answer.
+        // `hurtbox_collider`'s answer, which for a hittable slime that is no
+        // Rock and has its row reads only these flags.
         let collides = match row.kind {
-            0 | 1 => self.hurtbox_collider(i).is_some(),
+            0 | 1 if slot.active == ActiveAbility::None => !slot.base.dash.active,
+            0 | 1 => slot.form_hurtbox_enabled(),
             _ => self.collides(entity),
         };
+        debug_assert!(row.kind > 1 || collides == self.hurtbox_collider(i).is_some());
         debug_assert_eq!(collides, self.collides(entity));
         collides.then_some(row.kind == 0)
     }
