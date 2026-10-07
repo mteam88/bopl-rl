@@ -1265,6 +1265,33 @@ pub enum PlatformUpdater {
     Other,
 }
 
+impl PlatformUpdater {
+    /// `updaters` packed four bits each from the low end, code
+    /// `PlatformUpdater as u64 + 1`, a zero nibble ending the list.
+    pub fn pack(updaters: &[PlatformUpdater]) -> u64 {
+        assert!(updaters.len() <= 16, "a platform prefab with over 16 updaters");
+        updaters.iter().rev().fold(0, |packed, &updater| packed << 4 | (updater as u64 + 1))
+    }
+
+    /// The updater of a nonzero code of `pack`.
+    #[inline(always)]
+    pub fn from_code(code: u64) -> Self {
+        use PlatformUpdater as U;
+        match code {
+            1 => U::StickyRoundedRectangle,
+            2 => U::AnimateVelocity,
+            3 => U::ShakablePlatform,
+            4 => U::ResizablePlatform,
+            5 => U::BoplBody,
+            6 => U::AntiLockPlatform,
+            7 => U::VectorFieldPlatform,
+            8 => U::DestroyIfOutsideSceneBounds,
+            9 => U::Boulder,
+            _ => U::Other,
+        }
+    }
+}
+
 /// The modeled updaters of `names`, in their prefab order.
 fn platform_updaters(names: &[PlatformUpdater]) -> Vec<PlatformUpdater> {
     names.iter().copied().filter(|&u| u != PlatformUpdater::Other).collect()

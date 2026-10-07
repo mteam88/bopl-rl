@@ -1891,6 +1891,9 @@ pub struct PlatformDynamics {
     pub init_tick: Option<u32>,
     /// The prefab whose component order runs the platform's updaters.
     pub prefab: PlatformPrefab,
+    /// That prefab's updaters, `PlatformUpdater::pack`ed: what
+    /// `platform_updater_order` reads, kept per platform for its turn.
+    pub updaters: u64,
     /// The pass Updater appended the platform's components: 0 for an
     /// authored one, else the pass after it was instantiated, whose Init walk
     /// takes them off Updater's queue (Updater.cs:258-287).
@@ -6304,6 +6307,7 @@ impl RolloutWorld {
                 transform_rotation: None,
                 init_tick: None,
                 prefab: PlatformPrefab::Scene,
+                updaters: data::PlatformUpdater::pack(&p.updaters),
                 appended: 0,
                 float_next_frame: false,
                 spring_step: None,
@@ -19221,6 +19225,7 @@ impl RolloutWorld {
             transform_rotation: None,
             init_tick: None,
             prefab: PlatformPrefab::Boulder,
+            updaters: data::PlatformUpdater::pack(&data.macho_throw.boulder_updaters),
             appended: self.tick + 1,
             float_next_frame: false,
             spring_step: None,
@@ -31535,6 +31540,7 @@ impl RolloutWorld {
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
             prefab: PlatformPrefab::Resizable,
+            updaters: data::PlatformUpdater::pack(&data::get().platform.spawn_updaters),
             appended: self.tick + 1,
             float_next_frame: false,
             spring_step: None,
@@ -34634,8 +34640,10 @@ impl RolloutWorld {
         if !self.platforms[i].active {
             return;
         }
+        let tick = self.tick;
+        let dynamics = &mut self.platform_dynamics[i];
         // A body instantiated this pass joins the Updater on the next.
-        if self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick) {
+        if dynamics.init_tick.is_some_and(|t| t > tick) {
             return;
         }
         // ActivateSuddenDeath moves the spring home; the body follows through
@@ -34646,10 +34654,57 @@ impl RolloutWorld {
         // the component latch survives `WinGame`'s
         // `ActivateSuddenDeath(activate: false)`, so the level keeps sinking
         // on the tick that decides the round and on every tick after it.
-        let def_index = self.platform_defs[i];
-        let sinks = def_index != usize::MAX
-            || self.spawned.iter().any(|s| s.active && s.platform_index == i);
-        if sinks && self.sudden_death && self.platform_dynamics[i].sudden_death_delay.is_none() {
+        // Whether it sinks matters only with the flag up or a delay drawn,
+        // so the spawned list is searched only then.
+        if self.sudden_death || dynamics.sudden_death_delay.is_some() {
+            let def_index = self.platform_defs[i];
+            let sinks = def_index != usize::MAX
+                || self.spawned.iter().any(|s| s.active && s.platform_index == i);
+            if sinks {
+                self.platform_sink(data, updater_dt, i, def_index);
+            }
+        }
+
+        // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
+        // mass and 60 Hz impulse conversions: their intermediate fixed-point
+        // rounding is observable over long-running springs (notably map 2's
+        // orbiter), so simplifying this to `velocity += spring * DT` drifts.
+        let position = self.platforms[i].surface.center;
+        let dynamics = &mut self.platform_dynamics[i];
+        if dynamics.intro_disabled {
+            return;
+        }
+        let spring = if dynamics.float_next_frame {
+            dynamics.float_next_frame = false;
+            dynamics.home_position = position;
+            -dynamics.body.velocity * dynamics.mu
+        } else {
+            (dynamics.home_position - position) * dynamics.speed
+                - dynamics.body.velocity * dynamics.mu
+        };
+        let impulse = spring * updater_dt / dynamics.body.inverse_mass;
+        dynamics.body.force += impulse * Fix::from_int(60);
+        let floating =
+            -dynamics.body.velocity * dynamics.mu * updater_dt / dynamics.body.inverse_mass;
+        let (added, floating) = (impulse * Fix::from_int(60), floating * Fix::from_int(60));
+        dynamics.spring_step = Some((tick, added, floating, position));
+        if dynamics.interpolate_rotation_home {
+            let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
+            if angle_delta.abs() > Fix::PI {
+                angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
+            }
+            dynamics.body.angular_velocity = (dynamics.body.angular_velocity
+                + angle_delta * dynamics.rotation_speed * updater_dt)
+                * (Fix::ONE - dynamics.rotation_mu);
+        }
+    }
+
+    /// AnimateVelocity's sudden-death sinking for a platform that sinks
+    /// (authored, or a live spawned one): the delay drawn on the first pass
+    /// that sees the session flag, then the home's descent.
+    #[inline(never)]
+    fn platform_sink(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize, def_index: usize) {
+        if self.sudden_death && self.platform_dynamics[i].sudden_death_delay.is_none() {
             let max_delay = if def_index == usize::MAX {
                 data.platform.sudden_death_max_delay
             } else {
@@ -34658,7 +34713,7 @@ impl RolloutWorld {
             self.platform_dynamics[i].sudden_death_delay =
                 Some(self.rng.fix_range(Fix::ZERO, max_delay));
         }
-        if let (true, Some(delay)) = (sinks, self.platform_dynamics[i].sudden_death_delay) {
+        if let Some(delay) = self.platform_dynamics[i].sudden_death_delay {
             let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
             let (speed_scale, accel, curve) = if def_index == usize::MAX {
                 (
@@ -34698,39 +34753,6 @@ impl RolloutWorld {
                 dynamics.body.gravity_scale = Fix::ONE;
                 dynamics.root_body.gravity_scale = Fix::ONE;
             }
-        }
-
-        // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
-        // mass and 60 Hz impulse conversions: their intermediate fixed-point
-        // rounding is observable over long-running springs (notably map 2's
-        // orbiter), so simplifying this to `velocity += spring * DT` drifts.
-        if self.platform_dynamics[i].intro_disabled {
-            return;
-        }
-        let position = self.platforms[i].surface.center;
-        let dynamics = &mut self.platform_dynamics[i];
-        let spring = if dynamics.float_next_frame {
-            dynamics.float_next_frame = false;
-            dynamics.home_position = position;
-            -dynamics.body.velocity * dynamics.mu
-        } else {
-            (dynamics.home_position - position) * dynamics.speed
-                - dynamics.body.velocity * dynamics.mu
-        };
-        let impulse = spring * updater_dt / dynamics.body.inverse_mass;
-        dynamics.body.force += impulse * Fix::from_int(60);
-        let floating =
-            -dynamics.body.velocity * dynamics.mu * updater_dt / dynamics.body.inverse_mass;
-        let (added, floating) = (impulse * Fix::from_int(60), floating * Fix::from_int(60));
-        dynamics.spring_step = Some((self.tick, added, floating, position));
-        if dynamics.interpolate_rotation_home {
-            let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
-            if angle_delta.abs() > Fix::PI {
-                angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
-            }
-            dynamics.body.angular_velocity = (dynamics.body.angular_velocity
-                + angle_delta * dynamics.rotation_speed * updater_dt)
-                * (Fix::ONE - dynamics.rotation_mu);
         }
     }
 
@@ -35257,11 +35279,12 @@ impl RolloutWorld {
             PlatformPass::Duplicated => &self.scratch.duplicates_window,
             PlatformPass::Spawned => &self.scratch.spawned_window,
         };
-        (pass == PlatformPass::Authored || !self.updater_passed(self.platform_turn_key(i)))
-            && self.platform_dynamics[i].appended <= self.tick
-            && window.as_ref().is_none_or(|window| {
-                window.contains(&self.entities[self.platform_entities[i]].hierarchy)
-            })
+        // The window first: a turn the Updater walk hands over runs one row
+        // of all the pass's platforms, and its key is the costly test.
+        window.as_ref().is_none_or(|window| {
+            window.contains(&self.entities[self.platform_entities[i]].hierarchy)
+        }) && self.platform_dynamics[i].appended <= self.tick
+            && (pass == PlatformPass::Authored || !self.updater_passed(self.platform_turn_key(i)))
     }
 
     /// Which updater pass a platform's components run in. Platforms
@@ -35375,7 +35398,11 @@ impl RolloutWorld {
                 self.run_spawned_before(data, updater_dt, key);
                 self.updater_take_turn(key);
             }
-            for &updater in self.platform_updater_order(data, i) {
+            let mut updaters = self.platform_dynamics[i].updaters;
+            debug_assert_eq!(updaters, data::PlatformUpdater::pack(self.platform_updater_order(data, i)));
+            while updaters != 0 {
+                let updater = data::PlatformUpdater::from_code(updaters & 15);
+                updaters >>= 4;
                 match updater {
                     U::StickyRoundedRectangle => self.platform_sticky(updater_dt, i),
                     U::AnimateVelocity => self.platform_spring(data, updater_dt, i),
@@ -35437,11 +35464,14 @@ impl RolloutWorld {
     /// spring home remains fixed and pulls the rigid body back while
     /// successive samples replace the previous random offset.
     fn platform_shake(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
-        if !self.platforms[i].active || self.platform_dynamics[i].intro_disabled {
-            return false;
-        }
-        let duration = self.platform_dynamics[i].shake_duration;
-        if self.platform_dynamics[i].shake_time >= duration || duration == Fix::ZERO {
+        // A platform not shaking first: that is nearly all of them.
+        let dynamics = &self.platform_dynamics[i];
+        let duration = dynamics.shake_duration;
+        if duration == Fix::ZERO
+            || dynamics.shake_time >= duration
+            || dynamics.intro_disabled
+            || !self.platforms[i].active
+        {
             return false;
         }
         self.platform_dynamics[i].shake_time += updater_dt;
@@ -35575,15 +35605,17 @@ impl RolloutWorld {
         if !self.platforms[i].active {
             return;
         }
-        if self.platform_dynamics[i].drop_players_frames >= 0 {
-            self.platform_dynamics[i].drop_players_frames -= 1;
+        let time_scale = self.player_time_scale;
+        let sudden_death = self.sudden_death;
+        let dynamics = &mut self.platform_dynamics[i];
+        if dynamics.drop_players_frames >= 0 {
+            dynamics.drop_players_frames -= 1;
         }
         // StickyRoundedRectangle.UpdateSim eases a grown platform back.
-        let dynamics = &mut self.platform_dynamics[i];
-        dynamics.time_since_scaled_up += updater_dt * self.player_time_scale;
-        if (dynamics.time_since_scaled_up > Fix::from_int(10) || self.sudden_death)
-            && dynamics.scale > dynamics.base_scale
-            && self.player_time_scale >= Fix::from_f32(0.01)
+        dynamics.time_since_scaled_up += updater_dt * time_scale;
+        if dynamics.scale > dynamics.base_scale
+            && (dynamics.time_since_scaled_up > Fix::from_int(10) || sudden_death)
+            && time_scale >= Fix::from_f32(0.01)
         {
             let value = dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
                 + dynamics.base_scale * updater_dt;
