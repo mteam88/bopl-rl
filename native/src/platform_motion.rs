@@ -180,6 +180,13 @@ pub fn movement_limit<T>(
     dt: Fix,
     query: &mut impl FnMut(Vec2, Vec2, Fix) -> Option<(T, Fix)>,
 ) -> (Fix, Option<T>) {
+    let (origins, direction, distance) = movement_rays(position, radius, velocity, dt);
+    movement_limit_over(origins, direction, distance, query)
+}
+
+/// maxMovementAllowed's three rays: their origins (front, then the two
+/// sides), and the direction and length they share.
+pub fn movement_rays(position: Vec2, radius: Fix, velocity: Vec2, dt: Fix) -> ([Vec2; 3], Vec2, Fix) {
     // `normalized_safe` and `length` share the one square root.
     let length = velocity.length();
     let direction = if length == Fix::ZERO {
@@ -189,16 +196,27 @@ pub fn movement_limit<T>(
     };
     let distance = length * dt;
     let front = direction * radius;
+    (
+        [
+            position + front,
+            position + front - front.perp_cw(),
+            position + front + front.perp_cw(),
+        ],
+        direction,
+        distance,
+    )
+}
+
+/// `movement_limit` over rays `movement_rays` gave.
+pub fn movement_limit_over<T>(
+    origins: [Vec2; 3],
+    direction: Vec2,
+    distance: Fix,
+    query: &mut impl FnMut(Vec2, Vec2, Fix) -> Option<(T, Fix)>,
+) -> (Fix, Option<T>) {
     let mut near = MOVEMENT_UNBLOCKED;
     let mut blocking = None;
-    for (ray, origin) in [
-        position + front,
-        position + front - front.perp_cw(),
-        position + front + front.perp_cw(),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (ray, origin) in origins.into_iter().enumerate() {
         if let Some((hit, distance)) = query(origin, direction, distance)
             && (ray == 0 || distance < near)
         {

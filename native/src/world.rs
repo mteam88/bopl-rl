@@ -197,6 +197,11 @@ pub struct Player {
     /// divisions are usually already known (identical value either way).
     #[serde(skip)]
     pub(crate) input_normalized: Option<(Vec2, Vec2)>,
+    /// Where `ground` stood in the platform list when last looked up: tried
+    /// first, and a lookup that finds it elsewhere moves it. Platform ids
+    /// are unique, so a hit is the platform a scan would find.
+    #[serde(skip)]
+    pub(crate) ground_hint: std::cell::Cell<u32>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DashState {
@@ -541,6 +546,26 @@ impl PlatformBounds {
             chunk.min_y[lane] = (bounds.min.y - margin).to_f64();
         }
     }
+    /// The bits of `mask` whose platforms' bounds meet `[lo, hi]`, with the
+    /// bounds as they stand (`refresh`ed by the query `mask` came from).
+    fn refine(&self, mut mask: u64, lo: Vec2, hi: Vec2) -> u64 {
+        debug_assert!(!self.stale.get());
+        let (lo_x, hi_x, lo_y, hi_y) = (lo.x.to_f64(), hi.x.to_f64(), lo.y.to_f64(), hi.y.to_f64());
+        let chunks = self.chunks.borrow();
+        let mut refined = 0;
+        while mask != 0 {
+            let index = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let chunk = &chunks[index / BOUNDS_LANES];
+            let lane = index % BOUNDS_LANES;
+            let hit = lo_x <= chunk.max_x[lane]
+                && hi_x >= chunk.min_x[lane]
+                && lo_y <= chunk.max_y[lane]
+                && hi_y >= chunk.min_y[lane];
+            refined |= u64::from(hit) << index;
+        }
+        refined
+    }
     /// Bit `i` set when `platforms[i]`'s bounds meet the axis-aligned box
     /// `[lo, hi]` (`Bounds::may_reach` for a segment with those extents).
     fn candidates(&self, platforms: &[Platform], lo: Vec2, hi: Vec2) -> u64 {
@@ -593,6 +618,14 @@ impl<'a> Terrain<'a> {
     /// `[lo, hi]`.
     pub fn candidates(self, lo: Vec2, hi: Vec2) -> u64 {
         self.bounds.candidates(self.platforms, lo, hi)
+    }
+    /// `candidates(lo, hi) & mask`, where `mask` came from `candidates` of a
+    /// box with nothing changed since: the same compares, lane by lane, for
+    /// only the platforms in `mask`.
+    pub fn refine(self, mask: u64, lo: Vec2, hi: Vec2) -> u64 {
+        let refined = self.bounds.refine(mask, lo, hi);
+        debug_assert_eq!(refined, self.candidates(lo, hi) & mask);
+        refined
     }
 }
 
@@ -678,6 +711,46 @@ pub(crate) trait Walls {
         let _ = clean;
         self.raycast_to_closest_rounded_rect(origin, direction, distance, excluded)
     }
+    /// `raycast_in_run` for one ray of `run`, a run of casts inside its box.
+    fn cast_in_run(&mut self, run: &mut RayRun, origin: Vec2, direction: Vec2, distance: Fix) -> Option<(usize, Fix, Vec2)> {
+        self.raycast_in_run(origin, direction, distance, run.excluded, &mut run.clean)
+    }
+}
+
+/// A run of raycasts that nothing else touches the world between, all
+/// excluding `excluded`, whose segments all lie in the box `[lo, hi]`. Once
+/// the run is `clean` (a purge found nothing to drop), `mask` holds the
+/// platforms the box's broad phase admits that are live and not excluded.
+pub(crate) struct RayRun {
+    pub(crate) lo: Vec2,
+    pub(crate) hi: Vec2,
+    pub(crate) excluded: Option<usize>,
+    pub(crate) clean: bool,
+    pub(crate) mask: u64,
+}
+
+impl RayRun {
+    /// The run of rays from `origins` along `direction` for `distance`.
+    pub(crate) fn new(origins: impl IntoIterator<Item = Vec2>, direction: Vec2, distance: Fix, excluded: Option<usize>) -> Self {
+        let mut segment = SegmentBox::empty();
+        for origin in origins {
+            let (lo, hi) = ray_box(origin, direction, distance);
+            segment.add(lo);
+            segment.add(hi);
+        }
+        Self { lo: segment.lo, hi: segment.hi, excluded, clean: false, mask: 0 }
+    }
+}
+
+/// The axis-aligned box of the segment `origin + direction * t`,
+/// `0 <= t <= distance`, as `closest_rounded_rect` takes it.
+#[inline]
+pub(crate) fn ray_box(origin: Vec2, direction: Vec2, distance: Fix) -> (Vec2, Vec2) {
+    let end = origin + direction * distance;
+    (
+        Vec2::new(origin.x.min(end.x), origin.y.min(end.y)),
+        Vec2::new(origin.x.max(end.x), origin.y.max(end.y)),
+    )
 }
 
 /// Platforms with no destroyed collider to purge: the legacy World's, or a
@@ -705,13 +778,34 @@ impl Player {
     /// PlayerPhysics.attachedGround, which only a destroyed ground clears: a
     /// deactivated one is still named, and its surface still read.
     pub(crate) fn attached_ground<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
-        platforms.iter().find(|p| Some(p.id) == self.ground)
+        self.ground_index(platforms).map(|index| &platforms[index])
+    }
+    /// `platforms.iter().position(|p| Some(p.id) == self.ground)`, trying
+    /// `ground_hint` first.
+    pub(crate) fn ground_index(&self, platforms: &[Platform]) -> Option<usize> {
+        let ground = self.ground?;
+        let hint = self.ground_hint.get() as usize;
+        let index = if platforms.get(hint).is_some_and(|p| p.id == ground) {
+            Some(hint)
+        } else {
+            let index = platforms.iter().position(|p| p.id == ground);
+            if let Some(index) = index {
+                self.ground_hint.set(index as u32);
+            }
+            index
+        };
+        debug_assert_eq!(index, platforms.iter().position(|p| p.id == ground));
+        index
+    }
+    /// `platforms.iter().position(|p| p.id == ground && p.active)`: ids are
+    /// unique, so the one platform `ground_index` finds, if active.
+    pub(crate) fn active_ground_index(&self, platforms: &[Platform]) -> Option<usize> {
+        let index = self.ground_index(platforms).filter(|&index| platforms[index].active);
+        debug_assert_eq!(index, platforms.iter().position(|p| Some(p.id) == self.ground && p.active));
+        index
     }
     fn platform_indexed<'a>(&self, platforms: &'a [Platform]) -> Option<(usize, &'a Platform)> {
-        platforms
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.active && Some(p.id) == self.ground)
+        self.active_ground_index(platforms).map(|index| (index, &platforms[index]))
     }
     /// `input.normalized_safe()`, memoized on the exact input vector.
     fn normalized_input(&mut self, input: Vec2) -> Vec2 {
@@ -803,15 +897,15 @@ impl Player {
     pub(crate) fn collision_rays_over(&mut self, walls: &mut impl Walls, dt: Fix) -> bool {
         let velocity = self.velocity + self.external_velocity;
         // PlayerPhysics.checkForWall, once per ray (PlayerPhysics.cs:410-446).
-        let mut clean = false;
-        if let Some((index, position)) = crate::player_physics::collision_cast(
-            self.position,
-            velocity,
-            self.radius,
-            dt,
+        let (rays, direction, distance) = crate::player_physics::collision_rays(self.position, velocity, self.radius, dt);
+        let mut run = RayRun::new(rays.map(|(origin, _)| origin), direction, distance, None);
+        if let Some((index, position)) = crate::player_physics::collision_cast_over(
+            rays,
+            direction,
+            distance,
             &mut |origin, direction, distance| {
                 walls
-                    .raycast_in_run(origin, direction, distance, None, &mut clean)
+                    .cast_in_run(&mut run, origin, direction, distance)
                     .map(|(index, _, point)| (index, point))
             },
         ) {
@@ -845,7 +939,7 @@ impl Player {
     pub(crate) fn record_upside_down_jump(&mut self, platforms: &[Platform]) {
         let normal = self
             .grounded
-            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
+            .then(|| self.attached_ground(platforms))
             .flatten()
             .map_or(Vec2::UP, |p| p.surface.normal(self.position));
         self.was_upside_down = normal.y < Fix::ZERO;
@@ -890,11 +984,9 @@ impl Player {
         // PlayerPhysics.Move computes ground input against the retained
         // attachedGround reference before testing activeSelf. Blink therefore
         // leaves one legal pass where the platform is present but inactive.
-        let Some((platform_index, platform)) = walls
-            .platforms()
-            .iter()
-            .enumerate()
-            .find(|(_, p)| Some(p.id) == self.ground)
+        let Some((platform_index, platform)) = self
+            .ground_index(walls.platforms())
+            .map(|index| (index, &walls.platforms()[index]))
         else {
             // SlimeController.UpdateSim handles a destroyed retained ground
             // before calling Move: it zeros rotation, then UnGround(false).
@@ -934,7 +1026,7 @@ impl Player {
     /// body slides along its ground by only the external velocity's component
     /// along the surface, and that external velocity is spent.
     pub(crate) fn move_along_current_platform(&mut self, walls: &mut impl Walls) {
-        let Some(platform_index) = walls.platforms().iter().position(|p| Some(p.id) == self.ground) else {
+        let Some(platform_index) = self.ground_index(walls.platforms()) else {
             return;
         };
         let forward = walls.platforms()[platform_index].surface.normal(self.position).perp_cw();
@@ -949,15 +1041,15 @@ impl Player {
         let dt = self.fixed_delta_time;
         // maxMovementAllowed disables the own rounded rect around its three
         // raycasts (StickyRoundedRectangle.cs:441-468).
-        let mut clean = false;
-        let allowed = crate::platform_motion::movement_limit(
-            self.position,
-            self.radius,
-            velocity,
-            dt,
+        let (origins, direction, distance) = crate::platform_motion::movement_rays(self.position, self.radius, velocity, dt);
+        let mut run = RayRun::new(origins, direction, distance, Some(platform_index));
+        let allowed = crate::platform_motion::movement_limit_over(
+            origins,
+            direction,
+            distance,
             &mut |origin, direction, distance| {
                 walls
-                    .raycast_in_run(origin, direction, distance, Some(platform_index), &mut clean)
+                    .cast_in_run(&mut run, origin, direction, distance)
                     .map(|(_, near, _)| ((), near))
             },
         )
@@ -1032,7 +1124,7 @@ impl Player {
     pub(crate) fn capture_pre_move(&mut self, platforms: &[Platform]) {
         self.pre_move_up = self
             .grounded
-            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
+            .then(|| self.attached_ground(platforms))
             .flatten()
             .map_or(self.up(), |p| p.surface.normal(self.position));
         self.pre_move_grounded = self.grounded;

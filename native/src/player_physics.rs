@@ -306,6 +306,14 @@ pub fn collision_cast<T>(
     effective_dt: Fix,
     query: &mut impl FnMut(Vec2, Vec2, Fix) -> Option<(T, Vec2)>,
 ) -> Option<(T, Vec2)> {
+    let (rays, direction, distance) = collision_rays(position, velocity, radius, effective_dt);
+    collision_cast_over(rays, direction, distance, query)
+}
+
+/// CollisionRaycasts' three rays: each origin with the correction its hit
+/// point takes (front, then the two sides), and the direction and length
+/// they share.
+pub fn collision_rays(position: Vec2, velocity: Vec2, radius: Fix, effective_dt: Fix) -> ([(Vec2, Vec2); 3], Vec2, Fix) {
     let magnitude = velocity.length();
     let distance = magnitude * effective_dt;
     let direction = if magnitude == Fix::ZERO {
@@ -314,11 +322,25 @@ pub fn collision_cast<T>(
         velocity / magnitude
     };
     let side = -direction.perp_cw() * radius;
-    for (origin, correction) in [
-        (position + direction * radius, Vec2::ZERO),
-        (position - side, side),
-        (position + side, -side),
-    ] {
+    (
+        [
+            (position + direction * radius, Vec2::ZERO),
+            (position - side, side),
+            (position + side, -side),
+        ],
+        direction,
+        distance,
+    )
+}
+
+/// `collision_cast` over rays `collision_rays` gave.
+pub fn collision_cast_over<T>(
+    rays: [(Vec2, Vec2); 3],
+    direction: Vec2,
+    distance: Fix,
+    query: &mut impl FnMut(Vec2, Vec2, Fix) -> Option<(T, Vec2)>,
+) -> Option<(T, Vec2)> {
+    for (origin, correction) in rays {
         if let Some((hit, point)) = query(origin, direction, distance) {
             return Some((hit, point + correction));
         }

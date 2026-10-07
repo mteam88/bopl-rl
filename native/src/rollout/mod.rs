@@ -3412,9 +3412,7 @@ impl AbilitylessClone {
         dynamics: &[PlatformDynamics],
         tick: u32,
     ) {
-        let Some(index) = self.base.ground.and_then(|ground| {
-            platforms.iter().position(|platform| platform.id == ground && platform.active)
-        }) else {
+        let Some(index) = self.base.active_ground_index(platforms) else {
             return;
         };
         let dynamics = &dynamics[index];
@@ -6452,6 +6450,7 @@ impl RolloutWorld {
                     sync_rotation_to_platform: data.player.sync_rotation_to_platform,
                     aligned: None,
                     input_normalized: None,
+                    ground_hint: Default::default(),
                 },
                 owner: i,
                 team,
@@ -8540,11 +8539,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let ground_index = slot.base.ground.and_then(|ground| {
-                self.platforms
-                    .iter()
-                    .position(|platform| platform.id == ground)
-            });
+            let ground_index = slot.base.ground_index(&self.platforms);
             // A wall DestroyFix'd in this pass's callbacks (a BlackHole eating
             // it) is already IsDestroyed, so its riders stay where
             // DetPhysics left them.
@@ -8569,9 +8564,7 @@ impl RolloutWorld {
             self.players[index].base.late_step(&self.platforms);
         }
         for clone in &mut self.abilityless_clones {
-            let ground = clone.base.ground.and_then(|ground| {
-                self.platforms.iter().position(|platform| platform.id == ground)
-            });
+            let ground = clone.base.ground_index(&self.platforms);
             let Some(platform_index) = ground else {
                 continue;
             };
@@ -10456,11 +10449,7 @@ impl RolloutWorld {
         if !self.players[index].base.grounded {
             return false;
         }
-        let Some(platform_index) = self.players[index].base.ground.and_then(|ground| {
-            self.platforms
-                .iter()
-                .position(|platform| platform.id == ground && platform.active)
-        }) else {
+        let Some(platform_index) = self.players[index].base.active_ground_index(&self.platforms) else {
             return false;
         };
         let dynamics = self.platform_dynamics[platform_index];
@@ -10564,10 +10553,8 @@ impl RolloutWorld {
         // An airborne body keeps its stale attachedGround; only a grounded
         // rider discovers the disabled wall.
         let leaving_blink_wall = self.players[index].base.grounded
-            && self.players[index].base.ground.is_some_and(|ground| {
-                self.platforms
-                    .iter()
-                    .position(|platform| platform.id == ground)
+            && self.players[index].base.ground.is_some_and(|_| {
+                self.players[index].base.ground_index(&self.platforms)
                     .is_some_and(|platform_index| {
                         !self.platforms[platform_index].active
                             && self.platform_dynamics[platform_index].blink_tunnel_active
@@ -26767,6 +26754,7 @@ impl RolloutWorld {
             sync_rotation_to_platform: data.player.sync_rotation_to_platform,
             aligned: None,
             input_normalized: None,
+            ground_hint: Default::default(),
         };
         let clone = AbilitylessClone {
             active: true,
@@ -40332,6 +40320,41 @@ impl Walls for RolloutWorld {
             *clean = self.remove_destroyed_colliders();
         }
         self.closest_rounded_rect(origin, direction, distance, excluded, None)
+    }
+    /// `raycast_in_run` with the run's broad phase and liveness tests done
+    /// once: a ray's own box lies in the run's, so its candidates are the
+    /// run's mask refined by its own box, the same set
+    /// `closest_rounded_rect` tests. A purge that dropped something can
+    /// change liveness, so the mask is rebuilt after every purge.
+    fn cast_in_run(&mut self, run: &mut crate::world::RayRun, origin: Vec2, direction: Vec2, distance: Fix) -> Option<(usize, Fix, Vec2)> {
+        if !run.clean {
+            run.clean = self.remove_destroyed_colliders();
+            let mut mask = self.platforms.terrain().candidates(run.lo, run.hi);
+            let mut live = 0;
+            while mask != 0 {
+                let platform = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                if self.platform_is_active(platform) && run.excluded != Some(platform) {
+                    live |= 1 << platform;
+                }
+            }
+            run.mask = live;
+        }
+        let (lo, hi) = crate::world::ray_box(origin, direction, distance);
+        let mut candidates = if run.mask == 0 { 0 } else { self.platforms.terrain().refine(run.mask, lo, hi) };
+        let mut nearest = None;
+        while candidates != 0 {
+            let platform = candidates.trailing_zeros() as usize;
+            candidates &= candidates - 1;
+            if let Some(hit) = self.platforms[platform].collider.raycast(origin, direction)
+                && hit.near <= distance
+                && nearest.is_none_or(|(_, near, _)| hit.near < near)
+            {
+                nearest = Some((platform, hit.near, origin + direction * hit.near));
+            }
+        }
+        debug_assert_eq!(nearest, self.closest_rounded_rect(origin, direction, distance, run.excluded, None));
+        nearest
     }
 }
 
