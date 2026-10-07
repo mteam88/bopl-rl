@@ -11,10 +11,13 @@
  *   tail     previous action + v4 history + action mask, both players
  *   priv     bopl_encode_privileged from the undelayed state
  *   pack     bopl_pack_rows of the lite rows
- *   train    the trainer's full-writer finish: the full encode deferred
- *            (bopl4_defer, as bopl_step_finish sets it) + bopl_pack_rows,
- *            which ships each row's ray scene (pack mode 2) for the GPU
- *            writer (bopl_rays_v4.cu) instead of casting the rays
+ *   train    the trainer's full-writer finish (bopl_step_finish's writer
+ *            calls in its order): the full encode deferred (bopl4_defer)
+ *            with the overflow telemetry counted, which ships each row
+ *            whose state fits as that state (pack mode 4) for the GPU
+ *            writer (bopl_rays_v4.cu) and writes the rest on the CPU
+ *            with their ray scene (mode 2), then the tail, the privileged
+ *            block and bopl_pack_rows
  * lite and full each write into their own env (their own written-row records)
  * and swap order every decision. The replay's per-tick inputs are held for a
  * decision (the trainer's repeat 4); groups whose ticks disagree are counted.
@@ -22,7 +25,14 @@
  * then a summary over the corpus and per-map / per-kit aggregates go to the
  * python side. load1 travels with every line. Every game's hash folds each
  * decision's sampled and final states (replay_ab.c's strict state hash) and
- * both writers' rows and the train phase's packed slots: equal hashes between two builds = the exact gate.
+ * both writers' rows (hash), the train phase's packed slots and masks
+ * (train_hash) and its overflow telemetry (telemetry_hash, the counters):
+ * equal hashes between two builds = the exact gate. A change to what a slot
+ * ships for the same row moves train_hash alone; eval/encode_check.c then
+ * proves the GPU's rows from it equal to the CPU writer's.
+ * Each phase's user-space instructions per decision (<phase>_inst, from
+ * perf_event_open; -1 when unavailable) go in the summary: deterministic,
+ * the evidence for a writer change when wall time is noisy.
  *
  *   env_bench <libbopl_sim.so> <corpus_dir> [max_games=0 (all)] [warmup=240] [limit=10800]
  *
@@ -32,10 +42,26 @@
 #include <dirent.h>
 #include <inttypes.h>
 #include <time.h>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
 
 static double seconds(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec+t.tv_nsec/1e9;
+}
+/* This thread's user-space instruction count (0 without perf access). */
+static int inst_fd=-2;
+static uint64_t instructions(void) {
+    if (inst_fd==-2) {
+        struct perf_event_attr attr; memset(&attr, 0, sizeof(attr));
+        attr.size=sizeof(attr); attr.type=PERF_TYPE_HARDWARE; attr.config=PERF_COUNT_HW_INSTRUCTIONS;
+        attr.exclude_kernel=1; attr.exclude_hv=1;
+        inst_fd=(int)syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
+    }
+    uint64_t v=0;
+    if (inst_fd<0 || read(inst_fd, &v, sizeof(v))!=sizeof(v)) return 0;
+    return v;
 }
 static double load1(void) { double l[1]; return getloadavg(l, 1)==1?l[0]:-1.0; }
 
@@ -158,25 +184,31 @@ int main(int argc, char **argv) {
     /* BOPL_ENV_BENCH_SIM_ONLY skips the writers, so `perf stat` counts the
      * sim's instructions undiluted (the hash then covers the states alone). */
     int sim_only=getenv("BOPL_ENV_BENCH_SIM_ONLY")!=NULL;
+    /* BOPL_ENV_BENCH_TRAIN_ONLY skips the lite and full writers and the lite
+     * env's tail, privileged block and pack, so a profile of the run shows
+     * the trainer's writer path (sample + train) next to the sim alone (the
+     * hash then covers the states and the train phase). */
+    int train_only=getenv("BOPL_ENV_BENCH_TRAIN_ONLY")!=NULL;
     const char *evict_env=getenv("BOPL_ENV_BENCH_EVICT_KB");
     size_t evict_bytes=evict_env?(size_t)atol(evict_env)*1024:0;
     unsigned char *evict=evict_bytes?calloc(1, evict_bytes):NULL;
-    double total[PHASES]={0}; uint64_t total_decisions=0, total_ticks=0, total_split=0, corpus_hash=0;
+    double total[PHASES]={0}; uint64_t total_inst[PHASES]={0}, total_fallback=0, total_decisions=0, total_ticks=0, total_split=0, corpus_hash=0, corpus_train=0, corpus_telemetry=0;
     double wall=seconds();
     for (int g=0; g<n; g++) {
         char path[4096]; snprintf(path, sizeof(path), "%s/%s", argv[2], names[g]);
         Replay replay;
         if (replay_decode(path, warmup, limit, &replay)) return 1;
         if (replay.tick_count<=warmup) { fprintf(stderr, "%s: shorter than the warmup\n", path); return 1; }
-        double t[PHASES]={0}, t0=seconds();
+        double t[PHASES]={0}, t0=seconds(); uint64_t ic[PHASES]={0}, i0=instructions();
         if (bopl_rl_reset(world, &replay.config)!=BOPL_RL_OK) { fprintf(stderr, "%s: reset failed: %s\n", path, bopl_rl_error(world)); return 1; }
-        t[P_RESET]=seconds()-t0;
+        t[P_RESET]=seconds()-t0; ic[P_RESET]=instructions()-i0;
         lite->config=full->config=train->config=replay.config;
         bopl_written_forget(lite); bopl_written_forget(full); bopl_written_forget(train);
         memset(lite->action_history, 0, sizeof(lite->action_history)); memset(full->action_history, 0, sizeof(full->action_history));
+        memset(train->action_history, 0, sizeof(train->action_history));
         const BoplRlState *state=bopl_rl_state(world);
         for (int i=0; i<2; i++) bopl_state_copy(&delayed[i], state);
-        int cursor=0; uint64_t decisions=0, split=0, hash=state_hash(0x243F6A8885A308D3ull, state);
+        int cursor=0; uint64_t decisions=0, split=0, hash=state_hash(0x243F6A8885A308D3ull, state), train_hash=0x243F6A8885A308D3ull, telemetry_hash=train_hash;
         uint32_t tick=1;   /* the replay's first post-warmup tick */
         while (!(state->header.flags&BOPL_RL_TERMINAL) && warmup+tick-1<replay.tick_count) {
             BoplRlAction actions[PLAYERS];
@@ -186,11 +218,11 @@ int main(int argc, char **argv) {
             for (uint32_t k=1; k<4 && warmup+tick-1+k<replay.tick_count; k++)
                 if (memcmp(first, &replay.actions[(size_t)(warmup+tick-1+k)*PLAYERS], sizeof(actions))) { split++; break; }
             uint32_t before=state->header.episode_ticks;
-            t0=seconds();
+            t0=seconds(); i0=instructions();
             if (bopl_rl_step_sampled(world, actions, PLAYERS, 3, 1)) { fprintf(stderr, "%s: step failed: %s\n", path, bopl_rl_error(world)); return 1; }
-            double t1=seconds(); t[P_SIM]+=t1-t0;
+            double t1=seconds(); uint64_t i1=instructions(); t[P_SIM]+=t1-t0; ic[P_SIM]+=i1-i0;
             bopl_state_copy(&sample, bopl_rl_sample(world)); bopl_count_overflow(lite, bopl_rl_sample(world));
-            double t2=seconds(); t[P_SAMPLE]+=t2-t1;
+            double t2=seconds(); t[P_SAMPLE]+=t2-t1; ic[P_SAMPLE]+=instructions()-i1;
             state=bopl_rl_state(world);
             hash=state_hash(state_hash(hash, bopl_rl_sample(world)), state);
             tick+=state->header.episode_ticks-before;
@@ -198,20 +230,32 @@ int main(int argc, char **argv) {
             if (state->header.flags&BOPL_RL_TERMINAL) break;
             if (sim_only) continue;
             const BoplRlState *old=bopl_state_copy_get(&delayed[cursor]);
-            for (int k=0; k<2; k++) {
+            for (int k=0; k<2 && !train_only; k++) {
                 BoplPuffer *env=((decisions+k)&1)?lite:full; int phase=env==lite?P_LITE:P_FULL;
-                double a=seconds(); bopl_encode(env, old, 0); t[phase]+=seconds()-a;
+                double a=seconds(); uint64_t ia=instructions(); bopl_encode(env, old, 0); t[phase]+=seconds()-a; ic[phase]+=instructions()-ia;
             }
-            hash=mix_words(mix_words(hash, scratch_lite, sizeof(scratch_lite)), scratch_full, sizeof(scratch_full));
+            if (!train_only) hash=mix_words(mix_words(hash, scratch_lite, sizeof(scratch_lite)), scratch_full, sizeof(scratch_full));
             {
-                double a=seconds();
-                bopl4_defer=1; bopl4_pending_count=0; bopl4_state_count=0; bopl_encode(train, old, 0); bopl4_defer=0;
+                double a=seconds(); uint64_t ia=instructions();
+                for (int i=0; i<PLAYERS; i++) train->applied[i]=actions[i];
+                bopl4_defer=1; bopl4_pending_count=0; bopl4_state_count=0; bopl_encode(train, old, 1);
+                for (int i=0; i<PLAYERS; i++) {
+                    float *previous=bopl_obs_row(train, i)+bopl_previous_offset(train, i);
+                    bopl_previous_action(previous, actions[i], train->hold_left[i], train->hold_run[i]);
+                    bopl4_previous_history(previous, train->action_history[i], actions[i]);
+                    bopl_write_mask(train, i);
+                }
+                bopl_encode_privileged(train, state, actions);
+                bopl4_defer=0;
                 bopl_pack_rows(train);
-                t[P_TRAIN]+=seconds()-a;
-                hash=mix_words(hash, pack_train, sizeof(pack_train));
+                t[P_TRAIN]+=seconds()-a; ic[P_TRAIN]+=instructions()-ia;
+                train_hash=mix_words(mix_words(train_hash, pack_train, sizeof(pack_train)), masks_train, sizeof(masks_train));
+                telemetry_hash=mix_words(mix(telemetry_hash, (uint64_t)train->log.observation_overflow), &train->counters, sizeof(train->counters));
+                for (int i=0; i<PLAYERS; i++) total_fallback+=((const uint32_t*)(pack_train+(size_t)i*BOPL4_PACK_P))[0]!=BOPL4_PACK_MODE_STATE;
             }
             BoplStateCopy published=delayed[cursor]; delayed[cursor]=sample; sample=published; cursor^=1;
-            double t3=seconds();
+            if (train_only) continue;
+            double t3=seconds(); uint64_t i3=instructions();
             for (int i=0; i<PLAYERS; i++) {
                 lite->applied[i]=actions[i];
                 float *previous=bopl_obs_row(lite, i)+bopl_previous_offset(lite, i);
@@ -219,26 +263,30 @@ int main(int argc, char **argv) {
                 bopl4_previous_history(previous, lite->action_history[i], actions[i]);
                 bopl_write_mask(lite, i);
             }
-            double t4=seconds(); t[P_TAIL]+=t4-t3;
+            double t4=seconds(); uint64_t i4=instructions(); t[P_TAIL]+=t4-t3; ic[P_TAIL]+=i4-i3;
             bopl_encode_privileged(lite, state, actions);
-            double t5=seconds(); t[P_PRIV]+=t5-t4;
+            double t5=seconds(); uint64_t i5=instructions(); t[P_PRIV]+=t5-t4; ic[P_PRIV]+=i5-i4;
             bopl_pack_rows(lite);
-            t[P_PACK]+=seconds()-t5;
+            t[P_PACK]+=seconds()-t5; ic[P_PACK]+=instructions()-i5;
         }
         uint32_t ticks=state->header.episode_ticks;
-        printf("{\"game\": \"%s\", \"map\": %u, \"kits\": [[%u,%u,%u],[%u,%u,%u]], \"decisions\": %"PRIu64", \"ticks\": %u, \"split\": %"PRIu64", \"hash\": \"%016"PRIx64"\"",
+        printf("{\"game\": \"%s\", \"map\": %u, \"kits\": [[%u,%u,%u],[%u,%u,%u]], \"decisions\": %"PRIu64", \"ticks\": %u, \"split\": %"PRIu64", \"hash\": \"%016"PRIx64"\", \"train_hash\": \"%016"PRIx64"\", \"telemetry_hash\": \"%016"PRIx64"\"",
                names[g], replay.config.map, replay.config.player[0].abilities[0], replay.config.player[0].abilities[1], replay.config.player[0].abilities[2],
-               replay.config.player[1].abilities[0], replay.config.player[1].abilities[1], replay.config.player[1].abilities[2], decisions, ticks, split, hash);
+               replay.config.player[1].abilities[0], replay.config.player[1].abilities[1], replay.config.player[1].abilities[2], decisions, ticks, split, hash, train_hash, telemetry_hash);
         for (int p=0; p<PHASES; p++) printf(", \"%s_us\": %.3f", PHASE_NAMES[p], p==P_RESET?t[p]*1e6:t[p]*1e6/(double)(decisions?decisions:1));
         printf(", \"load1\": %.2f}\n", load1());
         fflush(stdout);
-        for (int p=0; p<PHASES; p++) total[p]+=t[p];
+        for (int p=0; p<PHASES; p++) { total[p]+=t[p]; total_inst[p]+=ic[p]; }
         total_decisions+=decisions; total_ticks+=ticks; total_split+=split; corpus_hash=mix(corpus_hash, hash);
+        corpus_train=mix(corpus_train, train_hash); corpus_telemetry=mix(corpus_telemetry, telemetry_hash);
         free(replay.actions);
     }
     wall=seconds()-wall;
-    printf("{\"summary\": true, \"games\": %d, \"decisions\": %"PRIu64", \"ticks\": %"PRIu64", \"split\": %"PRIu64", \"wall_s\": %.2f, \"hash\": \"%016"PRIx64"\"", n, total_decisions, total_ticks, total_split, wall, corpus_hash);
+    printf("{\"summary\": true, \"games\": %d, \"decisions\": %"PRIu64", \"ticks\": %"PRIu64", \"split\": %"PRIu64", \"wall_s\": %.2f, \"hash\": \"%016"PRIx64"\", \"train_hash\": \"%016"PRIx64"\", \"telemetry_hash\": \"%016"PRIx64"\"",
+           n, total_decisions, total_ticks, total_split, wall, corpus_hash, corpus_train, corpus_telemetry);
     for (int p=0; p<PHASES; p++) printf(", \"%s_us\": %.3f", PHASE_NAMES[p], total[p]*1e6/(double)total_decisions);
+    for (int p=0; p<PHASES; p++) printf(", \"%s_inst\": %.1f", PHASE_NAMES[p], inst_fd<0?-1.0:(double)total_inst[p]/(double)total_decisions);
+    printf(", \"train_fallback\": %.5f", (double)total_fallback/(double)(PLAYERS*total_decisions));
     printf(", \"env_lite_us\": %.3f, \"env_full_us\": %.3f, \"load1\": %.2f}\n",
            (total[P_RESET]+total[P_SIM]+total[P_SAMPLE]+total[P_LITE]+total[P_TAIL]+total[P_PRIV]+total[P_PACK])*1e6/(double)total_decisions,
            (total[P_RESET]+total[P_SIM]+total[P_SAMPLE]+total[P_FULL]+total[P_TAIL]+total[P_PRIV]+total[P_PACK])*1e6/(double)total_decisions, load1());
