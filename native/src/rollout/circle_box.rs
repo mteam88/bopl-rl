@@ -1537,6 +1537,8 @@ impl RolloutWorld {
         // act; its other pairs leave nothing to queue.
         let stale = self.platform_epoch != self.platform_rows_epoch;
         let mut settled = stale;
+        // The pass's sweep axis, for the ranks.
+        let sweep_x = self.sweep_x();
         // Debug builds test each untested pair here too, by its key, and
         // whether the group meets anything.
         #[cfg(debug_assertions)]
@@ -1549,8 +1551,9 @@ impl RolloutWorld {
             }
             let slime = matches!(part, Part::Body(_) | Part::Clone(_));
             debug_assert!(!slime || self.part_body(part).inverse_mass < Fix::ZERO);
-            let mut side: Option<(u32, Option<usize>)> = None;
+            let mut side: Option<(u32, Option<usize>, Option<usize>)> = None;
             let mut shape: Option<Collider> = None;
+            let mut part_rank: Option<SweepRank> = None;
             // The cheap box test first, sixteen walls at a time, then any wall
             // past the swept boxes; in wall order.
             let (mut next, mut first, mut meets, mut unboxed) = (0, 0, 0u64, boxed_walls);
@@ -1576,8 +1579,9 @@ impl RolloutWorld {
                 // RemoveDestroyedColliders (DetPhysics.cs:1658-1665, 2731).
                 // SortAndSweep pairs only layers the Physics2D matrix lets
                 // collide (DetPhysics.cs:2183).
-                let (layer, composite) = *side.get_or_insert_with(|| self.wall_part_side(part, data));
-                let wall_layer = self.entities[self.platform_entities[wall]].layer;
+                let (layer, composite, entity) = *side.get_or_insert_with(|| self.wall_part_side(part, data));
+                let wall_entity = self.platform_entities[wall];
+                let wall_layer = self.entities[wall_entity].layer;
                 if composite == Some(wall) || !self.wall_collides(wall) || !data.layers_collide(layer, wall_layer) {
                     continue;
                 }
@@ -1596,7 +1600,7 @@ impl RolloutWorld {
                     }
                     None
                 } else {
-                    let collider = *shape.get_or_insert_with(|| self.wall_part_collider(part));
+                    let collider = *shape.get_or_insert_with(|| self.wall_part_collider_at(part, entity));
                     let contact = if slime {
                         slime_wall_meets(collider, rounded).then(Contact::default)
                     } else {
@@ -1620,11 +1624,19 @@ impl RolloutWorld {
                     }
                     contact
                 };
-                // `part_rank`, from the box just taken.
-                let low = if self.sweep_x() { bounds[0].x } else { bounds[0].y };
-                let rank = sweep_rank(&self.entities, low, self.part_entity(part));
+                // `part_rank`, from the box just taken, once a part; `wall_rank`
+                // from the wall's swept box, or past them its collider.
+                let rank = *part_rank.get_or_insert_with(|| {
+                    sweep_rank(&self.entities, if sweep_x { bounds[0].x } else { bounds[0].y }, entity)
+                });
                 debug_assert!(rank == self.part_rank(part));
-                let (later, earlier) = sweep_pair(rank, self.wall_rank(wall));
+                let low = match swept_walls.get(wall) {
+                    Some(bounds) => bounds[0],
+                    None => Collider::RoundedRect(self.circle_collider(wall)).bounds()[0],
+                };
+                let rank_wall = sweep_rank(&self.entities, if sweep_x { low.x } else { low.y }, Some(wall_entity));
+                debug_assert!(rank_wall == self.wall_rank(wall));
+                let (later, earlier) = sweep_pair(rank, rank_wall);
                 #[cfg(debug_assertions)]
                 if contact.is_none() {
                     eager.last_mut().expect("its eager test").0 = (group, later, earlier);
@@ -1747,25 +1759,39 @@ impl RolloutWorld {
         self.scratch.wall_contacts = contacts;
     }
 
-    /// A wall group part's `part_layer` and `part_composite`; a slime's
-    /// layer from its hurtbox row.
+    /// A wall group part's `part_layer`, `part_composite` and `part_entity`;
+    /// a slime's layer from its hurtbox row.
     #[inline(always)]
-    fn wall_part_side(&self, part: Part, data: &data::RolloutData) -> (u32, Option<usize>) {
+    fn wall_part_side(&self, part: Part, data: &data::RolloutData) -> (u32, Option<usize>, Option<usize>) {
         let side = match part {
-            Part::Body(i) => (self.entities[Self::hurtbox_entity(&self.players[i])].layer, None),
-            _ => (self.part_layer(part, data), self.part_composite(part)),
+            Part::Body(i) => {
+                let entity = Self::hurtbox_entity(&self.players[i]);
+                (self.entities[entity].layer, None, Some(entity))
+            }
+            _ => (self.part_layer(part, data), self.part_composite(part), self.part_entity(part)),
         };
-        debug_assert_eq!(side, (self.part_layer(part, data), self.part_composite(part)));
+        debug_assert_eq!(side, (self.part_layer(part, data), self.part_composite(part), self.part_entity(part)));
         side
     }
 
     /// A wall group part's `part_collider`; a slime's from its hurtbox row.
     #[inline(always)]
     fn wall_part_collider(&self, part: Part) -> Collider {
-        let collider = match part {
-            Part::Body(i) => self.body_row_collider(Self::hurtbox_entity(&self.players[i])),
+        let entity = match part {
+            Part::Body(i) => Some(Self::hurtbox_entity(&self.players[i])),
+            _ => None,
+        };
+        self.wall_part_collider_at(part, entity)
+    }
+
+    /// `wall_part_collider` with a slime's `part_entity` (else unread).
+    #[inline(always)]
+    fn wall_part_collider_at(&self, part: Part, entity: Option<usize>) -> Collider {
+        let collider = match (part, entity) {
+            (Part::Body(_), Some(entity)) => self.body_row_collider(entity),
             _ => self.part_collider(part),
         };
+        debug_assert!(!matches!(part, Part::Body(_)) || entity == self.part_entity(part));
         #[cfg(debug_assertions)]
         {
             let bits = |c: Collider| match c {
