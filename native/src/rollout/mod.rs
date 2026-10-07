@@ -230,6 +230,8 @@ struct HeldAbilities {
 }
 
 impl HeldAbilities {
+    const EMPTY: Self = Self { ids: [0; MAX_BODIES], bits: [0; MAX_BODIES], count: 0 };
+
     /// `player_holds`: whether any listed body of player `id` holds
     /// `ability`, a real ability (never `ABILITY_NULL`).
     fn holds(&self, id: u32, ability: u32) -> bool {
@@ -39239,7 +39241,13 @@ impl RolloutWorld {
         if self.ropes.iter().any(|rope| rope.physics.enabled) {
             return false;
         }
-        let gate = self.source_gate();
+        let mut gate = SourceGate {
+            held: HeldAbilities::EMPTY,
+            live_forms: [u32::MAX; MAX_BODIES * 3],
+            any_platform: false,
+            drill_hitbox_layer: 0,
+        };
+        self.fill_source_gate(&mut gate);
         // Kind-indexed by `kind & 7`: every row's kind is 0..=4.
         let mut counts = [0usize; 8];
         for entity in &self.entities {
@@ -39471,11 +39479,14 @@ impl RolloutWorld {
         }
     }
 
-    /// What `gate_source_ability` reads, gathered once per observation.
-    fn source_gate(&self) -> SourceGate {
-        let held = self.held_abilities();
-        let mut live_forms = [u32::MAX; MAX_BODIES * 3];
-        for (slot, forms) in self.players.iter().zip(live_forms.chunks_mut(3)) {
+    /// What `gate_source_ability` reads, gathered once per observation into
+    /// the caller's `gate`. Filling it where it lives, rather than returning
+    /// it, spares a copy whose wide loads would wait on the narrow stores that
+    /// just filled it (a store-forwarding stall).
+    fn fill_source_gate(&self, gate: &mut SourceGate) {
+        self.fill_held_abilities(&mut gate.held);
+        gate.live_forms = [u32::MAX; MAX_BODIES * 3];
+        for (slot, forms) in self.players.iter().zip(gate.live_forms.chunks_mut(3)) {
             if Self::slime_listed(slot) {
                 for (id, &entity) in forms.iter_mut().zip(&slot.form_entities) {
                     if entity != usize::MAX {
@@ -39484,19 +39495,16 @@ impl RolloutWorld {
                 }
             }
         }
-        SourceGate {
-            any_platform: held.any(ABILITY_PLATFORM),
-            held,
-            live_forms,
-            drill_hitbox_layer: data::get().drill.hitbox_layer,
-        }
+        gate.any_platform = gate.held.any(ABILITY_PLATFORM);
+        gate.drill_hitbox_layer = data::get().drill.hitbox_layer;
     }
 
     /// `live_slime_abilities` as one ability bit set per body, beside the
     /// body's player id: `player_holds` without the slot scans. Every ability
-    /// id is below `ABILITY_COUNT`, so one word holds them.
-    fn held_abilities(&self) -> HeldAbilities {
-        let mut held = HeldAbilities { ids: [0; MAX_BODIES], bits: [0; MAX_BODIES], count: 0 };
+    /// id is below `ABILITY_COUNT`, so one word holds them. Filled into the
+    /// caller's `held`, as `fill_source_gate` fills its gate.
+    fn fill_held_abilities(&self, held: &mut HeldAbilities) {
+        *held = HeldAbilities::EMPTY;
         for (slot, (id, bits)) in self.players.iter().zip(held.ids.iter_mut().zip(&mut held.bits)) {
             *id = slot.base.id;
             if Self::slime_listed(slot) {
@@ -39520,7 +39528,6 @@ impl RolloutWorld {
                 }
             }
         }
-        held
     }
 
     /// `gate_published_source_abilities` for one published row, which still
@@ -39591,7 +39598,8 @@ impl RolloutWorld {
     }
 
     fn refresh_entity_metadata(&mut self) {
-        let held = self.held_abilities();
+        let mut held = HeldAbilities::EMPTY;
+        self.fill_held_abilities(&mut held);
         #[cfg(debug_assertions)]
         let held_slots = self.live_slime_abilities();
         let drill_hitbox_layer = data::get().drill.hitbox_layer;

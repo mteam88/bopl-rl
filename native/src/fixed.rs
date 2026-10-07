@@ -197,33 +197,36 @@ impl Fix {
         // any indefinite lane sends the whole array down the scalar path.
         const { assert!(N <= 12) };
         let lane = |i: usize| if i < N { values[i].0 } else { 0.0 };
-        let mut out = [0i64; 12];
-        let bad = if N <= 4 {
-            let (q, bad) = lanes::raw4(std::array::from_fn(lane));
-            out[..4].copy_from_slice(&q);
-            bad
+        // The low lanes in `wide` (from eight on) and the rest in `narrow`.
+        let (wide, narrow, bad) = if N <= 4 {
+            let (narrow, bad) = lanes::raw4(std::array::from_fn(lane));
+            ([0; 8], narrow, bad)
+        } else if N <= 8 {
+            let (wide, bad) = lanes::raw8(std::array::from_fn(lane));
+            (wide, [0; 4], bad)
         } else {
-            let (q, mut bad) = lanes::raw8(std::array::from_fn(lane));
-            out[..8].copy_from_slice(&q);
-            if N > 8 {
-                let (q, high) = lanes::raw4(std::array::from_fn(|i| lane(i + 8)));
-                out[8..].copy_from_slice(&q);
-                bad |= high;
-            }
-            bad
+            let (wide, low) = lanes::raw8(std::array::from_fn(lane));
+            let (narrow, high) = lanes::raw4(std::array::from_fn(|i| lane(i + 8)));
+            (wide, narrow, low | high)
         };
-        if bad != 0 {
-            return Self::raw_array_cold(values);
-        }
-        let raws = std::array::from_fn(|i| out[i]);
+        // The slow lanes rejoin as the same two vectors, so the fast path
+        // stores its lanes straight to their destination.
+        let (wide, narrow) = if bad != 0 { Self::raw_array_cold(values) } else { (wide, narrow) };
+        let raws = std::array::from_fn(|i| if N <= 4 { narrow[i] } else if i < 8 { wide[i] } else { narrow[i - 8] });
         debug_assert_eq!(raws, values.map(|value| (value.0 * SCALE).round() as i64));
         raws
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512dq", target_feature = "avx512vl"))]
     #[cold]
     #[inline(never)]
-    fn raw_array_cold<const N: usize>(values: [Self; N]) -> [i64; N] {
-        values.map(Self::raw)
+    fn raw_array_cold<const N: usize>(values: [Self; N]) -> ([i64; 8], [i64; 4]) {
+        let raws = values.map(Self::raw);
+        let lane = |i: usize| if i < N { raws[i] } else { 0 };
+        if N <= 4 {
+            ([0; 8], std::array::from_fn(lane))
+        } else {
+            (std::array::from_fn(lane), std::array::from_fn(|i| lane(i + 8)))
+        }
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512dq", target_feature = "avx512vl")))]
     #[inline]
