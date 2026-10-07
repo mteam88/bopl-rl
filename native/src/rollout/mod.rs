@@ -5097,6 +5097,10 @@ pub struct RolloutWorld {
     pub frozen_solids: Vec<FrozenSolidState>,
     pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
+    /// False only while no Duplicator copy can be live: every copy is made
+    /// where this is set, and DetPhysics.UpdateDuplicatedObjects clears it
+    /// on a pass that finds none.
+    pub duplicates_may_live: bool,
     pub time_stop_protected: [bool; MAX_BODIES],
     pub spawned: Vec<SpawnedPlatform>,
     /// Black Hole pulls on a shrinking platform whose ResizablePlatform ran
@@ -5295,6 +5299,7 @@ impl RolloutWorld {
             frozen_solids: Vec::with_capacity(32),
             scale_changers: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
+            duplicates_may_live: false,
             time_stop_protected: [false; MAX_BODIES],
             spawned: Vec::with_capacity(64),
             late_platform_pulls: Vec::new(),
@@ -5417,6 +5422,7 @@ impl RolloutWorld {
         self.frozen_solids.clone_from(&src.frozen_solids);
         self.scale_changers.clone_from(&src.scale_changers);
         self.player_time_scale = src.player_time_scale;
+        self.duplicates_may_live = src.duplicates_may_live;
         self.time_stop_protected = src.time_stop_protected;
         self.spawned.clone_from(&src.spawned);
         self.gust_waves = src.gust_waves;
@@ -5534,6 +5540,7 @@ impl RolloutWorld {
             frozen_solids: _,
             scale_changers: _,
             player_time_scale: _,
+            duplicates_may_live: _,
             time_stop_protected: _,
             spawned: _,
             late_platform_pulls: _,
@@ -5680,6 +5687,7 @@ impl RolloutWorld {
             std::env::var_os("BOPL_RL_ABILITY_SPAWNS").is_some_and(|value| value == "1");
         self.ability_spawner_state.clear();
         self.player_time_scale = Fix::ONE;
+        self.duplicates_may_live = false;
         self.time_stop_protected = [false; MAX_BODIES];
         self.spawned.clear();
         self.late_platform_pulls.clear();
@@ -26328,6 +26336,7 @@ impl RolloutWorld {
     }
 
     fn duplicate_arrow(&mut self, source_index: usize, direction: Vec2, data: &data::RolloutData) {
+        self.duplicates_may_live = true;
         let source = self.arrows[source_index];
         let speed = source.velocity.length() + Fix::from_int(10);
         for clone_index in 0..4 {
@@ -26390,6 +26399,7 @@ impl RolloutWorld {
         direction: Vec2,
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         let source = self.ability_pickups[source_index];
         let speed = source.body.velocity.length() + Fix::from_int(15);
         for clone_index in 0..3 {
@@ -26445,6 +26455,7 @@ impl RolloutWorld {
         direction: Vec2,
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         let source = self.black_holes[source_index];
         let position = source.position + direction * source.radius * Fix::from_int(2);
         let hierarchy_base = self.register_prefab(data::get().copy("BlackHole2"));
@@ -26717,6 +26728,7 @@ impl RolloutWorld {
     /// The copy's circle joins DetPhysics. Its row reads no owner, since
     /// Explosion is not an IPlayerIdHolder.
     fn register_duplicated_rock(&mut self, index: usize) {
+        self.duplicates_may_live = true;
         let mut rock = self.pending_duplicated_rocks[index];
         let entity = self.entities.len();
         let id = self.next_id();
@@ -26773,6 +26785,7 @@ impl RolloutWorld {
         direction: Vec2,
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         let source = self.spike_attacks[source_index];
         if source.platform_index >= self.platforms.len() {
             return;
@@ -26888,6 +26901,7 @@ impl RolloutWorld {
         caster: usize,
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         let source = self.engines[source_index];
         if source.platform_index >= self.platforms.len() {
             return;
@@ -27002,6 +27016,7 @@ impl RolloutWorld {
         caster: usize,
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         let source = self.tesla_nodes[source_index];
         if source.platform_index >= self.platforms.len() {
             return;
@@ -27118,6 +27133,7 @@ impl RolloutWorld {
         direction: Vec2,
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         let source = self.thrown_items[source_index];
         let (clone_count, spacing, angle, copy) = if source.ability == ABILITY_MINE {
             (
@@ -27247,6 +27263,7 @@ impl RolloutWorld {
         direction: Vec2,
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         let source = self.guided_missiles[source_index];
         let speed = source.body.velocity.length() + Fix::from_int(10);
         for clone_index in 0..data.missile.clone_count {
@@ -27301,6 +27318,7 @@ impl RolloutWorld {
     }
 
     fn duplicate_smoke_cloud(&mut self, source_index: usize, data: &data::RolloutData) {
+        self.duplicates_may_live = true;
         let source = self.smoke_clouds[source_index];
         // duplicateBoplBody copies the original's live radius over the one
         // FlammableSmoke.Awake set, then sets Scale (ShootDuplicator.cs:683-694).
@@ -27340,8 +27358,30 @@ impl RolloutWorld {
         }
     }
 
+    /// Whether any Duplicator copy is live, a carried Spike or Tesla node's
+    /// included: the walk below skips one only while it is carried.
+    fn duplicate_live(&self) -> bool {
+        self.platform_dynamics.iter().any(|dynamics| dynamics.duplicate_spawner_hierarchy.is_some())
+            || self.arrows.iter().any(|arrow| arrow.active && arrow.duplicated)
+            || self.ability_pickups.iter().any(|pickup| pickup.active && pickup.duplicated)
+            || self.black_holes.iter().any(|hole| hole.active && hole.duplicated)
+            || self.duplicated_rocks.iter().any(|rock| rock.active)
+            || self.smoke_clouds.iter().any(|cloud| cloud.active && cloud.duplicated)
+            || self.thrown_items.iter().any(|item| item.active && item.duplicated)
+            || self.guided_missiles.iter().any(|missile| missile.active && missile.duplicated)
+            || self.spike_attacks.iter().any(|spike| spike.active && spike.duplicated)
+            || self.engines.iter().any(|engine| engine.active && engine.duplicated)
+            || self.tesla_nodes.iter().any(|node| node.active && node.duplicated)
+    }
+
     fn duplicated_objects_tick(&mut self) {
         if self.player_time_scale < Fix::from_f32(0.01) {
+            return;
+        }
+        // Most passes have no copy to walk: without one, both walks below
+        // touch nothing and draw no shake.
+        if !self.duplicates_may_live {
+            debug_assert!(!self.duplicate_live(), "a Duplicator copy made without setting duplicates_may_live");
             return;
         }
         const PLATFORM: u8 = 0;
@@ -27446,6 +27486,9 @@ impl RolloutWorld {
             if node.active && !node.macho_carried && node.duplicated {
                 add(node.hierarchy_base, TESLA, index, node.duplicate_lifespan);
             }
+        }
+        if shake_order.is_empty() && !self.duplicate_live() {
+            self.duplicates_may_live = false;
         }
         shake_order.sort_unstable_by_key(|&(order, _, _)| std::cmp::Reverse(order));
         let mut shake_offsets = std::mem::take(&mut self.scratch.duplicate_shake_offsets);
@@ -30428,6 +30471,7 @@ impl RolloutWorld {
         shape: (Vec2, Fix, Fix),
         data: &data::RolloutData,
     ) {
+        self.duplicates_may_live = true;
         if source >= self.platforms.len() || source >= self.platform_dynamics.len() {
             return;
         }
@@ -33677,6 +33721,7 @@ impl RolloutWorld {
                 duplicate_lifespan: if item.duplicated { 1200 } else { 0 },
                 ..SmokeCloud::default()
             };
+            self.duplicates_may_live |= item.duplicated;
             if let Some(free) = self.smoke_clouds.iter().position(|cloud| !cloud.active) {
                 let entity = self.smoke_clouds[free].entity;
                 self.smoke_clouds[free] = SmokeCloud { entity, ..cloud };
@@ -41446,6 +41491,7 @@ mod tests {
             duplicate_lifespan: 60,
             ..ThrownItem::default()
         });
+        world.duplicates_may_live = true;
         let (newer, older) = {
             let mut rng = world.rng;
             let newer = Vec2::angle(rng.fix_range(Fix::ZERO, Fix::TAU));
@@ -41942,6 +41988,7 @@ mod tests {
             mass_scale: Fix::ONE,
             ..DuplicatedRock::default()
         });
+        world.duplicates_may_live = true;
         world.gust_waves[0] = Shockwave {
             active: true,
             appended: world.tick.max(1),
