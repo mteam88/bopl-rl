@@ -175,6 +175,11 @@ impl Fix {
     pub const fn to_f64(self) -> f64 {
         self.0
     }
+    /// The value's bits: equal exactly when the two are the same value,
+    /// zero's sign included.
+    pub const fn bits(self) -> u64 {
+        self.0.to_bits()
+    }
     pub fn sign(self) -> i64 {
         if self.0 > 0.0 {
             1

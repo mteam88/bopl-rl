@@ -2086,7 +2086,7 @@ pub struct PlatformBasis {
     entries: [u64; 2],
     basis: Vec2,
     /// The `inverse_extents` bits `right` and `up` were built from.
-    inverse_extents: Option<[u64; 2]>,
+    inverse_extents: [u64; 2],
     right: Vec2,
     up: Vec2,
 }
@@ -2099,28 +2099,28 @@ impl PlatformDynamics {
     #[inline(always)]
     fn basis_axes(&mut self, inverse_extents: Vec2) -> (Vec2, Vec2, Vec2) {
         let orientation = self.body.orientation;
+        let bits = [inverse_extents.x.bits(), inverse_extents.y.bits()];
+        let axes = |basis: Vec2| {
+            (
+                (Vec2::RIGHT / inverse_extents.x).complex_mul(basis),
+                (Vec2::UP / inverse_extents.y).complex_mul(basis),
+            )
+        };
         if !matches!(self.basis, Some(cached) if cached.orientation == orientation) {
             let entries = [orientation.fast_cos_entry(), orientation.fast_sin_entry()];
             match &mut self.basis {
                 Some(cached) if cached.entries == entries => cached.orientation = orientation,
                 slot => {
-                    *slot = Some(PlatformBasis {
-                        orientation,
-                        entries,
-                        basis: Vec2::new(Fix::fast_sin_at(entries[0]), Fix::fast_sin_at(entries[1])),
-                        inverse_extents: None,
-                        right: Vec2::ZERO,
-                        up: Vec2::ZERO,
-                    })
+                    let basis = Vec2::new(Fix::fast_sin_at(entries[0]), Fix::fast_sin_at(entries[1]));
+                    let (right, up) = axes(basis);
+                    *slot = Some(PlatformBasis { orientation, entries, basis, inverse_extents: bits, right, up });
                 }
             }
         }
         let Some(cached) = &mut self.basis else { unreachable!() };
-        let bits = [inverse_extents.x.to_f64().to_bits(), inverse_extents.y.to_f64().to_bits()];
-        if cached.inverse_extents != Some(bits) {
-            cached.right = (Vec2::RIGHT / inverse_extents.x).complex_mul(cached.basis);
-            cached.up = (Vec2::UP / inverse_extents.y).complex_mul(cached.basis);
-            cached.inverse_extents = Some(bits);
+        if cached.inverse_extents != bits {
+            (cached.right, cached.up) = axes(cached.basis);
+            cached.inverse_extents = bits;
         }
         #[cfg(debug_assertions)]
         {

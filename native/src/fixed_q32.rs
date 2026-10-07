@@ -62,6 +62,10 @@ impl Fix {
     pub fn to_f64(self) -> f64 {
         self.0 as f64 / 4_294_967_296.0
     }
+    /// The value's bits: equal exactly when the two are the same value.
+    pub const fn bits(self) -> u64 {
+        self.0 as u64
+    }
     pub fn sign(self) -> i64 {
         self.0.signum()
     }
