@@ -368,6 +368,33 @@ impl Fix {
         }
         self.checked_rem(rhs, true)
     }
+    /// The orientation wrap `((self % TAU) + TAU) % TAU`, as `checked_rem`
+    /// takes both, for `self` in `(-TAU, 2 TAU)` (any integrated
+    /// orientation). The first remainder is the identity below `TAU` in
+    /// magnitude and exactly `- TAU` on `[TAU, 2 TAU)` (Sterbenz). Adding
+    /// `TAU` then lands in `(0, 2 TAU]`, where the second is the identity
+    /// below `TAU`, exactly `- TAU` up to `2 TAU`, and +0 at it (where
+    /// `- TAU` would give `TAU`). The magnitude test also turns away NaN.
+    #[inline(always)]
+    pub fn wrap_tau(self) -> Self {
+        let tau = Self::TAU.0;
+        let once = if self.0 >= tau { self.0 - tau } else { self.0 };
+        if !(once.abs() < tau) {
+            return self.wrap_tau_reference();
+        }
+        let sum = once + tau;
+        let twice = if sum >= tau { sum - tau } else { sum };
+        let wrapped = Self(if twice >= tau { 0.0 } else { twice });
+        debug_assert_eq!(wrapped.bits(), self.wrap_tau_reference().bits());
+        wrapped
+    }
+    /// `wrap_tau` by the two remainders.
+    #[inline(never)]
+    pub fn wrap_tau_reference(self) -> Self {
+        (self.checked_rem(Self::TAU, true).unwrap() + Self::TAU)
+            .checked_rem(Self::TAU, true)
+            .unwrap()
+    }
     pub fn sqrt(self) -> Result<Self, MathError> {
         if self.0 < 0.0 {
             return Err(MathError::Domain);
@@ -823,6 +850,27 @@ mod tests {
                 (reference, horizontal, vertical),
                 "raw {raw}"
             );
+        }
+    }
+
+    #[test]
+    fn wrap_tau_matches_remainders() {
+        let tau = Fix::TAU.0;
+        let edge = tau - 1.0 / 1_099_511_627_776.0;
+        for angle in [0.0, -0.0, 1e-300, -1e-300, 1e-20, -1e-20, 1.0, -1.0, tau, -tau, 2.0 * tau, -1e-9, edge, -edge,
+                      f64::from_bits(edge.to_bits() - 1), -f64::from_bits(edge.to_bits() - 1), f64::NAN,
+                      f64::from_bits(tau.to_bits() - 1), f64::from_bits(tau.to_bits() - 2), 100.0, -100.0,
+                      tau + 1e-20, tau + 1e-9, tau + edge, f64::from_bits((tau + edge).to_bits() - 1),
+                      f64::from_bits((2.0 * tau).to_bits() - 1), f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(Fix(angle).wrap_tau().bits(), Fix(angle).wrap_tau_reference().bits(), "{angle}");
+        }
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..1_000_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let angle = ((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 5.0 * tau;
+            assert_eq!(Fix(angle).wrap_tau().bits(), Fix(angle).wrap_tau_reference().bits(), "{angle}");
         }
     }
 

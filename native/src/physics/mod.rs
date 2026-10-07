@@ -51,10 +51,8 @@ impl Body {
     pub fn integrate(&mut self, dt: Fix, gravity: Fix) -> Vec2 {
         self.velocity += dt * Vec2::new(Fix::ZERO, gravity * self.gravity_scale)
             + DT * self.force * self.inverse_mass;
-        self.orientation += dt * self.angular_velocity;
-        self.orientation = (self.orientation.checked_rem(Fix::TAU, true).unwrap() + Fix::TAU)
-            .checked_rem(Fix::TAU, true)
-            .unwrap();
+        // Wrapped last: its rare remainder call then holds nothing live.
+        let orientation = self.orientation + dt * self.angular_velocity;
         self.velocity *= if dt == Fix::ZERO {
             Fix::ONE
         } else {
@@ -66,7 +64,9 @@ impl Body {
             self.rotational_drag
         };
         self.force = Vec2::ZERO;
-        dt * self.velocity
+        let shift = dt * self.velocity;
+        self.orientation = orientation.wrap_tau();
+        shift
     }
     pub fn apply_impulse(&mut self, impulse: Vec2, contact: Vec2) {
         self.velocity += self.inverse_mass * impulse;

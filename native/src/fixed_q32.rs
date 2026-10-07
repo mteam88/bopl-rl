@@ -179,6 +179,12 @@ impl Fix {
             result
         }))
     }
+    /// The orientation wrap `((self % TAU) + TAU) % TAU`.
+    pub fn wrap_tau(self) -> Self {
+        (self.checked_rem(Self::TAU, true).unwrap() + Self::TAU)
+            .checked_rem(Self::TAU, true)
+            .unwrap()
+    }
     /// The f64 type's fused fmod; here, exactly `checked_rem(rhs, true)`.
     pub fn checked_rem_fused(self, rhs: Self) -> Result<Self, MathError> {
         self.checked_rem(rhs, true)
