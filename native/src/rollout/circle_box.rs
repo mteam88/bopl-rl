@@ -54,6 +54,41 @@ impl GroupPart {
     }
 }
 
+/// The layers of a set of parts, for which of them can pair at all: a pair
+/// loop acts only on a pair `GroupPart::pairs` passes, which needs
+/// `layers_collide`, so a part with no partner on a layer its own collides
+/// with makes no pair, and leaving it out of a rank-sorted group leaves the
+/// rest in the same order and every other pair as it was (`sweep_pairs`: a
+/// prior's time in `live` reads only its own end). The collision matrix is
+/// symmetric, so one row answers both sides.
+#[derive(Clone, Copy, Default)]
+struct LayerSet {
+    present: u32,
+    twice: u32,
+}
+
+impl LayerSet {
+    fn add(&mut self, layer: u32) {
+        let bit = 1 << layer;
+        self.twice |= self.present & bit;
+        self.present |= bit;
+    }
+    /// Whether a part on `layer` in the set has another there it can pair with.
+    fn meets_other(&self, layer: u32, data: &data::RolloutData) -> bool {
+        let bit = 1 << layer;
+        data.collision_matrix[layer as usize] & ((self.present & !bit) | (self.twice & bit)) != 0
+    }
+    /// Whether a part on `layer` outside the set can pair with one in it.
+    fn meets(&self, layer: u32, data: &data::RolloutData) -> bool {
+        data.collision_matrix[layer as usize] & self.present != 0
+    }
+}
+
+#[cfg(debug_assertions)]
+fn collision_matrix_symmetric(data: &data::RolloutData) -> bool {
+    (0..32).all(|a| (0..32).all(|b| data.layers_collide(a, b) == data.layers_collide(b, a)))
+}
+
 /// `group.sort_by_key(|part| part.rank)` without moving the parts about:
 /// the (rank, place) pairs are distinct, so an unstable sort of them gives
 /// the stable order, and the parts are gathered into it once.
@@ -69,20 +104,6 @@ fn sort_by_rank(group: &mut Vec<GroupPart>) {
         parts.clear();
         parts.extend(keys.iter().map(|&(_, place)| group[place as usize]));
         std::mem::swap(group, parts);
-    });
-}
-
-/// `sort_by_rank` into `out`, leaving `group` as it was.
-fn sorted_by_rank(group: &[GroupPart], out: &mut Vec<GroupPart>) {
-    thread_local! {
-        static KEYS: std::cell::RefCell<Vec<(SweepRank, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    KEYS.with_borrow_mut(|keys| {
-        keys.clear();
-        keys.extend(group.iter().enumerate().map(|(place, part)| (part.rank, place as u32)));
-        keys.sort_unstable();
-        out.clear();
-        out.extend(keys.iter().map(|&(_, place)| group[place as usize]));
     });
 }
 
@@ -483,16 +504,27 @@ impl RolloutWorld {
     /// The part as the pair loops read it: `part_rank`, `part_layer`,
     /// `part_composite` and its swept bounds.
     fn group_part(&self, part: Part, data: &data::RolloutData) -> GroupPart {
+        self.group_part_on(part, self.part_layer(part, data), data)
+    }
+
+    /// `group_part` of a part whose `part_layer` is `layer`.
+    fn group_part_on(&self, part: Part, layer: u32, data: &data::RolloutData) -> GroupPart {
+        debug_assert_eq!(layer, self.part_layer(part, data));
         let bounds = self.swept_bounds(Swept::Part(part));
         let low = bounds.map_or(Vec2::ZERO, |b| b[0]);
         let min = if self.sweep_x() { low.x } else { low.y };
         GroupPart {
             part,
             rank: sweep_rank(&self.entities, min, self.part_entity(part)),
-            layer: self.part_layer(part, data),
+            layer,
             composite: self.part_composite(part),
             bounds,
         }
+    }
+
+    /// Each part with its `part_layer`.
+    fn part_layers(&self, parts: &[Part], data: &data::RolloutData, out: &mut Vec<(Part, u32)>) {
+        out.extend(parts.iter().map(|&part| (part, self.part_layer(part, data))));
     }
 
     /// A wall's place in SortAndSweep's order, from the collider the
@@ -1047,88 +1079,123 @@ impl RolloutWorld {
     pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
-        let mut group = std::mem::take(&mut self.scratch.group_parts);
-        group.clear();
+        // The circles, then the boxes, each with its layer.
+        let mut layered = std::mem::take(&mut self.scratch.cb_layered);
+        layered.clear();
         if self.scratch.circle_parts_tick.take() == Some(self.tick) {
             // The Circle/Circle group just took each of these kinds' parts:
             // the same filters over flags nothing since has changed, and
-            // GroupParts that read only the boxes SortAndSweep took, rows'
-            // kinds and layers, none of which its corrections move. Its
-            // nodes are a subset of these (`node_part`), and a hole's and a
-            // hook's boxes are live, so those three kinds are taken afresh.
+            // rows' layers none of its corrections move. Its nodes are a
+            // subset of these (`node_part`), so they, and the holes and
+            // hooks, whose boxes are live, are taken afresh.
             let taken = std::mem::take(&mut self.scratch.circle_parts);
             let ends = self.scratch.circle_ends;
             let block = |kind: usize| {
                 let start = if kind == 0 { 0 } else { ends[kind - 1] as usize };
                 &taken[start..ends[kind] as usize]
             };
-            group.extend_from_slice(block(CC_ITEMS));
-            group.extend_from_slice(block(CC_SHOTS));
+            layered.extend_from_slice(block(CC_ITEMS));
+            layered.extend_from_slice(block(CC_SHOTS));
             for i in 0..self.tesla_nodes.len() {
                 if self.node_part(i, false) {
-                    group.push(self.group_part(Part::Node(i), data));
+                    parts.push(Part::Node(i));
                 }
             }
-            group.extend_from_slice(block(CC_ROCKS));
-            group.extend_from_slice(block(CC_ARROWS));
+            self.part_layers(&parts, data, &mut layered);
+            parts.clear();
+            layered.extend_from_slice(block(CC_ROCKS));
+            layered.extend_from_slice(block(CC_ARROWS));
             for (i, hole) in self.black_holes.iter().enumerate() {
                 if hole.active && !self.blink_object_hidden(hole.entity) {
-                    group.push(self.group_part(Part::Hole(i), data));
+                    parts.push(Part::Hole(i));
                 }
             }
-            group.extend_from_slice(block(CC_CLOUDS));
-            group.extend_from_slice(block(CC_DUPLICATED_ROCKS));
-            group.extend_from_slice(block(CC_PICKUPS));
+            self.part_layers(&parts, data, &mut layered);
+            parts.clear();
+            layered.extend_from_slice(block(CC_CLOUDS));
+            layered.extend_from_slice(block(CC_DUPLICATED_ROCKS));
+            layered.extend_from_slice(block(CC_PICKUPS));
             for rope in 0..self.ropes.len() {
                 if self.hook_live(rope) {
-                    group.push(self.group_part(Part::Hook(rope), data));
+                    parts.push(Part::Hook(rope));
                 }
             }
-            group.extend_from_slice(block(CC_BODIES));
-            group.extend_from_slice(block(CC_CLONES));
-            group.extend_from_slice(block(CC_ORBS));
+            self.part_layers(&parts, data, &mut layered);
+            parts.clear();
+            layered.extend_from_slice(block(CC_BODIES));
+            layered.extend_from_slice(block(CC_CLONES));
+            layered.extend_from_slice(block(CC_ORBS));
             self.scratch.circle_parts = taken;
             #[cfg(debug_assertions)]
             {
                 self.push_circle_parts(&mut parts);
-                debug_assert_eq!(parts.len(), group.len());
-                for (&part, taken) in parts.iter().zip(group.iter()) {
-                    debug_assert!(self.group_part(part, data).same(taken));
+                debug_assert_eq!(parts.len(), layered.len());
+                for (&part, &(taken, layer)) in parts.iter().zip(layered.iter()) {
+                    debug_assert!(part == taken && layer == self.part_layer(part, data));
                 }
                 parts.clear();
             }
         } else {
             self.push_circle_parts(&mut parts);
-            group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+            self.part_layers(&parts, data, &mut layered);
             parts.clear();
         }
-        let circles = group.len();
+        let circles = layered.len();
         self.push_box_parts(&mut parts);
-        group.extend(parts.iter().map(|&part| self.group_part(part, data)));
-        let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
-        contacts.clear();
-        let (circle_parts, box_parts) = group.split_at(circles);
-        // The Box/Box group that follows has these boxes for its parts, in
+        self.part_layers(&parts, data, &mut layered);
+        let (circle_layers, box_layers) = layered.split_at(circles);
+        // Only a circle on a layer some box's collides with, and the other
+        // way about, can pair (`LayerSet`); over the test replays one circle
+        // in five and one box in three can. The Box/Box group that follows
+        // has the boxes that can pair with another box for its parts, in
         // this order, and its pairs read nothing this group's corrections
         // move: the parts' membership flags, rows' layers and kinds,
         // composites, and the boxes SortAndSweep took (a lightning's and the
         // water's, live, are triggers no group moves).
-        self.scratch.box_parts.clear();
-        self.scratch.box_parts.extend_from_slice(box_parts);
-        self.scratch.box_parts_tick = Some(self.tick);
-        for circle in circle_parts {
-            for part in box_parts {
-                // SameCompositeAs: a node never meets its own platform's
-                // children; an item, shot or missile has no composite.
-                if !circle.pairs(part, data) {
-                    continue;
+        let (mut circle_set, mut box_set) = (LayerSet::default(), LayerSet::default());
+        circle_layers.iter().for_each(|&(_, layer)| circle_set.add(layer));
+        box_layers.iter().for_each(|&(_, layer)| box_set.add(layer));
+        let mut group = std::mem::take(&mut self.scratch.group_parts);
+        group.clear();
+        group.extend(
+            circle_layers
+                .iter()
+                .filter(|&&(_, layer)| box_set.meets(layer, data))
+                .map(|&(part, layer)| self.group_part_on(part, layer, data)),
+        );
+        let circles = group.len();
+        let mut box_parts = std::mem::take(&mut self.scratch.box_parts);
+        box_parts.clear();
+        for &(part, layer) in box_layers {
+            let (circle_box, box_box) = (circle_set.meets(layer, data), box_set.meets_other(layer, data));
+            if circle_box || box_box {
+                let part = self.group_part_on(part, layer, data);
+                if circle_box {
+                    group.push(part);
                 }
-                if let Some(contact) = self.part_collider(circle.part).contact(self.part_collider(part.part)) {
-                    let (later, earlier) = sweep_pair(circle.rank, part.rank);
-                    contacts.push(((GROUP_CB, later, earlier), circle.part, part.part, contact));
+                if box_box {
+                    box_parts.push(part);
                 }
             }
         }
+        self.scratch.box_parts = box_parts;
+        self.scratch.box_parts_tick = Some(self.tick);
+        let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
+        contacts.clear();
+        let (circle_parts, box_parts) = group.split_at(circles);
+        self.circle_box_pairs(circle_parts, box_parts, data, &mut contacts);
+        #[cfg(debug_assertions)]
+        {
+            // Every part's pairs are the filtered groups'.
+            debug_assert!(collision_matrix_symmetric(data));
+            let every_part: Vec<GroupPart> =
+                layered.iter().map(|&(part, layer)| self.group_part_on(part, layer, data)).collect();
+            let mut every = Vec::new();
+            let (circle_parts, box_parts) = every_part.split_at(circle_layers.len());
+            self.circle_box_pairs(circle_parts, box_parts, data, &mut every);
+            debug_assert!(every.iter().map(|c| (c.0, c.1, c.2)).eq(contacts.iter().map(|c| (c.0, c.1, c.2))));
+        }
+        self.scratch.cb_layered = layered;
         self.scratch.group_parts = group;
         contacts.sort_by_key(|&(key, ..)| key);
         // PrepareCollisionCallBacks: the circle is A, so its OnCollide queues
@@ -1141,6 +1208,30 @@ impl RolloutWorld {
         }
         self.scratch.cb_parts = parts;
         self.scratch.cb_contacts = contacts;
+    }
+
+    /// The Circle/Box group's manifolds of `circles` with `boxes`, in the
+    /// loop's order, keyed for SortAndSweep's.
+    fn circle_box_pairs(
+        &self,
+        circles: &[GroupPart],
+        boxes: &[GroupPart],
+        data: &data::RolloutData,
+        contacts: &mut Vec<(CallbackKey, Part, Part, Contact)>,
+    ) {
+        for circle in circles {
+            for part in boxes {
+                // SameCompositeAs: a node never meets its own platform's
+                // children; an item, shot or missile has no composite.
+                if !circle.pairs(part, data) {
+                    continue;
+                }
+                if let Some(contact) = self.part_collider(circle.part).contact(self.part_collider(part.part)) {
+                    let (later, earlier) = sweep_pair(circle.rank, part.rank);
+                    contacts.push(((GROUP_CB, later, earlier), circle.part, part.part, contact));
+                }
+            }
+        }
     }
 
     /// DetPhysics' Box/RoundedRect or Circle/RoundedRect group
@@ -1448,32 +1539,44 @@ impl RolloutWorld {
         ends[CC_CLONES] = parts.len() as u32;
         self.push_blasts(&mut parts, true);
         ends[CC_ORBS] = parts.len() as u32;
-        // The parts in the order taken stay for the Circle/Box group
-        // (`circle_parts`); the pair loop reads them in rank order.
+        // The parts in the order taken, with their layers, stay for the
+        // Circle/Box group (`circle_parts`). The pair loop reads, in rank
+        // order, only those with a partner on a layer theirs collides with
+        // (`LayerSet`): over the test replays four parts in five, most of
+        // them Smoke clouds, have none.
         let mut taken = std::mem::take(&mut self.scratch.circle_parts);
         taken.clear();
-        taken.extend(parts.iter().map(|&part| self.group_part(part, data)));
+        self.part_layers(&parts, data, &mut taken);
+        let mut layers = LayerSet::default();
+        taken.iter().for_each(|&(_, layer)| layers.add(layer));
         let mut group = std::mem::take(&mut self.scratch.group_parts);
-        sorted_by_rank(&taken, &mut group);
+        group.clear();
+        group.extend(
+            taken
+                .iter()
+                .filter(|&&(_, layer)| layers.meets_other(layer, data))
+                .map(|&(part, layer)| self.group_part_on(part, layer, data)),
+        );
         self.scratch.circle_parts = taken;
         self.scratch.circle_ends = ends;
         self.scratch.circle_parts_tick = Some(self.tick);
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
-        sweep_pairs(&group, self.sweep_x(), data, &mut live, |prior, current| {
-            // A hook's pair with a hole is grapple_hook_pairs'.
-            if matches!((prior.part, current.part), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
-                return;
-            }
-            // SameCompositeAs: nodes of one platform share its composite.
-            if !prior.pairs(current, data) {
-                return;
-            }
-            if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
-                contacts.push((prior.part, current.part, contact));
-            }
-        });
+        if group.len() > 1 {
+            sort_by_rank(&mut group);
+            self.circle_circle_pairs(&group, data, &mut live, &mut contacts);
+        }
+        #[cfg(debug_assertions)]
+        {
+            // Every part's pairs are the filtered group's.
+            debug_assert!(collision_matrix_symmetric(data));
+            let mut every_part: Vec<GroupPart> = parts.iter().map(|&part| self.group_part(part, data)).collect();
+            sort_by_rank(&mut every_part);
+            let mut every = Vec::new();
+            self.circle_circle_pairs(&every_part, data, &mut live, &mut every);
+            debug_assert!(every.iter().map(|c| (c.0, c.1)).eq(contacts.iter().map(|c| (c.0, c.1))));
+        }
         self.scratch.sweep_live = live;
         self.scratch.group_parts = group;
         // PrepareCollisionCallBacks queues every pair's callbacks before the
@@ -1490,6 +1593,30 @@ impl RolloutWorld {
         self.scratch.cc_contacts = contacts;
     }
 
+    /// The Circle/Circle group's manifolds of a rank-sorted group, in
+    /// SortAndSweep's pair order.
+    fn circle_circle_pairs(
+        &self,
+        group: &[GroupPart],
+        data: &data::RolloutData,
+        live: &mut Vec<LivePart>,
+        contacts: &mut Vec<(Part, Part, Contact)>,
+    ) {
+        sweep_pairs(group, self.sweep_x(), data, live, |prior, current| {
+            // A hook's pair with a hole is grapple_hook_pairs'.
+            if matches!((prior.part, current.part), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
+                return;
+            }
+            // SameCompositeAs: nodes of one platform share its composite.
+            if !prior.pairs(current, data) {
+                return;
+            }
+            if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
+                contacts.push((prior.part, current.part, contact));
+            }
+        });
+    }
+
     /// DetPhysics' Box/Box group, after the Circle/Box one: rocket engine and
     /// spike boxes of different platforms, Guided Missiles, and slime, form
     /// and clone boxes. Every manifold
@@ -1501,33 +1628,44 @@ impl RolloutWorld {
         parts.clear();
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
-        // The Circle/Box group just took these parts (`box_parts`).
-        if self.scratch.box_parts_tick.take() == Some(self.tick) {
+        // The Circle/Box group just took these parts (`box_parts`): the
+        // boxes that can pair with another (`LayerSet`).
+        let mut layered = std::mem::take(&mut self.scratch.cb_layered);
+        layered.clear();
+        let cached = self.scratch.box_parts_tick.take() == Some(self.tick);
+        if cached {
             group.extend_from_slice(&self.scratch.box_parts);
-            #[cfg(debug_assertions)]
-            {
-                self.push_box_parts(&mut parts);
-                debug_assert_eq!(parts.len(), group.len());
-                for (&part, taken) in parts.iter().zip(group.iter()) {
-                    debug_assert!(self.group_part(part, data).same(taken));
-                }
-                parts.clear();
-            }
         } else {
-            self.push_box_parts(&mut parts);
-            group.extend(parts.iter().map(|&part| self.group_part(part, data)));
+            self.box_box_parts(data, &mut parts, &mut layered, &mut group);
         }
-        sort_by_rank(&mut group);
+        #[cfg(debug_assertions)]
+        if cached {
+            let mut fresh = Vec::new();
+            self.box_box_parts(data, &mut parts, &mut layered, &mut fresh);
+            debug_assert_eq!(fresh.len(), group.len());
+            for (fresh, taken) in fresh.iter().zip(group.iter()) {
+                debug_assert!(fresh.same(taken));
+            }
+        }
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
-        sweep_pairs(&group, self.sweep_x(), data, &mut live, |prior, current| {
-            if prior.pairs(current, data) {
-                if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
-                    contacts.push((prior.part, current.part, contact));
-                }
-            }
-        });
+        if group.len() > 1 {
+            sort_by_rank(&mut group);
+            self.box_box_pairs(&group, data, &mut live, &mut contacts);
+        }
+        #[cfg(debug_assertions)]
+        {
+            // Every part's pairs are the filtered group's.
+            debug_assert!(collision_matrix_symmetric(data));
+            let mut every_part: Vec<GroupPart> =
+                layered.iter().map(|&(part, layer)| self.group_part_on(part, layer, data)).collect();
+            sort_by_rank(&mut every_part);
+            let mut every = Vec::new();
+            self.box_box_pairs(&every_part, data, &mut live, &mut every);
+            debug_assert!(every.iter().map(|c| (c.0, c.1)).eq(contacts.iter().map(|c| (c.0, c.1))));
+        }
+        self.scratch.cb_layered = layered;
         self.scratch.sweep_live = live;
         self.scratch.group_parts = group;
         for &(a, b, contact) in &contacts {
@@ -1542,6 +1680,45 @@ impl RolloutWorld {
         }
         self.scratch.cb_parts = parts;
         self.scratch.cc_contacts = contacts;
+    }
+
+    /// The Box/Box group's parts that can pair with another (`LayerSet`),
+    /// into `group`, with every box and its layer in `parts` and `layered`.
+    fn box_box_parts(
+        &self,
+        data: &data::RolloutData,
+        parts: &mut Vec<Part>,
+        layered: &mut Vec<(Part, u32)>,
+        group: &mut Vec<GroupPart>,
+    ) {
+        self.push_box_parts(parts);
+        self.part_layers(parts, data, layered);
+        let mut layers = LayerSet::default();
+        layered.iter().for_each(|&(_, layer)| layers.add(layer));
+        group.extend(
+            layered
+                .iter()
+                .filter(|&&(_, layer)| layers.meets_other(layer, data))
+                .map(|&(part, layer)| self.group_part_on(part, layer, data)),
+        );
+    }
+
+    /// The Box/Box group's manifolds of a rank-sorted group, in
+    /// SortAndSweep's pair order.
+    fn box_box_pairs(
+        &self,
+        group: &[GroupPart],
+        data: &data::RolloutData,
+        live: &mut Vec<LivePart>,
+        contacts: &mut Vec<(Part, Part, Contact)>,
+    ) {
+        sweep_pairs(group, self.sweep_x(), data, live, |prior, current| {
+            if prior.pairs(current, data) {
+                if let Some(contact) = self.part_collider(prior.part).contact(self.part_collider(current.part)) {
+                    contacts.push((prior.part, current.part, contact));
+                }
+            }
+        });
     }
 
     /// PrepareCollisionCallBacks for one manifold: A's OnCollide with B as the

@@ -4862,13 +4862,16 @@ struct PlatformScratch {
     cb_parts: Vec<Part>,
     /// A group's parts as its pair loop reads them.
     group_parts: Vec<circle_box::GroupPart>,
-    /// The Circle/Box group's boxes, for the Box/Box group of the pass
-    /// stamped (`box_box_group`).
+    /// A group's parts with their layers.
+    cb_layered: Vec<(Part, u32)>,
+    /// The Circle/Box group's boxes that can pair with another, for the
+    /// Box/Box group of the pass stamped (`box_box_group`).
     box_parts: Vec<circle_box::GroupPart>,
     box_parts_tick: Option<u32>,
-    /// The Circle/Circle group's parts in the order it took them, where
-    /// each of its kinds ends, and the pass, for the Circle/Box group.
-    circle_parts: Vec<circle_box::GroupPart>,
+    /// The Circle/Circle group's parts in the order it took them with their
+    /// layers, where each of its kinds ends, and the pass, for the
+    /// Circle/Box group.
+    circle_parts: Vec<(Part, u32)>,
     circle_ends: [u32; circle_box::CC_BLOCKS],
     circle_parts_tick: Option<u32>,
     /// sweep_pairs' priors still open on the sweep axis.
