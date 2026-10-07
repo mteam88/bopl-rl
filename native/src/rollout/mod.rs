@@ -1463,6 +1463,51 @@ fn set_moving_row(row: &mut CEntity, center: Vec2, velocity: Vec2) {
     [row.x, row.y, row.vx, row.vy] = Fix::raw_array([center.x, center.y, velocity.x, velocity.y]);
 }
 
+/// A GunTransform form's row (FreezeRayGun, Blink, the scale rays and the
+/// Duplicator); `offset` is its authored collider offset.
+#[allow(clippy::too_many_arguments)]
+fn gun_form_row(
+    entities: &mut [CEntity],
+    inverse_extents: &[Vec2],
+    slot: &PlayerSlot,
+    gun_e: usize,
+    gun: ActiveAbility,
+    offset: Vec2,
+    alive: bool,
+    entered: usize,
+    exit_position: Vec2,
+) {
+    let active = slot.active == gun;
+    let row = &mut entities[gun_e];
+    let flags = form_box_flags(alive && active);
+    if sync_form_row(row, flags, active, entered == gun_e, slot.base.id) {
+        // GunTransform only writes `body.up` from the aim while the
+        // shot is pending (GunTransform.cs:184-192) and once more
+        // inside Fire (GunTransform.cs:120-121); afterwards the form
+        // keeps the orientation it fired at. The DetPhysics-synced
+        // body rotation already carries that latch. Once out, the
+        // form's FixTransform is where its exit left it: zeroed by
+        // GunTransform.ExitAbility (GunTransform.cs:86), aimed when
+        // FreezeRayGun went straight to Ability.ExitAbility
+        // (FreezeRayGun.cs:128), turned again by a Fire that follows
+        // DropPlatformTest's exit (GunTransform.cs:147-151).
+        let s = slot.entity_slot(gun_e);
+        // DPhysicsBox translates its authored offset with the
+        // exact FixTransform basis copied/assigned by GunTransform,
+        // while its axes are rebuilt from the scalar angle.
+        let at_sync = slot.forms[s].synced;
+        let root = if active { at_sync.position } else { exit_position };
+        let rotation = at_sync.orientation.rotation();
+        let offset_basis = at_sync.orientation.up().perp_cw();
+        let basis = Vec2::angle(rotation);
+        let offset = slot.gun_offset(s, offset);
+        let center = root + offset_basis.complex_mul(offset);
+        let collider = stored_box(center, basis, inverse_extents[gun_e]);
+        set_box_row(row, center, collider.right, collider.up);
+        row.rotation = rotation.raw();
+    }
+}
+
 /// The Rock's circle row. `live` is the slime alive in its Rock form.
 fn rock_row(circle: &mut CEntity, slot: &PlayerSlot, live: bool, entered: bool, exit_position: Vec2) {
     let rocking = slot.active == ActiveAbility::Rock;
@@ -4218,13 +4263,15 @@ impl PlayerSlot {
         if let Some(inverse_extents) = slime_box.filter(|_| self.active != ActiveAbility::None) {
             self.slime.sync_collider(inverse_extents);
         }
-        let live = (self.active != ActiveAbility::None).then_some(self.active_slot);
-        for s in (0..self.forms.len()).filter(|&s| forms[s]) {
-            self.forms[s].synced = if live == Some(s) {
-                FormPose { position: self.base.position, orientation: self.base.orientation }
-            } else {
-                self.forms[s].pose
-            };
+        let live = if self.active != ActiveAbility::None { self.active_slot } else { usize::MAX };
+        for (s, form) in self.forms.iter_mut().enumerate() {
+            if forms[s] {
+                form.synced = if s == live {
+                    FormPose { position: self.base.position, orientation: self.base.orientation }
+                } else {
+                    form.pose
+                };
+            }
         }
     }
 
@@ -4914,6 +4961,8 @@ struct PlatformScratch {
     /// body's (whose value is its published one) or a clone's OldUpdate with
     /// the position it set.
     position_calls: Vec<(u32, PositionCall, u32, usize)>,
+    /// `circle_cast_all`'s live rows on its mask, in registration order.
+    cast_rows: Vec<usize>,
     /// The Updater hierarchy of the SlimeController updating now: 0 before
     /// the slimes' turns, `u32::MAX` after them (DetPhysics' callbacks).
     updater_hierarchy: u32,
@@ -26313,18 +26362,36 @@ impl RolloutWorld {
         hits: &mut [usize],
     ) -> usize {
         self.remove_destroyed_colliders();
+        // The rows on the mask, taken in one walk; each kind's pass then
+        // walks only those, still in registration order.
+        let mut rows = std::mem::take(&mut self.scratch.cast_rows);
+        rows.clear();
+        for (entity, row) in self.entities.iter().enumerate() {
+            if mask.checked_shr(row.layer).is_some_and(|bit| bit & 1 != 0)
+                && row.flags & (E_REMOVED | E_DESTROYED) == 0
+                && row.kind < 3
+            {
+                rows.push(entity);
+            }
+        }
+        let count = self.circle_cast_rows(query, &rows, unlisted, hits);
+        self.scratch.cast_rows = rows;
+        count
+    }
+
+    fn circle_cast_rows(
+        &self,
+        query: Circle,
+        rows: &[usize],
+        unlisted: impl Fn(&Self, usize) -> bool,
+        hits: &mut [usize],
+    ) -> usize {
         let mut count = 0;
         for kind in 0..3u32 {
-            for (entity, row) in self.entities.iter().enumerate() {
+            for &entity in rows {
                 // A form ExitAbility deactivated this pass is out of IsActive
                 // before its row's flags catch up.
-                if row.kind != kind
-                    || row.layer >= 32
-                    || mask & (1u32 << row.layer) == 0
-                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
-                    || self.left_form_row(entity)
-                    || unlisted(self, entity)
-                {
+                if self.entities[entity].kind != kind || self.left_form_row(entity) || unlisted(self, entity) {
                     continue;
                 }
                 let overlaps = match kind {
@@ -39315,7 +39382,16 @@ impl RolloutWorld {
                 let (right, up) = if body_active || slime_teleporting {
                     (slot.base.collider.right, slot.base.collider.up)
                 } else {
-                    let collider = stored_box(center, Vec2::angle(angle), self.entity_inverse_extents[slot.body_entity]);
+                    // A slime in its ability shows its frozen body, whose
+                    // move_collider kept the basis of that rotation.
+                    let slime = &slot.slime;
+                    let basis = if in_ability && slime.collider_rotation == angle && slime.collider_basis != Vec2::ZERO {
+                        debug_assert!(slime.collider_basis == Vec2::angle(angle), "collider_basis is stale");
+                        slime.collider_basis
+                    } else {
+                        Vec2::angle(angle)
+                    };
+                    let collider = stored_box(center, basis, self.entity_inverse_extents[slot.body_entity]);
                     (collider.right, collider.up)
                 };
                 set_box_row(body, center, right, up);
@@ -39508,52 +39584,23 @@ impl RolloutWorld {
             // the Duplicator share its rules).
             // A slime holds at most three of the five, so the form and its
             // offset are looked up only for a row it has.
-            for (gun_e, gun) in [
-                (slot.freeze_entity, ActiveAbility::Freeze),
-                (slot.blink_entity, ActiveAbility::Blink),
-                (slot.growth_ray_entity, ActiveAbility::GrowthRay),
-                (slot.shrink_ray_entity, ActiveAbility::ShrinkRay),
-                (slot.duplicator_entity, ActiveAbility::Duplicator),
-            ] {
-                if gun_e == usize::MAX {
-                    continue;
-                }
-                let active = slot.active == gun;
-                let offset = match gun {
-                    ActiveAbility::Freeze => data.freeze.collider_offset,
-                    ActiveAbility::Blink => data.blink.collider_offset,
-                    ActiveAbility::GrowthRay => data.scale_rays.growth.collider_offset,
-                    ActiveAbility::ShrinkRay => data.scale_rays.shrink.collider_offset,
-                    _ => data.duplicator.collider_offset,
-                };
-                let row = &mut self.entities[gun_e];
-                let flags = form_box_flags(alive && active);
-                if sync_form_row(row, flags, active, entered == gun_e, slot.base.id) {
-                    // GunTransform only writes `body.up` from the aim while the
-                    // shot is pending (GunTransform.cs:184-192) and once more
-                    // inside Fire (GunTransform.cs:120-121); afterwards the form
-                    // keeps the orientation it fired at. The DetPhysics-synced
-                    // body rotation already carries that latch. Once out, the
-                    // form's FixTransform is where its exit left it: zeroed by
-                    // GunTransform.ExitAbility (GunTransform.cs:86), aimed when
-                    // FreezeRayGun went straight to Ability.ExitAbility
-                    // (FreezeRayGun.cs:128), turned again by a Fire that follows
-                    // DropPlatformTest's exit (GunTransform.cs:147-151).
-                    let s = slot.entity_slot(gun_e);
-                    // DPhysicsBox translates its authored offset with the
-                    // exact FixTransform basis copied/assigned by GunTransform,
-                    // while its axes are rebuilt from the scalar angle.
-                    let at_sync = slot.forms[s].synced;
-                    let root = if active { at_sync.position } else { exit_position };
-                    let rotation = at_sync.orientation.rotation();
-                    let offset_basis = at_sync.orientation.up().perp_cw();
-                    let basis = Vec2::angle(rotation);
-                    let offset = slot.gun_offset(s, offset);
-                    let center = root + offset_basis.complex_mul(offset);
-                    let collider = stored_box(center, basis, self.entity_inverse_extents[gun_e]);
-                    set_box_row(row, center, collider.right, collider.up);
-                    row.rotation = rotation.raw();
-                }
+            let gun_row = |entities: &mut [CEntity], gun_e: usize, gun: ActiveAbility, offset: Vec2| {
+                gun_form_row(entities, &self.entity_inverse_extents, slot, gun_e, gun, offset, alive, entered, exit_position);
+            };
+            if slot.freeze_entity != usize::MAX {
+                gun_row(&mut self.entities, slot.freeze_entity, ActiveAbility::Freeze, data.freeze.collider_offset);
+            }
+            if slot.blink_entity != usize::MAX {
+                gun_row(&mut self.entities, slot.blink_entity, ActiveAbility::Blink, data.blink.collider_offset);
+            }
+            if slot.growth_ray_entity != usize::MAX {
+                gun_row(&mut self.entities, slot.growth_ray_entity, ActiveAbility::GrowthRay, data.scale_rays.growth.collider_offset);
+            }
+            if slot.shrink_ray_entity != usize::MAX {
+                gun_row(&mut self.entities, slot.shrink_ray_entity, ActiveAbility::ShrinkRay, data.scale_rays.shrink.collider_offset);
+            }
+            if slot.duplicator_entity != usize::MAX {
+                gun_row(&mut self.entities, slot.duplicator_entity, ActiveAbility::Duplicator, data.duplicator.collider_offset);
             }
             if slot.magnet_entity != usize::MAX {
                 let row = &mut self.entities[slot.magnet_entity];
