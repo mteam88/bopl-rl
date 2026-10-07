@@ -1516,6 +1516,17 @@ impl RolloutWorld {
         }
         // A wall past the swept boxes meets every part's box.
         let boxed_walls = swept_walls.len().min(self.platforms.len());
+        // Whether `contacts` holds a manifold yet. A slime's or clone's box is
+        // a trigger (`part_body`), so its manifold counts only toward whether
+        // the group found any (`platforms_changed`) and for its squish, which
+        // reads the wall, not the contact, and acts on few manifolds. Once
+        // the group has one, then, a slime's pairs with wall-layer walls
+        // queue untested (None) and their squishes test the box only where
+        // they would act; its other pairs leave nothing to queue.
+        let mut any = false;
+        // Debug builds test each untested pair here too, by its key.
+        #[cfg(debug_assertions)]
+        let mut eager: Vec<(CallbackKey, bool)> = Vec::new();
         for &(part, bounds) in parts {
             #[cfg(debug_assertions)]
             {
@@ -1549,37 +1560,52 @@ impl RolloutWorld {
                 // SortAndSweep pairs only layers the Physics2D matrix lets
                 // collide (DetPhysics.cs:2183).
                 let (layer, composite, collider) = *side.get_or_insert_with(|| self.wall_side(part, data));
-                if composite == Some(wall)
-                    || !self.wall_collides(wall)
-                    || !data.layers_collide(layer, self.entities[self.platform_entities[wall]].layer)
-                {
+                let wall_layer = self.entities[self.platform_entities[wall]].layer;
+                if composite == Some(wall) || !self.wall_collides(wall) || !data.layers_collide(layer, wall_layer) {
                     continue;
                 }
                 let rounded = self.narrow_wall(walls, wall);
                 // A Box meets a RoundedRect as a RoundedRect of radius zero
                 // (PhysTools.cs:104-111).
-                // A slime's or clone's box is a trigger (`part_body`), and its
-                // callback, the squish, reads the wall, not the contact: only
-                // whether there is one counts.
                 let contact = match collider {
-                    Collider::Circle(circle) => crate::physics::contact::circle_rounded(circle, rounded),
                     Collider::Box(inner) if matches!(part, Part::Body(_) | Part::Clone(_)) => {
                         debug_assert!(self.part_body(part).inverse_mass < Fix::ZERO);
-                        crate::physics::contact::box_rounded_meets(inner, rounded).then_some(Contact::default())
+                        if any {
+                            if wall_layer != LAYER_WALL {
+                                continue;
+                            }
+                            #[cfg(debug_assertions)]
+                            eager.push(((0, Default::default(), Default::default()), crate::physics::contact::box_rounded_meets(inner, rounded)));
+                            None
+                        } else if crate::physics::contact::box_rounded_meets(inner, rounded) {
+                            Some(Contact::default())
+                        } else {
+                            continue;
+                        }
                     }
+                    Collider::Circle(circle) => match crate::physics::contact::circle_rounded(circle, rounded) {
+                        Some(contact) => Some(contact),
+                        None => continue,
+                    },
                     Collider::Box(inner) => {
-                        crate::physics::contact::rounded_rounded(RoundedRect { inner, radius: Fix::ZERO }, rounded)
+                        match crate::physics::contact::rounded_rounded(RoundedRect { inner, radius: Fix::ZERO }, rounded) {
+                            Some(contact) => Some(contact),
+                            None => continue,
+                        }
                     }
                     Collider::RoundedRect(_) => unreachable!(),
                 };
-                if let Some(contact) = contact {
-                    // `part_rank`, from the box just taken.
-                    let low = if self.sweep_x() { bounds[0].x } else { bounds[0].y };
-                    let rank = sweep_rank(&self.entities, low, self.part_entity(part));
-                    debug_assert!(rank == self.part_rank(part));
-                    let (later, earlier) = sweep_pair(rank, self.wall_rank(wall));
-                    contacts.push(((group, later, earlier), part, wall, contact));
+                any = true;
+                // `part_rank`, from the box just taken.
+                let low = if self.sweep_x() { bounds[0].x } else { bounds[0].y };
+                let rank = sweep_rank(&self.entities, low, self.part_entity(part));
+                debug_assert!(rank == self.part_rank(part));
+                let (later, earlier) = sweep_pair(rank, self.wall_rank(wall));
+                #[cfg(debug_assertions)]
+                if contact.is_none() {
+                    eager.last_mut().expect("its eager test").0 = (group, later, earlier);
                 }
+                contacts.push(((group, later, earlier), part, wall, contact));
             }
         }
         contacts.sort_by_key(|&(key, ..)| key);
@@ -1591,6 +1617,45 @@ impl RolloutWorld {
             // collision.layer is the wall's own layer (DetPhysics.cs:2405-2437).
             let layer = self.entities[self.platform_entities[wall]].layer;
             let wall_layer = layer == LAYER_WALL;
+            // PlayerCollision.OnCollide's squish acts only on the wall layer
+            // (PlayerCollision.cs:326). Queued where it is built: a squish
+            // built into `hit` and copied from there reloads the wall's
+            // collider across stores of other variants' fields. An untested
+            // pair's squish takes the box its manifold would have tested;
+            // nothing has moved it since.
+            if let Part::Body(_) | Part::Clone(_) = part {
+                if !wall_layer {
+                    continue;
+                }
+                let slime = match part {
+                    Part::Body(index) => Slime::Player(index),
+                    Part::Clone(index) => Slime::Clone(index),
+                    _ => unreachable!(),
+                };
+                let collider = self.narrow_wall(walls, wall);
+                let untested = match contact {
+                    Some(_) => None,
+                    None => match self.wall_side(part, data).2 {
+                        Collider::Box(inner) => Some(inner),
+                        _ => unreachable!("only a slime's box pair is untested"),
+                    },
+                };
+                #[cfg(debug_assertions)]
+                let meets = contact.is_some() || eager.iter().find(|&&(k, _)| k == key).expect("an eager test").1;
+                self.scratch.callback_hits.push((
+                    key,
+                    CallbackHit::Squish {
+                        slime,
+                        wall,
+                        collider,
+                        untested,
+                        #[cfg(debug_assertions)]
+                        meets,
+                    },
+                ));
+                continue;
+            }
+            let contact = contact.expect("only a slime's pair is untested");
             let hit = match part {
                 // A smoke grenade detonates on any collider but a Projectile
                 // that does not ignite explosives, which no rounded rect is
@@ -1616,21 +1681,6 @@ impl RolloutWorld {
                 Part::Spike(spike) => CallbackHit::SpikeWallKnock { spike, wall, point: contact.point, wall_layer },
                 // Missile.cs:181-192.
                 Part::Missile(missile) => CallbackHit::MissileBlast { missile },
-                // PlayerCollision.OnCollide's squish acts only on the wall
-                // layer (PlayerCollision.cs:326).
-                // Queued where it is built: a squish built into `hit` and
-                // copied from there reloads the wall's collider across
-                // stores of other variants' fields.
-                Part::Body(_) | Part::Clone(_) if wall_layer => {
-                    let slime = match part {
-                        Part::Body(index) => Slime::Player(index),
-                        Part::Clone(index) => Slime::Clone(index),
-                        _ => unreachable!(),
-                    };
-                    let collider = self.narrow_wall(walls, wall);
-                    self.scratch.callback_hits.push((key, CallbackHit::Squish { slime, wall, collider }));
-                    continue;
-                }
                 // RopeHook.OnCollide tests the collider the manifold copied
                 // (RopeHook.cs:86-131).
                 Part::Hook(rope) => {
@@ -1669,7 +1719,7 @@ impl RolloutWorld {
                 debug_assert!(self.part_body(part).inverse_mass < Fix::ZERO);
                 continue;
             }
-            self.resolve_part_wall(part, wall, contact);
+            self.resolve_part_wall(part, wall, contact.expect("only a slime's pair is untested"));
         }
         if !contacts.is_empty() {
             self.platforms_changed();

@@ -5226,8 +5226,18 @@ enum CallbackHit {
     SpikeShove { spike: usize, target: Part, point: Vec2 },
     /// PlayerCollision.OnCollide of a slime's, form's or abilityless clone's
     /// collider with a wall-layer rounded rect, whose collider the manifold
-    /// copied (PlayerCollision.cs:326-347).
-    Squish { slime: Slime, wall: usize, collider: RoundedRect },
+    /// copied (PlayerCollision.cs:326-347). `untested` is the slime's box
+    /// where the group queued the pair without testing it (`wall_group`):
+    /// the squish then acts only if the box meets the collider.
+    Squish {
+        slime: Slime,
+        wall: usize,
+        collider: RoundedRect,
+        untested: Option<OrientedBox>,
+        /// Whether the pair met, tested when it was queued.
+        #[cfg(debug_assertions)]
+        meets: bool,
+    },
     /// A young SpikeAttack.OnCollide with a rounded rect, on the wall layer
     /// or not (SpikeAttack.cs:116-141).
     SpikeWallKnock { spike: usize, wall: usize, point: Vec2, wall_layer: bool },
@@ -5345,9 +5355,10 @@ struct PlatformScratch {
     beam_contacts: usize,
     cb_contacts: Vec<(CallbackKey, Part, Part, Contact)>,
     /// The Box/RoundedRect or Circle/RoundedRect group's parts, and its
-    /// manifolds in sweep order: (key, part, wall, contact).
+    /// manifolds in sweep order: (key, part, wall, contact), None for a
+    /// slime's pair queued untested.
     wall_parts: Vec<(Part, [Vec2; 2])>,
-    wall_contacts: Vec<(CallbackKey, Part, usize, Contact)>,
+    wall_contacts: Vec<(CallbackKey, Part, usize, Option<Contact>)>,
     item_order: Vec<usize>,
     /// Whether a magnet's parry registered this pass (`parry_registered`).
     parries_registered: bool,
@@ -35574,7 +35585,18 @@ impl RolloutWorld {
                 self.part_add_force_at(target, direction * data.spike.knock_player, point);
                 self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
             }
-            CallbackHit::Squish { slime, wall, collider } => self.squish(slime, wall, collider),
+            CallbackHit::Squish {
+                slime,
+                wall,
+                collider,
+                untested,
+                #[cfg(debug_assertions)]
+                meets,
+            } => {
+                #[cfg(debug_assertions)]
+                debug_assert!(untested.map_or(meets, |inner| crate::physics::contact::box_rounded_meets(inner, collider) == meets));
+                self.squish(slime, wall, collider, untested)
+            }
             CallbackHit::BlackHole { hole, target, inverse_mass } => {
                 self.black_hole_collide(hole, target, inverse_mass, route, data);
             }
@@ -37936,7 +37958,7 @@ impl RolloutWorld {
     /// OnCollide after Simulate has stepped the ropes and every group
     /// resolved (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer
     /// detaches its rope only after this pass's rope step.
-    fn squish(&mut self, slime: Slime, wall: usize, collider: RoundedRect) {
+    fn squish(&mut self, slime: Slime, wall: usize, collider: RoundedRect, untested: Option<OrientedBox>) {
         let (ignored, squishable, ground_destroyed) = match slime {
             Slime::Player(index) => {
                 let slot = &self.players[index];
@@ -37955,6 +37977,7 @@ impl RolloutWorld {
             || ground_destroyed
             || base.ground == Some(self.platforms[wall].id)
             || !collider.overlaps(base.position)
+            || untested.is_some_and(|inner| !crate::physics::contact::box_rounded_meets(inner, collider))
         {
             return;
         }
