@@ -270,6 +270,14 @@ impl Fix {
     pub fn fast_cos_entry(self) -> u64 {
         Self(self.0.wrapping_add(if self.0 > 0 { -20_239_556_556 } else { Self::HALF_PI.0 })).fast_sin_entry()
     }
+    /// `[fast_cos_entry(), fast_sin_entry()]`.
+    pub fn fast_cos_sin_entries(self) -> [u64; 2] {
+        [self.fast_cos_entry(), self.fast_sin_entry()]
+    }
+    /// `fast_sin_at` of each entry.
+    pub fn fast_sin_at_pair(entries: [u64; 2]) -> [Self; 2] {
+        entries.map(Self::fast_sin_at)
+    }
     /// The value at a `fast_sin_entry`.
     pub fn fast_sin_at(entry: u64) -> Self {
         let raw = lookup(SIN, (entry & 0xffff_ffff) as usize).0;

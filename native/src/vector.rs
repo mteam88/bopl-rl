@@ -16,8 +16,12 @@ impl Vec2 {
     pub const fn new(x: Fix, y: Fix) -> Self {
         Self { x, y }
     }
+    /// `(fast_cos, fast_sin)` of `angle`, their table entries and values
+    /// each taken as a pair.
     pub fn angle(angle: Fix) -> Self {
-        Self::new(angle.fast_cos(), angle.fast_sin())
+        let [x, y] = Fix::fast_sin_at_pair(angle.fast_cos_sin_entries());
+        debug_assert_eq!([x.bits(), y.bits()], [angle.fast_cos().bits(), angle.fast_sin().bits()]);
+        Self::new(x, y)
     }
     pub fn dot(self, other: Self) -> Fix {
         self.x * other.x + self.y * other.y

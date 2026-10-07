@@ -2232,11 +2232,12 @@ impl PlatformDynamics {
             )
         };
         if !matches!(self.basis, Some(cached) if cached.orientation == orientation) {
-            let entries = [orientation.fast_cos_entry(), orientation.fast_sin_entry()];
+            let entries = orientation.fast_cos_sin_entries();
             match &mut self.basis {
                 Some(cached) if cached.entries == entries => cached.orientation = orientation,
                 slot => {
-                    let basis = Vec2::new(Fix::fast_sin_at(entries[0]), Fix::fast_sin_at(entries[1]));
+                    let [x, y] = Fix::fast_sin_at_pair(entries);
+                    let basis = Vec2::new(x, y);
                     let (right, up) = axes(basis);
                     *slot = Some(PlatformBasis { orientation, entries, basis, inverse_extents: bits, right, up });
                 }

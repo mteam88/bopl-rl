@@ -483,6 +483,152 @@ impl Fix {
     pub fn fast_cos_entry(self) -> u64 {
         Self(self.0 + if self.0 > 0.0 { Self::COS_SHIFT_POSITIVE.0 } else { Self::HALF_PI.0 }).fast_sin_entry()
     }
+    /// `[fast_cos_entry(), fast_sin_entry()]`, both reduced at once: the
+    /// cosine's shifted angle and the angle itself each take the same IEEE
+    /// operations in their own lane, the one-period wrap, quadrant folds and
+    /// mirror selected per lane (a blend, which keeps a -0 angle's sign as
+    /// the branches do). An angle beyond the one-period wraps takes the
+    /// scalar pair.
+    #[inline]
+    pub fn fast_cos_sin_entries(self) -> [u64; 2] {
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+        let entries = {
+            use std::arch::x86_64::{
+                _MM_FROUND_NO_EXC, _MM_FROUND_TO_NEG_INF, _mm_add_pd, _mm_and_pd, _mm_blendv_pd, _mm_castpd_si128,
+                _mm_cmpge_pd, _mm_cmplt_pd, _mm_cvtsi128_si64, _mm_extract_epi64, _mm_min_pd, _mm_movemask_pd,
+                _mm_mul_pd, _mm_or_si128, _mm_round_pd, _mm_set_pd, _mm_set1_pd, _mm_setzero_pd, _mm_srli_epi64,
+                _mm_sub_pd,
+            };
+            const LUT_LAST: f64 = 205886.0;
+            let angle = self.0;
+            let shifted = angle + if angle > 0.0 { Self::COS_SHIFT_POSITIVE.0 } else { Self::HALF_PI.0 };
+            let (tau, pi, half_pi) = (Self::TAU.0, Self::PI.0, Self::HALF_PI.0);
+            // SAFETY: sse4.1 is enabled; plain lane arithmetic.
+            unsafe {
+                // Lane 0 the cosine's angle, lane 1 the sine's.
+                let a = _mm_set_pd(angle, shifted);
+                let wraps = _mm_and_pd(_mm_cmpge_pd(a, _mm_set1_pd(-tau)), _mm_cmplt_pd(a, _mm_set1_pd(2.0 * tau)));
+                if _mm_movemask_pd(wraps) == 3 {
+                    // `sin_quadrant`: one period up from [-tau, 0), down
+                    // from [tau, 2 tau), as the original angle lies.
+                    let t = _mm_set1_pd(tau);
+                    let below = _mm_cmplt_pd(a, _mm_setzero_pd());
+                    let above = _mm_cmpge_pd(a, t);
+                    let a = _mm_blendv_pd(a, _mm_add_pd(a, t), below);
+                    let a = _mm_blendv_pd(a, _mm_sub_pd(a, t), above);
+                    let p = _mm_set1_pd(pi);
+                    let vertical = _mm_cmpge_pd(a, p);
+                    let a = _mm_blendv_pd(a, _mm_sub_pd(a, p), vertical);
+                    let h = _mm_set1_pd(half_pi);
+                    let horizontal = _mm_cmpge_pd(a, h);
+                    let a = _mm_blendv_pd(a, _mm_sub_pd(a, h), horizontal);
+                    // `fast_sin_entry`: `floor(angle * 2^17).min(LUT_LAST)`
+                    // (minpd yields its second operand on a NaN, as `min`),
+                    // mirrored in the second quadrant.
+                    let last = _mm_set1_pd(LUT_LAST);
+                    let index = _mm_min_pd(
+                        _mm_round_pd::<{ _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC }>(_mm_mul_pd(a, _mm_set1_pd(131_072.0))),
+                        last,
+                    );
+                    let index = _mm_blendv_pd(index, _mm_sub_pd(last, index), horizontal);
+                    let entries = _mm_or_si128(_mm_castpd_si128(index), _mm_srli_epi64::<63>(_mm_castpd_si128(vertical)));
+                    Some([_mm_cvtsi128_si64(entries) as u64, _mm_extract_epi64::<1>(entries) as u64])
+                } else {
+                    None
+                }
+            }
+        };
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
+        let entries = None;
+        let entries = match entries {
+            Some(entries) => entries,
+            None => self.fast_cos_sin_entries_reference(),
+        };
+        debug_assert_eq!(entries, self.fast_cos_sin_entries_reference());
+        entries
+    }
+    /// `fast_cos_sin_entries` one at a time.
+    #[inline(never)]
+    pub fn fast_cos_sin_entries_reference(self) -> [u64; 2] {
+        [self.fast_cos_entry(), self.fast_sin_entry()]
+    }
+    /// `[fast_sin_at(entries[0]), fast_sin_at(entries[1])]`, both at once:
+    /// each lane evaluates both of `sin_reduced`'s polynomials, operation
+    /// for operation, and keeps the one its branch takes.
+    #[inline]
+    #[allow(clippy::excessive_precision)]
+    pub fn fast_sin_at_pair(entries: [u64; 2]) -> [Self; 2] {
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+        let values = {
+            use std::arch::x86_64::{
+                _MM_FROUND_NO_EXC, _MM_FROUND_TO_NEG_INF, _mm_add_pd, _mm_andnot_si128, _mm_blendv_pd,
+                _mm_castsi128_pd, _mm_cmple_pd, _mm_cvtsd_f64, _mm_div_pd, _mm_mul_pd,
+                _mm_round_pd, _mm_set_epi64x, _mm_set1_epi64x, _mm_set1_pd, _mm_slli_epi64, _mm_sub_pd,
+                _mm_unpackhi_pd, _mm_xor_pd,
+            };
+            const LUT_LAST: f64 = 205886.0;
+            // `sin_reduced`'s coefficients.
+            const S1: f64 = -1.666_666_666_666_663_243_48e-01;
+            const S2: f64 = 8.333_333_333_322_489_461_24e-03;
+            const S3: f64 = -1.984_126_982_985_794_931_34e-04;
+            const S4: f64 = 2.755_731_370_707_006_767_89e-06;
+            const S5: f64 = -2.505_076_025_340_686_341_95e-08;
+            const S6: f64 = 1.589_690_995_211_550_102_21e-10;
+            const C1: f64 = 4.166_666_666_666_660_190_37e-02;
+            const C2: f64 = -1.388_888_888_887_410_957_49e-03;
+            const C3: f64 = 2.480_158_728_947_672_941_78e-05;
+            const C4: f64 = -2.755_731_435_139_066_330_35e-07;
+            const C5: f64 = 2.087_572_321_298_174_827_90e-09;
+            const C6: f64 = -1.135_964_755_778_819_482_65e-11;
+            // SAFETY: sse4.1 is enabled; plain lane arithmetic.
+            unsafe {
+                let k = |c: f64| _mm_set1_pd(c);
+                let (add, sub, mul) = (
+                    |a, b| _mm_add_pd(a, b),
+                    |a, b| _mm_sub_pd(a, b),
+                    |a, b| _mm_mul_pd(a, b),
+                );
+                let e = _mm_set_epi64x(entries[1] as i64, entries[0] as i64);
+                let index = _mm_castsi128_pd(_mm_andnot_si128(_mm_set1_epi64x(1), e));
+                let x = mul(index, k(std::f64::consts::FRAC_PI_2 / LUT_LAST));
+                // x <= pi/4: x + z x (S1 + z r).
+                let z = mul(x, x);
+                let w = mul(z, z);
+                let r = add(
+                    add(k(S2), mul(z, add(k(S3), mul(z, k(S4))))),
+                    mul(mul(z, w), add(k(S5), mul(z, k(S6)))),
+                );
+                let near = add(x, mul(mul(z, x), add(k(S1), mul(z, r))));
+                // Otherwise the cosine of pi/2 - x.
+                let y = sub(k(std::f64::consts::FRAC_PI_2), x);
+                let z = mul(y, y);
+                let w = mul(z, z);
+                let r = add(
+                    mul(z, add(k(C1), mul(z, add(k(C2), mul(z, k(C3)))))),
+                    mul(mul(w, w), add(k(C4), mul(z, add(k(C5), mul(z, k(C6)))))),
+                );
+                let hz = mul(k(0.5), z);
+                let w = sub(k(1.0), hz);
+                let far = add(w, add(sub(sub(k(1.0), w), hz), mul(z, r)));
+                let value = _mm_blendv_pd(far, near, _mm_cmple_pd(x, k(std::f64::consts::FRAC_PI_4)));
+                let scale = k(4_294_967_296.0);
+                let value = _mm_div_pd(
+                    _mm_round_pd::<{ _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC }>(mul(value, scale)),
+                    scale,
+                );
+                // Bit 0 of an entry is its sign.
+                let value = _mm_xor_pd(value, _mm_castsi128_pd(_mm_slli_epi64::<63>(e)));
+                [Self(_mm_cvtsd_f64(value)), Self(_mm_cvtsd_f64(_mm_unpackhi_pd(value, value)))]
+            }
+        };
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
+        let values = [Self::fast_sin_at(entries[0]), Self::fast_sin_at(entries[1])];
+        debug_assert_eq!(
+            values.map(Self::bits),
+            [Self::fast_sin_at(entries[0]).bits(), Self::fast_sin_at(entries[1]).bits()]
+        );
+        values
+    }
     /// The value at a `fast_sin_entry`.
     pub fn fast_sin_at(entry: u64) -> Self {
         const LUT_LAST: f64 = 205886.0;
@@ -872,6 +1018,49 @@ mod tests {
             let angle = ((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 5.0 * tau;
             assert_eq!(Fix(angle).wrap_tau().bits(), Fix(angle).wrap_tau_reference().bits(), "{angle}");
         }
+    }
+
+    #[test]
+    fn sine_pairs_match_scalar() {
+        let (tau, pi, half_pi) = (Fix::TAU.0, Fix::PI.0, Fix::HALF_PI.0);
+        let shift = Fix::COS_SHIFT_POSITIVE.0;
+        let mut angles = vec![0.0, -0.0, 1e-300, -1e-300, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e9, -1e9];
+        for base in [0.0, half_pi, pi, pi + half_pi, tau, 2.0 * tau, -half_pi, -pi, -tau, -2.0 * tau, -shift, -shift - tau,
+                     -half_pi - tau, 3.0 * tau] {
+            let mut up = base;
+            let mut down = base;
+            for _ in 0..4 {
+                angles.extend([up, down]);
+                up = f64::from_bits(if up >= 0.0 { up.to_bits() + 1 } else { up.to_bits() - 1 });
+                down = f64::from_bits(if down > 0.0 { down.to_bits() - 1 } else { down.to_bits() + 1 });
+            }
+            angles.extend([base + 1e-9, base - 1e-9, base + 1.0 / 131_072.0, base - 1.0 / 131_072.0]);
+        }
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..1_000_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            angles.push(((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 7.0 * tau);
+        }
+        for angle in angles {
+            let angle = Fix(angle);
+            let entries = angle.fast_cos_sin_entries();
+            assert_eq!(entries, [angle.fast_cos_entry(), angle.fast_sin_entry()], "{angle:?}");
+            assert_eq!(
+                Fix::fast_sin_at_pair(entries).map(Fix::bits),
+                [angle.fast_cos().bits(), angle.fast_sin().bits()],
+                "{angle:?}"
+            );
+        }
+        // Every entry, both signs, and the -0 angle's.
+        for index in 0..=205_886u64 {
+            let bits = (index as f64).to_bits();
+            let pair = [bits, bits | 1];
+            assert_eq!(Fix::fast_sin_at_pair(pair).map(Fix::bits), pair.map(|e| Fix::fast_sin_at(e).bits()), "{index}");
+        }
+        let zero = (-0.0f64).to_bits();
+        assert_eq!(Fix::fast_sin_at_pair([zero, zero | 1]).map(Fix::bits), [zero, zero | 1].map(|e| Fix::fast_sin_at(e).bits()));
     }
 
     #[test]
