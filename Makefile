@@ -252,6 +252,15 @@ $(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train
 	mkdir -p $(OUT)
 	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
+# The sim's cost with the trainer's cache behaviour: K worlds stepped
+# round-robin (eval/env_interleave.c); eval/perf/env_ilv_ab.sh runs one copy
+# per hardware thread.
+env-interleave: $(OUT)/env_interleave
+
+$(OUT)/env_interleave: eval/env_interleave.c eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+	mkdir -p $(OUT)
+	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_interleave.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
+
 # The GPU v4 row writer (pack mode 4, train/bopl_rays_v4.cu) against the CPU
 # writer bit for bit over a replay corpus (eval/encode_check.c). The writer
 # objects are built as train/build.py builds the trainer's: clang with
@@ -322,7 +331,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench encode-check agent agent-mac check-reward check-routing
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave encode-check agent agent-mac check-reward check-routing
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
