@@ -66,6 +66,21 @@ BOPL4D_FN float bopl_clip(double value) {
     return (float)value;
 #endif
 }
+/* bopl_clip(count/(double)scale) for an integer count and a power-of-two
+ * scale. The device works in FP32: a power-of-two scaling commutes with the
+ * rounding (nothing here nears overflow or the subnormals), so RN(count) /
+ * scale in float is RN(count/scale), the float the exact double quotient
+ * rounds to, and the clip is bopl_clip's. */
+BOPL4D_FN float bopl4_count(int count, int scale) {
+#ifdef __CUDA_ARCH__
+    float f=(float)count*(1.0f/scale);
+    f=f<1.0f?f:1.0f;
+    f=f>-1.0f?f:-1.0f;
+    return f;
+#else
+    return bopl_clip(count/(double)scale);
+#endif
+}
 BOPL4D_FN double bopl_fix(int64_t value) {
 #ifdef __CUDA_ARCH__
     /* RN(value) / 2^32 by the exponent (an integer subtract, not an FP64
@@ -227,7 +242,7 @@ BOPL4D_FN void bopl_player_features(float *out, const BoplRlState *state,
     out[14]=(player->flags&16)!=0; out[15]=(player->flags&(32|64))!=0;
     out[17]=bopl_clip(BOPL4_DIVC(bopl_fix(player->invisible_time), 5.0));
     out[18]=bopl_clip(BOPL4_DIVC(bopl_fix(player->ability_time), 5.0));
-    out[19]=bopl_clip(bodies/(double)BOPL_OBS_SLIMES);
+    out[19]=bopl4_count(bodies, BOPL_OBS_SLIMES);
 }
 
 /* Relational block (BOPL4_RELATION) of a body at relative position r moving
@@ -381,8 +396,8 @@ typedef struct {
 } Bopl4Counts;
 BOPL4D_FN void bopl4_global_block(float *obs, const BoplRlState *state, const Bopl4Counts *c, uint32_t max_episode_ticks,
                                   int space, const BoplRlSlime *controller, int lane, int lanes) {
-    for (int id=lane; id<BOPL_ABILITY_COUNT; id+=lanes) obs[14+id]=bopl_clip(c->source_counts[id]/(double)BOPL_COUNT_SCALE);
-    for (int sector=lane; sector<8; sector+=lanes) obs[55+sector]=bopl_clip(c->sectors[sector]/(double)BOPL_COUNT_SCALE);
+    for (int id=lane; id<BOPL_ABILITY_COUNT; id+=lanes) obs[14+id]=bopl4_count(c->source_counts[id], BOPL_COUNT_SCALE);
+    for (int sector=lane; sector<8; sector+=lanes) obs[55+sector]=bopl4_count(c->sectors[sector], BOPL_COUNT_SCALE);
     if (lane) return;
     obs[0]=bopl_clip(BOPL4_DIVC(bopl_fix(state->header.simulation_time), 120.0));
     obs[1]=bopl_clip(bopl_fix(state->header.player_time_scale));
@@ -390,8 +405,8 @@ BOPL4D_FN void bopl4_global_block(float *obs, const BoplRlState *state, const Bo
     obs[3]=state->header.player_count/6.0f;
     obs[4]=bopl_clip(BOPL4_DIVC((double)c->active_count, BOPL4_ENTITIES));
     obs[5]=bopl_clip(BOPL4_DIVC((double)(c->active_count-c->count), BOPL4_ENTITIES));
-    obs[6]=bopl_clip((double)c->visible_slimes/BOPL4_SLIMES);
-    obs[7]=bopl_clip((double)(c->visible_slimes>BOPL4_SLIMES?c->visible_slimes-BOPL4_SLIMES:0)/BOPL4_SLIMES);
+    obs[6]=bopl4_count(c->visible_slimes, BOPL4_SLIMES);
+    obs[7]=bopl4_count(c->visible_slimes>BOPL4_SLIMES?c->visible_slimes-BOPL4_SLIMES:0, BOPL4_SLIMES);
     /* v3's absolute self position was a map lookup key and is dropped (the
      * terrain block replaces it). obs[8] reuses the first dead column for the
      * one mechanical map property: LevelType.space, which halves the gravity
@@ -407,7 +422,7 @@ BOPL4D_FN void bopl4_global_block(float *obs, const BoplRlState *state, const Bo
     obs[12]=state->header.sudden_death?bopl_clip(BOPL4_DIVC(fmax(0.0, level_time-120.0), 30.0)):0.0f;
     obs[13]=bopl_clip((max_episode_ticks-(double)state->header.episode_ticks)/max_episode_ticks);
     obs[53]=bopl_clip(BOPL4_DIVC(c->n_nonstatic, (double)BOPL4_ENTITIES));
-    obs[54]=bopl_clip(c->n_pickup/(double)BOPL_COUNT_SCALE);
+    obs[54]=bopl4_count(c->n_pickup, BOPL_COUNT_SCALE);
     obs[63]=c->time_stop_known?bopl_clip(BOPL4_DIVC(c->time_stop_remaining, 300.0)):0.0f;
     obs[64]=c->time_stop_known;
     obs[65]=controller?((controller->flags>>BOPL_SLIME_PICKUP_SLOT_SHIFT)&BOPL_SLIME_PICKUP_SLOT_MASK)/2.0f:0.0f;
