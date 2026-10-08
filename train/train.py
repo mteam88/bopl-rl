@@ -470,7 +470,7 @@ def main():
     # 12+ oversubscribes and stalls on preempted workers), BOPL_ENV_LPT=1
     # slowest-first claim order, BOPL_ENV_STEAL=1
     # buffer threads step other buffers' games while their own forward runs,
-    # BOPL_ENV_SPIN_US=100 idle spin before a futex park, BOPL_GPU_WAIT=poll|sync,
+    # BOPL_ENV_SPIN_US=10 idle spin before a futex park, BOPL_GPU_WAIT=poll|sync,
     # BOPL_ENV_PIN=1 to pin threads, BOPL_ENV_PROF=1|2 pool statistics and the
     # c_step phase attribution on stderr.
     # BOPL_ASYNC=1 (default) overlaps each rollout with the previous batch's
