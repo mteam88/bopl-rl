@@ -3948,8 +3948,8 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      if (pufferl.nccl_comm != nullptr) {
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
---- pristine-src/vecenv.h	2026-10-08 09:33:48.096702213 -0400
-+++ puffer-overlay/vecenv.h	2026-10-08 10:56:11.788412882 -0400
+--- pristine-src/vecenv.h	2026-10-08 11:06:00.898862464 -0400
++++ puffer-overlay/vecenv.h	2026-10-08 11:59:23.321616810 -0400
 @@ -97,6 +97,52 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
@@ -4050,7 +4050,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
  #define OMP_WAITING 5
  #define OMP_RUNNING 6
-@@ -217,13 +280,226 @@
+@@ -217,13 +280,253 @@
  #endif
  
  
@@ -4096,12 +4096,20 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +//     word): the buffer thread launches step t + 1's graph right after it
 +//     publishes step t's env job, and starts it with a store to the go word
 +//     after the env step, so the launch (~30 us) leaves the GPU phase;
++//   - with pre-launch and a host-only upload, the thread that finishes a
++//     job's last env uploads and stores the go (bopl_pool_finish), not the
++//     buffer thread, which was ~30 us late to its job's end (inside a
++//     stolen c_step, or preempted); the buffer thread steps its own envs and
++//     goes straight back to stealing and polling (BOPL_ENV_AB_FINISH=0 in
++//     arm 1 restores its straggler wait);
 +//   - BOPL_ENV_AFFINITY=1 claims each thread's own slice of every job first
 +//     (stable env -> thread mapping) instead of the LPT order; measured neutral
 +//     (an env's ~130 KB working set x 16-32 envs per thread never fits L2), off;
 +//   - BOPL_ENV_PROF=1 prints pool statistics every 50 profile reads, =2 also
 +//     the c_step phase attribution per env kind (self-play / historical /
 +//     scripted): begin (bot decide), sim, sample (obs encode + copy), finish;
++//     =3 also how late the buffer thread notices its GPU flag (against the
++//     first pool thread that sees it) and its job's last env (bopl notice);
 +//   - BOPL_ENV_PIN=1 pins buffer threads then workers to BOPL_ENV_PIN_CPUS
 +//     (default: CPUs of the affinity mask in order).
 +// Semantics are unchanged: every env is stepped exactly once per buffer-step,
@@ -4205,6 +4213,19 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    int64_t t_publish;   // driver mode: job published (eval_env start)
 +    int t;               // driver mode: step index within the rollout
 +    int state;           // driver mode: BOPL_BUF_*
++    // Finish by the last stepper (StaticThreading.finish): set by the buffer
++    // thread before the publish when step t + 1's graph is pre-launched; the
++    // thread whose env completes the job uploads (host-only) and stores the go
++    // word, recording when the job finished (t_fin) and the go (t_go).
++    int fin_go;
++    int64_t t_fin;
++    _Alignas(64) atomic_llong t_go;
++    // BOPL_ENV_PROF=3 (measurement): first time any pool thread saw the step's
++    // GPU flag set (armed while the buffer waits for it), and when the job's
++    // last env finished.
++    _Alignas(64) atomic_llong t_seen;
++    atomic_int armed;
++    _Alignas(64) atomic_llong t_last_done;
 +} BoplEnvJob;
 +
 +enum { BOPL_BUF_IDLE = 0, BOPL_BUF_GPU, BOPL_BUF_ENV, BOPL_BUF_FINAL, BOPL_BUF_DONE };
@@ -4242,6 +4263,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    int gpu_flag_check;  // BOPL_GPU_FLAG_CHECK diagnostics (see static_omp_threadmanager)
 +    int poll_pause;      // BOPL_GPU_POLL_PAUSE: cpu_relax() iterations between cudaStreamQuery calls
 +    int64_t steal_margin_ns; // BOPL_GPU_STEAL_MARGIN_US: stop stealing this long before the GPU is predicted done (-1: always steal)
++    int finish, finish_ab;  // the last stepper uploads and starts the next graph (BOPL_ENV_AB_FINISH: arm 1)
 +    int lpt;             // BOPL_ENV_LPT: order each step's claims by last duration, longest first
 +    int affinity;        // BOPL_ENV_AFFINITY: each thread claims from its own slice of every job first (env stays on one core)
 +    int participants;    // affinity: buffer/driver threads + workers
@@ -4275,10 +4297,15 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    atomic_llong kind_finish[3];
 +    atomic_llong kind_ticks[3];
 +    int prof_calls;
++    // BOPL_ENV_PROF=3: how late the buffer thread notices its flag (vs the
++    // first pool thread to see it) and its job's last env.
++    int notice;
++    StaticVec* vec;
++    _Alignas(64) atomic_llong stat_nf_ns[2], stat_nf_n[2], stat_nf_miss[2], stat_nd_ns, stat_ngo_ns, stat_nd_n;
  };
  
  typedef struct StaticOMPArg {
-@@ -235,7 +511,323 @@
+@@ -235,7 +538,368 @@
      thread_init_fn thread_init;
  } StaticOMPArg;
  
@@ -4352,6 +4379,20 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    return -1;
 +}
 +
++static void bopl_upload_host(StaticVec* vec, int buf);
++// The job's last env is done and step t + 1's graph waits on the go word: do
++// the buffer thread's upload (host-only: bopl_upload_host_only) and start the
++// graph here, instead of when the buffer thread next looks (~30 us later, it is
++// usually inside a stolen c_step or preempted). Nothing touches the job after
++// the go store: the next publish follows the graph's flag.
++static void bopl_pool_finish(StaticThreading* th, BoplEnvJob* job, int buf) {
++    job->t_fin = bopl_now_ns();
++    bopl_upload_host(th->vec, buf);
++    atomic_store_explicit(&job->t_go, bopl_now_ns(), memory_order_release);
++    if (th->notice) { atomic_store_explicit(&job->t_seen, 0, memory_order_relaxed); atomic_store_explicit(&job->armed, 1, memory_order_release); }
++    bopl_gpu_go(th->vec, buf);
++}
++
 +static inline int bopl_pool_try(StaticThreading* th, Env* envs, int buf, int kind, int participant) {
 +    BoplEnvJob* job = &th->jobs[buf];
 +    int count = job->env_count;
@@ -4386,7 +4427,16 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    } else {
 +        c_step(&envs[job->env_start + e]);
 +    }
-+    atomic_fetch_add_explicit(&job->done, 1, memory_order_release);
++    int64_t t_fin = th->notice ? bopl_now_ns() : 0;
++    // Read before the done increment: until then this step cannot be
++    // republished (its fin_go rewritten); after it, it can.
++    int fin_go = job->fin_go;
++    // acq_rel: the last stepper acquires every env's stores before it starts the graph.
++    int prev_done = atomic_fetch_add_explicit(&job->done, 1, memory_order_acq_rel);
++    if (prev_done == count - 1) {
++        if (th->notice) atomic_store_explicit(&job->t_last_done, t_fin, memory_order_release);
++        if (fin_go) bopl_pool_finish(th, job, buf);
++    }
 +    return 1;
 +}
 +
@@ -4409,7 +4459,20 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +// while the GPU idles, so the rollout costs forward + env instead of the
 +// larger of the two. Which thread steps an env does not affect what it
 +// computes, so the schedule changes nothing numerically.
++static void bopl_notice_observe(StaticThreading* th) {
++    StaticVec* vec = th->vec;
++    if (!vec->gpu_flag) return;
++    for (int b = 0; b < th->num_buffers; b++) {
++        BoplEnvJob* job = &th->jobs[b];
++        if (!atomic_load_explicit(&job->armed, memory_order_acquire)) continue;
++        if (!__atomic_load_n(vec->gpu_flag + b * BOPL_GPU_FLAG_STRIDE, __ATOMIC_ACQUIRE)) continue;
++        long long z = 0;
++        atomic_compare_exchange_strong_explicit(&job->t_seen, &z, (long long)bopl_now_ns(), memory_order_relaxed, memory_order_relaxed);
++    }
++}
++
 +static inline int bopl_pool_oldest(StaticThreading* th, int exclude) {
++    if (th->notice) bopl_notice_observe(th);
 +    int nb = th->num_buffers, best = -1;
 +    int64_t best_seq = INT64_MAX;
 +    for (int b = 0; b < nb; b++) {
@@ -4504,6 +4567,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +        while (atomic_load_explicit(&th->work_seq, memory_order_acquire) == seen) {
 +            bopl_cpu_relax();
 +            if ((++spun & 31) == 0) {
++                if (th->notice) bopl_notice_observe(th);
 +                if (bopl_now_ns() - t0 > spin_ns) break;
 +            }
 +        }
@@ -4599,11 +4663,19 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +#endif
 +}
 +
++// Does bopl_upload issue no CUDA call (any thread can run it)?
++static int bopl_upload_host_only(StaticVec* vec) {
++    return vec->zero_copy >= 2 || (vec->pack_host && !vec->zero_copy && vec->graph_copies);
++}
++static void bopl_upload_host(StaticVec* vec, int buf) {
++    if (vec->zero_copy < 2) bopl_pack_fill(vec, buf, 0);
++}
++
 +// Buffer thread: GPU forward -> D2H -> step envs -> H2D, horizon times per rollout.
  static void* static_omp_threadmanager(void* arg) {
      StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
      StaticVec* vec = worker_arg->vec;
-@@ -246,98 +838,347 @@
+@@ -246,98 +910,405 @@
      net_callback_fn net_callback = worker_arg->net_callback;
      thread_init_fn thread_init = worker_arg->thread_init;
  
@@ -4661,8 +4733,14 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +        int pre = (threading->ab && arm ? threading->prelaunch_ab : threading->prelaunch)
 +                  && vec->gpu_go && gpu_wait == 2 && vec->graph_copies && !vec->actions_zero_copy;
 +        int gp = gpu_prof && !pre;   // the stream-event split assumes launch-then-wait
++        // The last stepper of each step but the last uploads and stores the go
++        // (bopl_pool_finish): the buffer thread steps its own envs and goes
++        // straight back to stealing and polling.
++        int fin = pre && (threading->ab && arm ? threading->finish_ab : threading->finish) && bopl_upload_host_only(vec);
 +        int launched = 0;            // step t's graph went out during step t - 1 (pre)
++        int fin_pending = 0;         // ... and step t - 1's last stepper started it (fin)
 +        int64_t t_go = 0;            // ... and was started then
++        int64_t t1_prev = 0, ts_prev = 0;  // fin: step t - 1's publish and end of own claims
 +        int64_t steal_margin = threading->steal_margin_ns;
 +        int64_t gpu_ema = 0;  // issue -> ready, EMA over steps: the steal window ends steal_margin before it
  
@@ -4680,7 +4758,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 -            my_accum[EVAL_GPU] += (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_nsec - t0.tv_nsec) / 1e6f;
 +            int64_t t0, t_issued, launch_ns = 0;
 +            if (launched) {
-+                t0 = t_issued = t_go;   // eval_gpu runs from the go store
++                t0 = t_issued = fin_pending ? bopl_now_ns() : t_go;   // eval_gpu runs from the go store
 +                launched = 0;
 +            } else {
 +                t0 = bopl_now_ns();
@@ -4698,6 +4776,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +                if (gp) cudaEventRecord(ev[3], stream);
 +                t_issued = bopl_now_ns();
 +                launch_ns = t_issued - t0;
++                if (threading->notice) { atomic_store_explicit(&job->t_seen, 0, memory_order_relaxed); atomic_store_explicit(&job->armed, 1, memory_order_release); }
 +            }
 +            if (gpu_wait == 0) {
 +                if (ready) cudaEventSynchronize(ready);
@@ -4729,6 +4808,35 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +                }
 +            }
 +            int64_t t1 = bopl_now_ns();
++            if (fin_pending) {
++                // The flag follows the go, the go the job's last env: the job
++                // is done and the finisher (which acquired every stepper's
++                // stores through done) has published t_fin and t_go; the
++                // acquire below orders all of it before the republish.
++                // (t_go is stored after the steppers' last done increment and
++                // after t_fin: wait for this step's, older ones precede t1_prev.)
++                int64_t tg;
++                while ((tg = atomic_load_explicit(&job->t_go, memory_order_acquire)) < t1_prev) bopl_cpu_relax();
++                int64_t tf = job->t_fin;
++                t0 = t_issued = tg;
++                int64_t strag = tf > ts_prev ? tf - ts_prev : 0;
++                my_accum[EVAL_ENV_STEP] += (float)(tf - t1_prev) / 1e6f;
++                if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, strag, memory_order_relaxed);
++                if (prof && threading->ab) {
++                    atomic_fetch_add_explicit(&threading->arm_envph_ns[arm], tf - t1_prev, memory_order_relaxed);
++                    atomic_fetch_add_explicit(&threading->arm_strag_ns[arm], strag, memory_order_relaxed);
++                }
++                fin_pending = 0;
++            }
++            if (threading->notice) {
++                atomic_store_explicit(&job->armed, 0, memory_order_relaxed);
++                long long ts0 = atomic_load_explicit(&job->t_seen, memory_order_relaxed);
++                int na = threading->ab ? arm : 0;
++                if (ts0 > 0 && ts0 <= t1) {
++                    atomic_fetch_add_explicit(&threading->stat_nf_ns[na], t1 - ts0, memory_order_relaxed);
++                    atomic_fetch_add_explicit(&threading->stat_nf_n[na], 1, memory_order_relaxed);
++                } else atomic_fetch_add_explicit(&threading->stat_nf_miss[na], 1, memory_order_relaxed);
++            }
 +            gpu_ema = gpu_ema ? (gpu_ema * 7 + (t1 - t_issued)) / 8 : (t1 - t_issued);
 +            my_accum[EVAL_GPU] += (float)(t1 - t0) / 1e6f;
  
@@ -4764,6 +4872,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 -                agents_per_buffer * MY_ACTION_MASK * sizeof(unsigned char),
 -                cudaMemcpyHostToDevice, stream);
 -#endif
++            job->fin_go = fin && t + 1 < horizon;
 +            bopl_pool_publish(threading, buf);
 +            if (pre && t + 1 < horizon) {
 +                // Graph t has written the flag (seen above): clear it for t + 1,
@@ -4776,6 +4885,19 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            }
 +            if (prof) atomic_fetch_add_explicit(&threading->stat_launch_ns, launch_ns, memory_order_relaxed);
 +            while (bopl_pool_try(threading, envs, buf, 0, buf)) {}
++            if (job->fin_go) {
++                // The job's last stepper uploads and starts graph t + 1; its
++                // eval_env and straggler time are booked when the flag is seen.
++                if (prof && threading->ab) {
++                    atomic_fetch_add_explicit(&threading->arm_gpu_ns[arm], t1 - t0, memory_order_relaxed);
++                    atomic_fetch_add_explicit(&threading->arm_launch_ns[arm], launch_ns, memory_order_relaxed);
++                    atomic_fetch_add_explicit(&threading->arm_bsteps[arm], 1, memory_order_relaxed);
++                }
++                fin_pending = 1;
++                t1_prev = t1;
++                ts_prev = bopl_now_ns();
++                continue;
++            }
 +            // Stragglers: at most one env step of latency. With
 +            // BOPL_ENV_STRAGGLE_STEAL=1 the wait steps other buffers' envs
 +            // (one more c_step of latency at worst, ~40 us against a ~100 us
@@ -4811,8 +4933,16 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            if (gp) cudaEventRecord(ev[0], stream);
 +            bopl_upload(vec, buf, stream);
 +            if (launched) {
++                if (threading->notice) { atomic_store_explicit(&job->t_seen, 0, memory_order_relaxed); atomic_store_explicit(&job->armed, 1, memory_order_release); }
 +                bopl_gpu_go(vec, buf);
 +                t_go = bopl_now_ns();
++                if (threading->notice) {
++                    long long tl;
++                    while ((tl = atomic_load_explicit(&job->t_last_done, memory_order_acquire)) < t1) bopl_cpu_relax();
++                    atomic_fetch_add_explicit(&threading->stat_nd_ns, t2 - tl, memory_order_relaxed);
++                    atomic_fetch_add_explicit(&threading->stat_ngo_ns, t_go - tl, memory_order_relaxed);
++                    atomic_fetch_add_explicit(&threading->stat_nd_n, 1, memory_order_relaxed);
++                }
 +                if (check == 3) {
 +                    // =3: the go-wait clears the word as it passes: go -> start latency.
 +                    const unsigned* g = vec->gpu_go + buf * BOPL_GPU_FLAG_STRIDE;
@@ -4966,9 +5096,9 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      for (int buf = 0; buf < vec->buffers; buf++) {
 -        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
 +        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
-     }
- }
- 
++    }
++}
++
 +double static_vec_omp_wait(StaticVec* vec) {
 +    StaticThreading* threading = vec->threading;
 +    double last = 0.0;
@@ -4979,7 +5109,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            bopl_futex_wait(&threading->buffer_states[buf], s);
 +        }
 +        if (threading->done_at[buf] > last) last = threading->done_at[buf];
-+    }
+     }
 +    if (threading->ab) {
 +        int arm = atomic_load_explicit(&threading->arm, memory_order_relaxed);
 +        atomic_fetch_add_explicit(&threading->arm_rollouts[arm], 1, memory_order_relaxed);
@@ -4991,8 +5121,8 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +void static_vec_omp_step(StaticVec* vec) {
 +    static_vec_omp_start(vec);
 +    static_vec_omp_wait(vec);
-+}
-+
+ }
+ 
  void static_vec_seq_step(StaticVec* vec) {
      StaticThreading* threading = vec->threading;
      for (int buf = 0; buf < vec->buffers; buf++) {
@@ -5008,7 +5138,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -418,11 +1259,17 @@
+@@ -418,11 +1389,17 @@
      vec->size = num_envs;
  
      size_t obs_elem_size = obs_element_size();
@@ -5030,7 +5160,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
          cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
          cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
-@@ -449,9 +1296,11 @@
+@@ -449,9 +1426,11 @@
      vec->action_mask_size = MY_ACTION_MASK;
      size_t mask_bytes = (size_t)total_agents * MY_ACTION_MASK * sizeof(unsigned char);
      if (gpu) {
@@ -5043,7 +5173,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      } else {
          vec->action_mask = (unsigned char*)calloc(total_agents * MY_ACTION_MASK, sizeof(unsigned char));
          vec->gpu_action_mask = vec->action_mask;
-@@ -576,6 +1425,7 @@
+@@ -576,6 +1555,7 @@
              (size_t)vec->total_agents * MY_ACTION_MASK * sizeof(unsigned char),
              cudaMemcpyHostToDevice);
  #endif
@@ -5051,7 +5181,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1441,147 @@
+@@ -591,6 +1571,168 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -5145,9 +5275,30 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    th->poll_pause = bopl_env_int("BOPL_GPU_POLL_PAUSE", 40);
 +    th->steal_margin_ns = (int64_t)bopl_env_int("BOPL_GPU_STEAL_MARGIN_US", -1) * 1000;
 +    th->prof = bopl_env_int("BOPL_ENV_PROF", 0);
++    th->notice = th->prof >= 3;
++    th->vec = vec;
 +    th->gpu_prof = bopl_env_int("BOPL_GPU_PROF", 0);
 +    if (th->gpu_prof && !th->prof) th->prof = 1;  // printed with the pool statistics
 +    th->lpt = bopl_env_int("BOPL_ENV_LPT", 1);
++    // Finish by the last stepper (bopl_pool_finish). The buffer thread stored
++    // the go 29-33 us after its job's last env finished (BOPL_ENV_PROF=3, spec
++    // workload, 11 threads; it notices its flag 8.5-10 us after the first pool
++    // thread to see it). In-process A/B (spec, 11 threads, 600 updates, period
++    // 5, 2026-10-08), finish vs the buffer thread's straggler wait: rollout
++    // 0.980, 0.988, 0.981, 0.974 and reversed 0.981; eval_env -8 to -11%,
++    // straggler -14 to -37%, c_step flat, but eval_gpu (now from the earlier
++    // go) +4 to +14%: the buffer thread, stealing when the flag lands, notices
++    // it 18-23 us late instead of 8.5-10, and the forwards overlap more.
++    // Tried and dropped: any pool thread that sees a buffer's flag publishes
++    // its job (CAS on a per-job word armed after the flag clear; the buffer
++    // thread only launches and steps), rollout 1.018 vs finish alone (eval_gpu
++    // -1%, eval_env +5%, launch +13%); BOPL_GPU_STEAL_MARGIN_US=15 timed
++    // from the finisher's go (no steals once the forward is predicted within
++    // 15 us of done), rollout 1.017 vs finish alone: eval_gpu flat, the flag
++    // still seen 30-36 us late (the forward's EMA carries the lateness, and
++    // under load the late notices are mostly a preempted buffer thread).
++    th->finish = 1;
++    th->finish_ab = bopl_env_int("BOPL_ENV_AB_FINISH", th->finish);
 +    th->affinity = bopl_env_int("BOPL_ENV_AFFINITY", 0);
 +    if (th->affinity) th->lpt = 0;  // the claim order is the home slice, not the LPT sort
 +    th->driver = drivers;
@@ -5199,7 +5350,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1594,11 @@
+@@ -603,7 +1745,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -5212,7 +5363,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -611,10 +1606,21 @@
+@@ -611,10 +1757,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -5223,12 +5374,12 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 -            pthread_join(vec->threading->threads[i], NULL);
 +            bopl_futex_wake(&th->buffer_states[i], INT_MAX);
 +            if (!th->driver || i < th->driver) pthread_join(th->threads[i], NULL);
-+        }
+         }
 +        atomic_fetch_add(&th->work_seq, 1);
 +        bopl_futex_wake(&th->work_seq, INT_MAX);
 +        for (int i = 0; i < th->num_workers; i++) {
 +            pthread_join(th->workers[i], NULL);
-         }
++        }
 +        free(th->workers);
 +        for (int b = 0; b < vec->buffers; b++) { free(th->jobs[b].order); free(th->jobs[b].last_ns); free(th->jobs[b].claimed); }
 +        free(th->jobs);
@@ -5236,7 +5387,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1634,7 @@
+@@ -628,6 +1785,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -5244,7 +5395,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1730,64 @@
+@@ -723,6 +1881,73 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }
@@ -5280,6 +5431,15 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            100.0 * owner / (envs ? envs : 1), 100.0 * worker / (envs ? envs : 1), 100.0 * stolen / (envs ? envs : 1),
 +            sleeps / buffer_steps, polls / buffer_steps, strag / 1e3 / buffer_steps, launch / 1e3 / buffer_steps);
 +        long long checks = atomic_exchange(&threading->stat_checks, 0), check_ns = atomic_exchange(&threading->stat_check_ns, 0);
++        if (threading->notice) {
++            long long dn = atomic_exchange(&threading->stat_nd_n, 0), dns = atomic_exchange(&threading->stat_nd_ns, 0), gns = atomic_exchange(&threading->stat_ngo_ns, 0);
++            fprintf(stderr, "bopl notice:");
++            for (int a = 0; a < 2; a++) {
++                long long fn = atomic_exchange(&threading->stat_nf_n[a], 0), fns = atomic_exchange(&threading->stat_nf_ns[a], 0), fm = atomic_exchange(&threading->stat_nf_miss[a], 0);
++                fprintf(stderr, " arm %d flag %.2f us late (n %lld, unseen %lld);", a, fn ? fns / 1e3 / fn : 0.0, fn, fm);
++            }
++            fprintf(stderr, " last done -> noticed %.2f us, -> go %.2f us (n %lld)\n", dn ? dns / 1e3 / dn : 0.0, dn ? gns / 1e3 / dn : 0.0, dn);
++        }
 +        if (checks) fprintf(stderr, "bopl gpu flag check %d: %.2f us (mean of %lld)\n", threading->gpu_flag_check, check_ns / 1e3 / checks, checks);
 +        if (threading->gpu_prof) {
 +            long long steps = atomic_exchange(&threading->stat_gpu_steps, 0);
