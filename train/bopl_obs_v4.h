@@ -150,16 +150,18 @@ static const float *bopl4_entity_relation(float *scratch, const BoplRlState *sta
     return out;
 }
 /* bopl4_entity_row (parts 0-3) with parts 1 and 3's relations through the
- * cache: self_key and enemy_key from bopl4_relation_key. */
+ * cache (self_key and enemy_key from bopl4_relation_key) and part 2's
+ * surface distance the one the row's nearest pass found (`surface`:
+ * bopl_surface_distance of the entity from self_x, self_y). */
 static void bopl4_entity_row_keyed(float *row, const BoplRlState *state, uint32_t index, const BoplRlPlayer *self,
                                    double self_x, double self_y, double self_vx, double self_vy, const Bopl4Enemy *enemy, int ablation,
-                                   int self_key, int enemy_key) {
+                                   int self_key, int enemy_key, double surface) {
     const BoplRlEntity *entity=&state->entities[index];
     float scratch[BOPL4_RELATION];
     bopl4_entity_part(row, 0, state, entity, self, self_x, self_y, self_vx, self_vy, enemy, ablation);
     const float *relation=bopl4_entity_relation(scratch, state, index, self_key, self_x, self_y, self_vx, self_vy, ablation);
     for (int f=1; f<BOPL4_RELATION; f++) row[33+f]=relation[f];
-    bopl4_entity_part(row, 2, state, entity, self, self_x, self_y, self_vx, self_vy, enemy, ablation);
+    row[33]=bopl_clip(surface/64.0);   /* part 2 */
     row[45]=row[46]=0.0f;
     if (enemy->known) {
         int projectile=(entity->flags&BOPL_ENTITY_PROJECTILE)!=0 && entity->inverse_mass>0;
@@ -167,6 +169,9 @@ static void bopl4_entity_row_keyed(float *row, const BoplRlState *state, uint32_
         row[45]=versus[0]; row[46]=projectile?versus[10]:versus[8];
     }
 }
+/* Each visible entity's surface distance from the observer, by entity index,
+ * as the row's nearest pass computes it (this thread's current row). */
+static __thread double *bopl4_surface; static __thread size_t bopl4_surface_capacity;
 /* Encode `state` into player a's v4 row. Same contract as the v3 row writer:
  * every feature stored, unused set slots zeroed (with the bopl_written record
  * of the previous encode), the own-action tail zeroed and the privileged block
@@ -190,6 +195,12 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
 
     uint32_t nearest[BOPL4_ENTITIES]; double distances[BOPL4_ENTITIES];
     Bopl4Counts c; memset(&c, 0, sizeof(c));
+    if (state->header.entity_count>bopl4_surface_capacity) {
+        size_t capacity=state->header.entity_count<256?256:(size_t)state->header.entity_count*2;
+        double *grown=realloc(bopl4_surface, capacity*sizeof(*grown));
+        if (!grown) abort();
+        bopl4_surface=grown; bopl4_surface_capacity=capacity;
+    }
     for (uint32_t i=0; i<state->header.entity_count;) {
         int end=(state->entities[i].kind==3)?bopl_rope_group_end(state, i):(int)i+1;
         int group=end-(int)i;
@@ -198,6 +209,7 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
             if (entity->kind==3 && !bopl_rope_span_kept(j, group)) continue;
             if (!bopl_entity_visible(state, entity, self->id)) continue;
             double distance=bopl_surface_distance(entity, self_x, self_y);
+            bopl4_surface[i+(uint32_t)j]=distance;
             if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
             bopl_nearest(nearest, distances, &c.count, BOPL4_ENTITIES, i+(uint32_t)j, distance);
             c.active_count++;
@@ -266,7 +278,7 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
     int enemy_key=enemy.known?bopl4_relation_key(state, enemy.player, enemy.x, enemy.y, enemy.vx, enemy.vy, ablation):-1;
     for (int i=0; i<count; i++)
         bopl4_entity_row_keyed(obs+BOPL4_OBS_ENTITY_OFFSET+(size_t)i*BOPL4_ENTITY_FEATURES, state, nearest[i], self,
-                               self_x, self_y, self_vx, self_vy, &enemy, ablation, self_key, enemy_key);
+                               self_x, self_y, self_vx, self_vy, &enemy, ablation, self_key, enemy_key, bopl4_surface[nearest[i]]);
     bopl_zero_tail(obs+BOPL4_OBS_ENTITY_OFFSET, BOPL4_ENTITY_FEATURES, count, prev_entities, BOPL4_ENTITIES);
 
     for (int i=0; i<slime_count; i++) {
