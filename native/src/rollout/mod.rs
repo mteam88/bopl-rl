@@ -36958,7 +36958,10 @@ impl RolloutWorld {
         updater_dt: Fix,
         window: std::ops::Range<u32>,
     ) {
-        if window.is_empty() {
+        // With no runtime platform (most passes) the walk below has nothing
+        // to run: no platform's turn, and with no `newest` no pickup's
+        // either.
+        if window.is_empty() || self.platforms.len() == self.first_runtime_platform() {
             return;
         }
         // A DynamicAbilityPickup older than one of these platforms raycasts
