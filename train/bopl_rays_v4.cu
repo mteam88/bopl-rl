@@ -586,16 +586,24 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
             na += __popc(kept & axis); nr += __popc(kept & rot);
         }
         axis_lethal = br4e_or(axis_lethal); rot_lethal = br4e_or(rot_lethal); rot_skew = br4e_or(rot_skew);
+        // The water's top, a lane an entity: bopl4_scene_fill's scan keeps the first water entity's top and
+        // takes a later one only when greater, so it ends at the greatest top, the first in entity order at
+        // that value. A top is never NaN (fixed-point sums), so its integer key orders it (key 0, a NaN's, is
+        // none): the least index at the greatest key. One lane's pass over the entities was ~3.5k cycles.
+        unsigned long long wkey = 0;
+        int wk = 0x7fffffff;
+        for (int k = lane; k < w.E; k += 32)
+            if (w.kind[k] == BOPL4_SCENE_WATER) { const unsigned long long key = br4e_key(w.top[k]); if (key > wkey) { wkey = key; wk = k; } }
+        unsigned long long most = wkey;
+        #pragma unroll
+        for (int o = 16; o; o >>= 1) { const unsigned long long v = __shfl_xor_sync(0xffffffffu, most, o); most = v > most ? v : most; }
+        int first = wkey == most ? wk : 0x7fffffff;
+        #pragma unroll
+        for (int o = 16; o; o >>= 1) first = min(first, __shfl_xor_sync(0xffffffffu, first, o));
         if (lane == 0) {
             s->axis_count = na; s->rot_count = nr;
             s->axis_lethal = axis_lethal; s->rot_lethal = rot_lethal; s->rot_skew = rot_skew;
-            double water_top = -1e9; int has_water = 0;
-            for (int k = 0; k < w.E; k++)
-                if (w.kind[k] == BOPL4_SCENE_WATER) {
-                    if (!has_water || w.top[k] > water_top) water_top = w.top[k];
-                    has_water = 1;
-                }
-            if (has_water) { s->flags |= BOPL4F_WATER; s->water_top = (float)water_top; } else s->water_top = -1e9f;
+            if (most) { s->flags |= BOPL4F_WATER; s->water_top = (float)w.top[first]; } else s->water_top = -1e9f;
         }
     }
     // The unused set slots zeroed.
