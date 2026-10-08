@@ -539,7 +539,7 @@ static int pool4_grid(int D, int B) { int per = POOL_THREADS / (D / 4); return (
  * their 16-byte chunks XOR-swizzled by row & 7: conflict-free ldmatrix,
  * fragment stores and row reads, 48 KB a block, two blocks of 8 warps per SM.
  * 16 SMs, the entity set's ~450k rows: 617 (GEMM) + 333 (pool) -> ~475 us. */
-constexpr int H2P_WARPS = 8, H2P_D = 128, H2P_I = 64, H2P_ROWS = 192;   /* rows per warp to aim spw at */
+constexpr int H2P_WARPS = 8, H2P_D = 128, H2P_I = 64, H2P_ROWS = 192, UDH_ROWS = 384;   /* rows per warp to aim spw at (forward, backward) */
 __device__ __forceinline__ int h2p_chunk(int row, int chunk) { return chunk ^ (row & 7); }
 __device__ __forceinline__ void h2p_mma(float* c, const uint32_t* a, uint32_t b0, uint32_t b1) {
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
@@ -642,8 +642,125 @@ __global__ void __launch_bounds__(H2P_WARPS * 32) h2_pool_rows(const bf16* __res
     }
 }
 static bool h2_pool_ok(int D, int I, int ldj, int col0) { return D == H2P_D && I == H2P_I && pool4_ok(D, ldj, col0); }
-/* samples per warp: ~H2P_ROWS rows at the pass's mean (act / B), at most 32 */
-static int h2_pool_spw(int act, int B) { return std::max(1, std::min(32, (int)((long)H2P_ROWS * B / std::max(act, 1)))); }
+/* samples per warp: ~rows rows at the pass's mean (act / B), at most 32 */
+static int set_rows_spw(int rows, int act, int B) { return std::max(1, std::min(32, (int)((long)rows * B / std::max(act, 1)))); }
+/* The training backward's unpool_rows4 + dh1 = (dh2 W2) * ReLU'(h1) (the GEMM
+ * and mask_rows8) in one kernel, h2_pool_rows' counterpart: a warp owns
+ * consecutive samples' rows and walks them 16 at a time, writes dh2 as
+ * unpool_rows4 does (dW2 still reads it) and stages it swizzled in shared
+ * memory, then bf16 mma.sync m16n8k16 over the 8 k16 steps in order (the
+ * NN dh1 GEMM's candidates give the same bits) with W2 transposed by
+ * ldmatrix.trans, zeroes where h1 <= 0 before the bf16 rounding (mask_rows8
+ * zeroes the rounded value: the same bits) and writes dh1. Rows past the
+ * total are left to zero_tail. 16 SMs, the entity set: 257 (unpool) + 469
+ * (GEMM) + 247 (mask) -> ~575 us. */
+__device__ __forceinline__ void h2p_ldsm4t(uint32_t* r, const void* p) {
+    unsigned s = (unsigned)__cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n" : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(s));
+}
+__global__ void __launch_bounds__(H2P_WARPS * 32, 2) unpool_dh1_rows(const float* __restrict__ grad_joined, int ldj, int col0, const signed char* __restrict__ winner,
+        int mean_pool, const int* offsets, const int* counts, int total_index, const int* totals, const uint4* __restrict__ pos,
+        const bf16* __restrict__ w2, const bf16* __restrict__ h1, bf16* __restrict__ dh2, bf16* __restrict__ dh1, int B, int spw) {
+    __shared__ __align__(16) bf16 sw[H2P_D * H2P_I];
+    __shared__ __align__(16) bf16 st[H2P_WARPS][16 * H2P_D];
+    for (int i = threadIdx.x; i < H2P_D * H2P_I / 8; i += H2P_WARPS * 32) {
+        int k = i / (H2P_I / 8), c8 = i - k * (H2P_I / 8);
+        *(uint4*)&sw[k * H2P_I + h2p_chunk(k, c8) * 8] = *(const uint4*)&w2[k * H2P_I + c8 * 8];
+    }
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+    const int b0 = (blockIdx.x * H2P_WARPS + warp) * spw;
+    if (b0 >= B) return;
+    const int b_end = min(B, b0 + spw), total = totals[total_index];
+    auto rows_of = [&](int b) { int off = offsets[b], n = counts[b]; return off + n > total ? max(0, total - off) : n; };
+    const int r_begin = offsets[b0];
+    const int r_stop = max(r_begin, min(total, offsets[b_end - 1] + rows_of(b_end - 1)));
+    /* lane i < spw: sample b0 + i's row count; the samples with rows as a bitmask (spw <= 32) */
+    const int my_n = b0 + lane < b_end ? rows_of(b0 + lane) : 0;
+    unsigned live = __ballot_sync(0xffffffffu, my_n > 0);
+    bf16* stw = st[warp];
+    const int c = lane * 4;
+    /* the current sample's columns' winner / gmax / gmean, the next sample with rows prefetched */
+    float gmax[4], gmean[4]; int win[4];
+    char4 nw4; float4 ngm, nmean; int nxt = -1, nxt_n = 0;
+    auto prefetch = [&]() {   /* the next sample with rows into the n* registers */
+        nxt = live ? __ffs(live) - 1 : -1;
+        if (nxt < 0) return;
+        live &= live - 1;
+        nxt_n = __shfl_sync(0xffffffffu, my_n, nxt);
+        const long b = b0 + nxt;
+        nw4 = *reinterpret_cast<const char4*>(winner + b * H2P_D + c);
+        ngm = *reinterpret_cast<const float4*>(grad_joined + b * ldj + col0 + c);
+        nmean = mean_pool ? *reinterpret_cast<const float4*>(grad_joined + b * ldj + col0 + H2P_D + c) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    };
+    int cur_n = 0, r_in = 0;
+    auto take = [&]() {
+        cur_n = nxt_n; r_in = 0;
+        gmax[0] = ngm.x; gmax[1] = ngm.y; gmax[2] = ngm.z; gmax[3] = ngm.w;
+        win[0] = nw4.x; win[1] = nw4.y; win[2] = nw4.z; win[3] = nw4.w;
+        gmean[0] = gmean[1] = gmean[2] = gmean[3] = 0.0f;
+        if (mean_pool) { gmean[0] = nmean.x / cur_n; gmean[1] = nmean.y / cur_n; gmean[2] = nmean.z / cur_n; gmean[3] = nmean.w / cur_n; }
+        prefetch();
+    };
+    prefetch();
+    if (nxt >= 0) take();
+    for (int r0 = r_begin; r0 < r_stop; r0 += 16) {
+        const int nq = min(16, r_stop - r0);
+        /* dh2 rows as unpool_rows4 writes them (the tile's bitmask rows on lanes 0..15), and into the stage; rows past the run 0 */
+        const uint4 pm = lane < nq ? pos[r0 + lane] : make_uint4(0u, 0u, 0u, 0u);
+        for (int q = 0; q < 16; q++) {
+            float gv[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            const unsigned wb[4] = {__shfl_sync(0xffffffffu, pm.x, q), __shfl_sync(0xffffffffu, pm.y, q),
+                                    __shfl_sync(0xffffffffu, pm.z, q), __shfl_sync(0xffffffffu, pm.w, q)};
+            if (q < nq) {
+                if (r_in >= cur_n) take();
+                #pragma unroll
+                for (int j = 0; j < 4; j++) { float gg = gmean[j] + (win[j] == r_in ? gmax[j] : 0.0f); gv[j] = wb[j] >> lane & 1 ? gg : 0.0f; }
+                bf4_store(dh2 + (long)(r0 + q) * H2P_D + c, gv);
+                r_in++;
+            }
+            bf4_store(stw + q * H2P_D + h2p_chunk(q, lane >> 1) * 8 + (lane & 1) * 4, gv);
+        }
+        __syncwarp();
+        uint32_t hv[8][2];
+        {
+            const bool va = r0 + g < r_stop, vb = r0 + g + 8 < r_stop;
+            const bf16* pa = h1 + (long)(r0 + g) * H2P_I + 2 * t;
+            #pragma unroll
+            for (int nt = 0; nt < 8; nt++) {
+                hv[nt][0] = va ? *(const uint32_t*)(pa + 8 * nt) : 0u;
+                hv[nt][1] = vb ? *(const uint32_t*)(pa + 8 * H2P_I + 8 * nt) : 0u;
+            }
+        }
+        float acc[8][4] = {};
+        #pragma unroll
+        for (int kp = 0; kp < 8; kp += 2) {   /* k rows 16 kp .. 16 kp + 31: A from the stage, B = W2 transposed by ldmatrix */
+            uint32_t a0[4], a1[4];
+            const int row = lane & 15;
+            h2p_ldsm4(a0, stw + row * H2P_D + h2p_chunk(row, 2 * kp + (lane >> 4)) * 8);
+            h2p_ldsm4(a1, stw + row * H2P_D + h2p_chunk(row, 2 * kp + 2 + (lane >> 4)) * 8);
+            #pragma unroll
+            for (int nt = 0; nt < 8; nt++) {
+                uint32_t bq[4];
+                const int k = 16 * kp + lane;
+                h2p_ldsm4t(bq, sw + k * H2P_I + h2p_chunk(k, nt) * 8);
+                h2p_mma(acc[nt], a0, bq[0], bq[1]);
+                h2p_mma(acc[nt], a1, bq[2], bq[3]);
+            }
+        }
+        __syncwarp();
+        #pragma unroll
+        for (int nt = 0; nt < 8; nt++) {
+            const __nv_bfloat162 ha = *reinterpret_cast<const __nv_bfloat162*>(&hv[nt][0]), hb = *reinterpret_cast<const __nv_bfloat162*>(&hv[nt][1]);
+            float v0 = __low2float(ha) > 0.0f ? acc[nt][0] : 0.0f, v1 = __high2float(ha) > 0.0f ? acc[nt][1] : 0.0f;
+            float v2 = __low2float(hb) > 0.0f ? acc[nt][2] : 0.0f, v3 = __high2float(hb) > 0.0f ? acc[nt][3] : 0.0f;
+            const int n = 8 * nt + 2 * t;
+            if (r0 + g < r_stop) *reinterpret_cast<__nv_bfloat162*>(dh1 + (long)(r0 + g) * H2P_I + n) = __floats2bfloat162_rn(v0, v1);
+            if (r0 + g + 8 < r_stop) *reinterpret_cast<__nv_bfloat162*>(dh1 + (long)(r0 + g + 8) * H2P_I + n) = __floats2bfloat162_rn(v2, v3);
+        }
+    }
+}
+
 /* ---- elementwise and LayerNorm ------------------------------------------ */
 __global__ void relu_into(const float* src, float* dst, int rows, int cols, int ldd) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1181,7 +1298,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
                 mask ? CUBLASLT_EPILOGUE_RELU_AUX : CUBLASLT_EPILOGUE_RELU, stream, mask);
         /* h2 = ReLU(h1 W2^T) and the pools in one kernel when training (h2pos registered, no stage hooks) */
         if (a->h2pos[s].data && !g_set_stage.forward && !g_set_stage.backward && h2_pool_ok(D, I, LDJ, FD + s * 2 * D)) {
-            int spw = h2_pool_spw(act, B), warps = (B + spw - 1) / spw;
+            int spw = set_rows_spw(H2P_ROWS, act, B), warps = (B + spw - 1) / spw;
             h2_pool_rows<<<(warps + H2P_WARPS - 1) / H2P_WARPS, H2P_WARPS * 32, 0, stream>>>(bfp(a->h1[s]), bfp(a->w2b[s]), a->offsets.data + (long)s * B,
                 a->counts.data + (long)s * B, s, a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B,
                 (uint4*)a->h2pos[s].data, spw);
@@ -1222,28 +1339,40 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
     for (int s = SETS - 1; s >= 0; s--) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad, act = a->act[s];
-        if (pool4_ok(D, LDJ, FD + s * 2 * D))
-            unpool_rows4<<<pool4_grid(D, B), POOL_THREADS, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
-                                                                       a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B,
-                                                                       (const uint4*)a->h2pos[s].data);
-        else
-            unpool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
-                                             a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool);
-        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, nullptr, 0, a->totals.data, s, act);
-        if (g_set_stage.backward)
-            g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
-        prof_mark("bwd.enc.unpool", stream);
-        /* dW2 (D, I) = dh2^T h1 over the active rows (zero rows past the count) */
-        lt_gemm(true, false, D, I, act, bfp(a->dh2[s]), D, bfp(a->h1[s]), I, nullptr, a->wgrad_w2[s].data, I, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-        prof_mark("bwd.enc.dW2", stream);
-        /* dh1 = (dh2 W2) * ReLU'(h1), written over h2 (no longer needed) */
-        bf16* dh1 = bfp(a->h2[s]);
         void* mask = act >= LT_AUX_MIN_ROWS ? a->relu_mask[s].data : nullptr;   /* as the forward decided */
-        lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true,
-                mask ? CUBLASLT_EPILOGUE_DRELU : CUBLASLT_EPILOGUE_DEFAULT, stream, mask);
-        if (!mask && ((long)act * I) % 8 == 0) mask_rows8<<<grid_long((long)act * I / 8), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I / 8);
-        else if (!mask) mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
-        prof_mark("bwd.enc.dh1", stream);
+        bf16* dh1 = bfp(a->h2[s]);   /* written over h2 (no longer needed) */
+        if (a->h2pos[s].data && !mask && !g_set_stage.forward && !g_set_stage.backward && h2_pool_ok(D, I, LDJ, FD + s * 2 * D)) {
+            /* dh2 and dh1 = (dh2 W2) * ReLU'(h1) in one kernel, the tails zeroed; dW2 from dh2 below */
+            int spw = set_rows_spw(UDH_ROWS, act, B), warps = (B + spw - 1) / spw;
+            unpool_dh1_rows<<<(warps + H2P_WARPS - 1) / H2P_WARPS, H2P_WARPS * 32, 0, stream>>>(a->grad_joined.data, LDJ, FD + s * 2 * D,
+                (const signed char*)a->winner[s].data, w->mean_pool, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, s, a->totals.data,
+                (const uint4*)a->h2pos[s].data, bfp(a->w2b[s]), bfp(a->h1[s]), bfp(a->dh2[s]), dh1, B, spw);
+            zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, dh1, I, a->totals.data, s, act);
+            prof_mark("bwd.enc.unpool_dh1", stream);
+            lt_gemm(true, false, D, I, act, bfp(a->dh2[s]), D, bfp(a->h1[s]), I, nullptr, a->wgrad_w2[s].data, I, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
+            prof_mark("bwd.enc.dW2", stream);
+        } else {
+            if (pool4_ok(D, LDJ, FD + s * 2 * D))
+                unpool_rows4<<<pool4_grid(D, B), POOL_THREADS, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
+                                                                           a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B,
+                                                                           (const uint4*)a->h2pos[s].data);
+            else
+                unpool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
+                                                 a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool);
+            zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, nullptr, 0, a->totals.data, s, act);
+            if (g_set_stage.backward)
+                g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
+            prof_mark("bwd.enc.unpool", stream);
+            /* dW2 (D, I) = dh2^T h1 over the active rows (zero rows past the count) */
+            lt_gemm(true, false, D, I, act, bfp(a->dh2[s]), D, bfp(a->h1[s]), I, nullptr, a->wgrad_w2[s].data, I, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
+            prof_mark("bwd.enc.dW2", stream);
+            /* dh1 = (dh2 W2) * ReLU'(h1) */
+            lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true,
+                    mask ? CUBLASLT_EPILOGUE_DRELU : CUBLASLT_EPILOGUE_DEFAULT, stream, mask);
+            if (!mask && ((long)act * I) % 8 == 0) mask_rows8<<<grid_long((long)act * I / 8), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I / 8);
+            else if (!mask) mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
+            prof_mark("bwd.enc.dh1", stream);
+        }
         /* dW1 (I, K) = dh1^T X into the scratch, then keep the first `features` of the padded K */
         lt_gemm(true, false, I, K, act, dh1, I, bfp(a->xpack[s]), K, nullptr, a->acc.data, K, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         reduce_partials<<<grid_size(I * SPEC[s].features), BLOCK_SIZE, 0, stream>>>(a->acc.data, 1, 0, I, K, SPEC[s].features, a->wgrad_w1[s].data, 0);
