@@ -740,8 +740,7 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
 // ---- packed observation transport (bopl_obs_pack.h) ----------------------
 // One block per row, after the H2D copy of the slots' first
 // BR4_PACK_DMA_WORDS words: first the rest of the slot's used words from the
-// mapped host slot (a mode-4 slot's head gives its length; the other modes'
-// whole slot), then per mode. The blocks past `rows` copy the reward /
+// mapped host slot (bopl4_slot_used), then per mode. The blocks past `rows` copy the reward /
 // terminal / mask pack in the buffer's idle tail (tail_bytes, 0 when the
 // pack is copied on its own). Mode 4 rows are done then. Mode 0: the flat and privileged blocks, then each set's
 // prefix rows followed by zeros to the block's end; mode 2 the same without
@@ -749,6 +748,23 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
 // fit, or the row has no writer record): the dense row straight from the
 // mapped host buffer; mode 3 the same, its terrain and rays from bopl4_rays_rows. Either way the device row equals the host row bit for
 // bit (bopl4_transport_check counts the floats that differ, dump mode only).
+// A slot's used words, from its head in device memory: a mode-4 slot's head
+// gives them, a mode-1 slot is its header, a mode-3 slot its header and scene
+// (bopl4f_scene_words; the counts are in the DMA head), the rest the whole
+// slot. 2026-10-08 (fwd_bench, 1 stream, nsys): mode 3 read its whole slot,
+// 5 KB of PCIe reads a row for a scene the DMA head already held; ~half the
+// dumps carry 2 to 10 such rows (45+ entities), and the unpack's mean drops
+// 13.1 to 11.3 us, the sample's end 2.0 us.
+__device__ __forceinline__ int bopl4_slot_used(const unsigned* hdr) {
+    const unsigned mode = hdr[0];
+    if (mode == BOPL4_PACK_MODE_STATE) return (int)hdr[BOPL4_PACK_STATE_WORDS];
+    if (mode == BOPL4_PACK_MODE_DENSE) return BOPL4_PACK_HEADER;
+    if (mode == BOPL4_PACK_MODE_DENSE_SCENE && hdr[5] + 4 <= (unsigned)BR4_PACK_DMA_WORDS) {
+        const unsigned* sc = hdr + hdr[5];
+        return (int)hdr[5] + BOPL4F_SCENE_HEAD + 5 * (int)sc[1] + 9 * (int)sc[2] + 6 * (int)sc[3];
+    }
+    return BOPL4_PACK_P;
+}
 __global__ void bopl4_unpack_rows(const float* __restrict__ host_packed, float* __restrict__ packed, const float* __restrict__ host_rows,
                                   float* __restrict__ dense, int rows, int tail_bytes) {
     br_pdl_wait(); br_pdl_release();   /* launched after a memcpy (no PDL edge in); lets br4_sets pre-launch */
@@ -761,24 +777,28 @@ __global__ void bopl4_unpack_rows(const float* __restrict__ host_packed, float* 
         return;
     }
     float* slot = packed + (long)r * BOPL4_PACK_P;
+    const unsigned* hdr = (const unsigned*)slot;
+    const unsigned mode = hdr[0];
     {
-        const unsigned* head = (const unsigned*)slot;
-        const int used = head[0] == BOPL4_PACK_MODE_STATE ? (int)head[BOPL4_PACK_STATE_WORDS] : BOPL4_PACK_P;
         const float4* src = (const float4*)(host_packed + (long)r * BOPL4_PACK_P);
-        for (int i = BR4_PACK_DMA_WORDS / 4 + threadIdx.x; i < (used + 3) / 4; i += blockDim.x) ((float4*)slot)[i] = src[i];
-        __syncthreads();
+        for (int i = BR4_PACK_DMA_WORDS / 4 + threadIdx.x; i < (bopl4_slot_used(hdr) + 3) / 4; i += blockDim.x) ((float4*)slot)[i] = src[i];
     }
     float* out = dense + (long)r * BOPL_OBS_STRIDE;
-    const unsigned* hdr = (const unsigned*)slot;
-    if (hdr[0] == BOPL4_PACK_MODE_STATE) return;   /* bopl4_rays_rows writes the whole row */
-    if (hdr[0] == BOPL4_PACK_MODE_DENSE || hdr[0] == BOPL4_PACK_MODE_DENSE_SCENE) {
+    if (mode == BOPL4_PACK_MODE_STATE) return;   /* bopl4_rays_rows writes the whole row */
+    if (mode == BOPL4_PACK_MODE_DENSE || mode == BOPL4_PACK_MODE_DENSE_SCENE) {
+        // Every load in flight before the first store: one PCIe round trip, not one per 4 float4s.
+        constexpr int N = BOPL_OBS_STRIDE / 4, PER = (N + BR4_UNPACK_THREADS - 1) / BR4_UNPACK_THREADS;
         const float4* src = (const float4*)(host_rows + (long)r * BOPL_OBS_STRIDE);
-        float4* dst = (float4*)out;
-        for (int i = threadIdx.x; i < BOPL_OBS_STRIDE / 4; i += blockDim.x) dst[i] = src[i];
+        float4 v[PER];
+        #pragma unroll
+        for (int k = 0; k < PER; k++) { const int i = k * BR4_UNPACK_THREADS + threadIdx.x; if (i < N) v[k] = src[i]; }
+        #pragma unroll
+        for (int k = 0; k < PER; k++) { const int i = k * BR4_UNPACK_THREADS + threadIdx.x; if (i < N) ((float4*)out)[i] = v[k]; }
         return;
     }
+    __syncthreads();
     // Mode 2 leaves the terrain and rays (the flat block's tail) to bopl4_rays_rows.
-    const int scene = hdr[0] == BOPL4_PACK_MODE_SCENE, flat = scene ? BOPL4_OBS_TERRAIN_OFFSET : BOPL4_FLAT;
+    const int scene = mode == BOPL4_PACK_MODE_SCENE, flat = scene ? BOPL4_OBS_TERRAIN_OFFSET : BOPL4_FLAT;
     for (int i = threadIdx.x; i < flat; i += blockDim.x) out[i] = slot[BOPL4_PACK_HEADER + i];
     for (int i = threadIdx.x; i < BOPL4_PRIVILEGED; i += blockDim.x) out[BOPL4_OBS_PRIVILEGED_OFFSET + i] = slot[BOPL4_PACK_HEADER + flat + i];
     const Bopl4PackSet sets[BOPL4_PACK_SETS] = BOPL4_PACK_TABLE;
