@@ -185,18 +185,19 @@ __device__ static void br4_scene_prepare(Br4Shared& sh) {
 // (FP64 at 1/64 rate: a dependent DFMA is ~63 cycles, a division or square
 // root ~650), so the work is cut into short independent items over many
 // threads, one kind of item per warp (a warp runs one function):
-//   S   the scene's own threads, beside P1 and P2 (only P3 reads it): per
-//       (row, entity, component) bopl4_scene_entity's steps, a wall's axis
-//       lengths and unit vectors a square root and a quotient a thread,
-//       then the wall in the entity's first thread
+//   S   a warp per row, beside P1 and P2 (only P3 reads it):
+//       bopl4_scene_entity's steps, the classes a lane an entity, a wall's
+//       axes two lanes a wall (a square root and two quotients each), then
+//       the wall in its first lane
 //   P1  the other threads, per (row, entity): the circle; per (row,
 //       entity): kept, the distance and the counts (integers: any
 //       order sums alike); per (row, slime): its circle and what the slime
 //       pass needs of it (bopl4_slime_seen); per (row, player): its
 //       controlling body and the player as the primary enemy's candidate
 //       (a named barrier among these threads ends it)
-//   P2  per row (a lane each): the observer, its body, the primary enemy, the
-//       scene's head and the slime pass, from P1's; per (row, entity): the
+//   P2  per row (two warps): the primary enemy, then the observer, its body,
+//       the scene's head and the nearby slimes (a lane a slime, at its rank),
+//       and the slots (likewise), from P1's; per (row, entity): the
 //       nearest, every kept entity at its rank by (distance, index), which is
 //       bopl_nearest's stable order (there are at most BOPL4_ENTITIES),
 //       unless a distance is NaN, when the row runs bopl_nearest as written
@@ -208,8 +209,8 @@ __device__ static void br4_scene_prepare(Br4Shared& sh) {
 // The previous and critic blocks come from the slot as the host wrote them,
 // except critic 43 and 44, which read the opponent block. The scene goes to
 // the row's Bopl4Scene in global memory for the rays.
-// The scene's threads (four an entity: a square root and a quotient each) and the others.
-constexpr int BR4E_ROWS = 1, BR4E_SCENE = 4 * BOPL4_ENTITIES * BR4E_ROWS, BR4E_REST = 128, BR4E_THREADS = BR4E_SCENE + BR4E_REST;
+// The scene's warps (one a row) and the others.
+constexpr int BR4E_ROWS = 1, BR4E_SCENE = 32 * BR4E_ROWS, BR4E_REST = 128, BR4E_THREADS = BR4E_SCENE + BR4E_REST;
 constexpr int BR4E_SEGS = 7, BR4E_KINDS = 4;
 static_assert(BR4E_SCENE % 32 == 0, "the scene's warps are whole");
 static_assert(BR4E_REST >= 3 * 32 && BR4E_ROWS <= 32, "P2's warps");
@@ -249,6 +250,7 @@ struct Br4EShared {
     int off[BR4E_KINDS * BR4E_ROWS + 1], cnt[BR4E_KINDS * BR4E_ROWS];   // P1's items: kind-major, then row; off[last] the end
     unsigned long long slot_key[BR4E_ROWS][3 * BOPL4_SLIMES];             // P2's slot candidates in index order
     unsigned short slot_index[BR4E_ROWS][3 * BOPL4_SLIMES];
+    unsigned char walls[BR4E_ROWS][BOPL4_ENTITIES];                       // the scene's wall candidates in entity order
 };
 static_assert(BOPL4_SLIMES <= 32, "P2's slime pass a lane a slime");
 static_assert(sizeof(Br4EShared) <= 48 * 1024, "static shared memory");
@@ -327,41 +329,58 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
     __syncthreads();
 
     if (t < BR4E_SCENE) {
-        // Entity k's part of the scene (walls and water), beside P1 and P2 (only P3 reads it): bopl4_scene_entity's
-        // steps, a wall's axis lengths and unit vectors over four threads, component j each, then the wall in the first.
-        const int lr = t / (4 * BOPL4_ENTITIES), k = t % (4 * BOPL4_ENTITIES) >> 2, j = t & 3;
-        Br4ERow& w = sh.row[lr];
-        const int on = sh.valid[lr] && k < w.E;
-        const BoplRlEntity* e = on ? &w.st.entities[k] : nullptr;
-        int kind = BOPL4_SCENE_NONE;
-        double top = 0.0, length = 0.0, unit = 0.0;
-        if (on && (kind = bopl4_scene_class(e, &top)) == BOPL4_SCENE_WALL) {
-            const int64_t fx = j < 2 ? e->right_x : e->up_x, fy = j < 2 ? e->right_y : e->up_y;
-            if (fx == 0 || fy == 0) {
-                // An axis along x or y (most walls): the square root of x * x + 0 is |x| (in binary floating point
-                // the correctly rounded root of RN(x * x) is |x|; a nonzero bopl_fix is at least 2^-32, far from
-                // underflow) and the quotient is +-1 or +0, so neither FP64 square root nor division runs.
-                const int64_t c = j & 1 ? fy : fx;
-                length = fabs(bopl_fix(fx == 0 ? fy : fx));
-                if (length > 1e-6) unit = c == 0 ? 0.0 : c > 0 ? 1.0 : -1.0;
-            } else {
-                const double x = bopl_fix(fx), y = bopl_fix(fy);
-                length = bopl4_axis_length(x, y);
-                if (length > 1e-6) unit = (j & 1 ? y : x) / length;
+        // The row's part of the scene (walls and water), beside P1 and P2 (only P3 reads it): bopl4_scene_entity's
+        // steps on one warp a row, so each FP64 sequence issues once for all of the row's walls (an FP64
+        // instruction takes the pipe a whole warp at a time, however few of its lanes run): the classes a lane an
+        // entity, the walls listed in entity order by ballots; their axes' lengths and unit vectors two lanes a wall
+        // (its right and up axes); then bopl4_scene_wall in the wall's first lane.
+        Br4ERow& w = sh.row[warp];
+        if (sh.valid[warp]) {
+            unsigned char* list = sh.walls[warp];
+            int nw = 0;
+            for (int k0 = 0; k0 < w.E; k0 += 32) {
+                const int k = k0 + lane;
+                int kind = BOPL4_SCENE_NONE;
+                if (k < w.E) {
+                    double top = 0.0;
+                    kind = bopl4_scene_class(&w.st.entities[k], &top);
+                    w.kind[k] = (unsigned char)kind; w.top[k] = top; w.lethal[k] = 0; w.skew[k] = 0;
+                }
+                const unsigned walls = __ballot_sync(0xffffffffu, kind == BOPL4_SCENE_WALL);
+                if (kind == BOPL4_SCENE_WALL) list[nw + __popc(walls & ((1u << lane) - 1u))] = (unsigned char)k;
+                nw += __popc(walls);
             }
-        }
-        const double u1 = __shfl_down_sync(0xffffffffu, unit, 1), u2 = __shfl_down_sync(0xffffffffu, unit, 2);
-        const double u3 = __shfl_down_sync(0xffffffffu, unit, 3), ey = __shfl_down_sync(0xffffffffu, length, 2);
-        if (on && j == 0) {
-            int lethal = 0, skew = 0;
-            if (kind == BOPL4_SCENE_WALL) {
-                const double ex = length;
-                double rx, ry, ux, uy;
-                if (ex > 1e-6) { rx = unit; ry = u1; } else { rx = 1; ry = 0; }
-                if (ey > 1e-6) { ux = u2; uy = u3; } else { ux = -ry; uy = rx; }
-                kind = bopl4_scene_wall(e, rx, ry, ux, uy, ex, ey, w.wall[k], &lethal, &skew);
+            __syncwarp();
+            for (int c0 = 0; c0 < 2 * nw; c0 += 32) {
+                const int c = c0 + lane, on = c < 2 * nw, k = on ? list[c >> 1] : 0;
+                const BoplRlEntity* e = &w.st.entities[k];
+                double length = 0.0, ax = 0.0, ay = 0.0;   // the axis' length and, over 1e-6, its unit vector
+                if (on) {
+                    const int64_t fx = c & 1 ? e->up_x : e->right_x, fy = c & 1 ? e->up_y : e->right_y;
+                    if (fx == 0 || fy == 0) {
+                        // Along x or y (55% of the axes): the square root of x * x + 0 is |x| (in binary floating
+                        // point the correctly rounded root of RN(x * x) is |x|; a nonzero bopl_fix is at least
+                        // 2^-32, far from underflow) and the quotients are +-1 or +0: no FP64 root or division.
+                        length = fabs(bopl_fix(fx == 0 ? fy : fx));
+                        if (length > 1e-6) { ax = fx == 0 ? 0.0 : fx > 0 ? 1.0 : -1.0; ay = fy == 0 ? 0.0 : fy > 0 ? 1.0 : -1.0; }
+                    } else {
+                        const double x = bopl_fix(fx), y = bopl_fix(fy);
+                        length = bopl4_axis_length(x, y);
+                        if (length > 1e-6) { ax = x / length; ay = y / length; }
+                    }
+                }
+                const double ey = __shfl_down_sync(0xffffffffu, length, 1), upx = __shfl_down_sync(0xffffffffu, ax, 1),
+                             upy = __shfl_down_sync(0xffffffffu, ay, 1);
+                if (on && !(c & 1)) {
+                    const double ex = length;
+                    double rx, ry, ux, uy;
+                    if (ex > 1e-6) { rx = ax; ry = ay; } else { rx = 1; ry = 0; }
+                    if (ey > 1e-6) { ux = upx; uy = upy; } else { ux = -ry; uy = rx; }
+                    int lethal = 0, skew = 0;
+                    w.kind[k] = (unsigned char)bopl4_scene_wall(e, rx, ry, ux, uy, ex, ey, w.wall[k], &lethal, &skew);
+                    w.lethal[k] = (unsigned char)lethal; w.skew[k] = (unsigned char)skew;
+                }
             }
-            w.kind[k] = (unsigned char)kind; w.top[k] = top; w.lethal[k] = (unsigned char)lethal; w.skew[k] = (unsigned char)skew;
         }
     } else {
         const int u = t - BR4E_SCENE, uwarp = u >> 5;   // the thread and warp among the others
