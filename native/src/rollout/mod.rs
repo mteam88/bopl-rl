@@ -3923,16 +3923,21 @@ pub struct PlatformBodies {
     /// The physics step `settled` holds for: a pass at another settles
     /// nothing it has not integrated at that one.
     settled_dt: u64,
+    /// The sweep axis of the last platform narrow phase, if it took the
+    /// stack sweep (`platform_pairs`): kept with `settled`, which it
+    /// qualifies (see `platforms_tick`'s narrow phase).
+    pairs_axis: Option<bool>,
 }
 
 impl Clone for PlatformBodies {
     fn clone(&self) -> Self {
-        Self { list: self.list.clone(), settled: self.settled, settled_dt: self.settled_dt }
+        Self { list: self.list.clone(), settled: self.settled, settled_dt: self.settled_dt, pairs_axis: self.pairs_axis }
     }
     fn clone_from(&mut self, source: &Self) {
         self.list.clone_from(&source.list);
         self.settled = source.settled;
         self.settled_dt = source.settled_dt;
+        self.pairs_axis = source.pairs_axis;
     }
 }
 
@@ -4007,7 +4012,7 @@ impl<'a> IntoIterator for &'a mut PlatformBodies {
 
 impl PlatformBodies {
     fn with_capacity(capacity: usize) -> Self {
-        Self { list: Vec::with_capacity(capacity), settled: 0, settled_dt: 0 }
+        Self { list: Vec::with_capacity(capacity), settled: 0, settled_dt: 0, pairs_axis: None }
     }
     /// The settled bodies, for a pass integrating at `dt`: none unless the
     /// last pass integrated at it too.
@@ -36194,17 +36199,20 @@ impl RolloutWorld {
     /// generic DetPhysics sweep (strict touching-edge rejection included).
     /// `sweep_x` is `sweep_axes().0`, taken just before with nothing moved,
     /// and `scratch.callback_bounds` the platforms' boxes, just taken.
-    fn platform_pairs(platforms: &[Platform], scratch: &mut PlatformScratch, sweep_x: bool) {
+    /// Whether it took the stack sweep, whose order of two platforms
+    /// (their low edges on the axis, none NaN, then their indices) is a
+    /// function of their boxes alone.
+    fn platform_pairs(platforms: &[Platform], scratch: &mut PlatformScratch, sweep_x: bool) -> bool {
         // One sweep per axis, so no edge read picks its coordinate.
         if sweep_x {
-            Self::platform_pairs_on::<true>(platforms, scratch);
+            Self::platform_pairs_on::<true>(platforms, scratch)
         } else {
-            Self::platform_pairs_on::<false>(platforms, scratch);
+            Self::platform_pairs_on::<false>(platforms, scratch)
         }
     }
 
     #[inline(always)]
-    fn platform_pairs_on<const SWEEP_X: bool>(platforms: &[Platform], scratch: &mut PlatformScratch) {
+    fn platform_pairs_on<const SWEEP_X: bool>(platforms: &[Platform], scratch: &mut PlatformScratch) -> bool {
         let sweep_x = SWEEP_X;
         scratch.pairs.clear();
         let axis = |v: Vec2| if SWEEP_X { v.x } else { v.y };
@@ -36246,7 +36254,7 @@ impl RolloutWorld {
         };
         if count > CAP {
             general(scratch);
-            return;
+            return false;
         }
         // `order` is always a permutation of the walls (rebuilt above when
         // their number changes, and only ever reordered below), so every
@@ -36292,7 +36300,7 @@ impl RolloutWorld {
         if !in_order {
             if order.iter().any(|&index| axis(wall_box(index)[0]).to_f64().is_nan()) {
                 general(scratch);
-                return;
+                return false;
             }
             // The keys are distinct and none is NaN: any sort gives the one
             // order.
@@ -36325,6 +36333,7 @@ impl RolloutWorld {
             sorted.sort_by_key(|&index| (axis(bounds[index][0]), index));
             debug_assert_eq!(sorted, scratch.wall_order);
         }
+        true
     }
 
     /// `platform_pairs` as DetPhysics sweeps: the active platforms sorted,
@@ -38799,6 +38808,9 @@ impl RolloutWorld {
             physics_dt,
         );
         self.platform_dynamics.settled = settled;
+        // The platforms the integration skipped: settled since the last one
+        // (`moved` has every bit past 64 platforms, so none then).
+        let skipped = settled & !moved;
         self.platforms.integrated(settled, moved);
         if inactive {
             for i in 0..self.platforms.len() {
@@ -38917,9 +38929,31 @@ impl RolloutWorld {
         if self.platforms.len() >= 2 && self.platforms.iter().any(|platform| platform.active) {
             debug_assert_eq!(sweep_x, Self::platform_sweep_x(&self.platforms, &self.entities));
         }
-        Self::platform_pairs(&self.platforms, scratch, sweep_x);
+        let stack_sweep = Self::platform_pairs(&self.platforms, scratch, sweep_x);
+        // Two platforms the integration skipped meet no more than they did
+        // at the last narrow phase, which followed the last integration:
+        // nothing has written their colliders since (a write clears a
+        // platform's settled bit), and a contact there would have cleared
+        // both through `pair_mut` below. If that sweep and this one took
+        // the same axis on the stack, the two were a pair then, in the same
+        // order (a box overlap on both axes, in the order of their low edges
+        // then indices), and `rounded_rounded` of the same colliders found
+        // nothing.
+        let axis = stack_sweep.then_some(sweep_x);
+        let quiet = if axis.is_some() && axis == self.platform_dynamics.pairs_axis { skipped } else { 0 };
+        self.platform_dynamics.pairs_axis = axis;
+        debug_assert!(self.platforms.len() <= 64 || quiet == 0);
         scratch.contacts.clear();
         for &[a, b] in &scratch.pairs {
+            // `quiet` is 0 past 64 platforms, so the shifts' wrap reads none.
+            if (quiet >> a) & (quiet >> b) & 1 != 0 {
+                debug_assert!(
+                    crate::physics::contact::rounded_rounded(self.platforms[a].collider, self.platforms[b].collider)
+                        .is_none(),
+                    "skipped platforms {a} and {b} meet"
+                );
+                continue;
+            }
             if let Some(contact) = crate::physics::contact::rounded_rounded(
                 self.platforms[a].collider,
                 self.platforms[b].collider,
