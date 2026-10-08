@@ -1,5 +1,6 @@
 """Train native recurrent PPO against a PFSP self-play pool (league/pfsp.py)."""
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -889,7 +890,96 @@ def main():
             ready = offset_counters(vector.snapshot(), base_counts)
             dump_rows()
         training_started = time.monotonic()
-        with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
+        deferred = None   # the last update's bookkeeping, not done yet (the loop's end)
+        # BOPL_TRAIN_AB_DEFER=<period> (measurement only): updates alternate
+        # every <period> between the deferred bookkeeping (arm 0) and the
+        # serial order (arm 1, before the next rollout starts); the outputs
+        # are the same either way, the arms' wall_seconds are the A/B.
+        defer_ab = int(os.environ.get('BOPL_TRAIN_AB_DEFER', '0'))
+        def bookkeep(p, evaluate_due=True):
+            nonlocal next_checkpoint, next_eval
+            done = p['counts']   # == counts: the next rollout is not collected yet
+            native_selfplay.register(pool, ledger, done['game_steps'], done['learner_steps'])
+            after_pool = native_selfplay.summary(pool, ledger)
+            native = p['native']
+            record = update(native, done, p['previous'], elapsed=p['elapsed'], previous_elapsed=p['previous_elapsed'],
+                            entropy_coefficient=native['loss']['entropy_coefficient'],
+                            learning_rate=native['loss']['learning_rate'],
+                            pool_opponents=sorted(bank['opponent'] for bank in after_pool['banks']),
+                            rollout_seconds=p['rollout_seconds'], train_seconds=p['train_seconds'])
+            # With overlap the rollout (timed on the buffer threads) and the
+            # train phase run concurrently, so they no longer sum to the
+            # update's wall time; wall_seconds is that time (previous
+            # record to this one), which is what sps/learner_sps divide by.
+            record['wall_seconds'] = p['elapsed']-p['previous_elapsed']
+            record['overlap'] = overlap
+            record['pool'] = after_pool
+            if p['scripted'] is not None:
+                record['scripted'] = p['scripted']
+                record['scripted_share'] = p['share']
+            record['free_fraction'] = p['free']
+            record['entropy_head_scale_applied'] = p['applied_scale']
+            # The native trainer's own per-update timers (seconds, averaged
+            # over buffers): eval_gpu = inference graph + action copy-back,
+            # eval_env = OpenMP game stepping, rollout = whole barrier.
+            record['native_perf'] = {key: native['perf'].get(key) for key in ('rollout', 'eval_gpu', 'eval_env')}
+            packing = p['packing']
+            if packing is not None:
+                # The last training forward's packing (players, slots, entities, slimes): rows the packed set
+                # buffers dropped, and the rows packed per batch row (the row budget the batch needed).
+                record['set_overflow'] = packing[:4]
+                if len(packing) == 9 and packing[8]:
+                    record['set_rows'] = [round(n / packing[8], 3) for n in packing[4:8]]
+            metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
+            for event in native_selfplay.events(p['before_pool'], after_pool, ledger, done['learner_steps']):
+                events.write(json.dumps(event, allow_nan=False)+'\n')
+            events.flush()
+            saturation = after_pool['pfsp']
+            # Null until the pool has drawn/played anything; see _saturation.
+            digits = lambda value: None if value is None else round(value, 3)
+            console = dict(step=record['step'], learner_steps=record['learner_steps'],
+                           learner_sps=record['learner_sps'], matches=record['matches'],
+                           pool=after_pool['size'],
+                           # The saturation line: how concentrated the curriculum
+                           # actually is, next to what the pool currently intends.
+                           pfsp=dict(f=saturation['f'], serving=saturation['serving'],
+                                     top2=digits(saturation['played_top2']),
+                                     played_entropy=digits(saturation['entropy']['played']),
+                                     intended_entropy=digits(saturation['entropy']['intended']),
+                                     divergence=digits(saturation['divergence'])))
+            if p['scripted'] is not None:
+                console['scripted'] = dict(
+                    share=round(p['share'], 3),
+                    **{name: (None if row['score_rate'] is None else round(row['score_rate'], 3))
+                       for name, row in record['scripted'].items()})
+            print(json.dumps(console), flush=True)
+            if done['learner_steps'] >= next_checkpoint:
+                save()
+                next_checkpoint = (done['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
+            status('running')
+            if evaluate_due and not a.no_eval and done['learner_steps'] >= next_eval and not stop:
+                evaluate(save())
+                next_eval = (done['learner_steps']//a.eval_every+1)*a.eval_every
+        def flush_deferred(failing=False):
+            nonlocal deferred, counts
+            if deferred is None:
+                return
+            p, deferred = deferred, None
+            if not failing:
+                bookkeep(p)
+                return
+            # A failure after an update's critical half: write what the serial
+            # order would have written already (save and status read counts), best effort.
+            current, counts = counts, p['counts']
+            try:
+                bookkeep(p, evaluate_due=False)
+            except Exception:
+                pass
+            finally:
+                counts = current
+        with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events, \
+                contextlib.ExitStack() as on_exit:
+            on_exit.callback(flush_deferred, True)   # a no-op unless the loop failed
             while counts['learner_steps'] < a.steps and not stop:
                 before = time.monotonic()
                 if overlap:
@@ -903,6 +993,7 @@ def main():
                 else:
                     rollout_seconds = _C.rollouts(trainer)
                     dump_rows()
+                flush_deferred()   # the previous update's bookkeeping, while this rollout runs
                 rolled = time.monotonic()
                 # Configure the native loss before training. Native train_impl
                 # copies this scalar into a device buffer each update, so CUDA
@@ -942,20 +1033,7 @@ def main():
                 native_selfplay.credit(pool, flat, ledger)
                 native_selfplay.step(trainer, _C, pool, ledger, update_index)
                 update_index += 1
-                native_selfplay.register(pool, ledger, counts['game_steps'], counts['learner_steps'])
-                after_pool = native_selfplay.summary(pool, ledger)
-                record = update(native, counts, previous, elapsed=elapsed, previous_elapsed=previous_elapsed,
-                                entropy_coefficient=native['loss']['entropy_coefficient'],
-                                learning_rate=native['loss']['learning_rate'],
-                                pool_opponents=sorted(bank['opponent'] for bank in after_pool['banks']),
-                                rollout_seconds=rollout_seconds, train_seconds=trained-rolled)
-                # With overlap the rollout (timed on the buffer threads) and the
-                # train phase run concurrently, so they no longer sum to the
-                # update's wall time; wall_seconds is that time (previous
-                # record to this one), which is what sps/learner_sps divide by.
-                record['wall_seconds'] = elapsed-previous_elapsed
-                record['overlap'] = overlap
-                record['pool'] = after_pool
+                scripted = None
                 if roster_entries:
                     n = float(flat.get('env/n', 0.0))
                     window = []
@@ -982,52 +1060,22 @@ def main():
                             score_rate=scripted_roster.score_rate(entry), weight=weights[i],
                             window_games=window[i][0], window_wins=window[i][1],
                             window_draws=window[i][2])
-                    record['scripted'] = scripted
-                    record['scripted_share'] = share
-                record['free_fraction'] = free
-                record['entropy_head_scale_applied'] = applied_scale
-                # The native trainer's own per-update timers (seconds, averaged
-                # over buffers): eval_gpu = inference graph + action copy-back,
-                # eval_env = OpenMP game stepping, rollout = whole barrier.
-                record['native_perf'] = {key: native['perf'].get(key) for key in ('rollout', 'eval_gpu', 'eval_env')}
-                if a.encoder == 'v4':
-                    # The last training forward's packing (players, slots, entities, slimes): rows the packed set
-                    # buffers dropped, and the rows packed per batch row (the row budget the batch needed).
-                    packing = list(_C.bopl_v4_overflow())
-                    record['set_overflow'] = packing[:4]
-                    if len(packing) == 9 and packing[8]:
-                        record['set_rows'] = [round(n / packing[8], 3) for n in packing[4:8]]
-                metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
-                for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
-                    events.write(json.dumps(event, allow_nan=False)+'\n')
-                events.flush()
-                saturation = after_pool['pfsp']
-                # Null until the pool has drawn/played anything; see _saturation.
-                digits = lambda value: None if value is None else round(value, 3)
-                console = dict(step=record['step'], learner_steps=record['learner_steps'],
-                               learner_sps=record['learner_sps'], matches=record['matches'],
-                               pool=after_pool['size'],
-                               # The saturation line: how concentrated the curriculum
-                               # actually is, next to what the pool currently intends.
-                               pfsp=dict(f=saturation['f'], serving=saturation['serving'],
-                                         top2=digits(saturation['played_top2']),
-                                         played_entropy=digits(saturation['entropy']['played']),
-                                         intended_entropy=digits(saturation['entropy']['intended']),
-                                         divergence=digits(saturation['divergence'])))
-                if roster_entries:
-                    console['scripted'] = dict(
-                        share=round(share, 3),
-                        **{name: (None if row['score_rate'] is None else round(row['score_rate'], 3))
-                           for name, row in record['scripted'].items()})
-                print(json.dumps(console), flush=True)
+                # The rest of the update (register, the pool summary, the
+                # metrics and pool.jsonl lines, the console line, checkpoint,
+                # status, evaluation) reads nothing the next rollout writes
+                # and writes nothing it reads, so it waits for that rollout to
+                # start (bookkeep, at the top of the next iteration or after
+                # the loop) instead of holding it back ~0.8 ms. What it reads
+                # that a later call changes is taken here.
+                deferred = dict(native=native, counts=counts, previous=previous, elapsed=elapsed,
+                                previous_elapsed=previous_elapsed, rollout_seconds=rollout_seconds,
+                                train_seconds=trained-rolled, before_pool=before_pool, scripted=scripted,
+                                share=share, free=free, applied_scale=applied_scale,
+                                packing=list(_C.bopl_v4_overflow()) if a.encoder == 'v4' else None)
                 previous, previous_elapsed = counts, elapsed
-                if counts['learner_steps'] >= next_checkpoint:
-                    save()
-                    next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
-                status('running')
-                if not a.no_eval and counts['learner_steps'] >= next_eval and not stop:
-                    evaluate(save())
-                    next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
+                if defer_ab and (update_index // defer_ab) & 1:
+                    flush_deferred()   # BOPL_TRAIN_AB_DEFER's arm 1: the serial order
+            flush_deferred()
             final = save()
             if not a.no_eval and not stop and counts['game_steps'] not in evaluated_steps:
                 evaluate(final)
