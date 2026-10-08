@@ -553,7 +553,8 @@ constexpr int BR4R_KINDS = BOPL4_ENTITY_PARTS + BOPL4_SLIME_PARTS + 1 + BOPL4_PL
 __constant__ unsigned char br4r_count[BR4R_KINDS] = {0, 0, 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 5, 6};
 __constant__ unsigned char br4r_part[BR4R_KINDS] = {0, 1, 2, 3, 0, 1, 0, 0, 1, 0, 1, 0, 1, 2, 0};
 static_assert(BR4R_KINDS == 15, "the tables above");
-struct Br4IShared { int pre[BR4E_SEGS][BR4R_MAX_ROWS + 1], base[BR4R_KINDS + 1], wsum[BR4E_SEGS][BR4_RAYS_THREADS / 32]; };
+__host__ __device__ constexpr int br4r_seg(int k) { return k < 4 ? 0 : k < 6 ? 1 : k < 7 ? 2 : k < 9 ? 3 : k < 11 ? 4 : k < 14 ? 5 : 6; }   // br4r_count
+struct Br4IShared { int pre[BR4E_SEGS][BR4R_MAX_ROWS + 1], base[BR4R_KINDS + 1]; int4 wsum[BR4_RAYS_THREADS / 32][2]; };
 // Columns [LO, HI) of an item's row from the thread's copy to dst, A the
 // floats dst is aligned to (16 bytes: 4): each store as wide as the
 // alignment allows. A writer function's scattered float stores to the row
@@ -593,21 +594,31 @@ __device__ static void br4_items(const Br4Meta* __restrict__ metas, const int* _
     for (int o = 1; o < 32; o <<= 1)
         #pragma unroll
         for (int q = 0; q < BR4E_SEGS; q++) { const int y = __shfl_up_sync(0xffffffffu, x[q], o); if (lane >= o) x[q] += y; }
-    if (lane == 31)
-        #pragma unroll
-        for (int q = 0; q < BR4E_SEGS; q++) sh.wsum[q][wid] = x[q];
+    if (lane == 31) { sh.wsum[wid][0] = make_int4(x[0], x[1], x[2], x[3]); sh.wsum[wid][1] = make_int4(x[4], x[5], x[6], 0); }
     __syncthreads();
+    // Every thread its warp's offsets and the totals from the warps' sums,
+    // every load in flight at once (a thread's serial sum over the warps
+    // below and thread 0's pass over the kinds behind its own barrier were
+    // ~0.6 us of the items' start); thread 0 the kinds' bases.
+    int below[BR4E_SEGS], total[BR4E_SEGS];
     #pragma unroll
-    for (int q = 0; q < BR4E_SEGS; q++) {
-        int run = x[q];
-        for (int v = 0; v < wid; v++) run += sh.wsum[q][v];
-        if (t < rows) sh.pre[q][t] = run - c[q];
-        if (t == T - 1) sh.pre[q][rows] = run;
+    for (int q = 0; q < BR4E_SEGS; q++) below[q] = total[q] = 0;
+    #pragma unroll
+    for (int v = 0; v < W; v++) {
+        const int4 a = sh.wsum[v][0], b = sh.wsum[v][1];
+        const int y[BR4E_SEGS] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z};
+        #pragma unroll
+        for (int q = 0; q < BR4E_SEGS; q++) { total[q] += y[q]; below[q] += v < wid ? y[q] : 0; }
     }
-    __syncthreads();
+    #pragma unroll
+    for (int q = 0; q < BR4E_SEGS; q++) if (t < rows) sh.pre[q][t] = below[q] + x[q] - c[q];
     if (t == 0) {
+        int base = 0;
         sh.base[0] = 0;
-        for (int q = 0; q < BR4R_KINDS; q++) sh.base[q + 1] = (sh.base[q] + sh.pre[br4r_count[q]][rows] + 31) & ~31;
+        #pragma unroll
+        for (int q = 0; q < BR4E_SEGS; q++) sh.pre[q][rows] = total[q];
+        #pragma unroll
+        for (int k = 0; k < BR4R_KINDS; k++) sh.base[k + 1] = base = (base + total[br4r_seg(k)] + 31) & ~31;
     }
     __syncthreads();
     const int end = sh.base[BR4R_KINDS];
@@ -615,7 +626,8 @@ __device__ static void br4_items(const Br4Meta* __restrict__ metas, const int* _
         const int i = ((block + blocks * (wid + W * it)) << 5) + lane;
         if (i >= end) continue;
         int kind = 0;
-        while (sh.base[kind + 1] <= i) kind++;
+        #pragma unroll
+        for (int k = 1; k < BR4R_KINDS; k++) kind += sh.base[k] <= i;
         const int q = br4r_count[kind], part = br4r_part[kind];
         const int j = i - sh.base[kind];
         if (j >= sh.pre[q][rows]) continue;   // the padding to the next kind's warp
