@@ -607,6 +607,7 @@ struct BrPlan {
     int transport_check; // dump mode (train.py --dump-rows): count device-row floats that differ from the host row
     const float* packed_mapped;  // the device alias of vec->packed_host (bopl4_unpack_rows reads the slots' tails there)
     CUdeviceptr gpu_flag_dev;    // device aliases of vec->gpu_flag / vec->gpu_go (0: none)
+    unsigned* flag_done;         // [num_buffers * BOPL_GPU_FLAG_STRIDE] br_sample's finished blocks, or nullptr: see br_forward
     unsigned* gpu_go_dev;
     int tf32;            // tensor-core tf32 GEMMs (BOPL_TF32, default 1) or fp32 FMAs
     int sparse;          // stage only the populated obs slots (BOPL_OBS_SPARSE, default 1)
@@ -708,11 +709,18 @@ struct BrSampleArgs {
     curandStatePhilox4_32_10_t* rng;       // (rows,) this buffer's states
     const signed char* head_consume; int hc_stride;
     int rows;
+    // Or nullptr: the host-mapped completion word (vecenv.h gpu_flag), stored
+    // once every block's env actions are in host memory, and the device count
+    // of the blocks done (the last one resets it).
+    unsigned* flag; unsigned* done;
 };
 
-__global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
+// (256, 1): with the host stores below, ptxas otherwise settles on 80
+// registers and a larger stack (127 before them; 128 with the bound).
+__global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32, 1) br_sample(BrSampleArgs a) {
     __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
     __shared__ int s_buttons[SAMPLE_WARP_ROWS];
+    __shared__ float s_act[SAMPLE_WARP_ROWS * MAX_ATN_HEADS];   // with a.flag: the block's env actions, stored together
     br_pdl_wait(); br_pdl_release();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int row0 = blockIdx.x * SAMPLE_WARP_ROWS, idx = row0 + warp;
@@ -846,7 +854,8 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
         if (used) total_log_prob += log_prob;
         if (lane == 0) {
             a.rollout_actions[(long)idx * a.num_atns + h] = (float)sampled_action;
-            a.env_actions[(long)idx * a.num_atns + h] = (float)sampled_action;
+            if (a.flag) s_act[warp * a.num_atns + h] = (float)sampled_action;
+            else a.env_actions[(long)idx * a.num_atns + h] = (float)sampled_action;
         }
         sampled[h] = sampled_action;
     };
@@ -859,20 +868,41 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
             if (lane == 0) s_buttons[warp] = sampled[1];
         }
         if (a.aim_fourier > 0) fourier_bins();
-        if (!live) return;
-        stage(0, BOPL_ACT_AIM, sampled[1]);
-        sample_head(0);
-        for (int h = 2; h < a.num_atns; ++h) sample_head(h);
+        if (live) {
+            stage(0, BOPL_ACT_AIM, sampled[1]);
+            sample_head(0);
+            for (int h = 2; h < a.num_atns; ++h) sample_head(h);
+        }
     } else {
         if (a.aim_fourier > 0) fourier_bins();
-        if (!live) return;
-        stage(0, A_total, 0);
-        for (int h = 0; h < a.num_atns; ++h) sample_head(h);
+        if (live) {
+            stage(0, A_total, 0);
+            for (int h = 0; h < a.num_atns; ++h) sample_head(h);
+        }
     }
-    if (lane == 0) {
+    if (live && lane == 0) {
         a.logprobs[idx] = total_log_prob;
         if (idx >= a.value_rows) a.values[idx] = logits[a.dec_cols];
         a.rng[idx] = state;
+    }
+    if (a.flag) {
+        // The block's actions (its rows' are contiguous) to the host in one
+        // store, fenced; then a count of the blocks done, and the last block
+        // (which acquired every other block's count, so their fenced stores)
+        // releases the flag. A warp's lane-0 stores straight to the host took
+        // ~1 us longer in the sampler.
+        __syncthreads();
+        const int n = live_rows * a.num_atns;
+        if ((int)threadIdx.x < n) { a.env_actions[(long)row0 * a.num_atns + threadIdx.x] = s_act[threadIdx.x]; __threadfence_system(); }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            unsigned prev;
+            asm volatile("atom.acq_rel.sys.global.add.u32 %0, [%1], %2;" : "=r"(prev) : "l"(a.done), "r"(1u) : "memory");
+            if (prev == gridDim.x - 1u) {
+                *a.done = 0u;
+                asm volatile("st.release.sys.global.u32 [%0], %1;" :: "l"(a.flag), "r"(1u) : "memory");
+            }
+        }
     }
 }
 
@@ -995,6 +1025,14 @@ static void br_init(PuffeRL* pufferl) {
         };
         if (br_env_int("BOPL_GPU_FLAG", 1)) p->gpu_flag_dev = (CUdeviceptr)mapped_words(&vec->gpu_flag);
         if (vec->gpu_flag && br_env_int("BOPL_GPU_GO", 1)) p->gpu_go_dev = (unsigned*)mapped_words(&vec->gpu_go);
+        // br_sample stores the env actions into the mapped host buffer and
+        // then the flag itself (br_forward): no D2H copy or write-value node.
+        // BOPL_GPU_FLAG_CHECK=1 checks the write-value node's order (flag
+        // after actions_ready), so it keeps those nodes.
+        if (p->gpu_flag_dev && vec->mapped && vec->dev_actions && br_env_int("BOPL_GPU_FLAG_CHECK", 0) != 1) {
+            assert(cudaMalloc((void**)&p->flag_done, bytes) == cudaSuccess);
+            cudaMemset(p->flag_done, 0, bytes);
+        }
     }
     if (p->zero_copy == 0) {
         int nb = pufferl->hypers.num_buffers;
@@ -1115,6 +1153,7 @@ static void br_free(PuffeRL* pufferl) {
         for (int b = 0; b < pufferl->hypers.num_buffers; b++) cudaEventDestroy(vec->actions_ready[b]);
         free(vec->actions_ready); vec->actions_ready = nullptr;
     }
+    if (p->flag_done) { cudaFree(p->flag_done); p->flag_done = nullptr; }
     if (vec && vec->gpu_flag) { cudaFreeHost(vec->gpu_flag); vec->gpu_flag = nullptr; }
     if (vec && vec->gpu_go) { cudaFreeHost(vec->gpu_go); vec->gpu_go = nullptr; }
     if (vec && vec->pack_host) {
@@ -1155,7 +1194,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         terminals = (const float*)(pk + rows * sizeof(float));
         mask = p.mask_stride ? (const unsigned char*)(pk + 2 * rows * sizeof(float)) : nullptr;
     }
-    float* env_actions = (p.actions_zero_copy ? vec->dev_actions : vec->gpu_actions) + (long)start * p.num_atns;
+    float* env_actions = (p.actions_zero_copy || p.flag_done ? vec->dev_actions : vec->gpu_actions) + (long)start * p.num_atns;
     if (p.gpu_go_dev) br_go_wait<<<1, 1, 0, stream>>>(p.gpu_go_dev + buf * BOPL_GPU_FLAG_STRIDE);
     if (p.graph_copies && vec->packed_host) {
         // Packed rows: one 2D copy of the head of every slot of the buffer,
@@ -1258,14 +1297,24 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     smp.logprobs = lp_dst.data; smp.values = val_dst.data;
     smp.rng = pufferl->rng_states[buf];
     smp.head_consume = hc_dev; smp.hc_stride = hc_stride; smp.rows = rows;
+    if (p.flag_done) {
+        // The sampler writes the actions to the host and stores the flag:
+        // two graph nodes fewer to launch (the D2H copy and the write-value,
+        // ~1 us each on an idle host, more on the trainer's buffer threads).
+        // 2026-10-08 (fwd_bench, 32 SMs, go-gated, host flag seen; the host
+        // loaded by other jobs): launch 17.1 -> 9.7 us, flag 1 stream 126.5
+        // -> 115.2 us, 4 streams 289.4 -> 285.1 us.
+        smp.flag = (unsigned*)p.gpu_flag_dev + buf * BOPL_GPU_FLAG_STRIDE;
+        smp.done = p.flag_done + buf * BOPL_GPU_FLAG_STRIDE;
+    }
     br_launch_pdl(br_sample, dim3((rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS), dim3(SAMPLE_WARP_ROWS * 32), 0, stream, smp);
-    if (p.graph_copies && !p.actions_zero_copy)
+    if (p.graph_copies && !p.actions_zero_copy && !p.flag_done)
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);
     if (vec->actions_ready) br_record_external(vec->actions_ready[buf], stream);
     // After the event (BOPL_GPU_FLAG_CHECK=1 relies on it); the default flag
     // fences the stream's earlier writes (the action copy) before the word.
-    if (p.gpu_flag_dev) {
+    if (p.gpu_flag_dev && !p.flag_done) {
         CUresult r = cuStreamWriteValue32((CUstream)stream, p.gpu_flag_dev + (CUdeviceptr)buf * BOPL_GPU_FLAG_STRIDE * sizeof(unsigned),
                                           1, CU_STREAM_WRITE_VALUE_DEFAULT);
         if (r != CUDA_SUCCESS) { fprintf(stderr, "bopl gpu flag: cuStreamWriteValue32 failed (%d)\n", (int)r); abort(); }

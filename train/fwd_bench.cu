@@ -1,7 +1,7 @@
 // The policy v4 rollout forward of one buffer step, standalone: the trainer's
 // launch sequence (br_forward's packed-row path: the H2D copy of the slots,
-// bopl4_unpack_rows, bopl4_rays_launch, br4_run, br_sample, the D2H copy of
-// the actions) on buffer steps dumped from a running trainer (real weights,
+// bopl4_unpack_rows, bopl4_rays_launch, br4_run, br_sample with its host
+// stores of the actions and the flag) on buffer steps dumped from a running trainer (real weights,
 // rows, recurrent state, RNG). Two jobs:
 //
 //   exactness  every dumped step run eagerly from its dumped inputs; the
@@ -91,6 +91,9 @@ static void spill(const std::string& path, const void* p, size_t n) {
     if (!f || fwrite(p, 1, n, f) != n) { fprintf(stderr, "cannot write %s\n", path.c_str()); exit(1); }
     fclose(f);
 }
+#ifndef BOPL_GPU_FLAG_STRIDE
+#define BOPL_GPU_FLAG_STRIDE 16   // vecenv.h: words per buffer of the flag (and br_sample's count)
+#endif
 template <typename T> static T* dev_alloc(size_t n) {
     T* p = nullptr; ck(cudaMalloc((void**)&p, n * sizeof(T) + 16), "cudaMalloc"); ck(cudaMemset(p, 0, n * sizeof(T) + 16), "memset"); return p;
 }
@@ -119,7 +122,7 @@ struct Step {
 // One stream's (buffer's) device state.
 struct Lane {
     cudaStream_t s;
-    float *dense, *rew, *term, *actions, *env_actions, *logprobs, *values, *mask;
+    float *dense, *rew, *term, *actions, *logprobs, *values, *mask;
     curandStatePhilox4_32_10_t* rng;
     float* state[BR_MAX_GROUPS];
     cudaGraphExec_t graph = nullptr;
@@ -138,7 +141,8 @@ struct Bench {
     const Weights* cur = nullptr;
     std::vector<Step> steps;
     std::vector<Lane> lanes;
-    float *packed_dev, *packed_host, *packed_mapped, *host_rows, *host_rows_dev, *h_actions;
+    float *packed_dev, *packed_host, *packed_mapped, *host_rows, *host_rows_dev, *h_actions, *h_actions_dev;
+    unsigned *flag_host, *flag_dev, *flag_done;   // br_forward's gpu_flag words (mapped) and br_sample's block counts, BOPL_GPU_FLAG_STRIDE a buffer
     int* act_sizes;
 
     void load(const std::string& root, int max_steps) {
@@ -276,7 +280,11 @@ struct Bench {
         ck(cudaMemcpy(packed_dev, packed_host, slots * slot * sizeof(float), cudaMemcpyHostToDevice), "packed init");
         ck(cudaHostAlloc((void**)&host_rows, slots * BOPL_OBS_STRIDE * sizeof(float), cudaHostAllocMapped | cudaHostAllocPortable), "host_rows");
         ck(cudaHostGetDevicePointer((void**)&host_rows_dev, host_rows, 0), "host_rows alias");
-        ck(cudaHostAlloc((void**)&h_actions, slots * num_atns * sizeof(float), cudaHostAllocPortable), "h_actions");
+        ck(cudaHostAlloc((void**)&h_actions, slots * num_atns * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "h_actions");
+        ck(cudaHostGetDevicePointer((void**)&h_actions_dev, h_actions, 0), "h_actions alias");
+        ck(cudaHostAlloc((void**)&flag_host, (size_t)nb * BOPL_GPU_FLAG_STRIDE * 4, cudaHostAllocPortable | cudaHostAllocMapped), "flag");
+        ck(cudaHostGetDevicePointer((void**)&flag_dev, flag_host, 0), "flag alias");
+        flag_done = dev_alloc<unsigned>((size_t)nb * BOPL_GPU_FLAG_STRIDE);
         bopl4_rays_init(packed_dev, (long)slots);
         q.acts = (Br4Acts*)calloc(nb, sizeof(Br4Acts));
         lanes.resize(nb);
@@ -293,7 +301,7 @@ struct Bench {
             ck(cudaStreamCreateWithPriority(&a.critic, cudaStreamNonBlocking, hi), "critic stream");
             cudaEventCreateWithFlags(&a.fork, cudaEventDisableTiming); cudaEventCreateWithFlags(&a.join, cudaEventDisableTiming);
             L.dense = z((size_t)rows * BOPL_OBS_STRIDE); L.rew = z(rows); L.term = z(rows);
-            L.actions = z((size_t)rows * num_atns); L.env_actions = z((size_t)rows * num_atns); L.logprobs = z(rows); L.values = z(rows);
+            L.actions = z((size_t)rows * num_atns); L.logprobs = z(rows); L.values = z(rows);
             L.mask = z((size_t)rows * mask_stride);
             L.rng = dev_alloc<curandStatePhilox4_32_10_t>(rows);
             for (int g = 0; g < G; g++) L.state[g] = z(state_numel[g]);
@@ -334,11 +342,11 @@ struct Bench {
         smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
         smp.act_sizes = act_sizes; smp.num_atns = num_atns; smp.value_rows = br4_value_rows(p);
         smp.env_mask = mask; smp.mask_stride = mask_stride; smp.rollout_mask = L.mask;
-        smp.env_actions = L.env_actions; smp.rollout_actions = L.actions;
+        smp.env_actions = h_actions_dev + (size_t)start * num_atns; smp.rollout_actions = L.actions;
+        smp.flag = flag_dev + b * BOPL_GPU_FLAG_STRIDE; smp.done = flag_done + b * BOPL_GPU_FLAG_STRIDE;
         smp.logprobs = L.logprobs; smp.values = L.values; smp.rng = L.rng;
         smp.head_consume = nullptr; smp.hc_stride = 0; smp.rows = rows;
         br_launch_pdl(br_sample, dim3((rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS), dim3(SAMPLE_WARP_ROWS * 32), 0, L.s, smp);
-        ck(cudaMemcpyAsync(h_actions + (size_t)start * num_atns, L.env_actions, (size_t)rows * num_atns * sizeof(float), cudaMemcpyDeviceToHost, L.s), "d2h");
         br_record_external(L.ready, L.s);
         br4_join(p, b, L.s);
     }
