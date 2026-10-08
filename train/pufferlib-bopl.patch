@@ -1493,8 +1493,8 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 +    }
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
---- pristine-src/pufferlib.cu	2026-09-19 22:00:11.172363059 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-19 21:39:52.838271150 -0400
+--- pristine-src/pufferlib.cu	2026-10-07 20:56:31.555194561 -0400
++++ puffer-overlay/pufferlib.cu	2026-10-07 21:31:44.926519942 -0400
 @@ -1,15 +1,73 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -2316,7 +2316,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      } // end if (idx < total_elements)
  
  // Deterministic aggregation
-@@ -1021,6 +1588,259 @@
+@@ -1021,6 +1588,388 @@
      }
  }
  
@@ -2346,21 +2346,78 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +// on 16 SMs. Same values, same per-lane arithmetic and order as the direct
 +// loads, so the results are bit-identical.
 +#define PPO_SMEM_LOGITS 288
-+template<bool SMEM>
++// Bopl: Fourier aim tables (TAB: fourier in [1, PPO_AIM_TAB_K]). Every row's
++// aim bins use the same cos / sin values: bin i's (cos k theta_i, sin k
++// theta_i) of bopl_aim_basis + bopl_aim_basis_next for the logits, and k's
++// rotation over the bins (cos k theta_i, sin k theta_i by the recurrence of
++// the projection below) for the logit gradient's projection. Each block builds
++// both once in shared memory and walks row groups grid-stride (partials per
++// row group, as before). The recurrences' contractable mul / add pairs are
++// written as the explicit roundings ptxas chose for the per-row code in the
++// shipped kernel (SASS of ppo_loss_compute_warp<true>: c' = fma(c1, c, -(s1 s)),
++// s' = fma(s1, c, c1 s), the same shape for the projection's rotation): the
++// same source compiled into the builder rounded s' the other way (fma(c1, s,
++// s1 c)), and the values must be bit-identical. Per row this drops 255 sincosf + K rotations per bin and
++// the projection's 255 rotations per harmonic on K of 32 lanes (the kernel was
++// issue bound there: 547 us per 24576-row minibatch on 24 SMs).
++#define PPO_AIM_TAB_K 8
++#define PPO_AIM_ROT_LD 260   // s_rot row stride (floats): == 4 mod 32, so 8 lanes' float4 loads hit distinct banks
++static size_t ppo_aim_tab_bytes(int K) {
++    return (size_t)K * BOPL_ACT_AIM * sizeof(float2) + (size_t)2 * K * PPO_AIM_ROT_LD * sizeof(float);
++}
++template<bool SMEM, bool TAB = false>
 +__global__ void __launch_bounds__(PPO_THREADS) ppo_loss_compute_warp(
 +        float* __restrict__ ppo_partials,
 +        PPOKernelArgs a, PPOGraphArgs g) {
-+    __shared__ float s_logits[SMEM ? PPO_WARP_ROWS : 1][SMEM ? PPO_SMEM_LOGITS : 1];
++    __shared__ __align__(16) float s_logits[SMEM ? PPO_WARP_ROWS : 1][SMEM ? PPO_SMEM_LOGITS : 1];
 +    __shared__ float s_lse[PPO_WARP_ROWS][MAX_ATN_HEADS];
 +    __shared__ float s_ent[PPO_WARP_ROWS][MAX_ATN_HEADS];
 +    __shared__ int s_act[PPO_WARP_ROWS][MAX_ATN_HEADS];
 +    __shared__ int s_used[PPO_WARP_ROWS][MAX_ATN_HEADS];
 +    __shared__ float row_losses[PPO_WARP_ROWS][LOSS_N];
++    extern __shared__ float4 s_tab[];
++    // TAB: s_basis[(k - 1) * 256 + bin] = (cos k theta_bin, sin k theta_bin) as the logit's basis walk
++    // reaches them; s_rot[(2 (k - 1) + {0: cos, 1: sin}) * PPO_AIM_ROT_LD + i] = the projection's rotation at bin i.
++    float2* s_basis = reinterpret_cast<float2*>(s_tab);
++    float* s_rot = reinterpret_cast<float*>(s_basis + (TAB ? a.aim_fourier * BOPL_ACT_AIM : 0));
 +
 +    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
 +    const int total_elements = a.N * a.T_seq;
-+    const int nt = blockIdx.x * PPO_WARP_ROWS + warp;
 +    const float inv_NT = 1.0f / float(total_elements);
++    if (TAB) {
++        const int K = a.aim_fourier;
++        for (int bin = tid; bin < BOPL_ACT_AIM; bin += PPO_THREADS) {
++            // bopl_aim_basis / bopl_aim_basis_next with explicit roundings
++            float c1 = 0.0f, s1 = 0.0f;
++            if (bin > 0) {
++                const float theta = __fdiv_rn(__fmul_rn(6.283185307179586f, (float)(bin - 1)), 255.0f);
++                c1 = cosf(theta); s1 = sinf(theta);
++            }
++            float ck = c1, sk = s1;
++            for (int k = 1; k <= K; k++) {
++                s_basis[(k - 1) * BOPL_ACT_AIM + bin] = make_float2(ck, sk);
++                const float c = __fmaf_rn(c1, ck, -__fmul_rn(s1, sk));
++                sk = __fmaf_rn(s1, ck, __fmul_rn(c1, sk)); ck = c;
++            }
++        }
++        for (int k = tid + 1; k <= K; k += PPO_THREADS) {
++            const float dtheta = 6.283185307179586f / 255.0f;
++            float cs, sn;
++            sincosf(__fmul_rn((float)k, dtheta), &sn, &cs);
++            float ck = 1.0f, sk = 0.0f;  // cos/sin(k theta_1), theta_1 = 0
++            float* rc = s_rot + (2 * (k - 1)) * PPO_AIM_ROT_LD;
++            float* rs = rc + PPO_AIM_ROT_LD;
++            for (int i = 1; i < BOPL_ACT_AIM; ++i) {
++                rc[i] = ck; rs[i] = sk;
++                const float cn = __fmaf_rn(cs, ck, -__fmul_rn(sn, sk));
++                sk = __fmaf_rn(sn, ck, __fmul_rn(cs, sk)); ck = cn;
++            }
++        }
++        __syncthreads();
++    }
++    const int groups = TAB ? (total_elements + PPO_WARP_ROWS - 1) / PPO_WARP_ROWS : 1;
++    for (int grp = blockIdx.x; grp < (TAB ? groups : blockIdx.x + 1); grp += gridDim.x) {
++    const int nt = grp * PPO_WARP_ROWS + warp;
 +
 +    if (nt < total_elements) {
 +        const int n = nt / a.T_seq, t = nt - n * a.T_seq;
@@ -2425,7 +2482,50 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +        };
 +        float* s_row = SMEM ? s_logits[warp] : nullptr;
 +        if (SMEM) {
-+            if (aim) {
++            if (TAB) {
++                // bopl_game_logit with the basis from s_basis: the same products and sums
++                // (sum += fma(a_k, c, b_k s), the shipped per-row kernel's roundings).
++                const precision_t* raw = a.logits + logits_base;  // logits_stride_a == 1
++                const precision_t* block = raw + aim_blk;
++                const int K = a.aim_fourier;
++                float coef[2 * PPO_AIM_TAB_K + 1];
++                #pragma unroll
++                for (int c = 0; c <= 2 * PPO_AIM_TAB_K; c++) coef[c] = c <= 2 * K ? to_float(block[c]) : 0.0f;
++                const float scale = bopl_aim_fourier_scale(K);
++                // The row's mask and non-aim logits are loaded up front (all in flight at
++                // once) instead of one dependent load per 32-column step.
++                constexpr int IT = (PPO_SMEM_LOGITS + 31) / 32;
++                const bool masked = a.action_mask != nullptr;
++                float mk[IT], rw[IT - BOPL_ACT_AIM / 32];
++                #pragma unroll
++                for (int it = 0; it < IT; it++) {
++                    const int e = lane + 32 * it;
++                    mk[it] = (masked && e < a.A_total) ? to_float(a.action_mask[mask_base + e]) : 1.0f;
++                    if (it >= BOPL_ACT_AIM / 32)
++                        rw[it - BOPL_ACT_AIM / 32] = e < a.A_total ? to_float(raw[aim_boff + e - BOPL_ACT_AIM]) : 0.0f;
++                }
++                #pragma unroll
++                for (int it = 0; it < IT; it++) {
++                    const int e = lane + 32 * it;
++                    if (e >= a.A_total) break;
++                    float l;
++                    if (it < BOPL_ACT_AIM / 32) {
++                        if (e == 0) l = coef[0];
++                        else {
++                            float sum = 0.0f;
++                            #pragma unroll
++                            for (int k = 1; k <= PPO_AIM_TAB_K; k++) {
++                                if (k > K) break;
++                                const float2 b = s_basis[(k - 1) * BOPL_ACT_AIM + e];
++                                sum = __fadd_rn(sum, __fmaf_rn(coef[2 * k - 1], b.x, __fmul_rn(coef[2 * k], b.y)));
++                            }
++                            l = sum * scale;
++                        }
++                    } else l = rw[it - BOPL_ACT_AIM / 32];
++                    if (mk[it] == 0.0f) l = -1e4f;
++                    s_row[e] = l;
++                }
++            } else if (aim) {
 +                const precision_t* raw = a.logits + logits_base;  // logits_stride_a == 1
 +                for (int e = lane; e < a.A_total; e += 32) {
 +                    float l = bopl_game_logit(raw, a.aim_fourier, a.aim_ar, aim_buttons, e);
@@ -2526,8 +2626,35 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +                const int K = a.aim_fourier;
 +                const float scale = bopl_aim_fourier_scale(K);
 +                if (lane == 0) store(aim_blk, s_row[0]);  // neutral logit
++                if (TAB) {
++                    // Lane l = 2 (k - 1) + {0: cos, 1: sin} sums d_i x its rotation over i = 1..255 in
++                    // order (the ga / gb of harmonic k below): bins 1..3, then float4s of 4 bins.
++                    if (lane < 2 * K) {
++                        const float* rot = s_rot + lane * PPO_AIM_ROT_LD;
++                        float acc = 0.0f;
++                        #pragma unroll
++                        for (int i = 1; i < 4; ++i) acc = __fmaf_rn(s_row[i], rot[i], acc);
++                        // Software-pipelined (two buffers): each float4 pair is loaded a step before its FMAs.
++                        auto ld4 = [](const float* p) { return *reinterpret_cast<const float4*>(p); };
++                        auto fma4 = [](float4 d, float4 r, float acc) {
++                            acc = __fmaf_rn(d.x, r.x, acc); acc = __fmaf_rn(d.y, r.y, acc);
++                            acc = __fmaf_rn(d.z, r.z, acc); return __fmaf_rn(d.w, r.w, acc);
++                        };
++                        static_assert(BOPL_ACT_AIM == 256, "projection pipeline covers bins 4..255");
++                        float4 d0 = ld4(s_row + 4), r0 = ld4(rot + 4);
++                        #pragma unroll 2
++                        for (int i = 4; i < BOPL_ACT_AIM - 8; i += 8) {
++                            const float4 d1 = ld4(s_row + i + 4), r1 = ld4(rot + i + 4);
++                            acc = fma4(d0, r0, acc);
++                            d0 = ld4(s_row + i + 8); r0 = ld4(rot + i + 8);
++                            acc = fma4(d1, r1, acc);
++                        }
++                        acc = fma4(d0, r0, acc);   // bins 252..255
++                        store(aim_blk + lane + 1, acc * scale);
++                    }
++                }
 +                const float dtheta = 6.283185307179586f / 255.0f;
-+                for (int k = lane + 1; k <= K; k += 32) {
++                for (int k = lane + 1; !TAB && k <= K; k += 32) {
 +                    float cs, sn;
 +                    sincosf((float)k * dtheta, &sn, &cs);
 +                    float ck = 1.0f, sk = 0.0f;  // cos/sin(k theta_1), theta_1 = 0
@@ -2567,16 +2694,18 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    if (tid < LOSS_N) {
 +        float sum = 0.0f;
 +        for (int r = 0; r < PPO_WARP_ROWS; r++) sum += row_losses[r][tid];
-+        int base = blockIdx.x * (LOSS_N + 1);
++        int base = grp * (LOSS_N + 1);
 +        if (tid == LOSS_TOTAL) ppo_partials[base] = sum;
 +        ppo_partials[base + 1 + tid] = sum;
++    }
++    if (TAB) __syncthreads();   // row_losses / s_logits are rewritten by the next group
 +    }
 +}
 +
  // Deterministic reduction of per-block PPO loss partials + count increment
  __global__ void ppo_loss_reduce(
          float* __restrict__ loss,
-@@ -1091,6 +1911,11 @@
+@@ -1091,6 +2040,11 @@
  // This is a huge kernel for a relatively cheap operation. But without this,
  // it's death by a thousand cuts with repeated kernel launches. Even graphed, you
  // blow up the memory bandwidth.
@@ -2588,7 +2717,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  void ppo_loss_fwd_bwd(
          PrecisionTensor& dec_out,    // (N, T, fused_cols) — fused logits+value from decoder
          PrecisionTensor& logstd,     // continuous logstd or empty
-@@ -1098,9 +1923,19 @@
+@@ -1098,9 +2052,19 @@
          IntTensor& act_sizes, FloatTensor& losses_acc,
          float clip_coef, float vf_clip_coef, float vf_coef, const float* ent_coef,
          PPOBuffersPuf& bufs, bool is_continuous,
@@ -2610,7 +2739,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int total = N * T;
  
      // Pointers into fused decoder output
-@@ -1111,7 +1946,9 @@
+@@ -1111,7 +2075,9 @@
      ppo_var_mean<<<1, 256, 0, stream>>>(
          graph.mb_advantages.data, adv_var_ptr, adv_mean_ptr, numel(graph.mb_advantages.shape));
  
@@ -2621,7 +2750,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      static float* ppo_partials_buf = nullptr;
      static int ppo_partials_capacity = 0;
-@@ -1135,7 +1972,7 @@
+@@ -1135,7 +2101,7 @@
          .returns = graph.mb_returns.data,
      };
  
@@ -2630,7 +2759,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              int hc_stride_l = 0;
          const signed char* hc_dev_l = get_head_consume_dev(&hc_stride_l);
  PPOKernelArgs args = {
-@@ -1144,13 +1981,16 @@
+@@ -1144,13 +2110,16 @@
          .grad_values_pred = bufs.grad_values.data,
          .logits = logits_ptr,
          .logstd = is_continuous ? logstd.data : nullptr,
@@ -2651,7 +2780,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          .head_consume = hc_dev_l,
          .hc_stride = hc_stride_l,
          .num_atns = (int)numel(act_sizes.shape),
-@@ -1160,9 +2000,15 @@
+@@ -1160,9 +2129,28 @@
          .logits_stride_n = T * fused_cols, .logits_stride_t = fused_cols, .logits_stride_a = 1,
          .values_stride_n = T * fused_cols, .values_stride_t = fused_cols,
          .is_continuous = is_continuous,
@@ -2662,13 +2791,26 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    if (is_continuous) {
 +        ppo_loss_compute<<<ppo_grid, PPO_THREADS, 0, stream>>>(ppo_partials_buf, args, graph_args);
 +    } else {
-+        if (A_total <= PPO_SMEM_LOGITS) ppo_loss_compute_warp<true><<<ppo_grid, PPO_THREADS, 0, stream>>>(ppo_partials_buf, args, graph_args);
++        if (A_total <= PPO_SMEM_LOGITS && args.aim_fourier > 0 && args.aim_fourier <= PPO_AIM_TAB_K) {
++            // Resident blocks only: each builds the aim tables once and walks the row groups.
++            static int tab_k = -1, tab_grid = 0;
++            const size_t tab_bytes = ppo_aim_tab_bytes(args.aim_fourier);
++            if (tab_k != args.aim_fourier) {
++                int dev = 0, sms = 0, per_sm = 0;
++                cudaGetDevice(&dev);
++                cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
++                cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, ppo_loss_compute_warp<true, true>, PPO_THREADS, tab_bytes);
++                tab_grid = std::max(1, sms * std::max(1, per_sm));
++                tab_k = args.aim_fourier;
++            }
++            ppo_loss_compute_warp<true, true><<<std::min(ppo_grid, tab_grid), PPO_THREADS, tab_bytes, stream>>>(ppo_partials_buf, args, graph_args);
++        } else if (A_total <= PPO_SMEM_LOGITS) ppo_loss_compute_warp<true><<<ppo_grid, PPO_THREADS, 0, stream>>>(ppo_partials_buf, args, graph_args);
 +        else ppo_loss_compute_warp<false><<<ppo_grid, PPO_THREADS, 0, stream>>>(ppo_partials_buf, args, graph_args);
 +    }
  
      ppo_loss_reduce<<<1, LOSS_N + 1, 0, stream>>>(
          bufs.loss_output.data, losses_acc.data, ppo_partials_buf, ppo_grid);
-@@ -1174,10 +2020,16 @@
+@@ -1174,10 +2162,16 @@
  #define PRIO_NUM_WARPS (PRIO_BLOCK_SIZE / PRIO_WARP_SIZE)
  __global__ void compute_prio_adv_reduction(
          const precision_t* __restrict__ advantages,
@@ -2686,7 +2828,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      float local_sum = 0.0f;
      for (int t = tx; t < stride; t += blockDim.x) {
-@@ -1196,7 +2048,8 @@
+@@ -1196,7 +2190,8 @@
      }
  }
  
@@ -2696,7 +2838,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      __shared__ float shmem[PRIO_NUM_WARPS];
      __shared__ float block_sum;
  
-@@ -1207,7 +2060,8 @@
+@@ -1207,7 +2202,8 @@
  
      float local_sum = 0.0f;
      for (int t = tx; t < length; t += blockDim.x) {
@@ -2706,7 +2848,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
      for (int s = PRIO_WARP_SIZE / 2; s >= 1; s /= 2) {
          local_sum += __shfl_down_sync(PRIO_FULL_MASK, local_sum, s);
-@@ -1223,13 +2077,14 @@
+@@ -1223,13 +2219,14 @@
              val += __shfl_down_sync(PRIO_FULL_MASK, val, s);
          }
          if (tx == 0) {
@@ -2723,7 +2865,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1265,6 +2120,7 @@
+@@ -1265,6 +2262,7 @@
  
  // Multinomial with replacement (uses cuRAND)
  __global__ void multinomial_sample(int* __restrict__ out_idx, const float* __restrict__ cdf,
@@ -2731,7 +2873,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          int B, int num_samples, uint64_t seed, const int64_t* __restrict__ offset_ptr) {
      int tid = blockIdx.x * blockDim.x + threadIdx.x;
      if (tid >= num_samples) return;
-@@ -1280,6 +2136,10 @@
+@@ -1280,6 +2278,10 @@
          if (cdf[mid] < u) lo = mid + 1;
          else hi = mid;
      }
@@ -2742,7 +2884,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      out_idx[tid] = lo;
  }
  
-@@ -1288,26 +2148,31 @@
+@@ -1288,26 +2290,31 @@
  // It is a major improvement in some complex environments
  // The values of alpha and beta found by sweeps will tell you
  // whether it is important for your task
@@ -2779,7 +2921,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  }
  
  // Experience the puffer advantage! Generalized advantage estimation + V-Trace
-@@ -1464,12 +2329,24 @@
+@@ -1464,12 +2471,24 @@
  }
  
  // Minor copy bandwidth optimizations
@@ -2808,7 +2950,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1496,9 +2373,9 @@
+@@ -1496,9 +2515,9 @@
  
  __global__ void select_copy(RolloutBuf rollouts, TrainGraph graph,
          const int* __restrict__ idx, const precision_t* __restrict__ advantages,
@@ -2820,7 +2962,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int src_row = idx[mb];
  
      // Compute row byte counts from tensor shapes
-@@ -1528,13 +2405,19 @@
+@@ -1528,13 +2547,19 @@
          }
          break;
      case 5:
@@ -2841,7 +2983,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1549,11 +2432,15 @@
+@@ -1549,11 +2574,15 @@
      // Update to HypersT& p
      HypersT& hypers = pufferl.hypers;
  
@@ -2860,7 +3002,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      RolloutBuf& rollouts = pufferl.train_rollouts;
      PrecisionTensor& advantages_puf = pufferl.advantages_puf;
  
-@@ -1561,8 +2448,21 @@
+@@ -1561,8 +2590,21 @@
      int obs_size = (ndim(src.observations.shape) >= 3) ? src.observations.shape[2] : 1;
      int num_atns = (ndim(src.actions.shape) >= 3) ? src.actions.shape[2] : 1;
  
@@ -2884,7 +3026,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      transpose_102<<<grid_size(T*B*num_atns), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.actions.data, src.actions.data, T, B, num_atns);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1575,15 +2475,23 @@
+@@ -1575,15 +2617,23 @@
          rollouts.ratio.data, src.ratio.data, T, B, 1);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.values.data, src.values.data, T, B, 1);
@@ -2912,7 +3054,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Set importance weights to 1.0
      fill_precision_kernel<<<grid_size(numel(rollouts.ratio.shape)), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1600,10 +2508,14 @@
+@@ -1600,10 +2650,14 @@
  
      Muon* muon = &pufferl.muon;
      int total_epochs = hypers.total_timesteps / batch_size;
@@ -2928,7 +3070,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  
      // Annealed entropy coefficient — same cosine shape as lr. With PG signal
-@@ -1617,17 +2529,30 @@
+@@ -1617,17 +2671,30 @@
                                              current_epoch, total_epochs);
      }
      // copy ent_coef to the device buffer read by the loss kernel
@@ -2963,7 +3105,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          puf_zero(&advantages_puf, train_stream);
  
          profile_begin("compute_advantage", hypers.profile);
-@@ -1639,6 +2564,13 @@
+@@ -1639,6 +2706,13 @@
              zero_frozen_advantages_cuda(advantages_puf, apb,
                  pufferl.bank_layout[1], train_stream);
          }
@@ -2977,7 +3119,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          profile_end(hypers.profile);
  
          profile_begin("compute_prio", hypers.profile);
-@@ -1646,30 +2578,55 @@
+@@ -1646,30 +2720,55 @@
          long* train_rng_offset = pufferl.rng_offset_puf.data + hypers.num_buffers;
          prio_replay_cuda(advantages_puf, prio_alpha, minibatch_segments,
              hypers.total_agents, anneal_beta,
@@ -3044,7 +3186,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
                          && "cudaStreamBeginCapture failed");
              }
  
-@@ -1683,11 +2640,18 @@
+@@ -1683,11 +2782,18 @@
                  p_logstd = dw_train->logstd;
              }
  
@@ -3064,7 +3206,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
              FloatTensor grad_logits_puf = pufferl.ppo_bufs_puf.grad_logits;
              FloatTensor grad_logstd_puf = pufferl.is_continuous ? pufferl.ppo_bufs_puf.grad_logstd : FloatTensor();
-@@ -1696,6 +2660,8 @@
+@@ -1696,6 +2802,8 @@
                  grad_logits_puf, grad_logstd_puf, grad_values_puf, stream);
  
              muon_step(&pufferl.muon, pufferl.master_weights, pufferl.grad_puf, hypers.max_grad_norm, stream);
@@ -3073,7 +3215,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              if (USE_BF16) {
                  int n = numel(pufferl.param_puf.shape);
                  cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-@@ -1705,11 +2671,17 @@
+@@ -1705,11 +2813,17 @@
                  cudaGraph_t _graph;
                  assert(cudaStreamEndCapture(train_stream, &_graph) == cudaSuccess
                          && "cudaStreamEndCapture failed");
@@ -3092,7 +3234,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              }
              pufferl.train_warmup++;
          }
-@@ -1720,22 +2692,31 @@
+@@ -1720,22 +2834,31 @@
          {
              int num_idx = numel(pufferl.prio_bufs.idx.shape);
              int row_bytes = (numel(graph.mb_ratio.shape) / graph.mb_ratio.shape[0]) * sizeof(precision_t);
@@ -3128,7 +3270,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      if (total_minibatches > 0) {
          float ms;
-@@ -1819,7 +2800,7 @@
+@@ -1819,7 +2942,7 @@
      int* raw_act_sizes = get_act_sizes();
      int act_n = 0;
      for (int i = 0; i < num_action_heads; i++) act_n += raw_act_sizes[i];
@@ -3137,7 +3279,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      bank->policy = build_policy(pufferl->env_name.c_str(), input_size, hidden_size,
          num_layers, decoder_output_size, act_n, pufferl->is_continuous, pufferl->hypers.horizon);
      bank->hidden_size = hidden_size;
-@@ -1838,8 +2819,13 @@
+@@ -1838,8 +2961,13 @@
          alloc_register(acts, &bank->buffer_states[i]);
      }
  
@@ -3153,7 +3295,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      bank->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
      if (USE_BF16) {
-@@ -1889,14 +2875,15 @@
+@@ -1889,14 +3017,15 @@
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          frozen_total += pufferl->frozen_banks[b].slice_size;
      }
@@ -3173,7 +3315,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int cumul = pufferl->bank_layout[1];
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          cumul += pufferl->frozen_banks[b].slice_size;
-@@ -1993,6 +2980,21 @@
+@@ -1993,6 +3122,21 @@
      pufferl->env_name = env_name;
  
      cudaSetDevice(hypers.gpu_id);
@@ -3195,7 +3337,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Multi-GPU: initialize NCCL
      if (hypers.world_size > 1) {
-@@ -2050,7 +3052,7 @@
+@@ -2050,7 +3194,7 @@
      int hidden_size = hypers.hidden_size;
      int num_layers = hypers.num_layers;
      bool is_continuous = pufferl->is_continuous;
@@ -3204,7 +3346,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int minibatch_segments = hypers.minibatch_size / hypers.horizon;
      int inf_batch = vec->total_agents / hypers.num_buffers;
      int B_TT = minibatch_segments * hypers.horizon;
-@@ -2081,13 +3083,27 @@
+@@ -2081,13 +3225,27 @@
          alloc_register(acts, &pufferl->buffer_states[i]);
      }
      int mask_size = pufferl->vec->action_mask_size;
@@ -3235,7 +3377,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      register_ppo_buffers(pufferl->ppo_bufs_puf,
          acts, minibatch_segments, hypers.horizon, decoder_output_size, is_continuous);
      register_prio_buffers(pufferl->prio_bufs,
-@@ -2106,6 +3122,14 @@
+@@ -2106,6 +3264,14 @@
      pufferl->advantages_puf = {.shape = {total_agents, horizon}};
      alloc_register(acts, &pufferl->advantages_puf);
  
@@ -3250,7 +3392,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
      pufferl->muon.nccl_comm = pufferl->nccl_comm;
      pufferl->muon.world_size = hypers.world_size;
-@@ -2122,6 +3146,80 @@
+@@ -2122,6 +3288,80 @@
      }
  
      pufferl->grad_puf = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
@@ -3331,7 +3473,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      pufferl->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
  
      ulong init_seed = hypers.seed;
-@@ -2159,6 +3257,8 @@
+@@ -2159,6 +3399,8 @@
      DictItem* fbp_item = dict_get_unsafe(vec_kwargs, "frozen_bank_pct");
      DictItem* fbh_item = dict_get_unsafe(vec_kwargs, "frozen_bank_hidden_size");
      DictItem* fbl_item = dict_get_unsafe(vec_kwargs, "frozen_bank_num_layers");
@@ -3340,7 +3482,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int num_frozen = nb_item ? (int)nb_item->value : 0;
      float frozen_pct = fbp_item ? (float)fbp_item->value : 0.0f;
      int frozen_hidden = fbh_item ? (int)fbh_item->value : hidden_size;
-@@ -2167,10 +3267,11 @@
+@@ -2167,10 +3409,11 @@
          int agents_per_buffer = total_agents / num_buffers;
          int frozen_size = (int)((float)agents_per_buffer * frozen_pct);  // truncates = floor for positive
          int frozen_total = num_frozen * frozen_size;
@@ -3355,7 +3497,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              return nullptr;
          }
          // add_frozen_bank auto-builds the sequential bank_layout.
-@@ -2178,10 +3279,12 @@
+@@ -2178,10 +3421,12 @@
              pufferl_add_frozen_bank(pufferl.get(), frozen_size, frozen_hidden, frozen_layers);
          }
      }
@@ -3369,7 +3511,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          pufferl->train_warmup = 0;
  
          // Snapshot weights + optimizer state before init-time capture
-@@ -2193,40 +3296,41 @@
+@@ -2193,40 +3438,41 @@
          cudaMalloc(&saved_momentum, wb_bytes);
          cudaMemcpy(saved_momentum, pufferl->muon.mb_puf.data, wb_bytes, cudaMemcpyDeviceToDevice);
  
@@ -3415,12 +3557,12 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 -        tl_stream = warmup_stream;
          for (int i = 0; i <= hypers.cudagraphs; i++) {
 +            pufferl->ready_slot = 0;
-+            train_impl(*pufferl);
-+        }
-+        for (int slot = 1; slot < num_slots; slot++) {
-+            pufferl->ready_slot = slot;  // captures this slot's train graph
              train_impl(*pufferl);
          }
++        for (int slot = 1; slot < num_slots; slot++) {
++            pufferl->ready_slot = slot;  // captures this slot's train graph
++            train_impl(*pufferl);
++        }
 +        pufferl->ready_slot = 0;
  
 -        cudaStreamSynchronize(warmup_stream);
@@ -3432,7 +3574,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
          // Restore weights + optimizer state corrupted by warmup/capture
          cudaMemcpy(pufferl->master_weights.data, saved_weights, wb_bytes, cudaMemcpyDeviceToDevice);
-@@ -2250,15 +3354,6 @@
+@@ -2250,15 +3496,6 @@
          pufferl->global_step = 0;
      }
  
@@ -3448,7 +3590,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      create_static_threads(vec, hypers.num_threads, horizon, pufferl.get(),
          net_callback_wrapper, thread_init_wrapper);
      static_vec_reset(vec);
-@@ -2276,21 +3371,108 @@
+@@ -2276,21 +3513,108 @@
      return pufferl;
  }
  
@@ -3559,7 +3701,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
      for (int buf = 0; buf < pufferl.hypers.num_buffers; buf++) {
          policy_activations_free(&pufferl.policy, pufferl.buffer_activations[buf]);
-@@ -2315,6 +3497,8 @@
+@@ -2315,6 +3639,8 @@
      for (int i = 0; i < NUM_TRAIN_EVENTS; i++) {
          cudaEventDestroy(pufferl.profile.events[i]);
      }
@@ -3568,7 +3710,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      nvmlShutdown();
  
      static_vec_close(pufferl.vec);
-@@ -2329,6 +3513,7 @@
+@@ -2329,6 +3655,7 @@
      }
      free(pufferl.frozen_banks);
      free(pufferl.bank_layout);
