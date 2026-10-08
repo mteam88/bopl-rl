@@ -5888,6 +5888,12 @@ pub struct RolloutWorld {
     /// Whether `session_result_tick` last found two teams still in, and no
     /// player's `out` or `team` has been written since: the result stands.
     result_contested: bool,
+    /// Whether a body may hold a pending Black Hole, a pending revival or
+    /// stock clone, or an ability not yet instantiated: each write of one
+    /// sets it, and `register_pending_objects` clears it once a scan finds
+    /// none, so `nothing_queued_to_register` skips its player scan until
+    /// the next such write.
+    bodies_queued: bool,
     /// Whether the actor rows still hold what `refresh_actor_entities` gives,
     /// but for the Rock rows (`refresh_rock_rows`): set by the physics pass's
     /// refresh; cleared when a tick starts, by a pickup grant and by the
@@ -6055,6 +6061,7 @@ impl RolloutWorld {
             fix_destroyed_rows: true,
             hidden_platform_rows: true,
             result_contested: false,
+            bodies_queued: true,
             actor_rows_fresh: false,
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
@@ -6193,6 +6200,7 @@ impl RolloutWorld {
         self.fix_destroyed_rows = src.fix_destroyed_rows;
         self.hidden_platform_rows = src.hidden_platform_rows;
         self.result_contested = src.result_contested;
+        self.bodies_queued = src.bodies_queued;
         self.actor_rows_fresh = false;
         self.scratch.updater_version += 1;
         self.scratch.pending_quiet = None;
@@ -6315,6 +6323,7 @@ impl RolloutWorld {
             fix_destroyed_rows: _,
             hidden_platform_rows: _,
             result_contested: _,
+            bodies_queued: _,
             actor_rows_fresh: _,
             queued_spawns: _,
             entities: _,
@@ -6542,6 +6551,7 @@ impl RolloutWorld {
         self.fix_destroyed_rows = true;
         self.hidden_platform_rows = true;
         self.result_contested = false;
+        self.bodies_queued = true;
         self.scratch.updater_version += 1;
         let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
         let mut circle_entity = [usize::MAX; MAX_BODIES];
@@ -7983,6 +7993,7 @@ impl RolloutWorld {
         slot.timers[ability_slot] = timer;
         slot.roll_lethal[ability_slot] = false;
         slot.ability_instantiated[ability_slot] = false;
+        self.bodies_queued = true;
         slot.form_entities[ability_slot] = usize::MAX;
         // The new Beam component has no orbEffect yet (Beam.cs:261).
         slot.beam_orb_slots[ability_slot] = None;
@@ -9240,8 +9251,17 @@ impl RolloutWorld {
             self.scratch.sweep = Some(sweep);
             self.scratch.body_parts = None;
         }
+        // The walls as the Circle/RoundedRect group's narrow phase sees them,
+        // where only an enabled rope's step (`ropes_physics`) can move one
+        // before it; nothing reads them after that group's manifolds. With
+        // no rope enabled they are the platforms' own colliders still, and
+        // release reads those (`narrow_wall`, `circle_collider`) instead of a
+        // copy; debug builds take it and check.
         self.scratch.circle_colliders.clear();
-        self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
+        let roped = self.ropes.iter().any(|rope| rope.physics.enabled);
+        if roped || cfg!(debug_assertions) {
+            self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
+        }
         self.ropes_physics(physics_dt);
         self.scratch.beam_contacts = self
             .beam_pool
@@ -9254,6 +9274,13 @@ impl RolloutWorld {
             })
             .count();
         self.beam_physics_tick(data);
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            roped
+                || rounded_rect_bits(&self.scratch.circle_colliders)
+                    == rounded_rect_bits(&self.platforms.iter().map(|p| p.collider).collect::<Vec<_>>()),
+            "circle_colliders: a wall moved before the Circle/RoundedRect group with no rope enabled"
+        );
         // DetPhysics runs every narrow-phase group every Simulate; one with
         // no parts makes no pairs. It corrects every Circle/RR pair before any
         // Circle/Circle one, so an item's wall correction moves it before an
@@ -17661,6 +17688,7 @@ impl RolloutWorld {
             let position = slot.base.position + scale * slot.base.up().perp_cw().complex_mul(local);
             let base = self.register_prefab(data.prefab("BlackHole2"));
             self.players[index].pending_black_hole = Some((position, base));
+            self.bodies_queued = true;
         }
         let cast = &mut self.players[index].black_hole_cast;
         if animates
@@ -21044,31 +21072,42 @@ impl RolloutWorld {
     /// take their ids in the order they were instantiated, whatever their
     /// kind.
     fn register_pending_objects(&mut self, data: &data::RolloutData) {
-        for item in &self.thrown_items {
-            if !item.active
-                && let Some(entity) = item.entity
-                && self.entities[entity].flags & E_DESTROYED != 0
-            {
-                self.entities[entity].flags = E_REMOVED;
+        // These rows are E_DESTROYED and not E_REMOVED, and with
+        // `destroyed_rows` down none is (an E_REMOVED | E_DESTROYED row is
+        // a hidden platform's): nearly every pass, which then writes none.
+        // Debug builds walk them anyway and check it.
+        if self.destroyed_rows || cfg!(debug_assertions) {
+            let mut wrote = false;
+            for item in &self.thrown_items {
+                if !item.active
+                    && let Some(entity) = item.entity
+                    && self.entities[entity].flags & E_DESTROYED != 0
+                {
+                    self.entities[entity].flags = E_REMOVED;
+                    wrote = true;
+                }
             }
-        }
-        for missile in &self.guided_missiles {
-            if !missile.active
-                && let Some(entity) = missile.entity
-                && self.entities[entity].flags & E_DESTROYED != 0
-            {
-                self.entities[entity].flags = E_REMOVED;
+            for missile in &self.guided_missiles {
+                if !missile.active
+                    && let Some(entity) = missile.entity
+                    && self.entities[entity].flags & E_DESTROYED != 0
+                {
+                    self.entities[entity].flags = E_REMOVED;
+                    wrote = true;
+                }
             }
-        }
-        // A new cloud may already hold the pooled slot of one evicted last
-        // pass; its row is still the evicted cloud's until it registers.
-        for cloud in &self.smoke_clouds {
-            if !cloud.registered
-                && let Some(entity) = cloud.entity
-                && self.entities[entity].flags & E_DESTROYED != 0
-            {
-                self.entities[entity].flags = E_REMOVED;
+            // A new cloud may already hold the pooled slot of one evicted last
+            // pass; its row is still the evicted cloud's until it registers.
+            for cloud in &self.smoke_clouds {
+                if !cloud.registered
+                    && let Some(entity) = cloud.entity
+                    && self.entities[entity].flags & E_DESTROYED != 0
+                {
+                    self.entities[entity].flags = E_REMOVED;
+                    wrote = true;
+                }
             }
+            debug_assert!(self.destroyed_rows || !wrote, "register_pending_objects: a destroyed row with destroyed_rows down");
         }
         let mut pending = std::mem::take(&mut self.scratch.pending_objects);
         pending.clear();
@@ -21298,17 +21337,30 @@ impl RolloutWorld {
 
     /// Nothing sits in the lists and player flags `collect_pending_objects`
     /// reads besides the object pools.
-    fn nothing_queued_to_register(&self) -> bool {
+    fn nothing_queued_to_register(&mut self) -> bool {
+        // A body with none of its flags up leaves nothing queued; until a
+        // write puts one up, no body does (`bodies_queued`).
+        let clear = |player: &PlayerSlot| {
+            player.pending_black_hole.is_none()
+                && !player.revival_clone_pending
+                && !player.stock_clone_pending
+                && player.ability_instantiated.iter().all(|&instantiated| instantiated)
+        };
+        debug_assert!(self.bodies_queued || self.players.iter().all(clear), "bodies_queued: a body's registration flag is up");
+        if self.bodies_queued && self.players.iter().all(clear) {
+            self.bodies_queued = false;
+        }
         self.pending_black_holes.is_empty()
             && self.pending_duplicated_rocks.is_empty()
             && self.pending_orphan_abilities.is_empty()
-            && self.players.iter().all(|player| {
-                player.pending_black_hole.is_none()
-                    && !player.revival_clone_pending
-                    && !player.stock_clone_pending
-                    && (player.ability_instantiated.iter().all(|&instantiated| instantiated)
-                        || !(self.ability_spawner_enabled || !self.ability_pickups.is_empty()))
-            })
+            && (!self.bodies_queued
+                || self.players.iter().all(|player| {
+                    player.pending_black_hole.is_none()
+                        && !player.revival_clone_pending
+                        && !player.stock_clone_pending
+                        && (player.ability_instantiated.iter().all(|&instantiated| instantiated)
+                            || !(self.ability_spawner_enabled || !self.ability_pickups.is_empty()))
+                }))
     }
 
     /// Whether a pooled object `collect_pending_objects` may take on a later
@@ -39345,6 +39397,7 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
+            self.bodies_queued = true;
             // The revival clone's PrepareToRevive (SlimeController.cs:611-625),
             // on SpawnClone's fresh PlayerCollision.
             slot.invulnerable = INVULNERABLE_REVIVE;
@@ -39541,6 +39594,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.stocks -= 1;
         slot.stock_clone_pending = true;
+        self.bodies_queued = true;
         // The replacement slime's Awake and BeforeSpawnInit, and the
         // PrepareToRevive SpawnClone gives its fresh PlayerCollision.
         slot.invulnerable = INVULNERABLE_REVIVE;
