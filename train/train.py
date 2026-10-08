@@ -929,7 +929,7 @@ def main():
                     raise RuntimeError('Native rollout physical/learner decision accounting mismatch')
                 elapsed = elapsed_before + time.monotonic()-training_started
                 # Snapshots, PFSP draws and bank retirements from this rollout's finished games.
-                before_pool = native_selfplay.summary(pool, ledger)
+                before_pool = native_selfplay.summary(pool, ledger, saturation=False)  # feeds events() only
                 flat = {'env/'+key: value for key, value in native['env'].items()}
                 native_selfplay.credit(pool, flat, ledger)
                 native_selfplay.step(trainer, _C, pool, ledger, update_index)

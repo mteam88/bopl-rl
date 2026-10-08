@@ -255,8 +255,12 @@ def _member(ledger, path):
                 score=pfsp.score(wins, losses, draws) if row['games'] else None)
 
 
-def summary(pool, ledger):
-    """The pool's PFSP state for metrics.jsonl."""
+def summary(pool, ledger, saturation=True):
+    """The pool's PFSP state for metrics.jsonl.
+
+    saturation=False leaves out the 'pfsp' block, most of the cost: the
+    update loop's pre-step summary feeds only events().
+    """
     banks = []
     for bank in pool['banks']:
         games = bank['hist_n']
@@ -269,6 +273,12 @@ def summary(pool, ledger):
                           if bank['pending_opp_path'] else None,
                           score_at_swap=bank['last_score_at_swap'],
                           epochs_to_align=bank['last_epochs_to_align']))
+    games = sum(bank['hist_n'] for bank in pool['banks'])
+    wins = sum(bank['hist_wins'] for bank in pool['banks'])
+    out = dict(schema=2, size=len(pool['pool']), entries=[_member(ledger, entry['path']) for entry in pool['pool']],
+               winrate=wins / games if games else None, banks=banks)
+    if not saturation:
+        return out
     saturation = _saturation(pool, ledger, scores(pool, ledger))
     # Keyed by candidate NAME, not by step: a league member is not a snapshot of
     # this run and has no step, so a step key could not name one.
@@ -281,10 +291,8 @@ def summary(pool, ledger):
     played = saturation.pop('played')
     saturation['played'] = {name_of[path]: share for path, share in played.items() if path in live}
     saturation['played_evicted'] = sum(share for path, share in played.items() if path not in live)
-    games = sum(bank['hist_n'] for bank in pool['banks'])
-    wins = sum(bank['hist_wins'] for bank in pool['banks'])
-    return dict(schema=2, size=len(pool['pool']), entries=[_member(ledger, entry['path']) for entry in pool['pool']],
-                winrate=wins / games if games else None, banks=banks, pfsp=saturation)
+    out['pfsp'] = saturation
+    return out
 
 
 def events(before, after, ledger, learner_steps):
