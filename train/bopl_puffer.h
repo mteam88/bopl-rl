@@ -128,13 +128,16 @@ uint8_t bopl_loadout_sets[BOPL_LOADOUT_SET_MAX*6];
  * one buffer, image, laid out as a shipped state is in its slot after the
  * header and players: the entities, the slimes, then room for the slimes'
  * sinf/cosf the publish writes; a shipped row is the header and players
- * (fixed size, copied inline) and one copy of the image (bopl4_encode_state). */
-enum { BOPL_COPY_HEAD=(int)(sizeof(BoplRlHeader)+6*sizeof(BoplRlPlayer)) };
+ * (fixed size, copied inline) and one copy of the image (bopl4_encode_state).
+ * The state itself (header, players, telemetry) heads the same allocation,
+ * so the copy is a few words and the publish's swap of three copies moves
+ * no state. */
+enum { BOPL_COPY_HEAD=(int)(sizeof(BoplRlHeader)+6*sizeof(BoplRlPlayer)), BOPL_COPY_STATE=(int)((sizeof(BoplRlState)+63)&~(size_t)63) };
 _Static_assert(offsetof(BoplRlState, players)==sizeof(BoplRlHeader) && sizeof(((BoplRlState*)0)->players)==6*sizeof(BoplRlPlayer),
                "header and players are contiguous in the state, as in the slot");
 _Static_assert(BOPL_COPY_HEAD%8==0 && sizeof(BoplRlEntity)%8==0 && sizeof(BoplRlSlime)%8==0, "the image's rows stay aligned");
 typedef struct {
-    BoplRlState state;
+    BoplRlState *state;      /* the allocation's head; image follows it */
     unsigned char *image; size_t image_capacity;
     int valid, compact;
     uint64_t source_mask; uint8_t source_counts[BOPL_ABILITY_COUNT];
@@ -144,13 +147,13 @@ static void bopl_state_copy(BoplStateCopy *copy, const BoplRlState *state) {
     if (!state) { copy->valid=0; return; }
     uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
     size_t need=(size_t)entities*sizeof(BoplRlEntity)+(size_t)slimes*(sizeof(BoplRlSlime)+2*sizeof(float));
-    if (need>copy->image_capacity) {
+    if (!copy->state || need>copy->image_capacity) {
         size_t capacity=need<16384?16384:need*2;
-        unsigned char *grown=realloc(copy->image, capacity);
+        unsigned char *grown=realloc(copy->state, BOPL_COPY_STATE+capacity);
         if (!grown) abort();
-        copy->image=grown; copy->image_capacity=capacity;
+        copy->state=(BoplRlState*)grown; copy->image=grown+BOPL_COPY_STATE; copy->image_capacity=capacity;
     }
-    copy->state=*state;
+    *copy->state=*state;
     BoplRlEntity *to=(BoplRlEntity*)copy->image;
     const BoplRlEntity *from=state->entities;
     uint32_t kept=0; int ropes=0; uint64_t mask=0;
@@ -166,15 +169,15 @@ static void bopl_state_copy(BoplStateCopy *copy, const BoplRlState *state) {
         to[kept++]=*entity;
     }
     if (ropes) { memcpy(to, from, (size_t)entities*sizeof(*to)); kept=entities; }
-    copy->state.header.entity_count=kept;
+    copy->state->header.entity_count=kept;
     copy->compact=!ropes; copy->source_mask=mask;
     BoplRlSlime *slime_rows=(BoplRlSlime*)(to+kept);
     if (slimes) memcpy(slime_rows, state->slimes, (size_t)slimes*sizeof(*slime_rows));
-    copy->state.entities=to; copy->state.slimes=slime_rows;
+    copy->state->entities=to; copy->state->slimes=slime_rows;
     copy->valid=1;
 }
-static const BoplRlState *bopl_state_copy_get(const BoplStateCopy *copy) { return copy->valid?&copy->state:NULL; }
-static void bopl_state_copy_free(BoplStateCopy *copy) { free(copy->image); memset(copy, 0, sizeof(*copy)); }
+static const BoplRlState *bopl_state_copy_get(const BoplStateCopy *copy) { return copy->valid?copy->state:NULL; }
+static void bopl_state_copy_free(BoplStateCopy *copy) { free(copy->state); memset(copy, 0, sizeof(*copy)); }
 typedef struct {
     Log log;
     /* Base pointers assigned by PufferLib's vector (slot 0 of this environment).
@@ -878,7 +881,7 @@ static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
  * run, and without a rope their census is the copy's. */
 static void bopl4_shared_from_copy(Bopl4Shared *shared, const BoplStateCopy *copy) {
     shared->image=NULL;
-    const BoplRlState *state=&copy->state;
+    const BoplRlState *state=copy->state;
     uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
     shared->state=state; shared->census_ready=0; shared->shared_census=1;
     for (uint32_t i=0; i<state->header.player_count; i++) if (state->players[i].flags&4) shared->shared_census=0;
