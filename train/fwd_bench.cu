@@ -129,7 +129,7 @@ struct Lane {
 struct Bench {
     Meta m;
     int rows, apb, nb = 4, H, G, num_atns, mask_stride, pack_bytes, state_numel[BR_MAX_GROUPS], state_rows[BR_MAX_GROUPS];
-    bool frag_v1 = false;   // the dump's GEMM weights are in the first fragment order (frag_from_v1)
+    int frag = 3;   // the dump's GEMM weight order: 1 and 2 are converted (frag_from_v1, frag_from_v2), 3 is br_frag_index's
     BrPlan p = {};
     Br4Plan q = {};
     std::map<std::string, Weights> weights;
@@ -160,7 +160,8 @@ struct Bench {
         br_tiles(p.g, p.tiles);
         q.FD = m.i("FD"); q.D = m.i("D"); q.I = m.i("I"); q.F = m.i("F"); q.C = m.i("C"); q.P = m.i("P"); q.mean_pool = m.i("mean_pool");
         q.JW = m.i("JW"); q.W = m.i("W"); q.LNW = m.i("LNW");
-        frag_v1 = !m.kv.count("frag");
+        frag = m.kv.count("frag") ? m.i("frag") : 1;
+        if (frag < 1 || frag > 3) { fprintf(stderr, "unknown weight order frag %d\n", frag); exit(1); }
         if (q.JW != q.FD + 8 * q.D || q.W != H + q.P || q.LNW != std::max(H, std::max(q.W, q.C))) { fprintf(stderr, "plan widths disagree with the dump\n"); exit(1); }
         for (auto& n : names) {
             Step s; s.dir = root + "/" + n;
@@ -176,16 +177,34 @@ struct Bench {
         fprintf(stderr, "fwd_bench: %zu steps, %zu weight snapshots, %d rows (%d groups, %d tiles), H %d, set %d/%d, critic %d\n",
                 steps.size(), weights.size(), rows, G, p.tiles[G], H, q.D, q.I, q.C);
     }
+    // The second fragment order (frag 2): the B operand of the untransposed
+    // product, a lane's float4 the k = 2 tid4 + {0, 1} + 8 s of column gid of
+    // a 16 k x 8 n block, blocks k-pair major.
+    static long frag2_index(int k, int n, int ntiles) {
+        int kstep = k >> 3, kk = k & 7, ntile = n >> 3, gid = n & 7;
+        int kpair = kstep >> 1, s = kstep & 1, tid4 = kk >> 1, half = kk & 1;
+        return (((long)kpair * ntiles + ntile) * 32 + gid * 4 + tid4) * 4 + s * 2 + half;
+    }
     // Dumps without a frag key hold the GEMM weights in the first fragment
-    // order (a step's k at slots k % 4 + 4 (k / 4 % 2)); br_frag_index's order
-    // is a permutation of each 16 k x 8 n block of it.
+    // order (a step's k at slots k % 4 + 4 (k / 4 % 2)); the second order is
+    // a permutation of each 16 k x 8 n block of it.
     static std::vector<char> frag_from_v1(std::vector<char> b) {
         std::vector<char> out(b.size());
         const float* src = (const float*)b.data(); float* dst = (float*)out.data();
         for (size_t blk = 0; blk < b.size() / 512; blk++)
             for (int lane = 0; lane < 32; lane++)
                 for (int e = 0; e < 4; e++)
-                    dst[blk * 128 + br_frag_index((e >> 1) * 8 + (e & 1) * 4 + (lane & 3), lane >> 2, 1)] = src[blk * 128 + lane * 4 + e];
+                    dst[blk * 128 + frag2_index((e >> 1) * 8 + (e & 1) * 4 + (lane & 3), lane >> 2, 1)] = src[blk * 128 + lane * 4 + e];
+        return out;
+    }
+    // The second order (K padded to 16, N to 8) into br_frag_index's (K to 8, N to 16) for a (K, N) operand.
+    static std::vector<char> frag_from_v2(const std::vector<char>& b, int K, int N) {
+        const int ntiles = (N + 7) / 8, mtiles = (N + 15) / 16;
+        if (b.size() != (size_t)((K + 15) / 16) * 16 * ntiles * 8 * 4) { fprintf(stderr, "frag 2 weights of %zu bytes for (%d, %d)\n", b.size(), K, N); exit(1); }
+        std::vector<char> out((size_t)br_frag_floats(K, N) * 4, 0);
+        const float* src = (const float*)b.data(); float* dst = (float*)out.data();
+        for (int k = 0; k < K; k++)
+            for (int n = 0; n < N; n++) dst[br_frag_index(k, n, mtiles)] = src[frag2_index(k, n, ntiles)];
         return out;
     }
     Weights load_weights(const std::string& wdir) {
@@ -193,13 +212,18 @@ struct Bench {
         for (int g = 0; g < G; g++) {
             std::string pre = wdir + "/g" + std::to_string(g) + "_";
             auto up = [&](const char* name) { return (float*)dev_upload(slurp(pre + name)); };
-            auto upf = [&](const char* name) { std::vector<char> b = slurp(pre + name); return (float*)dev_upload(frag_v1 ? frag_from_v1(b) : b); };
+            auto upf = [&](const char* name, int K, int N) {
+                std::vector<char> b = slurp(pre + name);
+                if (frag == 1) b = frag_from_v1(b);
+                if (frag <= 2) b = frag_from_v2(b, K, N);
+                return (float*)dev_upload(b);
+            };
             Br4Wt& t = w.wt[g];
-            t.flat = upf("flat"); t.fusion = upf("fusion");
-            for (int l = 0; l < p.layers; l++) t.gru[l] = upf(("gru" + std::to_string(l)).c_str());
-            if (q.F) { t.ffn_in = upf("ffn_in"); t.ffn_out = upf("ffn_out"); }
-            t.actor = upf("actor");
-            if (q.C) { t.cin = upf("cin"); t.b1 = upf("b1"); t.b2 = upf("b2"); w.cout[g] = up("cout"); }
+            t.flat = upf("flat", v4::FLAT, q.FD); t.fusion = upf("fusion", q.JW, H);
+            for (int l = 0; l < p.layers; l++) t.gru[l] = upf(("gru" + std::to_string(l)).c_str(), H, 3 * H);
+            if (q.F) { t.ffn_in = upf("ffn_in", H, q.F); t.ffn_out = upf("ffn_out", q.F, H); }
+            t.actor = upf("actor", H, p.ld_dec);
+            if (q.C) { t.cin = upf("cin", q.W, q.C); t.b1 = upf("b1", q.C, q.C); t.b2 = upf("b2", q.C, q.C); w.cout[g] = up("cout"); }
             for (int s = 0; s < 4; s++) {
                 t.w1t[s] = (__nv_bfloat16*)up(("w1t" + std::to_string(s)).c_str());
                 t.w2b[s] = (__nv_bfloat16*)up(("w2b" + std::to_string(s)).c_str());

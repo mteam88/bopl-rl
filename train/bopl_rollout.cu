@@ -12,7 +12,7 @@
 //               terminal into the rollout tensors (the old cast kernels).
 //               Stages only the populated slots of the row (header counts).
 //   br_gemm     grouped small-M GEMM: mma.sync tf32 with the weights stored
-//               in B-fragment order (BOPL_TF32=1) or fp32 FMAs (=0); 16-row
+//               in A-fragment order (BOPL_TF32=1) or fp32 FMAs (=0); 16-row
 //               tiles, 8 warps split K in 64-chunks, fixed-order reduction,
 //               optional ReLU epilogue: flat, fusion, MinGRU, decoder.
 //   br_gate     MinGRU gate with the terminal reset fused in, state updated
@@ -198,10 +198,11 @@ __global__ void __launch_bounds__(BS_E, 12) br_encode_entity(BrEncodeArgs a) {
 // kept at <= 128 registers per thread so two blocks (and other buffers' chains)
 // share an SM. The warps' partial tiles are reduced through shared memory in a
 // fixed order (deterministic). TF32 (default, like cuBLAS' BOPL_TF32 mode): mma.sync
-// m16n8k8 tensor-core steps, inputs rounded to tf32, fp32 accumulate; the
-// weights are stored in the B-fragment order (br_transpose_frag) so a lane's
-// operands are one float4 and a warp's load is 512 contiguous bytes, and a
-// lane reads its A operands straight from the rows (see br_frag_index). fp32
+// m16n8k8 tensor-core steps on the transposed product (the weights are the A
+// operand, the rows B: see br_frag_index), inputs rounded to tf32, fp32
+// accumulate; the weights are stored in the A-fragment order
+// (br_transpose_frag) so a lane's operands are one float4 and a warp's load is
+// 512 contiguous bytes, and a lane reads its B operands straight from the rows. fp32
 // (BOPL_TF32=0): CUDA-core FMAs over the plain transposed weights (K, ldb), a
 // thread owns one column and all 16 rows. Row tiles never straddle a group
 // (tiles[] = cumulative 16-row tiles per group). Slots past the chunk count
@@ -217,30 +218,36 @@ __global__ void __launch_bounds__(BS_E, 12) br_encode_entity(BrEncodeArgs a) {
 struct BrGemmArgs {
     const float* in; int ld_in;
     float* out; int ld_out;
-    int K, N, ldb, relu;  // ldb: fp32 = row stride of the (K, ldb) transposed weights; tf32 = n-tiles (ceil(N/8))
+    int K, N, ldb, relu;  // ldb: fp32 = row stride of the (K, ldb) transposed weights; tf32 = m-tiles (ceil(N/16))
     BrGroups g;
     BrLinear wt;  // per-group weights: fp32 (K, ldb) transposed; tf32 fragment order (see br_frag_index)
     int tiles[BR_MAX_GROUPS + 1];
 };
 
-// TF32 fragment-order weight layout: element (k, n) of the (K, N) operand B.
-// mma.m16n8k8 B fragment: lane = 4*groupID + tid4 holds b0 = B[tid4][groupID],
-// b1 = B[tid4 + 4][groupID] of an 8x8 (k, n) tile; two k-steps (16 k) of one
-// n-tile form the lane's float4 {b0(s0), b1(s0), b0(s1), b1(s1)}. The k of a
-// step go to the fragment's k slots permuted: slot tid4 takes k = 2 tid4,
-// slot tid4 + 4 takes k = 2 tid4 + 1, so a lane's A operands of a step are two
-// adjacent floats of a row, one float2 load from global, with no shared
-// memory round. The A side is permuted the same way and the mma's 8-product
-// sum does not depend on the order of its products (measured: 0 of 384k
-// sums differ under four permutations, wide exponent range, with and without
-// an accumulator), so the bits are those of the unpermuted step.
-__host__ __device__ __forceinline__ long br_frag_index(int k, int n, int ntiles) {
-    int kstep = k >> 3, kk = k & 7, ntile = n >> 3, gid = n & 7;
-    int kpair = kstep >> 1, s = kstep & 1, tid4 = kk >> 1, half = kk & 1;
-    return (((long)kpair * ntiles + ntile) * 32 + gid * 4 + tid4) * 4 + s * 2 + half;
+// TF32 fragment-order weight layout: element (k, n) of the (K, N) weights.
+// The mma computes the output transposed, C^T = W^T X^T: the weights are the
+// m16n8k8 A operand (16 output columns an m-tile) and the rows the B operand
+// (8 rows an n-tile), so a group of 8 rows (a frozen bank's) fills one n-tile
+// whole instead of half an m16 row tile. A fragment: lane = 4 groupID + tid4
+// holds a0 = A[gid][tid4], a1 = A[gid + 8][tid4], a2 = A[gid][tid4 + 4], a3 =
+// A[gid + 8][tid4 + 4] of a 16 x 8 (n, k) tile; one k-step (8 k) of one
+// m-tile is the lane's float4 {a0, a1, a2, a3}, a warp's load 512 contiguous
+// bytes. The k of a step go to the fragment's k slots permuted: slot tid4
+// takes k = 2 tid4, slot tid4 + 4 takes k = 2 tid4 + 1, so a lane's B
+// operands of a step (b0 = B[tid4][gid], b1 = B[tid4 + 4][gid]: row gid) are
+// two adjacent floats of a row, one float2 load from global, with no shared
+// memory round. The 8-product sum does not depend on the order of its
+// products (measured: 0 of 384k sums differ under four permutations, wide
+// exponent range, with and without an accumulator) nor on which operand a
+// factor is (A B = (B^T A^T)^T: each output's 8 products are the same pairs
+// in the same slots), so the bits are those of the unpermuted, unswapped step.
+__host__ __device__ __forceinline__ long br_frag_index(int k, int n, int mtiles) {
+    int kstep = k >> 3, kk = k & 7, mtile = n >> 4, gid = n & 7, hi = (n >> 3) & 1;
+    int tid4 = kk >> 1, half = kk & 1;
+    return (((long)kstep * mtiles + mtile) * 32 + gid * 4 + tid4) * 4 + half * 2 + hi;
 }
 __host__ __device__ __forceinline__ long br_frag_floats(int K, int N) {
-    return (long)((K + 15) / 16) * 16 * ((N + 7) / 8) * 8;
+    return (long)((K + 7) / 8) * 8 * ((N + 15) / 16) * 16;
 }
 
 __device__ __forceinline__ unsigned br_tf32(float x) {
@@ -261,8 +268,11 @@ __host__ __device__ __forceinline__ int br_gemm_slots(int K, int* sub) {
 }
 
 // Shared floats per warp: fp32 stages its A chunk (16 x 64) there, TF32 only
-// its 16 x 32 C tile (the fp32 C tile aliases the A chunk).
-template <bool TF32> __host__ __device__ constexpr int br_gemm_warp_smem() { return TF32 ? BR_TM * BR_TN : BR_TM * BR_TK; }
+// its 16 x 32 C tile (the fp32 C tile aliases the A chunk). The TF32 tile's
+// rows are 36 floats apart: a lane's C entries (rows 2 tid4 (+1), column gid
+// of an m-tile) then fall in 32 distinct banks per store.
+template <bool TF32> __host__ __device__ constexpr int br_gemm_ldc() { return TF32 ? BR_TN + 4 : BR_TN; }
+template <bool TF32> __host__ __device__ constexpr int br_gemm_warp_smem() { return TF32 ? BR_TM * br_gemm_ldc<TF32>() : BR_TM * BR_TK; }
 
 // The GEMM's block body: the row tile from row0 of group grp, column subtile
 // set ctile (the BR_KG / sub subtiles one block covers), the warps' shared
@@ -291,69 +301,81 @@ __device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int grp, int r
     float* Aw = As + warp * WS;
     const int lane = c;
     const int gid = lane >> 2, tid4 = lane & 3;
-    const int ntiles = ldb, ntile0 = col0 >> 3;
-    // B chunk: 4 k-pairs (64 k) x 4 n-tiles (32 columns), one float4 per lane each,
-    // a warp instruction reads 512 contiguous bytes. k-pairs past K are zero padding
-    // in the fragment buffer (br_frag_floats rounds K up to 16). n-tiles past ntiles
-    // (the block's column span exceeds N, e.g. narrow decoders) are outside the
-    // buffer: skip them, their columns are dropped by the epilogue anyway.
-    float4 bf[4][4];
-    auto load_b = [&](int k0) {
-        #pragma unroll
-        for (int kp = 0; kp < 4; kp++)
-            #pragma unroll
-            for (int t = 0; t < 4; t++) {
-                long kpair = (k0 >> 4) + kp;
-                bf[kp][t] = (ntile0 + t < ntiles)
-                    ? *(const float4*)(Wt + ((kpair * ntiles + ntile0 + t) * 32 + lane) * 4)
-                    : make_float4(0.f, 0.f, 0.f, 0.f);
-            }
-    };
     if constexpr (TF32) {
-        float acc[4][4];
+        // A chunk (the weights): 8 k-steps (64 k) x 2 m-tiles (32 columns), one
+        // float4 per lane each, a warp instruction reads 512 contiguous bytes.
+        // k-steps past K are outside the buffer (br_frag_floats rounds K up to
+        // 8) and so are m-tiles past mtiles (the block's column span exceeds
+        // N, e.g. narrow decoders): zeros, their products are +0 and their
+        // columns are dropped by the epilogue.
+        const int mtiles = ldb, mtile0 = col0 >> 4, ksteps = (K + 7) >> 3;
+        float4 wf[BR_TK / 8][2];
+        auto load_w = [&](int k0) {
+            #pragma unroll
+            for (int ks = 0; ks < BR_TK / 8; ks++)
+                #pragma unroll
+                for (int t = 0; t < 2; t++) {
+                    long kstep = (k0 >> 3) + ks;
+                    wf[ks][t] = (kstep < ksteps && mtile0 + t < mtiles)
+                        ? *(const float4*)(Wt + ((kstep * mtiles + mtile0 + t) * 32 + lane) * 4)
+                        : make_float4(0.f, 0.f, 0.f, 0.f);
+                }
+        };
+        // acc[t][h]: m-tile t (columns col0 + 16 t ..) of n-tile h (rows row0 + 8 h ..)
+        float acc[2][2][4];
         #pragma unroll
-        for (int t = 0; t < 4; t++) { acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f; }
-        // A operands of step ks (k slots permuted, see br_frag_index): rows gid
-        // and gid + 8 at k = 8 ks + 2 tid4 + {0, 1}, a float2 each (K is even:
-        // a pair is past K whole); 16 loads per chunk, every 32-byte sector
-        // used whole. Scalar loads for rows that are not 8-byte aligned.
-        // (The A chunk went through shared memory before, to the fragment
-        // order: one GEMM in a graph of 20 chained launches, 1 stream, the
-        // critic's 384 x 384 5.1 -> 4.0 us, the fusion's 1280 x 256 11.6 ->
-        // 9.5 us.)
+        for (int t = 0; t < 2; t++)
+            #pragma unroll
+            for (int h = 0; h < 2; h++) { acc[t][h][0] = acc[t][h][1] = acc[t][h][2] = acc[t][h][3] = 0.f; }
+        // B operands of step ks (k slots permuted, see br_frag_index): row gid
+        // of each n-tile at k = 8 ks + 2 tid4 + {0, 1}, a float2 (K is even: a
+        // pair is past K whole); 8 loads per chunk and n-tile, every 32-byte
+        // sector used whole. Scalar loads for rows that are not 8-byte aligned.
+        // A tile whose second n-tile has no row (a group's last 8 rows or
+        // fewer: a frozen bank) runs the first only, half the loads and mmas.
         const bool a2 = (a.ld_in & 1) == 0 && (((size_t)a.in) & 7) == 0;
         const bool r0 = row0 + gid < row_end, r1 = row0 + gid + 8 < row_end;
         const float* x0 = a.in + (long)(row0 + gid) * a.ld_in;
         const float* x1 = x0 + 8L * a.ld_in;
-        for (int ch = kg; ch < nchunks; ch += sub) {
-            load_b(ch * BR_TK);
-            if (!waited) { br_pdl_wait(); waited = true; }
-            float2 xa[BR_TK / 8], xb[BR_TK / 8];
-            #pragma unroll
-            for (int ks = 0; ks < BR_TK / 8; ks++) {
-                int k = ch * BR_TK + ks * 8 + 2 * tid4;
-                xa[ks] = r0 && k < K ? (a2 ? *(const float2*)(x0 + k) : make_float2(x0[k], x0[k + 1])) : make_float2(0.f, 0.f);
-                xb[ks] = r1 && k < K ? (a2 ? *(const float2*)(x1 + k) : make_float2(x1[k], x1[k + 1])) : make_float2(0.f, 0.f);
-            }
-            #pragma unroll
-            for (int ks = 0; ks < BR_TK / 8; ks++) {
-                unsigned a[4] = {br_tf32(xa[ks].x), br_tf32(xb[ks].x), br_tf32(xa[ks].y), br_tf32(xb[ks].y)};
+        auto chunks = [&](auto two_c) {
+            constexpr bool TWO = decltype(two_c)::value;
+            for (int ch = kg; ch < nchunks; ch += sub) {
+                load_w(ch * BR_TK);
+                if (!waited) { br_pdl_wait(); waited = true; }
+                float2 xa[BR_TK / 8], xb[BR_TK / 8];
                 #pragma unroll
-                for (int t = 0; t < 4; t++) {
-                    float4 b = bf[ks >> 1][t];
-                    unsigned b0 = br_tf32((ks & 1) ? b.z : b.x), b1 = br_tf32((ks & 1) ? b.w : b.y);
-                    br_mma(acc[t], a, b0, b1);
+                for (int ks = 0; ks < BR_TK / 8; ks++) {
+                    int k = ch * BR_TK + ks * 8 + 2 * tid4;
+                    xa[ks] = r0 && k < K ? (a2 ? *(const float2*)(x0 + k) : make_float2(x0[k], x0[k + 1])) : make_float2(0.f, 0.f);
+                    if (TWO) xb[ks] = r1 && k < K ? (a2 ? *(const float2*)(x1 + k) : make_float2(x1[k], x1[k + 1])) : make_float2(0.f, 0.f);
+                }
+                #pragma unroll
+                for (int ks = 0; ks < BR_TK / 8; ks++) {
+                    const unsigned b0 = br_tf32(xa[ks].x), b1 = br_tf32(xa[ks].y);
+                    unsigned c0 = 0, c1 = 0;
+                    if (TWO) { c0 = br_tf32(xb[ks].x); c1 = br_tf32(xb[ks].y); }
+                    #pragma unroll
+                    for (int t = 0; t < 2; t++) {
+                        const float4 w = wf[ks][t];
+                        const unsigned af[4] = {br_tf32(w.x), br_tf32(w.y), br_tf32(w.z), br_tf32(w.w)};
+                        br_mma(acc[t][0], af, b0, b1);
+                        if (TWO) br_mma(acc[t][1], af, c0, c1);
+                    }
                 }
             }
-        }
-        float* Cw = Aw;  // [16][32]: c0 (gid, 2 tid4), c1 (gid, 2 tid4 + 1), c2/c3 at row gid + 8
+        };
+        if (row0 + 8 < row_end) chunks(std::true_type{});
+        else chunks(std::false_type{});
+        // C^T fragment: c0 (column gid, row 2 tid4), c1 (gid, 2 tid4 + 1), c2/c3 at column gid + 8
+        constexpr int LDC = br_gemm_ldc<TF32>();
+        float* Cw = Aw;  // [16][LDC]: rows of the tile x its 32 columns
         #pragma unroll
-        for (int t = 0; t < 4; t++) {
-            Cw[gid * BR_TN + t * 8 + tid4 * 2] = acc[t][0];
-            Cw[gid * BR_TN + t * 8 + tid4 * 2 + 1] = acc[t][1];
-            Cw[(gid + 8) * BR_TN + t * 8 + tid4 * 2] = acc[t][2];
-            Cw[(gid + 8) * BR_TN + t * 8 + tid4 * 2 + 1] = acc[t][3];
-        }
+        for (int t = 0; t < 2; t++)
+            #pragma unroll
+            for (int h = 0; h < 2; h++) {
+                float* r = Cw + (h * 8 + 2 * tid4) * LDC + t * 16 + gid;
+                r[0] = acc[t][h][0]; r[LDC] = acc[t][h][1]; r[8] = acc[t][h][2]; r[LDC + 8] = acc[t][h][3];
+            }
     } else {
         // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row
         // i%16, k-quad i/16), staged as [k][row] for float4 row reads. K is
@@ -424,7 +446,7 @@ __device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int grp, int r
         int st = o / (BR_TM * BR_TN / 4), e = (o % (BR_TM * BR_TN / 4)) * 4, r = e / BR_TN, cc = e % BR_TN;
         float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
         for (int w = st * used; w < (st + 1) * used; w++) {
-            float4 p = *(const float4*)&As[w * WS + r * BR_TN + cc];
+            float4 p = *(const float4*)&As[w * WS + r * br_gemm_ldc<TF32>() + cc];
             v.x += p.x; v.y += p.y; v.z += p.z; v.w += p.w;
         }
         if (a.relu) { v.x = fmaxf(0.f, v.x); v.y = fmaxf(0.f, v.y); v.z = fmaxf(0.f, v.z); v.w = fmaxf(0.f, v.w); }
@@ -458,24 +480,24 @@ static int br_gemm_col_tiles(int K, int N) {
     return (N + cols - 1) / cols;
 }
 
-// TF32: dst_g = src_g (N, K) in B-fragment order (br_frag_index), zero padded to
-// 16 k x 8 n; one thread per destination float4 (a lane's fragment: column n,
-// rows k0, k0 + 1, k0 + 8, k0 + 9), so the stores are whole float4s in
-// order and a warp's loads are 8 columns x 16 consecutive k (64-byte runs).
+// TF32: dst_g = src_g (N, K) in A-fragment order (br_frag_index), zero padded to
+// 8 k x 16 n; one thread per destination float4 (a lane's fragment: columns
+// n, n + 8 at k0, k0 + 1), so the stores are whole float4s in order and a
+// warp's loads are 16 columns x 8 consecutive k (32-byte runs).
 // The thread-per-element form strided both sides (1.03 ms per update).
 __global__ void br_transpose_frag(BrLinear src, BrLinear dst, int N, int K) {
     const float* s = src.w[blockIdx.z];
     float4* d = (float4*)dst.w[blockIdx.z];
-    int ntiles = (N + 7) / 8, Kp = (K + 15) / 16 * 16;
+    int mtiles = (N + 15) / 16, Ks = (K + 7) / 8;
     long i = (long)blockIdx.x * blockDim.x + threadIdx.x;   /* destination float4 */
-    if (i >= (long)Kp / 16 * ntiles * 32) return;
+    if (i >= (long)Ks * mtiles * 32) return;
     int lane = (int)(i & 31), tile = (int)(i >> 5);
-    int kpair = tile / ntiles, ntile = tile - kpair * ntiles;
-    int n = ntile * 8 + (lane >> 2), k0 = kpair * 16 + 2 * (lane & 3);
+    int kstep = tile / mtiles, mtile = tile - kstep * mtiles;
+    int n0 = mtile * 16 + (lane >> 2), k0 = kstep * 8 + 2 * (lane & 3);
     float v[4];
     #pragma unroll
-    for (int e = 0; e < 4; e++) {   /* e = s * 2 + half: k = k0 + 8 s + half (br_frag_index) */
-        int k = k0 + (e >> 1) * 8 + (e & 1);
+    for (int e = 0; e < 4; e++) {   /* e = half * 2 + hi: k = k0 + half, n = n0 + 8 hi (br_frag_index) */
+        int k = k0 + (e >> 1), n = n0 + (e & 1) * 8;
         v[e] = (k < K && n < N) ? s[(long)n * K + k] : 0.f;
     }
     d[i] = make_float4(v[0], v[1], v[2], v[3]);
@@ -575,7 +597,7 @@ static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* o
         int K, int N, int ldb, int relu, const BrLinear& wt, cudaStream_t stream) {
     BrGemmArgs a = {};
     a.in = in; a.ld_in = ld_in; a.out = out; a.ld_out = ld_out; a.K = K; a.N = N; a.ldb = ldb; a.relu = relu;
-    if (p.tf32) a.ldb = (N + 7) / 8;  // n-tiles of the fragment layout
+    if (p.tf32) a.ldb = (N + 15) / 16;  // m-tiles of the fragment layout
     a.g = p.g; a.wt = wt;
     memcpy(a.tiles, p.tiles, sizeof(a.tiles));
     int sub, used = br_gemm_slots(K, &sub);
