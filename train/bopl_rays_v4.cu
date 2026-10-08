@@ -741,17 +741,16 @@ __device__ static void br4_finish(const Br4Shared& sh, int lane, float dx, float
 // flight at once (a lane past n computes on a wall it then drops), the rest
 // (n > 4 L) in a loop. The whole warp steps until its last live ray ends
 // (the lanes ran that long anyway), so the shuffles take the full mask: a
-// ray's own mask cost a convergence check per shuffle. The minima are
-// fminf, one instruction: w < d ? w : d is the same float, as d is never
-// NaN (fminf drops a NaN w as the select does) and neither is -0
-// (bopl4f_box).
+// ray's own mask cost a convergence check per shuffle. A step's SDF at t is
+// taken before t's end checks and the warp's exit branch, so the branch
+// resolves beside the SDF instead of in front of it (~50 cycles a step; the
+// last step's SDF is wasted). The minima are fminf, one instruction:
+// w < d ? w : d is the same float, as d is never NaN (fminf drops a NaN w as
+// the select does) and neither is -0 (bopl4f_box).
 template <int L, int K>
 __device__ static float br4_march(const Br4Shared& sh, int n, int lane, bool live, float ox, float oy, float dx, float dy, float max, float limit) {
     float t = 0.0f, out = 0.0f;
     for (int i = 0; i < 32; i++) {
-        if (live && !(t < max)) { out = max; live = false; }
-        if (live && t >= limit) { out = limit; live = false; }
-        if (!__any_sync(0xffffffffu, live)) return out;
         const float px = ox + dx * t, py = oy + dy * t;
         float d = 1e9f;
         #pragma unroll
@@ -759,6 +758,9 @@ __device__ static float br4_march(const Br4Shared& sh, int n, int lane, bool liv
         if (K == 4) for (int j = lane + K * L; j < n; j += L) d = fminf(br4_wall_sdf(sh, j, px, py), d);
         #pragma unroll
         for (int o = 1; o < L; o <<= 1) d = fminf(__shfl_xor_sync(0xffffffffu, d, o), d);
+        if (live && !(t < max)) { out = max; live = false; }
+        if (live && t >= limit) { out = limit; live = false; }
+        if (!__any_sync(0xffffffffu, live)) return out;
         if (live && d < 0.05f) { out = t; live = false; }
         t += d;
     }
