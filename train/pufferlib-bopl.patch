@@ -579,8 +579,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      long offset = 0;
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
---- pristine-src/models.cu	2026-10-07 20:01:55.279986950 -0400
-+++ puffer-overlay/models.cu	2026-10-07 20:02:05.628204592 -0400
+--- pristine-src/models.cu	2026-10-07 20:56:31.551545861 -0400
++++ puffer-overlay/models.cu	2026-10-07 21:17:32.691190223 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -928,6 +928,29 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
          mingru_scan_forward<<<grid_size(B*m->hidden), BLOCK_SIZE, 0, stream>>>(a->scan_bufs[i]);
          x = a->scan_bufs[i].out;
      }
+@@ -745,10 +846,18 @@
+         mingru_scan_backward<<<grid_size(scan.B*scan.H), BLOCK_SIZE, 0, stream>>>(
+             scan, grad.data, a->grad_next_state.data);
+         puf_mm_tn(&scan.grad_combined, &a->saved_inputs[i], &a->wgrad_scratch[i], stream);
+-        puf_mm_nn(&scan.grad_combined, &m->weights[i], &a->grad_input_buf, stream);
+-        int n = numel(scan.grad_input.shape);
+-        add_kernel<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
+-            a->grad_input_buf.data, scan.grad_input.data, n);
++        // Bopl: grad_input_buf = grad_combined W + scan.grad_input (the highway
++        // gate's input gradient) with the addend in the GEMM's epilogue (out of
++        // place, beta = 1: acc + C rounded once, as the separate add_kernel
++        // pass over the product rounded it).
++        {
++            PrecisionTensor* ga = &scan.grad_combined; PrecisionTensor* w = &m->weights[i];
++            int M = batch_size(ga->shape) * ga->shape[ndim(ga->shape) - 2];
++            int K = ga->shape[ndim(ga->shape) - 1];
++            int N = w->shape[ndim(w->shape) - 1];
++            cublasGemmExDense(CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, ga->data, w->data, scan.grad_input.data,
++                stream, 1.0f, 1.0f, a->grad_input_buf.data);
++        }
+         grad = a->grad_input_buf;
+     }
+     return grad;
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-10-07 20:01:55.279986950 -0400
 +++ puffer-overlay/muon.cu	2026-10-07 20:07:23.362705661 -0400
