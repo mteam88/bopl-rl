@@ -525,6 +525,125 @@ __global__ void __launch_bounds__(POOL_THREADS) unpool_rows4(const bf16* __restr
 }
 static bool pool4_ok(int D, int ldj, int col0) { return D % 4 == 0 && POOL_THREADS % (D / 4) == 0 && ldj % 4 == 0 && col0 % 4 == 0; }
 static int pool4_grid(int D, int B) { int per = POOL_THREADS / (D / 4); return (B + per - 1) / per; }
+/* h2 = ReLU(h1 W2^T) and pool_rows4 in one kernel (training, D = 128, I = 64):
+ * h2 is never written, so its write and pool_rows4's read of it go. A warp
+ * owns `spw` consecutive samples, i.e. one contiguous run of packed rows, and
+ * walks it 16 rows at a time: bf16 mma.sync m16n8k16 (fp32 accumulators from
+ * zero, the 4 k16 steps in order: cuBLASLt's bf16 kernels for these shapes,
+ * every candidate lt_plan can pick, give the same bits), ReLU, bf16 rounding,
+ * the 16 x 128 tile staged in shared memory, then pool_rows4's per-column scan
+ * over those rows in order (lane = 4 columns, the sample's best / winner / sum
+ * carried across tiles and flushed at its last row), and the same h2 > 0
+ * bitmask. The pools, winners and bitmask are bit-identical to the GEMM +
+ * pool_rows4. W2 (16 KB) and the per-warp stages (4 KB) are unpadded with
+ * their 16-byte chunks XOR-swizzled by row & 7: conflict-free ldmatrix,
+ * fragment stores and row reads, 48 KB a block, two blocks of 8 warps per SM.
+ * 16 SMs, the entity set's ~450k rows: 617 (GEMM) + 333 (pool) -> ~475 us. */
+constexpr int H2P_WARPS = 8, H2P_D = 128, H2P_I = 64, H2P_ROWS = 192;   /* rows per warp to aim spw at */
+__device__ __forceinline__ int h2p_chunk(int row, int chunk) { return chunk ^ (row & 7); }
+__device__ __forceinline__ void h2p_mma(float* c, const uint32_t* a, uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3]) : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+__device__ __forceinline__ void h2p_ldsm4(uint32_t* r, const void* p) {
+    unsigned s = (unsigned)__cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n" : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(s));
+}
+__global__ void __launch_bounds__(H2P_WARPS * 32) h2_pool_rows(const bf16* __restrict__ h1, const bf16* __restrict__ w2, const int* offsets, const int* counts,
+                                                              int total_index, const int* totals, float* __restrict__ joined, int ldj, int col0,
+                                                              signed char* __restrict__ winner, int mean_pool, int B, uint4* __restrict__ pos, int spw) {
+    __shared__ __align__(16) bf16 sw[H2P_D * H2P_I];
+    __shared__ __align__(16) bf16 st[H2P_WARPS][16 * H2P_D];
+    for (int i = threadIdx.x; i < H2P_D * H2P_I / 8; i += H2P_WARPS * 32) {
+        int n = i / (H2P_I / 8), k8 = i - n * (H2P_I / 8);
+        *(uint4*)&sw[n * H2P_I + h2p_chunk(n, k8) * 8] = *(const uint4*)&w2[n * H2P_I + k8 * 8];
+    }
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+    const int b0 = (blockIdx.x * H2P_WARPS + warp) * spw;
+    if (b0 >= B) return;
+    const int b_end = min(B, b0 + spw), total = totals[total_index];
+    auto rows_of = [&](int b) { int off = offsets[b], n = counts[b]; return off + n > total ? max(0, total - off) : n; };
+    const int r_begin = offsets[b0];
+    const int r_stop = max(r_begin, min(total, offsets[b_end - 1] + rows_of(b_end - 1)));
+    bf16* stw = st[warp];
+    const int c = lane * 4;
+    float best[4], sum[4]; int win[4];
+    auto reset = [&]() {
+        #pragma unroll
+        for (int j = 0; j < 4; j++) { best[j] = 0.0f; sum[j] = 0.0f; win[j] = -1; }
+    };
+    int cur = b0, cur_n = rows_of(b0), r_in = 0;
+    auto flush = [&]() {   /* sample cur is complete: its pools as pool_rows4 writes them */
+        *reinterpret_cast<float4*>(joined + (long)cur * ldj + col0 + c) = make_float4(best[0], best[1], best[2], best[3]);
+        float4 m = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        if (mean_pool && cur_n > 0) m = make_float4(sum[0] / cur_n, sum[1] / cur_n, sum[2] / cur_n, sum[3] / cur_n);
+        *reinterpret_cast<float4*>(joined + (long)cur * ldj + col0 + H2P_D + c) = m;
+        *reinterpret_cast<unsigned*>(winner + (long)cur * H2P_D + c) = pack_win4(win);
+    };
+    auto advance = [&]() {   /* past every complete sample, empty ones included (warp-uniform) */
+        while (cur < b_end && r_in >= cur_n) { flush(); cur++; r_in = 0; reset(); if (cur < b_end) cur_n = rows_of(cur); }
+    };
+    reset();
+    advance();
+    uint32_t a[4][4];
+    auto load_a = [&](int r0) {   /* A fragments: rows r0 + g, r0 + g + 8, k = 16 ks + 2 t (+ 8); rows past the run 0 */
+        const int ra = r0 + g, rb = ra + 8;
+        const bool va = ra < r_stop, vb = rb < r_stop;
+        const bf16* pa = h1 + (long)ra * H2P_I + 2 * t;
+        const bf16* pb = h1 + (long)rb * H2P_I + 2 * t;
+        #pragma unroll
+        for (int ks = 0; ks < 4; ks++) {
+            a[ks][0] = va ? *(const uint32_t*)(pa + 16 * ks) : 0u;
+            a[ks][1] = vb ? *(const uint32_t*)(pb + 16 * ks) : 0u;
+            a[ks][2] = va ? *(const uint32_t*)(pa + 16 * ks + 8) : 0u;
+            a[ks][3] = vb ? *(const uint32_t*)(pb + 16 * ks + 8) : 0u;
+        }
+    };
+    if (r_begin < r_stop) load_a(r_begin);
+    for (int r0 = r_begin; r0 < r_stop; r0 += 16) {
+        #pragma unroll
+        for (int nt = 0; nt < H2P_D / 8; nt += 2) {   /* two 8-column tiles at a time */
+            uint32_t bq[2][8];
+            #pragma unroll
+            for (int u = 0; u < 2; u++) {
+                const int n = (nt + u) * 8 + (lane & 7);
+                h2p_ldsm4(bq[u], sw + n * H2P_I + h2p_chunk(n, lane >> 3) * 8);
+                h2p_ldsm4(bq[u] + 4, sw + n * H2P_I + h2p_chunk(n, 4 + (lane >> 3)) * 8);
+            }
+            float acc[2][4] = {};
+            #pragma unroll
+            for (int ks = 0; ks < 4; ks++)
+                #pragma unroll
+                for (int u = 0; u < 2; u++) h2p_mma(acc[u], a[ks], bq[u][2 * ks], bq[u][2 * ks + 1]);
+            #pragma unroll
+            for (int u = 0; u < 2; u++) {
+                __nv_bfloat162 lo = __floats2bfloat162_rn(fmaxf(acc[u][0], 0.0f), fmaxf(acc[u][1], 0.0f));
+                __nv_bfloat162 hi = __floats2bfloat162_rn(fmaxf(acc[u][2], 0.0f), fmaxf(acc[u][3], 0.0f));
+                *reinterpret_cast<__nv_bfloat162*>(stw + g * H2P_D + h2p_chunk(g, nt + u) * 8 + 2 * t) = lo;
+                *reinterpret_cast<__nv_bfloat162*>(stw + (g + 8) * H2P_D + h2p_chunk(g, nt + u) * 8 + 2 * t) = hi;
+            }
+        }
+        __syncwarp();
+        if (r0 + 16 < r_stop) load_a(r0 + 16);   /* the next tile's loads in flight during the scan */
+        const int nq = min(16, r_stop - r0);
+        for (int q = 0; q < nq; q++) {
+            float v[4];
+            bf4_load(stw + q * H2P_D + h2p_chunk(q, lane >> 1) * 8 + (lane & 1) * 4, v);
+            #pragma unroll
+            for (int j = 0; j < 4; j++) { if (v[j] > best[j]) { best[j] = v[j]; win[j] = r_in; } sum[j] += v[j]; }
+            const uint4 m = make_uint4(__ballot_sync(0xffffffffu, v[0] > 0.0f), __ballot_sync(0xffffffffu, v[1] > 0.0f),
+                                       __ballot_sync(0xffffffffu, v[2] > 0.0f), __ballot_sync(0xffffffffu, v[3] > 0.0f));
+            if (lane == 0) pos[r0 + q] = m;
+            r_in++;
+            advance();
+        }
+        __syncwarp();
+    }
+}
+static bool h2_pool_ok(int D, int I, int ldj, int col0) { return D == H2P_D && I == H2P_I && pool4_ok(D, ldj, col0); }
+/* samples per warp: ~H2P_ROWS rows at the pass's mean (act / B), at most 32 */
+static int h2_pool_spw(int act, int B) { return std::max(1, std::min(32, (int)((long)H2P_ROWS * B / std::max(act, 1)))); }
 /* ---- elementwise and LayerNorm ------------------------------------------ */
 __global__ void relu_into(const float* src, float* dst, int rows, int cols, int ldd) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1060,6 +1179,15 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
         void* mask = act >= LT_AUX_MIN_ROWS ? a->relu_mask[s].data : nullptr;
         lt_gemm(false, true, act, I, K, bfp(a->xpack[s]), K, bfp(a->w1b[s]), K, nullptr, bfp(a->h1[s]), I, true,
                 mask ? CUBLASLT_EPILOGUE_RELU_AUX : CUBLASLT_EPILOGUE_RELU, stream, mask);
+        /* h2 = ReLU(h1 W2^T) and the pools in one kernel when training (h2pos registered, no stage hooks) */
+        if (a->h2pos[s].data && !g_set_stage.forward && !g_set_stage.backward && h2_pool_ok(D, I, LDJ, FD + s * 2 * D)) {
+            int spw = h2_pool_spw(act, B), warps = (B + spw - 1) / spw;
+            h2_pool_rows<<<(warps + H2P_WARPS - 1) / H2P_WARPS, H2P_WARPS * 32, 0, stream>>>(bfp(a->h1[s]), bfp(a->w2b[s]), a->offsets.data + (long)s * B,
+                a->counts.data + (long)s * B, s, a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B,
+                (uint4*)a->h2pos[s].data, spw);
+            prof_mark("enc.set_mlp_pool", stream);
+            continue;
+        }
         /* h2 = ReLU(h1 W2^T); W2 stored (D, I) */
         lt_gemm(false, true, act, D, I, bfp(a->h1[s]), I, bfp(a->w2b[s]), I, nullptr, bfp(a->h2[s]), D, true, CUBLASLT_EPILOGUE_RELU, stream);
         if (g_set_stage.forward)
