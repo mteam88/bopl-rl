@@ -1588,7 +1588,9 @@ impl RolloutWorld {
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
-    pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) {
+    /// Whether the Box/Box group that follows has two parts that pair
+    /// (`any_pairs`), or more than a few to sort.
+    pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) -> bool {
         let sweep_x = self.sweep_x();
         // The circles, each with its layer.
         let mut layered = std::mem::take(&mut self.scratch.cb_parts);
@@ -1717,6 +1719,12 @@ impl RolloutWorld {
             boxes.retain(|part| box_set.meets_other(part.layer, data));
         }
         debug_assert!(boxes.iter().all(|part| box_set.meets_other(part.layer, data)));
+        // The Box/Box group's pairs read nothing this group's corrections
+        // move (above), so whether it has two that pair is known now, while
+        // its boxes are at hand; one pass in a hundred over the test replays
+        // has, and the rest skip that group (`box_box_unpaired`).
+        let box_pairs = boxes.len() > 1 && (boxes.len() > 8 || any_pairs(&boxes, data));
+        self.scratch.box_pairs = box_pairs;
         self.scratch.box_parts = boxes;
         self.scratch.box_parts_tick = Some(self.tick);
         self.scratch.cb_parts = layered;
@@ -1731,6 +1739,7 @@ impl RolloutWorld {
             self.resolve_parts(circle, part, contact);
         }
         self.scratch.cb_contacts = contacts;
+        box_pairs
     }
 
     /// The Circle/Box group's manifolds of `circles` with `boxes`, in the
@@ -2472,8 +2481,17 @@ impl RolloutWorld {
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
         // A group of a few parts with no two that pair (`any_pairs`) is left
-        // unsorted.
-        if group.len() > 1 && (group.len() > 8 || any_pairs(&group, data)) {
+        // unsorted; the Circle/Box group answered that for its boxes.
+        let sorted = if cached {
+            debug_assert_eq!(
+                self.scratch.box_pairs,
+                group.len() > 1 && (group.len() > 8 || any_pairs(&group, data))
+            );
+            self.scratch.box_pairs
+        } else {
+            group.len() > 1 && (group.len() > 8 || any_pairs(&group, data))
+        };
+        if sorted {
             // The Circle/Box group's boxes take their ranks now
             // (`unranked_part`).
             if cached {
@@ -2512,6 +2530,28 @@ impl RolloutWorld {
             self.platforms_changed();
         }
         self.scratch.cc_contacts = contacts;
+    }
+
+    /// `box_box_group` on a pass whose boxes the Circle/Box group just took
+    /// with no two that pair (`any_pairs`): it would sort none and build no
+    /// manifold, so it only drops the boxes' stamp. Debug builds take every
+    /// box afresh and check the full group makes no manifold.
+    pub(super) fn box_box_unpaired(&mut self, data: &data::RolloutData) {
+        let cached = self.scratch.box_parts_tick.take() == Some(self.tick);
+        debug_assert!(cached && !self.scratch.box_pairs);
+        #[cfg(debug_assertions)]
+        {
+            let sweep_x = self.sweep_x();
+            let mut layered = Vec::new();
+            self.push_box_parts(&mut layered, None, data);
+            let mut every_part: Vec<GroupPart> =
+                layered.iter().map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)).collect();
+            sort_by_rank(&mut every_part);
+            let (mut live, mut every) = (Vec::new(), Vec::new());
+            self.box_box_pairs(&every_part, data, &mut live, &mut every);
+            debug_assert!(every.is_empty(), "a Box/Box pass skipped with a manifold");
+        }
+        let _ = (cached, data);
     }
 
     /// The Box/Box group's parts that can pair with another (`LayerSet`),

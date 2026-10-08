@@ -5592,6 +5592,9 @@ struct PlatformScratch {
     /// Box/Box group of the pass stamped (`box_box_group`).
     box_parts: Vec<circle_box::GroupPart>,
     box_parts_tick: Option<u32>,
+    /// Whether `box_parts` has two that pair (`any_pairs`), or more than a
+    /// few to sort.
+    box_pairs: bool,
     /// The Circle/Circle group's parts in the order it took them with their
     /// layers, where each of its kinds ends, and the pass, for the
     /// Circle/Box group.
@@ -9551,8 +9554,14 @@ impl RolloutWorld {
         self.grapple_hook_pairs();
         // The Circle/Box group, after the corrections of every Circle/Circle
         // pair, then the Box/Box group.
-        self.thrown_item_pair_contacts(data);
-        self.box_box_group(data);
+        // A pass whose Box/Box boxes have no two that pair builds no Box/Box
+        // manifold, as over the test replays 99 passes in 100 do
+        // (`circle_box_group`'s `any_pairs`).
+        if self.thrown_item_pair_contacts(data) {
+            self.box_box_group(data);
+        } else {
+            self.box_box_unpaired(data);
+        }
         self.sync_guided_missile_rows();
         // DetPhysics.SyncGameObject: each child's FixTransform takes its
         // collider's pose before the collision callbacks (DetPhysics.cs:3172-3192).
@@ -35990,8 +35999,10 @@ impl RolloutWorld {
 
     /// The Circle/Circle group, then the Circle/Box group built from the
     /// corrected circles, then the Smoke callbacks.
+    /// Whether the Box/Box group has two boxes that pair
+    /// (`circle_box_group`).
     #[inline(never)]
-    fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) {
+    fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) -> bool {
         for item in &self.thrown_items {
             let Some(entity) = item.entity.filter(|_| item.active) else {
                 continue;
@@ -36002,7 +36013,7 @@ impl RolloutWorld {
             row.angular_velocity = item.body.angular_velocity.raw();
         }
         // The Circle/Box group follows, built from the corrected circles.
-        self.circle_box_group(data);
+        self.circle_box_group(data)
     }
 
     fn clone_box_registered(&self, index: usize) -> bool {
