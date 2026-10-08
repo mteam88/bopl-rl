@@ -951,6 +951,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
          grad = a->grad_input_buf;
      }
      return grad;
+diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-10-08 08:01:29.452719940 -0400
 +++ puffer-overlay/muon.cu	2026-10-08 08:02:25.871162682 -0400
 @@ -1,4 +1,5 @@
