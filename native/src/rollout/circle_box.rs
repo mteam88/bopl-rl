@@ -1691,9 +1691,13 @@ impl RolloutWorld {
             let partners = Self::cloud_partners(&boxes, data);
             self.insert_cloud_parts(&mut group, cloud_place, partners, sweep_x, data);
         }
-        let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
-        contacts.clear();
-        if !group.is_empty() {
+        // With no circle that can meet a box, over the test replays three
+        // passes in five, there is no pair: the contacts stay where they are.
+        let paired = !group.is_empty();
+        let mut contacts = Vec::new();
+        if paired {
+            contacts = std::mem::take(&mut self.scratch.cb_contacts);
+            contacts.clear();
             self.circle_box_pairs(&group, &boxes, sweep_x, data, &mut contacts);
         }
         #[cfg(debug_assertions)]
@@ -1729,16 +1733,20 @@ impl RolloutWorld {
         self.scratch.box_parts_tick = Some(self.tick);
         self.scratch.cb_parts = layered;
         self.scratch.group_parts = group;
-        contacts.sort_by_key(|&(key, ..)| key);
-        // PrepareCollisionCallBacks: the circle is A, so its OnCollide queues
-        // first, then the box's.
-        for &(key, circle, part, contact) in &contacts {
-            self.queue_collide(key, circle, part, contact);
+        if paired {
+            contacts.sort_by_key(|&(key, ..)| key);
+            // PrepareCollisionCallBacks: the circle is A, so its OnCollide
+            // queues first, then the box's.
+            for &(key, circle, part, contact) in &contacts {
+                self.queue_collide(key, circle, part, contact);
+            }
+            for &(_, circle, part, contact) in &contacts {
+                self.resolve_parts(circle, part, contact);
+            }
+            self.scratch.cb_contacts = contacts;
+        } else {
+            debug_assert!(contacts.is_empty());
         }
-        for &(_, circle, part, contact) in &contacts {
-            self.resolve_parts(circle, part, contact);
-        }
-        self.scratch.cb_contacts = contacts;
         box_pairs
     }
 
@@ -1782,8 +1790,15 @@ impl RolloutWorld {
         walls: &[RoundedRect],
         data: &data::RolloutData,
     ) {
+        // No part makes no manifold, and with none nothing below acts (see
+        // after the pair loop): over the test replays most Circle/RoundedRect
+        // passes have no part.
+        if parts.is_empty() {
+            return;
+        }
+        // Left empty by every pass (below), so taken as it is.
         let mut contacts = std::mem::take(&mut self.scratch.wall_contacts);
-        contacts.clear();
+        debug_assert!(contacts.is_empty());
         // Nothing below moves until every manifold is built. The walls'
         // swept boxes were taken with the callback colliders, once per pass
         // (`callback_bounds`); a wall past them, or every wall when no
@@ -1946,6 +1961,14 @@ impl RolloutWorld {
         }
         #[cfg(debug_assertions)]
         debug_assert!(stale || contacts.is_empty() != found);
+        // With no manifold, over the test replays 49 passes in 50 of either
+        // group, nothing below acts: every step reads `contacts` or is taken
+        // only with one (the sort, the queued hits, the resolutions, the
+        // platforms' bump), and `callback_hits` would be put back as it was.
+        if contacts.is_empty() {
+            self.scratch.wall_contacts = contacts;
+            return;
+        }
         contacts.sort_by_key(|&(key, ..)| key);
         // A wall `walls` leaves out is read live up to the resolutions, which
         // are the first to move one.
@@ -2085,9 +2108,9 @@ impl RolloutWorld {
             }
             self.resolve_part_wall(part, wall, contact.expect("only a slime's pair is untested"));
         }
-        if !contacts.is_empty() {
-            self.platforms_changed();
-        }
+        debug_assert!(!contacts.is_empty());
+        self.platforms_changed();
+        contacts.clear();
         self.scratch.wall_contacts = contacts;
     }
 
@@ -2246,7 +2269,8 @@ impl RolloutWorld {
         // Circle/Box group (`circle_parts`), with where each kind's end.
         let mut parts = std::mem::take(&mut self.scratch.circle_parts);
         parts.clear();
-        let mut ends = [0u32; CC_BLOCKS];
+        // Each kind's end goes straight to `circle_ends`: kept on the stack
+        // and copied there at the end, its narrow stores fed a wide reload.
         for (i, item) in self.thrown_items.iter().enumerate() {
             if item.active
                 && self.child_registered(item.entity)
@@ -2255,19 +2279,19 @@ impl RolloutWorld {
                 parts.push(self.layered(Part::Item(i), data));
             }
         }
-        ends[CC_ITEMS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_ITEMS] = parts.len() as u32;
         for i in 0..self.tesla_nodes.len() {
             if self.node_part(i, true) {
                 parts.push(self.layered(Part::Node(i), data));
             }
         }
-        ends[CC_NODES] = parts.len() as u32;
+        self.scratch.circle_ends[CC_NODES] = parts.len() as u32;
         for (i, shot) in self.portal_shots.iter().enumerate() {
             if shot.active && shot.registered && !self.blink_object_hidden(shot.entity) {
                 parts.push(self.layered(Part::Shot(i), data));
             }
         }
-        ends[CC_SHOTS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_SHOTS] = parts.len() as u32;
         // The players' parts, by bit, in one pass over them: a Rock form's
         // circle, or a slime's or other form's circle or box (`body_part_circle`,
         // which takes no Rock); the slimes whose box the Circle/Box group
@@ -2283,62 +2307,62 @@ impl RolloutWorld {
                 rocks |= (self.hittable(i) as u32) << i;
             }
         }
-        let each_bit = |parts: &mut Vec<(Part, u32)>, mut bits: u32, part: fn(usize) -> Part| {
+        let each_bit = |world: &Self, parts: &mut Vec<(Part, u32)>, mut bits: u32, part: fn(usize) -> Part| {
             while bits != 0 {
                 let i = bits.trailing_zeros() as usize;
-                parts.push((part(i), self.part_layer(part(i), data)));
+                parts.push((part(i), world.part_layer(part(i), data)));
                 bits &= bits - 1;
             }
         };
-        each_bit(&mut parts, rocks, Part::Rock);
+        each_bit(self, &mut parts, rocks, Part::Rock);
         #[cfg(debug_assertions)]
         {
-            let start = ends[CC_SHOTS] as usize;
+            let start = self.scratch.circle_ends[CC_SHOTS] as usize;
             let fresh: Vec<(Part, u32)> = (0..self.players.len())
                 .filter(|&i| self.players[i].active == ActiveAbility::Rock && self.hittable(i))
                 .map(|i| self.layered(Part::Rock(i), data))
                 .collect();
             debug_assert!(fresh[..] == parts[start..]);
         }
-        ends[CC_ROCKS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_ROCKS] = parts.len() as u32;
         for (i, pickup) in self.ability_pickups.iter().enumerate() {
             if pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity) {
                 parts.push(self.layered(Part::Pickup(i), data));
             }
         }
-        ends[CC_PICKUPS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_PICKUPS] = parts.len() as u32;
         for (i, rock) in self.duplicated_rocks.iter().enumerate() {
             if rock.active && !self.blink_object_hidden(rock.entity) {
                 parts.push(self.layered(Part::DuplicatedRock(i), data));
             }
         }
-        ends[CC_DUPLICATED_ROCKS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_DUPLICATED_ROCKS] = parts.len() as u32;
         for rope in 0..self.ropes.len() {
             if self.hook_live(rope) {
                 parts.push(self.layered(Part::Hook(rope), data));
             }
         }
-        ends[CC_HOOKS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_HOOKS] = parts.len() as u32;
         for i in 0..self.arrows.len() {
             if self.arrow_registered(i) {
                 parts.push(self.layered(Part::Arrow(i), data));
             }
         }
-        ends[CC_ARROWS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_ARROWS] = parts.len() as u32;
         for (i, hole) in self.black_holes.iter().enumerate() {
             if hole.active && !self.blink_object_hidden(hole.entity) {
                 parts.push(self.layered(Part::Hole(i), data));
             }
         }
-        ends[CC_HOLES] = parts.len() as u32;
+        self.scratch.circle_ends[CC_HOLES] = parts.len() as u32;
         // The clouds are taken only if they can pair (`cloud_parts_present`).
         let cloud_count = self.cloud_parts_present(data);
         let cloud_layer = data.smoke.cloud_layer;
-        ends[CC_CLOUDS] = parts.len() as u32;
-        each_bit(&mut parts, circle_bodies, Part::Body);
+        self.scratch.circle_ends[CC_CLOUDS] = parts.len() as u32;
+        each_bit(self, &mut parts, circle_bodies, Part::Body);
         #[cfg(debug_assertions)]
         {
-            let start = ends[CC_CLOUDS] as usize;
+            let start = self.scratch.circle_ends[CC_CLOUDS] as usize;
             let fresh: Vec<(Part, u32)> = (0..self.players.len())
                 .filter(|&i| self.body_part_circle(i) == Some(true))
                 .map(|i| self.body_layered(i, data))
@@ -2347,15 +2371,15 @@ impl RolloutWorld {
             let boxes = (0..self.players.len()).filter(|&i| self.body_part_circle(i) == Some(false));
             debug_assert_eq!(box_bodies, boxes.fold(0, |bits, i| bits | 1 << i));
         }
-        ends[CC_BODIES] = parts.len() as u32;
+        self.scratch.circle_ends[CC_BODIES] = parts.len() as u32;
         for i in 0..self.abilityless_clones.len() {
             if self.clone_part_circle(i) == Some(true) {
                 parts.push(self.layered(Part::Clone(i), data));
             }
         }
-        ends[CC_CLONES] = parts.len() as u32;
+        self.scratch.circle_ends[CC_CLONES] = parts.len() as u32;
         self.push_blasts(&mut parts, true, data);
-        ends[CC_ORBS] = parts.len() as u32;
+        self.scratch.circle_ends[CC_ORBS] = parts.len() as u32;
         // The pair loop reads, in rank order, only the parts with a partner
         // on a layer theirs collides with (`LayerSet`): over the test replays
         // four parts in five, most of them Smoke clouds, have none.
@@ -2364,7 +2388,7 @@ impl RolloutWorld {
         (0..cloud_count).for_each(|_| layers.add(cloud_layer));
         let mut group = std::mem::take(&mut self.scratch.group_parts);
         group.clear();
-        let cloud_at = ends[CC_CLOUDS] as usize;
+        let cloud_at = self.scratch.circle_ends[CC_CLOUDS] as usize;
         let mut cloud_place = 0;
         for (place, &(part, layer)) in parts.iter().enumerate() {
             if place == cloud_at {
@@ -2381,17 +2405,33 @@ impl RolloutWorld {
             let partners = Self::cloud_partners(&group, data);
             self.insert_cloud_parts(&mut group, cloud_place, partners, sweep_x, data);
         }
-        self.scratch.circle_ends = ends;
         self.scratch.circle_clouds = cloud_count;
         self.scratch.box_bodies = box_bodies;
         self.scratch.circle_parts_tick = Some(self.tick);
+        // A group of one part or none makes no pair: its contacts and the
+        // sweep's open priors stay where they are.
+        if group.len() <= 1 {
+            #[cfg(debug_assertions)]
+            {
+                let mut every_layered = parts.clone();
+                let every_clouds = self.cloud_layered(data);
+                every_layered.splice(cloud_at..cloud_at, every_clouds);
+                let mut every_part: Vec<GroupPart> =
+                    every_layered.iter().map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)).collect();
+                sort_by_rank(&mut every_part);
+                let (mut live, mut every) = (Vec::new(), Vec::new());
+                self.circle_circle_pairs(&every_part, data, &mut live, &mut every);
+                debug_assert!(every.is_empty(), "a Circle/Circle group of one part made a manifold");
+            }
+            self.scratch.group_parts = group;
+            self.scratch.circle_parts = parts;
+            return;
+        }
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         let mut live = std::mem::take(&mut self.scratch.sweep_live);
-        if group.len() > 1 {
-            sort_by_rank(&mut group);
-            self.circle_circle_pairs(&group, data, &mut live, &mut contacts);
-        }
+        sort_by_rank(&mut group);
+        self.circle_circle_pairs(&group, data, &mut live, &mut contacts);
         #[cfg(debug_assertions)]
         {
             // Every part's pairs are the filtered group's.

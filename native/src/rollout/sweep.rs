@@ -292,6 +292,9 @@ impl RolloutWorld {
     #[inline]
     fn player_bounds(&self, index: usize) -> [Vec2; 2] {
         let slot = &self.players[index];
+        if matches!(slot.active, ActiveAbility::None | ActiveAbility::Dash) {
+            return box_bounds(slot.base.synced);
+        }
         if slot.active == ActiveAbility::Rock {
             // A Blink tunnel or teleport disables the form's
             // GameObject, taking its body out of DetPhysics.
@@ -305,10 +308,22 @@ impl RolloutWorld {
             return bounds(slot.base.position, Vec2::new(radius, radius));
         }
         let entity = Self::hurtbox_entity(slot);
-        if matches!(slot.active, ActiveAbility::None | ActiveAbility::Dash) || entity >= self.entities.len() {
+        if entity >= self.entities.len() {
             return box_bounds(slot.base.synced);
         }
-        self.row_bounds(entity)
+        // A form's row is no other pool's, so `detphysics_collider` would
+        // scan every pool that owns rows only to reach this player's
+        // `hurtbox_collider` (debug builds check it gives the same box).
+        let bounds = match self.hurtbox_collider(index) {
+            Some(collider) => collider_bounds(collider),
+            None => self.row_shape_bounds(entity),
+        };
+        #[cfg(debug_assertions)]
+        {
+            let bits = |b: [Vec2; 2]| [b[0].x, b[0].y, b[1].x, b[1].y].map(Fix::bits);
+            debug_assert_eq!(bits(bounds), bits(self.row_bounds(entity)));
+        }
+        bounds
     }
 
     #[inline]
