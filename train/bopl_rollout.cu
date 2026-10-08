@@ -60,6 +60,19 @@ static void br_launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_
     cudaError_t e = cudaLaunchKernelEx(&cfg, kernel, std::forward<Args>(args)...);
     if (e != cudaSuccess) { fprintf(stderr, "br_launch_pdl: %s\n", cudaGetErrorString(e)); abort(); }
 }
+// The first node of each step's graph (vecenv.h gpu_go): wait for the host's
+// go word with system-scope acquire loads, then clear it. A stream memop wait
+// (cuStreamWaitValue32) in its place woke 8-10 us after the store on the busy
+// GPU, this kernel 1.9 us.
+__global__ void br_go_wait(unsigned* go) {
+    unsigned v;
+    for (;;) {
+        asm volatile("ld.acquire.sys.global.u32 %0, [%1];" : "=r"(v) : "l"(go) : "memory");
+        if (v) break;
+        __nanosleep(256);
+    }
+    asm volatile("st.relaxed.sys.global.u32 [%0], %1;" :: "l"(go), "r"(0u) : "memory");
+}
 // An event the host polls: an external event node of the graph when the
 // stream is capturing (the flag is an error outside capture).
 static void br_record_external(cudaEvent_t e, cudaStream_t stream) {
@@ -593,6 +606,8 @@ struct BrPlan {
     int graph_copies;    // H2D / D2H memcpys captured into the forward graph (BOPL_GRAPH_COPIES, default 1)
     int transport_check; // dump mode (train.py --dump-rows): count device-row floats that differ from the host row
     const float* packed_mapped;  // the device alias of vec->packed_host (bopl4_unpack_rows reads the slots' tails there)
+    CUdeviceptr gpu_flag_dev;    // device aliases of vec->gpu_flag / vec->gpu_go (0: none)
+    unsigned* gpu_go_dev;
     int tf32;            // tensor-core tf32 GEMMs (BOPL_TF32, default 1) or fp32 FMAs
     int sparse;          // stage only the populated obs slots (BOPL_OBS_SPARSE, default 1)
     int rows;            // live rows per buffer (bank_layout end)
@@ -962,6 +977,24 @@ static void br_init(PuffeRL* pufferl) {
         vec->actions_ready = (cudaEvent_t*)calloc(pufferl->hypers.num_buffers, sizeof(cudaEvent_t));
         for (int b = 0; b < pufferl->hypers.num_buffers; b++)
             assert(cudaEventCreateWithFlags(&vec->actions_ready[b], cudaEventDisableTiming) == cudaSuccess);
+        // The host-visible completion and start words (vecenv.h gpu_flag,
+        // gpu_go): BOPL_GPU_FLAG=0 / BOPL_GPU_GO=0 leave them out of the graphs.
+        size_t bytes = (size_t)pufferl->hypers.num_buffers * BOPL_GPU_FLAG_STRIDE * sizeof(unsigned);
+        auto mapped_words = [&](unsigned** host) -> void* {
+            void* dev = nullptr;
+            if (cudaHostAlloc((void**)host, bytes, cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess
+                    && cudaHostGetDevicePointer(&dev, *host, 0) == cudaSuccess) {
+                memset(*host, 0, bytes);
+                return dev;
+            }
+            if (*host) cudaFreeHost(*host);
+            *host = nullptr;
+            cudaGetLastError();
+            fprintf(stderr, "bopl gpu flag: mapped host words unavailable\n");
+            return nullptr;
+        };
+        if (br_env_int("BOPL_GPU_FLAG", 1)) p->gpu_flag_dev = (CUdeviceptr)mapped_words(&vec->gpu_flag);
+        if (vec->gpu_flag && br_env_int("BOPL_GPU_GO", 1)) p->gpu_go_dev = (unsigned*)mapped_words(&vec->gpu_go);
     }
     if (p->zero_copy == 0) {
         int nb = pufferl->hypers.num_buffers;
@@ -1082,6 +1115,8 @@ static void br_free(PuffeRL* pufferl) {
         for (int b = 0; b < pufferl->hypers.num_buffers; b++) cudaEventDestroy(vec->actions_ready[b]);
         free(vec->actions_ready); vec->actions_ready = nullptr;
     }
+    if (vec && vec->gpu_flag) { cudaFreeHost(vec->gpu_flag); vec->gpu_flag = nullptr; }
+    if (vec && vec->gpu_go) { cudaFreeHost(vec->gpu_go); vec->gpu_go = nullptr; }
     if (vec && vec->pack_host) {
         if (!vec->pack_in_tail)
             for (int b = 0; b < pufferl->hypers.num_buffers; b++) { cudaFreeHost(vec->pack_host[b]); cudaFree(vec->pack_dev[b]); }
@@ -1121,6 +1156,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         mask = p.mask_stride ? (const unsigned char*)(pk + 2 * rows * sizeof(float)) : nullptr;
     }
     float* env_actions = (p.actions_zero_copy ? vec->dev_actions : vec->gpu_actions) + (long)start * p.num_atns;
+    if (p.gpu_go_dev) br_go_wait<<<1, 1, 0, stream>>>(p.gpu_go_dev + buf * BOPL_GPU_FLAG_STRIDE);
     if (p.graph_copies && vec->packed_host) {
         // Packed rows: one 2D copy of the head of every slot of the buffer,
         // then the dense device rows rebuilt for the chain (the unpack reads
@@ -1227,6 +1263,13 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);
     if (vec->actions_ready) br_record_external(vec->actions_ready[buf], stream);
+    // After the event (BOPL_GPU_FLAG_CHECK=1 relies on it); the default flag
+    // fences the stream's earlier writes (the action copy) before the word.
+    if (p.gpu_flag_dev) {
+        CUresult r = cuStreamWriteValue32((CUstream)stream, p.gpu_flag_dev + (CUdeviceptr)buf * BOPL_GPU_FLAG_STRIDE * sizeof(unsigned),
+                                          1, CU_STREAM_WRITE_VALUE_DEFAULT);
+        if (r != CUDA_SUCCESS) { fprintf(stderr, "bopl gpu flag: cuStreamWriteValue32 failed (%d)\n", (int)r); abort(); }
+    }
     br4_join(p, buf, stream);
 }
 #include "bopl_rollout_v4.cu"
