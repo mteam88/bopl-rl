@@ -5641,8 +5641,8 @@ struct PlatformScratch {
     /// Each bit is set wherever its state turns on, and cleared by the
     /// walk when its scan finds nothing on, so a clear bit skips the scan.
     walk_awake: u8,
-    /// The authored platform pass's platform per definition (usize::MAX:
-    /// none).
+    /// The authored platform pass's platform at each place of the map's
+    /// `update_order` (usize::MAX: none).
     authored_platforms: Vec<usize>,
     /// Whether `authored_platforms` stands: the authored platforms move only
     /// when one is removed, and a reset or a fork brings others.
@@ -37131,9 +37131,10 @@ impl RolloutWorld {
         // platform list both, so each definition is looked up among the live
         // platforms. The map loads one authored platform per definition (a
         // Duplicator copy keeps its source's, but is not authored), so one
-        // walk finds them all, and it stands until an authored platform is
-        // removed (which clears `authored_platforms_built`, also in this pass:
-        // the walk is then redone before the next definition is looked up).
+        // walk finds them all, each at its place in the update order, and it
+        // stands until an authored platform is removed (which clears
+        // `authored_platforms_built`, also in this pass: the walk is then
+        // redone before the next place is looked up).
         let mut authored = std::mem::take(&mut self.scratch.authored_platforms);
         let first_runtime = self.first_runtime_platform();
         // The other passes skip the authored platforms; until one of theirs
@@ -37151,22 +37152,19 @@ impl RolloutWorld {
                     self.authored_platforms_into(data, &mut fresh);
                     debug_assert_eq!(fresh, authored);
                 }
-                let definition = order[k];
-                let found = authored.get(definition).copied().unwrap_or(usize::MAX);
+                let found = authored[k];
                 debug_assert_eq!(
                     (found != usize::MAX).then_some(found),
-                    (0..self.platforms.len()).find(|&i| self.platform_defs[i] == definition && self.platform_pass(i) == pass)
+                    (0..self.platforms.len()).find(|&i| self.platform_defs[i] == order[k] && self.platform_pass(i) == pass)
                 );
                 if found == usize::MAX {
                     continue;
                 }
                 // An authored platform is of this pass, and its pass has no
-                // window and no Updater key to wait for.
-                let updates = self.platform_dynamics[found].appended <= self.tick;
-                debug_assert_eq!(updates, self.platform_updates_in(found, pass));
-                if !updates {
-                    continue;
-                }
+                // window and no Updater key to wait for; it is loaded with
+                // the map (`appended` 0), so it always updates.
+                debug_assert_eq!(self.platform_dynamics[found].appended, 0);
+                debug_assert!(self.platform_updates_in(found, pass));
                 found
             } else {
                 // platform_updates_in, keeping the key for the turn.
@@ -37295,16 +37293,17 @@ impl RolloutWorld {
         shook
     }
 
-    /// Each definition's authored platform (usize::MAX: none) into `authored`.
+    /// The authored platform (usize::MAX: none) of the definition at each
+    /// place of the map's update order into `authored`: the first authored
+    /// platform of that definition.
     fn authored_platforms_into(&self, data: &data::RolloutData, authored: &mut Vec<usize>) {
+        let first_runtime = self.first_runtime_platform();
         authored.clear();
-        authored.resize(data.maps[self.map].platforms.len(), usize::MAX);
-        for i in 0..self.first_runtime_platform() {
-            let definition = self.platform_defs[i];
-            if definition < authored.len() && authored[definition] == usize::MAX && self.platform_pass(i) == PlatformPass::Authored {
-                authored[definition] = i;
-            }
-        }
+        authored.extend(data.maps[self.map].update_order.iter().map(|&definition| {
+            (0..first_runtime)
+                .find(|&i| self.platform_defs[i] == definition && self.platform_pass(i) == PlatformPass::Authored)
+                .unwrap_or(usize::MAX)
+        }));
     }
 
     /// The updaters of platform `i`'s prefab, in its component order: the
