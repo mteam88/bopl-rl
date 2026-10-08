@@ -2080,88 +2080,18 @@ pub struct SpawnedPlatform {
 }
 
 /// DetPhysics body plus AnimateVelocity state for one rounded platform.
+///
+/// `repr(C)`, its fields in this order: the ones every pass touches (the
+/// scene platform's updaters, integration, the basis) first, in the eight
+/// cache lines from its 64-byte boundary, the rest after them.
 #[derive(Clone, Copy, Default)]
+#[repr(C, align(64))]
 pub struct PlatformDynamics {
     pub body: Body,
-    /// Its prefab's registration list (`World::register_prefab`), the
-    /// script execution order of each, and its collider's number in it. Its
-    /// row's HierarchyNumber less that one is what every number in the list
-    /// registered offset by, which a copy made while it is out of the
-    /// hierarchy keeps (ShootDuplicator.cs:709-718).
-    pub registered: (&'static [u32], &'static [i32], u32),
-    /// DPhysicsRoundedRect.Scale and its authored lower clamp. MachoThrow2
-    /// mutates these while excavating a Boulder from the attached platform.
-    pub scale: Fix,
-    /// BoplBody.prevScale. Non-resizable bodies update inverse mass and
-    /// inertia on the updater pass after DPhysics changes FixTransform scale.
-    pub body_scale: Fix,
-    pub body_resizable: bool,
-    /// The platform BoplBody's magnet hold; only a Boulder's is ever held.
-    pub hold: Hold,
-    /// GameSessionHandler keeps authored grounds active but disables their
-    /// colliders/AnimateVelocity until the shared level-intro routine ends.
-    pub intro_disabled: bool,
-    /// DPhysicsRoundedRect.MinScale and MaxScale, the bounds its Scale setter
-    /// clamps to: serialized per platform (MaxScale 3 on some space maps).
-    pub min_scale: Fix,
-    pub max_scale: Fix,
-    /// StickyRoundedRectangle.baseScaleForPlatform (GrowOnStart.scaleUp) and
-    /// DPhysicsRoundedRect.timeSinceLastScaledUp: a platform grown past its
-    /// base shrinks back ten seconds after its last growth.
-    pub base_scale: Fix,
-    pub time_since_scaled_up: Fix,
-    /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
-    /// the pass after a later MachoThrow2 scale write.
-    pub surface_shape_dirty: bool,
-    /// The rounded rectangle's own serialized body. `body` becomes the
-    /// effective CompositeBody while SpikeAttack children are attached; the
-    /// observation bridge still exports this child body unchanged.
-    pub root_body: Body,
-    pub attached_children: u32,
-    /// Children attached so far, including departed ones; stamps
-    /// `attach_order`.
-    pub attach_count: u32,
-    /// CompositeBody.position is separate from the rounded-rectangle child
-    /// centre. Box/RR positional correction can move the former without
-    /// moving the latter until a later operation rebuilds the composite.
-    pub composite_position: Vec2,
-    /// FixTransform rotation written by a component this tick.
-    /// DetPhysics.Simulate copies it into the body only after AnimateVelocity
-    /// has computed its torque against the stale orientation
-    /// (DetPhysics.cs:2504-2506).
-    pub transform_rotation: Option<Fix>,
-    /// Tick on which Updater adds a body registered mid-tick and calls
-    /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
-    /// position physics had already corrected on the spawn tick; 0 for
-    /// none (a pending one is a pass after its spawn pass, never 0), so
-    /// `init_tick > tick` is the whole "joins on a later pass" test.
-    pub init_tick: u32,
-    /// `platform_defs`' entry for it as the definition itself (None for
-    /// `usize::MAX`): a copy keeps its source's with the index.
-    pub definition: Option<&'static data::PlatformDef>,
-    /// The prefab whose component order runs the platform's updaters.
-    pub prefab: PlatformPrefab,
-    /// That prefab's updaters, `PlatformUpdater::pack`ed: what
-    /// `platform_updater_order` reads, kept per platform for its turn.
-    pub updaters: u64,
-    /// The pass Updater appended the platform's components: 0 for an
-    /// authored one, else the pass after it was instantiated, whose Init walk
-    /// takes them off Updater's queue (Updater.cs:258-287).
-    pub appended: u32,
-    /// DuplicatePlatformEffect asks AnimateVelocity to suppress its home
-    /// spring on the next pass and re-home at the displaced body position.
-    pub float_next_frame: bool,
     /// This pass's AnimateVelocity step: its tick, the impulse it added, the
     /// impulse it would have added floating, and the position it read.
     pub spring_step: Option<(u32, Vec2, Vec2, Vec2)>,
-    /// The rect body's inverse mass before this pass's BoplBody rescale, and
-    /// the tick: a Black Hole registered before a Duplicator copy pulls it
-    /// first, with that mass (BlackHole.cs:434, BoplBody.cs:332-343).
-    pub unscaled_inverse_mass: Option<(u32, Fix)>,
-    /// AnimateVelocity.isBeingControlled: set by a Push on it, cleared only
-    /// when that Push leaves through its own ExitAbility or by Initialize
-    /// (ControlPlatform.cs:120-130,160-166; AnimateVelocity.cs:88-93).
-    pub being_controlled: bool,
+    /// AnimateVelocity's home and spring constants.
     pub home_position: Vec2,
     pub home_rotation: Fix,
     pub speed: Fix,
@@ -2170,18 +2100,109 @@ pub struct PlatformDynamics {
     /// `One - rotationMu`, AnimateVelocity's per-pass angular damping
     /// factor: rotationMu is constant per body, so its complement is kept.
     pub rotation_keep: Fix,
-    pub interpolate_rotation_home: bool,
-    /// ShakablePlatform's transform-space displacement. Meteor writes the
-    /// request after this map updater has run, so the first sample is taken
-    /// on the following pass.
+    /// DPhysicsRoundedRect.Scale and its authored lower clamp. MachoThrow2
+    /// mutates these while excavating a Boulder from the attached platform.
+    pub scale: Fix,
+    /// BoplBody.prevScale. Non-resizable bodies update inverse mass and
+    /// inertia on the updater pass after DPhysics changes FixTransform scale.
+    pub body_scale: Fix,
+    /// StickyRoundedRectangle.baseScaleForPlatform (GrowOnStart.scaleUp) and
+    /// DPhysicsRoundedRect.timeSinceLastScaledUp: a platform grown past its
+    /// base shrinks back ten seconds after its last growth.
+    pub base_scale: Fix,
+    pub time_since_scaled_up: Fix,
+    /// ShakablePlatform's transform-space displacement, its clock and length
+    /// (its amount and last sample are with the cold fields). Meteor writes
+    /// the request after this map updater has run, so the first sample is
+    /// taken on the following pass.
     pub shake_time: Fix,
     pub shake_duration: Fix,
-    pub shake_amount: Fix,
-    pub shake_previous: Vec2,
-    pub meteor_shake_curve: bool,
+    /// FixTransform rotation written by a component this tick.
+    /// DetPhysics.Simulate copies it into the body only after AnimateVelocity
+    /// has computed its torque against the stale orientation
+    /// (DetPhysics.cs:2504-2506).
+    pub transform_rotation: Option<Fix>,
     /// `AnimateVelocity.randomSuddenDeathDelay`, drawn when the body enters
     /// sudden death; `None` until then (`inSuddenDeath`).
     pub sudden_death_delay: Option<Fix>,
+    /// CompositeBody.position is separate from the rounded-rectangle child
+    /// centre. Box/RR positional correction can move the former without
+    /// moving the latter until a later operation rebuilds the composite.
+    pub composite_position: Vec2,
+    /// The updaters of its `prefab`, `PlatformUpdater::pack`ed: what
+    /// `platform_updater_order` reads, kept per platform for its turn.
+    pub updaters: u64,
+    /// The platform BoplBody's magnet hold; only a Boulder's is ever held.
+    pub hold: Hold,
+    /// The basis and box axes of the last integration: a platform that
+    /// translates without rotating (sudden death, a spring settling) keeps
+    /// its basis instead of consulting the sine table twice.
+    pub basis: Option<PlatformBasis>,
+    pub attached_children: u32,
+    /// Tick on which Updater adds a body registered mid-tick and calls
+    /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
+    /// position physics had already corrected on the spawn tick; 0 for
+    /// none (a pending one is a pass after its spawn pass, never 0), so
+    /// `init_tick > tick` is the whole "joins on a later pass" test.
+    pub init_tick: u32,
+    /// The pass Updater appended the platform's components: 0 for an
+    /// authored one, else the pass after it was instantiated, whose Init walk
+    /// takes them off Updater's queue (Updater.cs:258-287).
+    pub appended: u32,
+    /// Whether `body_scale` follows `scale` without rescaling the body.
+    pub body_resizable: bool,
+    /// GameSessionHandler keeps authored grounds active but disables their
+    /// colliders/AnimateVelocity until the shared level-intro routine ends.
+    pub intro_disabled: bool,
+    /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
+    /// the pass after a later MachoThrow2 scale write.
+    pub surface_shape_dirty: bool,
+    /// DuplicatePlatformEffect asks AnimateVelocity to suppress its home
+    /// spring on the next pass and re-home at the displaced body position.
+    pub float_next_frame: bool,
+    pub interpolate_rotation_home: bool,
+    /// StickyRoundedRectangle.DropAllAttachedPlayers. The platform updater
+    /// decrements this before player prefabs run; a Meteor landing writes two
+    /// after that updater, so later players can be ejected immediately and
+    /// earlier players see the remaining frame on the following pass
+    /// (`dont_drop_player_id` and `drop_force` are with the cold fields).
+    pub drop_players_frames: i8,
+    // Past the hot fields' 490 bytes (`HOT_END`): what a pass touches only
+    // on its rarer paths.
+    /// Its prefab's registration list (`World::register_prefab`), the
+    /// script execution order of each, and its collider's number in it. Its
+    /// row's HierarchyNumber less that one is what every number in the list
+    /// registered offset by, which a copy made while it is out of the
+    /// hierarchy keeps (ShootDuplicator.cs:709-718).
+    pub registered: (&'static [u32], &'static [i32], u32),
+    /// DPhysicsRoundedRect.MinScale and MaxScale, the bounds its Scale setter
+    /// clamps to: serialized per platform (MaxScale 3 on some space maps).
+    pub min_scale: Fix,
+    pub max_scale: Fix,
+    /// The rounded rectangle's own serialized body. `body` becomes the
+    /// effective CompositeBody while SpikeAttack children are attached; the
+    /// observation bridge still exports this child body unchanged.
+    pub root_body: Body,
+    /// Children attached so far, including departed ones; stamps
+    /// `attach_order`.
+    pub attach_count: u32,
+    /// `platform_defs`' entry for it as the definition itself (None for
+    /// `usize::MAX`): a copy keeps its source's with the index.
+    pub definition: Option<&'static data::PlatformDef>,
+    /// The prefab whose component order runs the platform's updaters.
+    pub prefab: PlatformPrefab,
+    /// The rect body's inverse mass before this pass's BoplBody rescale, and
+    /// the tick: a Black Hole registered before a Duplicator copy pulls it
+    /// first, with that mass (BlackHole.cs:434, BoplBody.cs:332-343).
+    pub unscaled_inverse_mass: Option<(u32, Fix)>,
+    /// AnimateVelocity.isBeingControlled: set by a Push on it, cleared only
+    /// when that Push leaves through its own ExitAbility or by Initialize
+    /// (ControlPlatform.cs:120-130,160-166; AnimateVelocity.cs:88-93).
+    pub being_controlled: bool,
+    /// ShakablePlatform's amount and the displacement last sampled.
+    pub shake_amount: Fix,
+    pub shake_previous: Vec2,
+    pub meteor_shake_curve: bool,
     /// Permanent Duplicator copies are keyed by the casting gun hierarchy.
     /// A later copy from the same gun schedules the previous one to expire.
     pub duplicate_spawner_hierarchy: Option<u32>,
@@ -2190,11 +2211,7 @@ pub struct PlatformDynamics {
     /// DPhysicsRoundedRect.startRadius: the radius the collider was built
     /// with, which `AsRoundedRect` still reports after the body is resized.
     pub start_radius: Fix,
-    /// StickyRoundedRectangle.DropAllAttachedPlayers. The platform updater
-    /// decrements this before player prefabs run; a Meteor landing writes two
-    /// after that updater, so later players can be ejected immediately and
-    /// earlier players see the remaining frame on the following pass.
-    pub drop_players_frames: i8,
+    /// The player `drop_players_frames`' drop spares, and the drop's force.
     pub dont_drop_player_id: u32,
     pub drop_force: Fix,
     /// A wall QuantumTunnel is registered on the shot pass, waits one strict
@@ -2207,11 +2224,12 @@ pub struct PlatformDynamics {
     /// The tunnel's updater slot: spawned updaters created after it (a
     /// Black Hole) see the wall it restores on the same pass.
     pub blink_tunnel_hierarchy: u32,
-    /// The basis and box axes of the last integration: a platform that
-    /// translates without rotating (sudden death, a spring settling) keeps
-    /// its basis instead of consulting the sine table twice.
-    pub basis: Option<PlatformBasis>,
 }
+
+/// The end of `PlatformDynamics`' hot fields: they fill no more than the
+/// eight cache lines from its start.
+const HOT_END: usize = std::mem::offset_of!(PlatformDynamics, drop_players_frames) + 1;
+const _: () = assert!(HOT_END <= 512 && std::mem::align_of::<PlatformDynamics>() == 64);
 
 /// `Vec2::angle(orientation)` and the rounded rectangle's box axes on it
 /// (Box.SetRotation), kept from one integration to the next. A turn small
@@ -38610,8 +38628,40 @@ impl RolloutWorld {
         // The slimes' and forms' circles and boxes hold for the pass: the
         // Circle/RoundedRect and Circle/Circle groups take them from here.
         let (_, mut boxes) = self.fresh_body_parts();
+        // `push_swept` of each `Part::Body`, written in place: the part
+        // straight into the slot and its box copied there from the sweep's
+        // player list. `push_swept` built the part in the stack slot its
+        // fallback lookup borrows and the pair on the stack, copied in with
+        // loads straddling the stores that put them there.
+        let players = self.swept_players();
         while boxes != 0 {
-            self.push_swept(&mut parts, Part::Body(boxes.trailing_zeros() as usize));
+            let i = boxes.trailing_zeros() as usize;
+            match players {
+                Some(players) => {
+                    if let Some(bounds) = players.get(i) {
+                        #[cfg(debug_assertions)]
+                        {
+                            let bits = |b: [Vec2; 2]| [b[0].x, b[0].y, b[1].x, b[1].y].map(Fix::bits);
+                            debug_assert_eq!(Some(bits(*bounds)), self.swept_bounds(Swept::Part(Part::Body(i))).map(bits));
+                        }
+                        parts.reserve(1);
+                        let len = parts.len();
+                        debug_assert!(len < parts.capacity());
+                        // SAFETY: `reserve` left room for one more past `len`,
+                        // both of whose fields are written before the length
+                        // takes it in.
+                        unsafe {
+                            let slot = parts.as_mut_ptr().add(len);
+                            (&raw mut (*slot).0).write(Part::Body(i));
+                            std::ptr::copy_nonoverlapping(bounds, &raw mut (*slot).1, 1);
+                            parts.set_len(len + 1);
+                        }
+                    } else {
+                        debug_assert!(self.swept_bounds(Swept::Part(Part::Body(i))).is_none());
+                    }
+                }
+                None => self.push_swept(&mut parts, Part::Body(i)),
+            }
             boxes &= boxes - 1;
         }
         for i in 0..self.abilityless_clones.len() {
