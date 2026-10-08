@@ -932,6 +932,7 @@ impl RolloutWorld {
             Part::Arrow(i) => self.set_arrow_body(i, body, delta),
             Part::Hole(i) => self.black_holes[i].body_velocity = body.velocity,
             Part::Cloud(i) => {
+                self.smoke_clouds[i].rest.forget();
                 self.smoke_clouds[i].body = body;
                 self.smoke_clouds[i].position += delta;
             }
@@ -1022,7 +1023,10 @@ impl RolloutWorld {
             (Part::Shot(i), None) => &mut self.portal_shots[i].body,
             (Part::Missile(i), None) => &mut self.guided_missiles[i].body,
             (Part::Rock(i), None) => &mut self.players[i].rock.body,
-            (Part::Cloud(i), None) => &mut self.smoke_clouds[i].body,
+            (Part::Cloud(i), None) => {
+                self.smoke_clouds[i].rest.forget();
+                &mut self.smoke_clouds[i].body
+            }
             _ => unreachable!(),
         };
         body.apply_impulse(force, arm);
@@ -1072,7 +1076,10 @@ impl RolloutWorld {
             Part::Pickup(i) => self.ability_pickups[i].body.force += force,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].body.force += force,
             Part::Arrow(i) => self.arrows[i].force += force,
-            Part::Cloud(i) => self.smoke_clouds[i].body.force += force,
+            Part::Cloud(i) => {
+                self.smoke_clouds[i].rest.forget();
+                self.smoke_clouds[i].body.force += force;
+            }
             // A RopeHook's circle has no BoplBody, so nothing integrates it.
             Part::Hook(_) => {}
             Part::Node(_)
