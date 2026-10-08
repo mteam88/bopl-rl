@@ -624,13 +624,15 @@ struct BrSampleArgs {
 
 __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
     __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
+    __shared__ int s_buttons[SAMPLE_WARP_ROWS];
     br_pdl_wait(); br_pdl_release();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
-    if (idx >= a.rows) return;
+    const int row0 = blockIdx.x * SAMPLE_WARP_ROWS, idx = row0 + warp;
+    const int live_rows = min(SAMPLE_WARP_ROWS, a.rows - row0);
+    const bool live = idx < a.rows;   // (the other warps only join the block's aim pass)
     const int A_total = a.A_total;
     const float* logits = a.dec + (long)idx * a.ld_dec;
-    const unsigned char* mask = a.env_mask ? a.env_mask + (long)idx * a.mask_stride : nullptr;
+    const unsigned char* mask = live && a.env_mask ? a.env_mask + (long)idx * a.mask_stride : nullptr;
     float* row = s_logits[warp];
     // The mask may live in host memory: issue every lane's loads before the first use.
     constexpr int MASK_ITERS = (SAMPLE_MAX_LOGITS + 31) / 32;
@@ -647,13 +649,50 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
         }
     }
     const bool aim = a.aim_fourier > 0 || a.aim_ar;
-    // Stage game logits [g0, g1) from the raw row (bopl_aim.h; identity unless aim).
+    // Fourier aim: the block's rows' aim logits into s_logits, one bin per
+    // thread, so a bin's basis (cosf, sinf and the rotations) is computed once
+    // for the block's rows rather than per row; each (row, bin) takes the
+    // operations of bopl_aim_fourier_logit_dev in its order. The buttons of
+    // each row's aim block from s_buttons (autoregressive). All warps.
+    // 2026-10-07 (fwd_bench, Fourier 4): the kernel 14.7 -> 9.9 us.
+    auto fourier_bins = [&]() {
+        __syncthreads();
+        const int K = a.aim_fourier;
+        const float* blk[SAMPLE_WARP_ROWS];
+        #pragma unroll
+        for (int r = 0; r < SAMPLE_WARP_ROWS; r++)
+            blk[r] = a.dec + (long)(row0 + min(r, live_rows - 1)) * a.ld_dec + bopl_aim_block_offset(K, a.aim_ar, a.aim_ar ? s_buttons[r] : 0);
+        for (int bin = threadIdx.x; bin < BOPL_ACT_AIM; bin += blockDim.x) {
+            float sum[SAMPLE_WARP_ROWS];
+            if (bin == 0) {
+                #pragma unroll
+                for (int r = 0; r < SAMPLE_WARP_ROWS; r++) sum[r] = blk[r][0];
+            } else {
+                BoplAimBasis b = bopl_aim_basis(bin);
+                #pragma unroll
+                for (int r = 0; r < SAMPLE_WARP_ROWS; r++) sum[r] = 0.0f;
+                for (int k = 1; k <= K; k++) {
+                    #pragma unroll
+                    for (int r = 0; r < SAMPLE_WARP_ROWS; r++) sum[r] += blk[r][2 * k - 1] * b.ck + blk[r][2 * k] * b.sk;
+                    bopl_aim_basis_next(&b);
+                }
+                #pragma unroll
+                for (int r = 0; r < SAMPLE_WARP_ROWS; r++) sum[r] = sum[r] * bopl_aim_fourier_scale(K);
+            }
+            #pragma unroll
+            for (int r = 0; r < SAMPLE_WARP_ROWS; r++) if (r < live_rows) s_logits[r][bin] = sum[r];
+        }
+        __syncthreads();
+    };
+    // Stage game logits [g0, g1) from the raw row (bopl_aim.h; identity unless
+    // aim; the Fourier aim bins as fourier_bins left them in the row).
     auto stage = [&](int g0, int g1, int buttons) {
         #pragma unroll
         for (int it = 0; it < MASK_ITERS; it++) {
             int i = lane + it * 32;
             if (i < g0 || i >= g1) continue;
-            float l = aim ? bopl_game_logit(logits, a.aim_fourier, a.aim_ar, buttons, i) : logits[i];
+            float l = a.aim_fourier > 0 && i < BOPL_ACT_AIM ? row[i]
+                    : aim ? bopl_game_logit(logits, a.aim_fourier, a.aim_ar, buttons, i) : logits[i];
             l = finite_or_clamp(l, -1.0e4f, 1.0e4f);
             if (mask && mv[it] == 0) l = -1e4f;
             row[i] = l;
@@ -662,7 +701,7 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
     };
 
     curandStatePhilox4_32_10_t state;
-    if (lane == 0) state = a.rng[idx];
+    if (live && lane == 0) state = a.rng[idx];
     float total_log_prob = 0.0f;
     int verb = 0;
     int sampled[MAX_ATN_HEADS];
@@ -726,12 +765,19 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
     if (a.aim_ar) {
         // Autoregressive aim: buttons (head 1) first, then the aim block of
         // that combo (head 0), then the rest. Same order as sample_logits_warp.
-        stage(BOPL_ACT_AIM, A_total, 0);
-        sample_head(1);
+        if (live) {
+            stage(BOPL_ACT_AIM, A_total, 0);
+            sample_head(1);
+            if (lane == 0) s_buttons[warp] = sampled[1];
+        }
+        if (a.aim_fourier > 0) fourier_bins();
+        if (!live) return;
         stage(0, BOPL_ACT_AIM, sampled[1]);
         sample_head(0);
         for (int h = 2; h < a.num_atns; ++h) sample_head(h);
     } else {
+        if (a.aim_fourier > 0) fourier_bins();
+        if (!live) return;
         stage(0, A_total, 0);
         for (int h = 0; h < a.num_atns; ++h) sample_head(h);
     }
