@@ -420,7 +420,12 @@ __global__ void unpool_rows(const bf16* h2, bf16* dh2, int D, const int* offsets
  * thread count per pass is a quarter (the scalar forms issued 2-byte loads).
  * The rows are loaded POOL_BATCH at a time ahead of their (sequential) use:
  * one load in flight per thread left the scans latency bound (~300 GB/s).
- * Used when D % 4 == 0 and D / 4 divides POOL_THREADS. */
+ * Used when D % 4 == 0 and D / 4 divides POOL_THREADS.
+ * In training, with D % 128 == 0 (a warp per 128 columns of one sample),
+ * pool_rows4 also writes h2 > 0 as a bitmask `pos` (cap, D / 32): per 128
+ * columns 4 ballot words, word j's bit l column 4 l + j. unpool_rows4 reads
+ * those 16 bytes per row and warp (a broadcast) in place of h2's 256: the
+ * same predicate on the same bf16 values, so dh2 is bit-identical. */
 constexpr int POOL_THREADS = 128, POOL_BATCH = 4;
 __device__ __forceinline__ void bf4_load(const bf16* p, float* v) {
     uint2 u = *reinterpret_cast<const uint2*>(p);
@@ -436,7 +441,8 @@ __device__ __forceinline__ unsigned pack_win4(const int* w) {
     return (unsigned)(w[0] & 0xff) | (unsigned)(w[1] & 0xff) << 8 | (unsigned)(w[2] & 0xff) << 16 | (unsigned)(w[3] & 0xff) << 24;
 }
 __global__ void __launch_bounds__(POOL_THREADS) pool_rows4(const bf16* __restrict__ h2, int D, const int* offsets, const int* counts, int total_index,
-                                                          const int* totals, float* __restrict__ joined, int ldj, int col0, signed char* __restrict__ winner, int mean_pool, int B) {
+                                                          const int* totals, float* __restrict__ joined, int ldj, int col0, signed char* __restrict__ winner, int mean_pool, int B,
+                                                          uint4* __restrict__ pos) {
     const int tps = D / 4;   /* threads per sample */
     const int b = blockIdx.x * (POOL_THREADS / tps) + threadIdx.x / tps, c = (threadIdx.x % tps) * 4;
     if (b >= B) return;
@@ -453,6 +459,11 @@ __global__ void __launch_bounds__(POOL_THREADS) pool_rows4(const bf16* __restric
             if (r0 + q >= n) break;
             #pragma unroll
             for (int j = 0; j < 4; j++) { if (v[q][j] > best[j]) { best[j] = v[q][j]; win[j] = r0 + q; } sum[j] += v[q][j]; }
+            if (pos) {   /* warp-uniform: the warp is one sample's 128 columns */
+                const uint4 m = make_uint4(__ballot_sync(0xffffffffu, v[q][0] > 0.0f), __ballot_sync(0xffffffffu, v[q][1] > 0.0f),
+                                           __ballot_sync(0xffffffffu, v[q][2] > 0.0f), __ballot_sync(0xffffffffu, v[q][3] > 0.0f));
+                if ((threadIdx.x & 31) == 0) pos[((long)(off + r0 + q) * D + c) / 128] = m;
+            }
         }
     }
     *reinterpret_cast<float4*>(joined + (long)b * ldj + col0 + c) = make_float4(best[0], best[1], best[2], best[3]);
@@ -462,7 +473,8 @@ __global__ void __launch_bounds__(POOL_THREADS) pool_rows4(const bf16* __restric
     *reinterpret_cast<unsigned*>(winner + (long)b * D + c) = pack_win4(win);
 }
 __global__ void __launch_bounds__(POOL_THREADS) unpool_rows4(const bf16* __restrict__ h2, bf16* __restrict__ dh2, int D, const int* offsets, const int* counts, const int* totals,
-                                                            int total_index, const float* __restrict__ grad_joined, int ldj, int col0, const signed char* __restrict__ winner, int mean_pool, int B) {
+                                                            int total_index, const float* __restrict__ grad_joined, int ldj, int col0, const signed char* __restrict__ winner, int mean_pool, int B,
+                                                            const uint4* __restrict__ pos) {
     const int tps = D / 4;
     const int b = blockIdx.x * (POOL_THREADS / tps) + threadIdx.x / tps, c = (threadIdx.x % tps) * 4;
     if (b >= B) return;
@@ -476,6 +488,26 @@ __global__ void __launch_bounds__(POOL_THREADS) unpool_rows4(const bf16* __restr
         gmean[0] = t.x / n; gmean[1] = t.y / n; gmean[2] = t.z / n; gmean[3] = t.w / n;
     }
     const long base = (long)off * D + c;
+    if (pos) {
+        const int bit = threadIdx.x & 31;
+        const uint4* m = pos + base / 128;
+        for (int r0 = 0; r0 < n; r0 += POOL_BATCH) {
+            uint4 u[POOL_BATCH];
+            #pragma unroll
+            for (int q = 0; q < POOL_BATCH; q++) if (r0 + q < n) u[q] = m[(long)(r0 + q) * D / 128];
+            #pragma unroll
+            for (int q = 0; q < POOL_BATCH; q++) {
+                if (r0 + q >= n) break;
+                int r = r0 + q;
+                const unsigned w[4] = {u[q].x, u[q].y, u[q].z, u[q].w};
+                float g[4];
+                #pragma unroll
+                for (int j = 0; j < 4; j++) { float gg = gmean[j] + (win[j] == r ? gmax[j] : 0.0f); g[j] = w[j] >> bit & 1 ? gg : 0.0f; }
+                bf4_store(dh2 + base + (long)r * D, g);
+            }
+        }
+        return;
+    }
     for (int r0 = 0; r0 < n; r0 += POOL_BATCH) {
         float v[POOL_BATCH][4];
         #pragma unroll
@@ -741,6 +773,7 @@ struct EncActs {
     /* training */
     PrecisionTensor grad_fused, grad_joined, grad_flat, acc;
     IntTensor dh2[SETS];
+    IntTensor h2pos[SETS];       /* h2 > 0 as a bitmask (cap, D/32) for unpool_rows4 (pool_rows4); unset in rollout or when D % 128 != 0 */
     IntTensor relu_mask[SETS];   /* h1's ReLU bitmask (cap, I/32) for the DRELU epilogue; unset in rollout, at small caps, or when I % 128 != 0 */
     PrecisionTensor wgrad_w1[SETS], wgrad_w2[SETS], wgrad_embedding, wgrad_flat, wgrad_fusion;
 };
@@ -1033,7 +1066,8 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
             g_set_stage.forward(s, bfp(a->h2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
         if (pool4_ok(D, LDJ, FD + s * 2 * D))
             pool_rows4<<<pool4_grid(D, B), POOL_THREADS, 0, stream>>>(bfp(a->h2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, s,
-                                                                     a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B);
+                                                                     a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B,
+                                                                     (uint4*)a->h2pos[s].data);
         else
             pool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, a->cap[s], s,
                                            a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool);
@@ -1062,7 +1096,8 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
         int K = SPEC[s].kpad, act = a->act[s];
         if (pool4_ok(D, LDJ, FD + s * 2 * D))
             unpool_rows4<<<pool4_grid(D, B), POOL_THREADS, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
-                                                                       a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B);
+                                                                       a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool, B,
+                                                                       (const uint4*)a->h2pos[s].data);
         else
             unpool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                                              a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, (signed char*)a->winner[s].data, w->mean_pool);
@@ -1159,6 +1194,7 @@ static void enc_reg_train(void* weights, void* activations, Allocator* acts, All
     long acc = 0;   /* dW1's fp32 (I, kpad) */
     for (int s = 0; s < SETS; s++) {
         a->dh2[s] = {.shape = {a->cap[s], D / 2}}; alloc_register(acts, &a->dh2[s]);
+        if (D % 128 == 0 && pool4_ok(D, FD + SETS * 2 * D, FD + s * 2 * D)) { a->h2pos[s] = {.shape = {a->cap[s], D / 32}}; alloc_register(acts, &a->h2pos[s]); }
         if (I % 128 == 0 && a->cap[s] >= LT_AUX_MIN_ROWS) {
             a->relu_mask[s] = {.shape = {a->cap[s], I / 32}}; alloc_register(acts, &a->relu_mask[s]);
         }
