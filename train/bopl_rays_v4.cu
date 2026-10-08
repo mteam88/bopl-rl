@@ -515,26 +515,38 @@ constexpr int BR4R_KINDS = BOPL4_ENTITY_PARTS + BOPL4_SLIME_PARTS + 1 + BOPL4_PL
 __constant__ unsigned char br4r_count[BR4R_KINDS] = {0, 0, 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 5, 6};
 __constant__ unsigned char br4r_part[BR4R_KINDS] = {0, 1, 2, 3, 0, 1, 0, 0, 1, 0, 1, 0, 1, 2, 0};
 static_assert(BR4R_KINDS == 15, "the tables above");
-struct Br4IShared { int pre[BR4E_SEGS][BR4R_MAX_ROWS + 1], base[BR4R_KINDS + 1], wsum[BR4_RAYS_THREADS / 32]; };
+struct Br4IShared { int pre[BR4E_SEGS][BR4R_MAX_ROWS + 1], base[BR4R_KINDS + 1], wsum[BR4E_SEGS][BR4_RAYS_THREADS / 32]; };
 __device__ static void br4_items(const Br4Meta* __restrict__ metas, const int* __restrict__ counts, int rows, int block, int blocks,
                                  Br4IShared& sh) {
     constexpr int T = BR4_RAYS_THREADS, W = T / 32;
+    static_assert(BR4R_MAX_ROWS <= T && BR4E_SEGS <= 8, "a thread per row, its counts two int4s");
     const int t = threadIdx.x, lane = t & 31, wid = t >> 5;
-    const int per = (rows + T - 1) / T, lo = min(rows, t * per), hi = min(rows, lo + per);
-    for (int q = 0; q < BR4E_SEGS; q++) {
-        int sum = 0;
-        for (int r = lo; r < hi; r++) sum += counts[r * 8 + q];
-        int x = sum;
-        #pragma unroll
-        for (int o = 1; o < 32; o <<= 1) { const int y = __shfl_up_sync(0xffffffffu, x, o); if (lane >= o) x += y; }
-        if (lane == 31) sh.wsum[wid] = x;
-        __syncthreads();
-        int run = x - sum;
-        for (int v = 0; v < wid; v++) run += sh.wsum[v];
-        for (int r = lo; r < hi; r++) { sh.pre[q][r] = run; run += counts[r * 8 + q]; }
-        if (t == T - 1) sh.pre[q][rows] = run;
-        __syncthreads();
+    // The segments' exclusive prefixes over the rows, all seven at once (one
+    // memory round and one barrier; a segment at a time took ~8 us).
+    int c[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    if (t < rows) {
+        const int4 a = ((const int4*)counts)[2 * t], b = ((const int4*)counts)[2 * t + 1];
+        c[0] = a.x; c[1] = a.y; c[2] = a.z; c[3] = a.w; c[4] = b.x; c[5] = b.y; c[6] = b.z; c[7] = b.w;
     }
+    int x[BR4E_SEGS];
+    #pragma unroll
+    for (int q = 0; q < BR4E_SEGS; q++) x[q] = c[q];
+    #pragma unroll
+    for (int o = 1; o < 32; o <<= 1)
+        #pragma unroll
+        for (int q = 0; q < BR4E_SEGS; q++) { const int y = __shfl_up_sync(0xffffffffu, x[q], o); if (lane >= o) x[q] += y; }
+    if (lane == 31)
+        #pragma unroll
+        for (int q = 0; q < BR4E_SEGS; q++) sh.wsum[q][wid] = x[q];
+    __syncthreads();
+    #pragma unroll
+    for (int q = 0; q < BR4E_SEGS; q++) {
+        int run = x[q];
+        for (int v = 0; v < wid; v++) run += sh.wsum[q][v];
+        if (t < rows) sh.pre[q][t] = run - c[q];
+        if (t == T - 1) sh.pre[q][rows] = run;
+    }
+    __syncthreads();
     if (t == 0) {
         sh.base[0] = 0;
         for (int q = 0; q < BR4R_KINDS; q++) sh.base[q + 1] = (sh.base[q] + sh.pre[br4r_count[q]][rows] + 31) & ~31;
@@ -594,24 +606,20 @@ __device__ static void br4_items(const Br4Meta* __restrict__ metas, const int* _
     }
 }
 
-// The scene bopl4_encode_rows left in global memory, by the whole block.
+// The scene bopl4_encode_rows left in global memory, by the whole block:
+// the whole struct in one pass, every load in flight at once (the unused
+// capacity comes along and is never read). Copying the used parts sized by
+// the counts took five dependent memory rounds, ~6 us of a ~24 us ray block.
 __device__ static void br4_scene_fetch(const Bopl4Scene* __restrict__ g, Br4Shared& sh) {
-    Bopl4Scene* s = &sh.s;
-    const int na = g->axis_count, nr = g->rot_count, nc = g->circle_count;
-    constexpr int HEAD = (int)(offsetof(Bopl4Scene, axis_cx) / 4);
-    for (int i = threadIdx.x; i < HEAD; i += blockDim.x) ((int32_t*)s)[i] = ((const int32_t*)g)[i];
-    const float* ga[5] = {g->axis_cx, g->axis_cy, g->axis_ex, g->axis_ey, g->axis_radius};
-    float* sa[5] = {s->axis_cx, s->axis_cy, s->axis_ex, s->axis_ey, s->axis_radius};
-    const float* gr[9] = {g->rot_cx, g->rot_cy, g->rot_rx, g->rot_ry, g->rot_ux, g->rot_uy, g->rot_ex, g->rot_ey, g->rot_radius};
-    float* sr[9] = {s->rot_cx, s->rot_cy, s->rot_rx, s->rot_ry, s->rot_ux, s->rot_uy, s->rot_ex, s->rot_ey, s->rot_radius};
-    const float* gc[5] = {g->cx, g->cy, g->cr, g->cvx, g->cvy};
-    float* sc[5] = {s->cx, s->cy, s->cr, s->cvx, s->cvy};
-    for (int i = threadIdx.x; i < 5 * na; i += blockDim.x) sa[i / na][i % na] = ga[i / na][i % na];
-    for (int i = threadIdx.x; i < 9 * nr; i += blockDim.x) sr[i / nr][i % nr] = gr[i / nr][i % nr];
-    for (int i = threadIdx.x; i < 6 * nc; i += blockDim.x) {
-        const int f = i / nc, j = i % nc;
-        if (f < 5) sc[f][j] = gc[f][j]; else s->cclass[j] = g->cclass[j];
-    }
+    constexpr int W = (int)(sizeof(Bopl4Scene) / 8), T = BR4_RAYS_THREADS, NL = (W + T - 1) / T;
+    static_assert(sizeof(Bopl4Scene) % 8 == 0, "copied by 8-byte words");
+    const uint2* src = (const uint2*)g;
+    uint2* dst = (uint2*)&sh.s;
+    uint2 v[NL];
+    #pragma unroll
+    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < W) v[t] = src[t * T + threadIdx.x];
+    #pragma unroll
+    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < W) dst[t * T + threadIdx.x] = v[t];
     __syncthreads();
 }
 
