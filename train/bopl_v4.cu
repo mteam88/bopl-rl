@@ -1216,7 +1216,7 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
         lt_gemm32(false, true, B, F, H, a->ln1.data, H, w->ffn_in.data, H, nullptr, a->f.data, F, CUBLASLT_EPILOGUE_RELU, stream);
         lt_gemm32(false, true, B, H, F, a->f.data, F, w->ffn_out.data, F, h.data, a->y.data, H, CUBLASLT_EPILOGUE_DEFAULT, stream);
     } else {
-        puf_copy(&a->y, &h, stream);
+        a->y.data = h.data;   /* y = h: the network's output, intact through the backward */
     }
     prof_mark("dec.ffn", stream);
     /* logits: actor rows then zero rows to the padded width */
@@ -1298,8 +1298,8 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         prof_mark("bwd.dec.critic_in", stream);
     }
     /* FFN: grad_h = g_y + LN_bwd(W_i^T (ReLU' * W_o^T g_y)) */
-    puf_copy(&a->base.grad_input, &a->g_y, stream);
     if (w->ffn) {
+        puf_copy(&a->base.grad_input, &a->g_y, stream);
         int F = w->ffn;
         puf_mm_tn(&a->g_y, &a->f, &a->wgrad_ffn_out, stream);
         puf_mm_nn(&a->g_y, &w->ffn_out, &a->g_f, stream);
@@ -1312,7 +1312,7 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
     }
     (void)grad_logstd;
     prof_mark("bwd.dec.ffn", stream);
-    return a->base.grad_input;
+    return w->ffn ? a->base.grad_input : a->g_y;
 }
 static void dec_init(void* weights, ulong* seed, cudaStream_t stream) {
     auto* w = (DecWeights*)weights;
@@ -1347,8 +1347,9 @@ static void dec_reg_forward(DecWeights* w, DecActs* a, Allocator* alloc, int B, 
     a->B = B; a->od1 = w->od + 1;
     a->base.out = {.shape = {B, pad}}; alloc_register(alloc, &a->base.out);
     a->actor_pad = {.shape = {pad, H}}; alloc_register(alloc, &a->actor_pad);
-    a->y = {.shape = {B, H}}; alloc_register(alloc, &a->y);
+    a->y = {.shape = {B, H}};
     if (w->ffn) {
+        alloc_register(alloc, &a->y);
         a->ln1 = {.shape = {B, H}}; a->f = {.shape = {B, w->ffn}};
         alloc_register(alloc, &a->ln1); alloc_register(alloc, &a->f);
         a->m1 = {.shape = {B}}; a->r1 = {.shape = {B}}; alloc_register(alloc, &a->m1); alloc_register(alloc, &a->r1);
@@ -1376,8 +1377,12 @@ static void dec_reg_train(void* weights, void* activations, Allocator* acts, All
     dec_reg_forward(w, a, acts, B, pad);
     a->base.grad_out = {.shape = {B, pad}}; a->base.saved_input = {.shape = {B, H}}; a->base.grad_input = {.shape = {B, H}};
     a->wgrad_actor_pad = {.shape = {pad, H}}; a->g_y = {.shape = {B, H}}; a->g_ln1 = {.shape = {B, H}};
-    for (auto* t : {&a->base.grad_out, &a->base.saved_input, &a->base.grad_input, &a->wgrad_actor_pad, &a->g_y, &a->g_ln1}) alloc_register(acts, t);
-    if (w->ffn) { a->g_f = {.shape = {B, w->ffn}}; alloc_register(acts, &a->g_f); }
+    for (auto* t : {&a->base.grad_out, &a->wgrad_actor_pad, &a->g_y}) alloc_register(acts, t);
+    /* without the FFN, y is the input and the input gradient is g_y: no saved input, no copies */
+    if (w->ffn) {
+        a->g_f = {.shape = {B, w->ffn}};
+        for (auto* t : {&a->base.saved_input, &a->base.grad_input, &a->g_ln1, &a->g_f}) alloc_register(acts, t);
+    }
     /* the critic block's ReLU bitmask (RELU_AUX rounds like RELU from LT_AUX_MIN_ROWS up; the width must be a multiple of 128 bits) */
     if (C && B >= LT_AUX_MIN_ROWS && C % 128 == 0) { a->b1_mask = {.shape = {B, C / 32}}; alloc_register(acts, &a->b1_mask); }
     if (C) {

@@ -579,8 +579,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      long offset = 0;
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
---- pristine-src/models.cu	2026-09-19 22:00:11.168998834 -0400
-+++ puffer-overlay/models.cu	2026-09-19 21:39:52.836962612 -0400
+--- pristine-src/models.cu	2026-10-07 20:01:55.279986950 -0400
++++ puffer-overlay/models.cu	2026-10-07 20:02:05.628204592 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -903,7 +903,24 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      return a->grad_input;
  }
  
-@@ -731,6 +830,7 @@
+@@ -651,7 +750,6 @@
+         a->saved_inputs[i]  = {.shape = {B, TT, H}};
+         a->combined_bufs[i] = {.shape = {B_TT, 3 * H}};
+         a->wgrad_scratch[i] = {.shape = {3 * H, H}};
+-        alloc_register(acts,&a->saved_inputs[i]);
+         alloc_register(acts,&a->combined_bufs[i]);
+         alloc_register(acts,&a->scan_bufs[i].out);
+         alloc_register(acts,&a->scan_bufs[i].next_state);
+@@ -725,12 +823,15 @@
+     MinGRUActivations* a = (MinGRUActivations*)activations;
+     int B = x.shape[0];
+     for (int i = 0; i < m->num_layers; i++) {
+-        puf_copy(&a->saved_inputs[i], &x, stream);
++        // Bopl: x (the encoder output or the previous layer's scan output) is
++        // intact through the backward, so the layer input is aliased, not copied.
++        a->saved_inputs[i].data = x.data;
+         PrecisionTensor state_i = mingru_state_layer(m, state, i);
+         puf_mm(&x, &m->weights[i], &a->combined_bufs[i], stream);
          a->scan_bufs[i].combined_ptr = a->combined_bufs[i].data;
          a->scan_bufs[i].state_ptr = state_i.data;
          a->scan_bufs[i].input_ptr = a->saved_inputs[i].data;
