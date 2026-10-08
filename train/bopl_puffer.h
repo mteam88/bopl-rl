@@ -111,13 +111,28 @@ enum { BOPL_LOADOUT_SET_MAX=256, BOPL_LOADOUT_FIXED=0, BOPL_LOADOUT_POOL=1, BOPL
 int bopl_loadout_set_count=0;
 uint8_t bopl_loadout_sets[BOPL_LOADOUT_SET_MAX*6];
 /* A world state that outlives the game's own state buffer: header, players and
- * telemetry by value, entity and slime rows in owned buffers. */
+ * telemetry by value, entity and slime rows in owned buffers. Without a rope
+ * (no kind-3 entity, dead or alive) the copy keeps the live entities alone
+ * (active and not destroyed), in order, and its entity_count says how many: a
+ * dead entity is in no row of either layout and in no overflow count (never
+ * visible, bopl_entity_visible; no wall or water, bopl4_scene_class), and the
+ * writers relate entities by position only (bopl_nearest keeps ties in index
+ * order), so every row and count from the copy is the state's. Only rope
+ * pieces see their neighbours (bopl_rope_group_end, bopl4_rope_continues), so
+ * with a rope every entity is kept. Copied once per decision while the
+ * sampled state is warm, the copy is then what a shipped row needs as it is:
+ * one run of entities and, in source_mask/source_counts, the census of its
+ * first BOPL4_ENTITIES entities by source ability (bit and index s-1 for
+ * source s in 1..BOPL_ABILITY_COUNT), so publishing it two decisions later
+ * reads no entity it does not ship (bopl4_shared_from_copy). */
 typedef struct {
     BoplRlState state;
     BoplRlEntity *entities; BoplRlSlime *slimes;
     uint32_t entity_capacity, slime_capacity;
-    int valid;
+    int valid, compact;
+    uint64_t source_mask; uint8_t source_counts[BOPL_ABILITY_COUNT];
 } BoplStateCopy;
+_Static_assert(BOPL_ABILITY_COUNT<=64, "source_mask holds every source ability");
 static void bopl_state_copy(BoplStateCopy *copy, const BoplRlState *state) {
     if (!state) { copy->valid=0; return; }
     uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
@@ -134,7 +149,21 @@ static void bopl_state_copy(BoplStateCopy *copy, const BoplRlState *state) {
         copy->slimes=grown; copy->slime_capacity=capacity;
     }
     copy->state=*state;
-    if (entities) memcpy(copy->entities, state->entities, (size_t)entities*sizeof(*copy->entities));
+    const BoplRlEntity *from=state->entities;
+    uint32_t kept=0; int ropes=0; uint64_t mask=0;
+    memset(copy->source_counts, 0, sizeof(copy->source_counts));
+    for (uint32_t i=0; i<entities; i++) {
+        const BoplRlEntity *entity=&from[i];
+        ropes|=entity->kind==3;
+        if ((entity->flags&(BOPL_ENTITY_ACTIVE|BOPL_ENTITY_DESTROYED))!=BOPL_ENTITY_ACTIVE) continue;
+        if (kept<BOPL4_ENTITIES) {
+            uint32_t source=entity->reserved[0];
+            if (source>0 && source<=BOPL_ABILITY_COUNT) { copy->source_counts[source-1]++; mask|=1ull<<(source-1); }
+        }
+        copy->entities[kept++]=*entity;
+    }
+    if (ropes) { memcpy(copy->entities, from, (size_t)entities*sizeof(*copy->entities)); kept=entities; }
+    copy->state.header.entity_count=kept; copy->compact=!ropes; copy->source_mask=mask;
     if (slimes) memcpy(copy->slimes, state->slimes, (size_t)slimes*sizeof(*copy->slimes));
     copy->state.entities=copy->entities; copy->state.slimes=copy->slimes;
     copy->valid=1;
@@ -731,7 +760,7 @@ static void bopl4_previous_history(float *previous, BoplRlAction *history, BoplR
  * bopl_encode_v4_row counts) without the row: the visible entities after rope
  * thinning, the visible slimes and their slots. Only for states of at most
  * BOPL4_ENTITIES entities, so every visible entity is kept. */
-typedef struct { int count, visible_slimes, visible_slots, source_counts[BOPL_ABILITY_COUNT]; } Bopl4Census;
+typedef struct { int count, visible_slimes, visible_slots, source_counts[BOPL_ABILITY_COUNT]; uint64_t source_mask; } Bopl4Census;
 static void bopl4_census(const BoplRlState *state, int a, Bopl4Census *c) {
     const BoplRlPlayer *self=&state->players[a];
     memset(c, 0, sizeof(*c));
@@ -744,7 +773,7 @@ static void bopl4_census(const BoplRlState *state, int a, Bopl4Census *c) {
             if (!bopl_entity_visible(state, entity, self->id)) continue;
             c->count++;
             uint32_t source=entity->reserved[0];
-            if (source>0 && source<=BOPL_ABILITY_COUNT) c->source_counts[source-1]++;
+            if (source>0 && source<=BOPL_ABILITY_COUNT) { c->source_counts[source-1]++; c->source_mask|=1ull<<(source-1); }
         }
         i=(uint32_t)end;
     }
@@ -776,8 +805,10 @@ static void bopl4_census(const BoplRlState *state, int a, Bopl4Census *c) {
  * any order (the zero additions left out: the counters are never -0). */
 static void bopl4_census_note(BoplPuffer *env, const Bopl4Census *c) {
     bopl_note_overflow(env, c->count, c->count, c->visible_slimes, c->visible_slots);
-    for (int ability=1; ability<BOPL_ABILITY_COUNT; ability++)
-        if (c->source_counts[ability-1]) env->counters.entity_rows[ability]+=c->source_counts[ability-1];
+    for (uint64_t mask=c->source_mask; mask; mask&=mask-1) {
+        int ability=1+__builtin_ctzll(mask);   /* source_mask: the abilities with a nonzero count */
+        if (ability<BOPL_ABILITY_COUNT) env->counters.entity_rows[ability]+=c->source_counts[ability-1];
+    }
 }
 /* What the rows of one encode share when they ship their state, found by
  * the first row that tries (state NULL until then):
@@ -796,6 +827,7 @@ static void bopl4_census_note(BoplPuffer *env, const Bopl4Census *c) {
  *   visible and kept, every slime visible. */
 typedef struct {
     const BoplRlState *state;
+    const BoplStateCopy *copy;   /* the state's copy, when it is one (bopl_encode_copy) */
     int fits, shared_census, census_ready;
     uint32_t shipped, runs, run_begin[BOPL4_ENTITIES], run_count[BOPL4_ENTITIES];
     Bopl4Census census;
@@ -807,14 +839,14 @@ static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
     for (uint32_t i=0; i<state->header.player_count; i++) if (state->players[i].flags&4) shared->shared_census=0;
     uint32_t shipped=0, runs=0, ropes=0;
     Bopl4Census *c=&shared->census;
-    if (shared->shared_census) memset(c->source_counts, 0, sizeof(c->source_counts));
+    if (shared->shared_census) { memset(c->source_counts, 0, sizeof(c->source_counts)); c->source_mask=0; }
     for (uint32_t i=0; i<entities; i++) {
         const BoplRlEntity *entity=&state->entities[i];
         ropes|=entity->kind==3;
         if ((entity->flags&(BOPL_ENTITY_ACTIVE|BOPL_ENTITY_DESTROYED))!=BOPL_ENTITY_ACTIVE || shipped>BOPL4_ENTITIES) continue;
         if (shipped<BOPL4_ENTITIES) {
             uint32_t source=entity->reserved[0];
-            if (shared->shared_census && source>0 && source<=BOPL_ABILITY_COUNT) c->source_counts[source-1]++;
+            if (shared->shared_census && source>0 && source<=BOPL_ABILITY_COUNT) { c->source_counts[source-1]++; c->source_mask|=1ull<<(source-1); }
             if (runs && shared->run_begin[runs-1]+shared->run_count[runs-1]==i) shared->run_count[runs-1]++;
             else { shared->run_begin[runs]=i; shared->run_count[runs]=1; runs++; }
         }
@@ -828,6 +860,27 @@ static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
     if (shared->shared_census && !ropes) {
         c->count=(int)shipped; c->visible_slimes=(int)slimes; c->visible_slots=0;
         for (uint32_t i=0; i<slimes; i++) c->visible_slots+=bopl_slime_inventory(&state->slimes[i]);
+        shared->census_ready=1;
+    }
+}
+/* bopl4_shared_init of a copy (bopl_state_copy), from what the copy noted:
+ * its entities are what ships (the live ones, or every one with a rope), one
+ * run, and without a rope their census is the copy's. */
+static void bopl4_shared_from_copy(Bopl4Shared *shared, const BoplStateCopy *copy) {
+    const BoplRlState *state=&copy->state;
+    uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
+    shared->state=state; shared->census_ready=0; shared->shared_census=1;
+    for (uint32_t i=0; i<state->header.player_count; i++) if (state->players[i].flags&4) shared->shared_census=0;
+    shared->shipped=entities; shared->runs=1; shared->run_begin[0]=0; shared->run_count[0]=entities;
+    shared->fits=entities<=BOPL4_ENTITIES && slimes<=BOPL4_SLIMES && bopl4_state_words(entities, slimes)<=BOPL4_PACK_P;
+    if (!shared->fits) return;
+    for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &shared->trig[2*i], &shared->trig[2*i+1]);
+    if (shared->shared_census && copy->compact) {
+        Bopl4Census *c=&shared->census;
+        c->count=(int)entities; c->visible_slimes=(int)slimes; c->visible_slots=0;
+        for (uint32_t i=0; i<slimes; i++) c->visible_slots+=bopl_slime_inventory(&state->slimes[i]);
+        c->source_mask=copy->source_mask;
+        for (uint64_t mask=copy->source_mask; mask; mask&=mask-1) { int k=__builtin_ctzll(mask); c->source_counts[k]=copy->source_counts[k]; }
         shared->census_ready=1;
     }
 }
@@ -845,7 +898,7 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     if (!bopl4_defer || bopl4_state_count==BOPL_MAX_PLAYERS) return 0;
     float *obs=bopl_obs_row(env, a), *slot=bopl4_pack_slot(env, obs);
     if (!slot) return 0;
-    if (shared->state!=state) bopl4_shared_init(shared, state);
+    if (shared->state!=state) { if (shared->copy) bopl4_shared_from_copy(shared, shared->copy); else bopl4_shared_init(shared, state); }
     if (!shared->fits) return 0;
     uint32_t entities=shared->shipped, slimes=state->header.slime_count;
     if (bopl4_check_rows()) {
@@ -882,24 +935,35 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     memcpy(trig, shared->trig, (size_t)slimes*2*sizeof(float));
     unsigned char *sectors=(unsigned char*)(trig+2*slimes);
     double self_x=bopl_fix(state->players[a].x), self_y=bopl_fix(state->players[a].y);
+    /* One run (a copy): the sectors read the source, not the slot just stored. */
+    const BoplRlEntity *source=shared->runs==1?&state->entities[shared->run_begin[0]]:shipped;
     for (uint32_t i=0; i<entities; i++) {
-        const BoplRlEntity *entity=&shipped[i];
+        const BoplRlEntity *entity=&source[i];
         sectors[i]=entity->inverse_mass>0?(unsigned char)bopl4_sector(bopl_fix(entity->x)-self_x, bopl_fix(entity->y)-self_y):0;
     }
     int k=bopl4_state_count++;
     bopl4_state_rows[k].row=obs; bopl4_state_rows[k].slot=slot; bopl4_state_rows[k].enemy=0;
     return 1;
 }
-static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
-    Bopl4Shared shared; shared.state=NULL;
+static void bopl_encode_shared(BoplPuffer *env, const BoplRlState *state, int count_overflow, Bopl4Shared *shared) {
     for (int a=0; a<env->players; a++) {
         if (!state) {
             float *obs=bopl_obs_row(env, a);
             memset(obs, 0, bopl_obs_size_of(env, a)*sizeof(float)); bopl_written_zeroed(env, obs);
         } else if (bopl_layout_of(env, a)==4) {
-            if (!bopl4_encode_state(env, state, a, count_overflow, &shared)) bopl_encode_v4_row(env, state, a, count_overflow);
+            if (!bopl4_encode_state(env, state, a, count_overflow, shared)) bopl_encode_v4_row(env, state, a, count_overflow);
         } else bopl_encode_v3_row(env, state, a, count_overflow);
     }
+}
+static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
+    Bopl4Shared shared; shared.state=NULL; shared.copy=NULL;
+    bopl_encode_shared(env, state, count_overflow, &shared);
+}
+/* bopl_encode of a copy's state (none: an invalid copy), whose shipped part
+ * comes from the copy (bopl4_shared_from_copy). */
+static void bopl_encode_copy(BoplPuffer *env, const BoplStateCopy *copy, int count_overflow) {
+    Bopl4Shared shared; shared.state=NULL; shared.copy=copy;
+    bopl_encode_shared(env, bopl_state_copy_get(copy), count_overflow, &shared);
 }
 /* The critic-only block of every v4 row from the undelayed state `now`
  * (bopl4_privileged); `actions` may be NULL (episode start). */
@@ -1455,7 +1519,7 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
          * the buffers swap, nothing is copied. */
         int cursor=env->delay_cursor;
         BoplStateCopy *old=&env->delayed[cursor];
-        bopl_encode(env, bopl_state_copy_get(old), !env->delayed_counted[cursor]);
+        bopl_encode_copy(env, old, !env->delayed_counted[cursor]);
         BoplStateCopy published=*old; *old=env->sample_copy; env->sample_copy=published;
         env->delayed_counted[cursor]=env->sample_counted; env->sample_counted=1;
         env->delay_cursor=(env->delay_cursor+1)%2;

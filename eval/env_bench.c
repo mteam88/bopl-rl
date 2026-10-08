@@ -238,7 +238,7 @@ int main(int argc, char **argv) {
             {
                 double a=seconds(); uint64_t ia=instructions();
                 for (int i=0; i<PLAYERS; i++) train->applied[i]=actions[i];
-                bopl4_defer=1; bopl4_pending_count=0; bopl4_state_count=0; bopl_encode(train, old, 1);
+                bopl4_defer=1; bopl4_pending_count=0; bopl4_state_count=0; bopl_encode_copy(train, &delayed[cursor], 1);
                 for (int i=0; i<PLAYERS; i++) {
                     float *previous=bopl_obs_row(train, i)+bopl_previous_offset(train, i);
                     bopl_previous_action(previous, actions[i], train->hold_left[i], train->hold_run[i]);

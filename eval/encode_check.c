@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
                 bopl_encode(ref[k], old, 1);
                 double t1=seconds();
                 bopl4_defer=1; bopl4_pending_count=0; bopl4_state_count=0;
-                bopl_encode(st[k], old, 1);
+                bopl_encode_copy(st[k], &delayed[cursor], 1);
                 double t2=seconds();
                 cpu_ref+=t1-t0; cpu_state+=t2-t1; encodes++;
                 for (int v=0; v<2; v++) {
