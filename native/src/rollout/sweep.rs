@@ -38,6 +38,13 @@ pub(super) struct SweepBounds {
     duplicated_rocks: Vec<[Vec2; 2]>,
     pickups: Vec<[Vec2; 2]>,
     rows: Vec<[Vec2; 2]>,
+    /// The spikes and Guided Missiles take_sweep bounded, the active ones;
+    /// `spikes` and `missiles` hold NOWHERE for the rest, which nothing
+    /// reads.
+    #[cfg(debug_assertions)]
+    spikes_taken: Vec<bool>,
+    #[cfg(debug_assertions)]
+    missiles_taken: Vec<bool>,
     /// take_sweep's rows some pool could own.
     #[cfg(debug_assertions)]
     owned: Vec<bool>,
@@ -101,8 +108,29 @@ impl RolloutWorld {
             circle(self.tesla_nodes[i].collider_center, self.tesla_nodes[i].radius)
         });
         fill(&mut sweep.engines, self.engines.len(), |i| box_bounds(self.engines[i].rocket_box(table)));
-        fill(&mut sweep.spikes, self.spike_attacks.len(), |i| self.spike_bounds(i));
-        fill(&mut sweep.missiles, self.guided_missiles.len(), |i| box_bounds(self.guided_missiles[i].collider(table)));
+        // A spike's or a Guided Missile's box is read only for a part of
+        // this pass's groups: the Box/RoundedRect group takes only active
+        // spikes and live missiles (`guided_missile_live`), and the others a
+        // spike only through its collider (`child_registered`), which an
+        // inactive spike's row is not (`detphysics_collider`), and a missile
+        // only live. Nothing between here and the groups activates either, so
+        // an inactive one, about half the spike slots and four missile slots
+        // in five over the test replays, is left unbounded and its sin and cos
+        // untaken (debug builds check every one read was taken).
+        fill(&mut sweep.spikes, self.spike_attacks.len(), |i| {
+            if self.spike_attacks[i].active { self.spike_bounds(i) } else { NOWHERE }
+        });
+        fill(&mut sweep.missiles, self.guided_missiles.len(), |i| {
+            let missile = &self.guided_missiles[i];
+            if missile.active { box_bounds(missile.collider(table)) } else { NOWHERE }
+        });
+        #[cfg(debug_assertions)]
+        {
+            sweep.spikes_taken.clear();
+            sweep.spikes_taken.extend(self.spike_attacks.iter().map(|spike| spike.active));
+            sweep.missiles_taken.clear();
+            sweep.missiles_taken.extend(self.guided_missiles.iter().map(|missile| missile.active));
+        }
         fill(&mut sweep.players, self.players.len(), |i| self.player_bounds(i));
         fill(&mut sweep.clones, self.abilityless_clones.len(), |i| self.clone_bounds(i));
         fill(&mut sweep.arrows, self.arrows.len(), |i| self.arrow_bounds(i));
@@ -120,8 +148,15 @@ impl RolloutWorld {
             check(&sweep.shots, &|i| Swept::Part(Part::Shot(i)));
             check(&sweep.nodes, &|i| Swept::Part(Part::Node(i)));
             check(&sweep.engines, &|i| Swept::Part(Part::Engine(i)));
-            check(&sweep.spikes, &|i| Swept::Part(Part::Spike(i)));
-            check(&sweep.missiles, &|i| Swept::Part(Part::Missile(i)));
+            let check_taken = |list: &[[Vec2; 2]], taken: &[bool], f: &dyn Fn(usize) -> Swept| {
+                for (i, b) in list.iter().enumerate() {
+                    if taken[i] {
+                        debug_assert_eq!(bits(b), bits(&self.current_bounds(f(i), data)));
+                    }
+                }
+            };
+            check_taken(&sweep.spikes, &sweep.spikes_taken, &|i| Swept::Part(Part::Spike(i)));
+            check_taken(&sweep.missiles, &sweep.missiles_taken, &|i| Swept::Part(Part::Missile(i)));
             check(&sweep.players, &|i| Swept::Player(i));
             check(&sweep.clones, &|i| Swept::Clone(i));
             check(&sweep.arrows, &|i| Swept::Arrow(i));
@@ -367,8 +402,16 @@ impl RolloutWorld {
             Swept::Part(Part::Shot(i)) => sweep.shots.get(i),
             Swept::Part(Part::Node(i)) => sweep.nodes.get(i),
             Swept::Part(Part::Engine(i)) => sweep.engines.get(i),
-            Swept::Part(Part::Spike(i)) => sweep.spikes.get(i),
-            Swept::Part(Part::Missile(i)) => sweep.missiles.get(i),
+            Swept::Part(Part::Spike(i)) => {
+                #[cfg(debug_assertions)]
+                debug_assert!(sweep.spikes_taken.get(i).is_none_or(|&taken| taken), "an untaken spike's sweep box was read");
+                sweep.spikes.get(i)
+            }
+            Swept::Part(Part::Missile(i)) => {
+                #[cfg(debug_assertions)]
+                debug_assert!(sweep.missiles_taken.get(i).is_none_or(|&taken| taken), "an untaken missile's sweep box was read");
+                sweep.missiles.get(i)
+            }
             Swept::Part(Part::Rock(i)) => sweep.players.get(i),
             Swept::Part(Part::Pickup(i)) => sweep.pickups.get(i),
             Swept::Part(Part::DuplicatedRock(i)) => sweep.duplicated_rocks.get(i),

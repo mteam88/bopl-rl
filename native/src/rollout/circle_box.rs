@@ -27,20 +27,36 @@ pub(super) const CC_BLOCKS: usize = 13;
 #[derive(Clone, Copy)]
 pub(super) struct GroupPart {
     part: Part,
+    /// `UNRANKED` for a part the Circle/Box group took (`unranked_part`),
+    /// whose rank is read only where it is needed (`group_rank`).
     rank: SweepRank,
     layer: u32,
     composite: Option<usize>,
     bounds: Option<[Vec2; 2]>,
+    /// Debug builds: the rank as taken when the part was, which every
+    /// rank `group_rank` takes later must equal.
+    #[cfg(debug_assertions)]
+    eager: SweepRank,
+}
+
+/// The rank of a part taken without one (`unranked_part`).
+const UNRANKED: SweepRank = (Fix::ZERO, u32::MAX, usize::MAX);
+
+/// Bit-for-bit equality of two ranks, for debug assertions.
+#[cfg(debug_assertions)]
+fn same_rank(a: SweepRank, b: SweepRank) -> bool {
+    a.0.to_f64().to_bits() == b.0.to_f64().to_bits() && (a.1, a.2) == (b.1, b.2)
 }
 
 impl GroupPart {
-    /// Bit-for-bit equality, for debug assertions.
+    /// Bit-for-bit equality, for debug assertions: `other` may be unranked,
+    /// so its rank is the one it was taken with.
     #[cfg(debug_assertions)]
     fn same(&self, other: &GroupPart) -> bool {
         let bits = |b: Option<[Vec2; 2]>| b.map(|b| [b[0].x, b[0].y, b[1].x, b[1].y].map(|v| v.to_f64().to_bits()));
         self.part == other.part
-            && self.rank.0.to_f64().to_bits() == other.rank.0.to_f64().to_bits()
-            && (self.rank.1, self.rank.2) == (other.rank.1, other.rank.2)
+            && same_rank(self.rank, self.eager)
+            && same_rank(self.rank, other.eager)
             && self.layer == other.layer
             && self.composite == other.composite
             && bits(self.bounds) == bits(other.bounds)
@@ -700,13 +716,70 @@ impl RolloutWorld {
         }
         let low = bounds.map_or(Vec2::ZERO, |b| b[0]);
         let min = if sweep_x { low.x } else { low.y };
+        let rank = sweep_rank(&self.entities, min, self.part_entity_inlined(part));
         GroupPart {
             part,
-            rank: sweep_rank(&self.entities, min, self.part_entity_inlined(part)),
+            rank,
             layer,
             composite: self.part_composite(part),
             bounds,
+            #[cfg(debug_assertions)]
+            eager: rank,
         }
+    }
+
+    /// `group_part_bounded` without the rank (`UNRANKED`), for the
+    /// Circle/Box group's parts: that group reads a rank only for a
+    /// manifold, and the Box/Box group, which keeps its boxes, only to sort
+    /// a group with two that pair, which over the test replays one pass in a
+    /// hundred has; each takes it then (`group_rank`), from the part's
+    /// bounds and row as they were here (debug builds check that).
+    #[inline(always)]
+    fn unranked_part(
+        &self,
+        part: Part,
+        layer: u32,
+        bounds: Option<[Vec2; 2]>,
+        sweep_x: bool,
+        data: &data::RolloutData,
+    ) -> GroupPart {
+        #[cfg(debug_assertions)]
+        let eager = self.group_part_bounded(part, layer, bounds, sweep_x, data).rank;
+        let _ = (sweep_x, data);
+        GroupPart {
+            part,
+            rank: UNRANKED,
+            layer,
+            composite: self.part_composite(part),
+            bounds,
+            #[cfg(debug_assertions)]
+            eager,
+        }
+    }
+
+    /// `unranked_part` of a part with its `part_layer`, inlined where the
+    /// part's kind is known, so its layer, box and composite come straight
+    /// from its pool.
+    #[inline(always)]
+    fn known_unranked(&self, part: Part, sweep_x: bool, data: &data::RolloutData) -> GroupPart {
+        let (part, layer) = self.layered(part, data);
+        self.unranked_part(part, layer, self.swept_bounds_inlined(Swept::Part(part)), sweep_x, data)
+    }
+
+    /// `group_part`, unranked (`unranked_part`).
+    fn group_unranked(&self, part: Part, layer: u32, sweep_x: bool, data: &data::RolloutData) -> GroupPart {
+        self.unranked_part(part, layer, self.swept_bounds(Swept::Part(part)), sweep_x, data)
+    }
+
+    /// A group part's rank, ranked or not: `group_part_bounded`'s, from its
+    /// bounds on the pass's `sweep_x` and its row.
+    fn group_rank(&self, part: &GroupPart, sweep_x: bool) -> SweepRank {
+        let low = part.bounds.map_or(Vec2::ZERO, |b| b[0]);
+        let min = if sweep_x { low.x } else { low.y };
+        let rank = sweep_rank(&self.entities, min, self.part_entity(part.part));
+        #[cfg(debug_assertions)]
+        debug_assert!(same_rank(rank, part.eager), "a group part's rank moved since it was taken");
+        rank
     }
 
     /// The part with its `part_layer`, inlined where the part's kind is
@@ -714,15 +787,6 @@ impl RolloutWorld {
     #[inline(always)]
     fn layered(&self, part: Part, data: &data::RolloutData) -> (Part, u32) {
         (part, self.part_layer(part, data))
-    }
-
-    /// `group_part` of a part with its `part_layer`, inlined where the part's
-    /// kind is known, so its layer, box, entity and composite come straight
-    /// from its pool.
-    #[inline(always)]
-    fn known_part(&self, part: Part, sweep_x: bool, data: &data::RolloutData) -> GroupPart {
-        let (part, layer) = self.layered(part, data);
-        self.group_part_bounded(part, layer, self.swept_bounds_inlined(Swept::Part(part)), sweep_x, data)
     }
 
     /// A slime's or form's `body_part_circle` collider with its layer: that
@@ -1443,22 +1507,22 @@ impl RolloutWorld {
         let swept_players = self.swept_players();
         for (i, engine) in self.engines.iter().enumerate() {
             if self.child_registered(engine.entity) {
-                push(parts, self.known_part(Part::Engine(i), sweep_x, data));
+                push(parts, self.known_unranked(Part::Engine(i), sweep_x, data));
             }
         }
         for (i, spike) in self.spike_attacks.iter().enumerate() {
             if self.child_registered(spike.entity) {
-                push(parts, self.known_part(Part::Spike(i), sweep_x, data));
+                push(parts, self.known_unranked(Part::Spike(i), sweep_x, data));
             }
         }
         for i in 0..self.guided_missiles.len() {
             if self.guided_missile_live(i) {
-                push(parts, self.known_part(Part::Missile(i), sweep_x, data));
+                push(parts, self.known_unranked(Part::Missile(i), sweep_x, data));
             }
         }
         for i in 0..self.tesla_nodes.len() {
             if self.line_part(i) {
-                push(parts, self.known_part(Part::Line(i), sweep_x, data));
+                push(parts, self.known_unranked(Part::Line(i), sweep_x, data));
             }
         }
         let body_box = |i: usize| {
@@ -1478,7 +1542,7 @@ impl RolloutWorld {
                 for i in 0..self.players.len() {
                     if body_box(i) {
                         let (part, layer) = self.body_layered(i, data);
-                        push(parts, self.group_part_bounded(part, layer, players.get(i).copied(), sweep_x, data));
+                        push(parts, self.unranked_part(part, layer, players.get(i).copied(), sweep_x, data));
                     }
                 }
             }
@@ -1486,25 +1550,25 @@ impl RolloutWorld {
                 for i in 0..self.players.len() {
                     if body_box(i) {
                         let (part, layer) = self.body_layered(i, data);
-                        push(parts, self.group_part(part, layer, sweep_x, data));
+                        push(parts, self.group_unranked(part, layer, sweep_x, data));
                     }
                 }
             }
         }
         for i in 0..self.abilityless_clones.len() {
             if self.clone_part_circle(i) == Some(false) {
-                push(parts, self.known_part(Part::Clone(i), sweep_x, data));
+                push(parts, self.known_unranked(Part::Clone(i), sweep_x, data));
             }
         }
         self.for_blasts(false, |blast| {
             let part = Part::Explosion(blast);
-            push(parts, self.group_part(part, self.part_layer(part, data), sweep_x, data));
+            push(parts, self.group_unranked(part, self.part_layer(part, data), sweep_x, data));
         });
         // The water is a part on a map with water, and its box the map's.
         let water = data.maps[self.map].water_bounds;
         debug_assert_eq!(water.is_some(), !self.part_destroyed(Part::Water));
         if let Some(bounds) = water {
-            push(parts, self.group_part_bounded(Part::Water, LAYER_WATER, Some(bounds), sweep_x, data));
+            push(parts, self.unranked_part(Part::Water, LAYER_WATER, Some(bounds), sweep_x, data));
         }
         #[cfg(debug_assertions)]
         {
@@ -1614,7 +1678,7 @@ impl RolloutWorld {
                 cloud_place = group.len();
             }
             if box_set.meets(layer, data) {
-                group.push(self.group_part(part, layer, sweep_x, data));
+                group.push(self.group_unranked(part, layer, sweep_x, data));
             }
         }
         if cloud_at == layered.len() {
@@ -1628,7 +1692,7 @@ impl RolloutWorld {
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
         if !group.is_empty() {
-            self.circle_box_pairs(&group, &boxes, data, &mut contacts);
+            self.circle_box_pairs(&group, &boxes, sweep_x, data, &mut contacts);
         }
         #[cfg(debug_assertions)]
         {
@@ -1645,7 +1709,7 @@ impl RolloutWorld {
                 every_layered.iter().map(|&(part, layer)| self.group_part(part, layer, sweep_x, data)).collect();
             let mut every = Vec::new();
             let (circle_parts, box_parts) = every_part.split_at(every_circles);
-            self.circle_box_pairs(circle_parts, box_parts, data, &mut every);
+            self.circle_box_pairs(circle_parts, box_parts, sweep_x, data, &mut every);
             debug_assert!(every.iter().map(|c| (c.0, c.1, c.2)).eq(contacts.iter().map(|c| (c.0, c.1, c.2))));
         }
         // Over the test replays nearly every box can pair with another.
@@ -1675,6 +1739,7 @@ impl RolloutWorld {
         &self,
         circles: &[GroupPart],
         boxes: &[GroupPart],
+        sweep_x: bool,
         data: &data::RolloutData,
         contacts: &mut Vec<(CallbackKey, Part, Part, Contact)>,
     ) {
@@ -1686,7 +1751,7 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) = self.part_collider(circle.part).contact(self.part_collider(part.part)) {
-                    let (later, earlier) = sweep_pair(circle.rank, part.rank);
+                    let (later, earlier) = sweep_pair(self.group_rank(circle, sweep_x), self.group_rank(part, sweep_x));
                     contacts.push(((GROUP_CB, later, earlier), circle.part, part.part, contact));
                 }
             }
@@ -2409,6 +2474,16 @@ impl RolloutWorld {
         // A group of a few parts with no two that pair (`any_pairs`) is left
         // unsorted.
         if group.len() > 1 && (group.len() > 8 || any_pairs(&group, data)) {
+            // The Circle/Box group's boxes take their ranks now
+            // (`unranked_part`).
+            if cached {
+                let sweep_x = self.sweep_x();
+                for part in group.iter_mut() {
+                    part.rank = self.group_rank(part, sweep_x);
+                }
+            }
+            #[cfg(debug_assertions)]
+            debug_assert!(group.iter().all(|part| same_rank(part.rank, part.eager)));
             sort_by_rank(&mut group);
             self.box_box_pairs(&group, data, &mut live, &mut contacts);
         }
