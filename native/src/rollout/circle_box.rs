@@ -1825,7 +1825,12 @@ impl RolloutWorld {
         #[cfg(debug_assertions)]
         let live_walls: Vec<RoundedRect> = self.platforms.iter().map(|p| p.collider).collect();
         let mut hits = std::mem::take(&mut self.scratch.callback_hits);
-        for &(key, part, wall, contact) in &contacts {
+        // By reference: the key copied out here was spilled with overlapping
+        // stores and reloaded across them for the squish's push (a
+        // store-forwarding stall); it is copied into the hit where it is
+        // queued.
+        for (key, part, wall, contact) in &contacts {
+            let (part, wall) = (*part, *wall);
             // collision.layer is the wall's own layer (DetPhysics.cs:2405-2437).
             let layer = self.entities[self.platform_entities[wall]].layer;
             let wall_layer = layer == LAYER_WALL;
@@ -1846,18 +1851,29 @@ impl RolloutWorld {
                 };
                 let collider = self.narrow_wall(walls, wall);
                 #[cfg(debug_assertions)]
-                let meets = contact.is_some() || eager.iter().find(|&&(k, _)| k == key).expect("an eager test").1;
-                hits.push((
-                    key,
-                    CallbackHit::Squish {
+                let meets = contact.is_some() || eager.iter().find(|&&(k, _)| k == *key).expect("an eager test").1;
+                // Written in place, with the room made first and the key
+                // copied straight from the contact: `push` built the hit on
+                // the stack and copied the key in with loads that straddled
+                // the stores that put it there (a store-forwarding stall).
+                hits.reserve(1);
+                let len = hits.len();
+                debug_assert!(len < hits.capacity());
+                // SAFETY: `reserve` left room for one more past `len`, both of
+                // whose fields are written before the length takes it in.
+                unsafe {
+                    let slot = hits.as_mut_ptr().add(len);
+                    std::ptr::copy_nonoverlapping(key, &raw mut (*slot).0, 1);
+                    (&raw mut (*slot).1).write(CallbackHit::Squish {
                         slime,
                         wall,
                         collider,
                         untested: None,
                         #[cfg(debug_assertions)]
                         meets,
-                    },
-                ));
+                    });
+                    hits.set_len(len + 1);
+                }
                 // The untested collider is written into the queued squish, a
                 // field at a time: built apart and copied in, its copy reloads
                 // it across the stores that built it.
@@ -1867,7 +1883,7 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            let contact = contact.expect("only a slime's pair is untested");
+            let contact = contact.as_ref().expect("only a slime's pair is untested");
             let hit = match part {
                 // A smoke grenade detonates on any collider but a Projectile
                 // that does not ignite explosives, which no rounded rect is
@@ -1915,7 +1931,7 @@ impl RolloutWorld {
                 }
                 _ => continue,
             };
-            hits.push((key, hit));
+            hits.push((*key, hit));
         }
         self.scratch.callback_hits = hits;
         #[cfg(debug_assertions)]
