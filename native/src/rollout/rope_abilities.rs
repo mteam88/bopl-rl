@@ -259,7 +259,7 @@ fn parent_pose(
         RopeParent::Item(i, _) => ParentPose::turned(items[i].position, items[i].body.orientation, items[i].scale),
         RopeParent::Shot(i, _) => ParentPose::turned(shots[i].position, shots[i].body.orientation, shots[i].scale),
         RopeParent::Spike(i, _) => {
-            ParentPose::turned(spikes[i].transform_position, spikes[i].transform_rotation, spikes[i].scale)
+            ParentPose::turned(spikes[i].transform_position(), spikes[i].transform_rotation, spikes[i].scale)
         }
         RopeParent::Node(i, _) => {
             ParentPose::turned(nodes[i].transform_position, nodes[i].transform_rotation, nodes[i].scale)

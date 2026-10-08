@@ -1261,7 +1261,15 @@ pub struct SpawnedSpike {
     /// (DetPhysics.cs:1652-1656, 3172-3192). A composite's
     /// UpdatePhysicsPositions and a Scale write move only the collider
     /// (DetPhysics.cs:2467-2496, DPhysicsBox.cs:207-208, SpikeAttack.cs:144-158).
-    pub transform_position: Vec2,
+    /// Read it through `transform_position`: with `pose_offset` set, `pose`
+    /// holds the collider centre SyncGameObject saw and the turn is deferred
+    /// to the rare reader (a rope, portal, MachoThrow or ShootDuplicator).
+    pose: Vec2,
+    /// The collider offset SyncGameObject saw, when `pose` is its centre.
+    pose_offset: Option<Vec2>,
+    /// The position SyncGameObject computed eagerly, for the reference check.
+    #[cfg(debug_assertions)]
+    pose_check: Vec2,
     pub transform_rotation: Fix,
     pub surface_offset: Fix,
     /// SpikeAttack.fixedOffset, the offset Initialize was handed: Spike's
@@ -1286,9 +1294,40 @@ pub struct SpawnedSpike {
 impl SpawnedSpike {
     /// SyncGameObject's write of this child's FixTransform from its box on a
     /// platform turned by `parent_rotation`.
+    ///
+    /// Half of all syncs land on a pooled spike and nearly all the rest go
+    /// unread before the next, so the Vec2::angle of `transform_root` waits
+    /// for a reader: `transform_position` turns the same inputs the same way.
     fn sync_transform(&mut self, parent_rotation: Fix) {
         self.transform_rotation = parent_rotation + self.relative_rotation;
-        self.transform_position = transform_root(self.collider_center, self.collider_offset, self.transform_rotation);
+        self.pose = self.collider_center;
+        self.pose_offset = Some(self.collider_offset);
+        #[cfg(debug_assertions)]
+        {
+            self.pose_check = transform_root(self.collider_center, self.collider_offset, self.transform_rotation);
+        }
+    }
+
+    /// FixTransform.position: as SyncGameObject or a writer last set it.
+    fn transform_position(&self) -> Vec2 {
+        let Some(offset) = self.pose_offset else {
+            return self.pose;
+        };
+        // Only SyncGameObject writes a spike's rotation once it lives, so the
+        // deferred turn sees the rotation the eager one did.
+        let root = transform_root(self.pose, offset, self.transform_rotation);
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            [root.x.bits(), root.y.bits()],
+            [self.pose_check.x.bits(), self.pose_check.y.bits()],
+            "deferred spike pose drifted"
+        );
+        root
+    }
+
+    fn set_transform_position(&mut self, position: Vec2) {
+        self.pose = position;
+        self.pose_offset = None;
     }
 
     /// The box collider's inverseExtents, which its row holds. DPhysicsBox.Scale
@@ -9568,8 +9607,11 @@ impl RolloutWorld {
         // A spike a MachoThrow carries keeps the rotation its transform gave it.
         for spike in &mut self.spike_attacks {
             if spike.macho_carried {
-                spike.transform_position =
-                    transform_root(spike.collider_center, spike.collider_offset, spike.transform_rotation);
+                spike.set_transform_position(transform_root(
+                    spike.collider_center,
+                    spike.collider_offset,
+                    spike.transform_rotation,
+                ));
             } else if let Some(parent) = self.platform_dynamics.get(spike.platform_index) {
                 spike.sync_transform(parent.body.orientation);
             }
@@ -11215,7 +11257,7 @@ impl RolloutWorld {
             if let Some(entity) = spike.entity.filter(|&entity| {
                 attached(spike.active, spike.macho_carried, spike.platform_index) && shown(entity)
             }) {
-                bodies.push((PortalBody::Spike(index), entity, spike.transform_position));
+                bodies.push((PortalBody::Spike(index), entity, spike.transform_position()));
             }
         }
         for (index, engine) in self.engines.iter().enumerate() {
@@ -11398,7 +11440,7 @@ impl RolloutWorld {
                     let right = Vec2::angle(combined.orientation + spike.relative_rotation);
                     let center = position + spike.collider_offset.complex_mul(right);
                     spike.collider_center = center;
-                    spike.transform_position = position;
+                    spike.set_transform_position(position);
                     combined.velocity = map(combined.velocity);
                     self.entities[entity].x = center.x.raw();
                     self.entities[entity].y = center.y.raw();
@@ -16951,7 +16993,10 @@ impl RolloutWorld {
             placed_up: Some(normal),
             relative_rotation,
             collider_center,
-            transform_position,
+            pose: transform_position,
+            pose_offset: None,
+            #[cfg(debug_assertions)]
+            pose_check: Vec2::ZERO,
             transform_rotation: parent_rotation + relative_rotation,
             surface_offset,
             fixed_offset: data.spike.surface_offset,
@@ -20554,7 +20599,7 @@ impl RolloutWorld {
         }
         let source = self.spike_attacks[spike_index];
         let entity = source.entity.expect("active Spike has a collider row");
-        let old_root = source.transform_position;
+        let old_root = source.transform_position();
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
         let desired_rotation = parent_rotation + Fix::PI;
@@ -28697,7 +28742,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         // LocalPlayerPosFromPos reads the hit child's FixTransform, which
         // SyncGameObject placed at the collider less its rotated offset.
-        let source_position = source.transform_position;
+        let source_position = source.transform_position();
         let local = self.duplicate_attached_local(
             platform_index,
             source_position,
@@ -28773,7 +28818,10 @@ impl RolloutWorld {
             placed_up: None,
             relative_rotation: rotation - parent_rotation,
             collider_center,
-            transform_position: transform_root(collider_center, source.collider_offset, rotation),
+            pose: transform_root(collider_center, source.collider_offset, rotation),
+            pose_offset: None,
+            #[cfg(debug_assertions)]
+            pose_check: Vec2::ZERO,
             transform_rotation: rotation,
             surface_offset,
             fixed_offset,
@@ -29615,7 +29663,7 @@ impl RolloutWorld {
                 let old = self.spike_attacks[spike_index].duplicate_shake_offset;
                 let new = shake(SPIKE, spike_index) * progress * Fix::from_f32(0.25);
                 let child = &mut self.spike_attacks[spike_index];
-                child.transform_position = child.transform_position - old + new;
+                child.set_transform_position(child.transform_position() - old + new);
                 self.spike_attacks[spike_index].duplicate_shake_offset = new;
             }
         }
@@ -38696,7 +38744,7 @@ impl RolloutWorld {
                 continue;
             };
             let right = right(spike.transform_rotation, spike.placed_up, spike.placed_tick == tick);
-            spike.collider_center = spike.transform_position + spike.collider_offset.complex_mul(right);
+            spike.collider_center = spike.transform_position() + spike.collider_offset.complex_mul(right);
             let basis = Vec2::angle(spike.transform_rotation);
             let extents = spike.box_extents(&self.entity_inverse_extents);
             let row = &mut self.entities[entity];
