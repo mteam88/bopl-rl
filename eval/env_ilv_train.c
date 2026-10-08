@@ -10,8 +10,8 @@
  * replay's inputs are applied unlatched (BoplStepPhase as bopl_step_begin
  * leaves it for a fresh hold-1 decision).
  *   env_ilv_train <libbopl_sim.so> <corpus_dir> [max_games] [worlds=23]
- * Prints sample_cyc and finish_cyc (TSC cycles per decision, rdtsc around
- * each call) and the sim's. BOPL_ENV_ILV_HASH=1 folds every decision's
+ * Prints begin_cyc (bopl_step_clear), sample_cyc and finish_cyc (TSC cycles
+ * per decision, rdtsc around each call) and the sim's. BOPL_ENV_ILV_HASH=1 folds every decision's
  * slots, masks, rewards and terminals into per-game hashes (the exact gate
  * between two writer builds; off for timing, the hashing costs more than
  * the writer). Pin it (taskset). */
@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
         slots[s].game=-1;
     }
     int next=0, live=0;
-    uint64_t decisions=0, sim=0, sample=0, finish=0;
+    uint64_t decisions=0, sim=0, sample=0, finish=0, begin=0;
     double wall=seconds();
     for (;;) {
         for (int s=0; s<k; s++) {
@@ -98,8 +98,10 @@ int main(int argc, char **argv) {
                 memcpy(phase.actions, &replay->actions[(size_t)(warmup+slot->tick-1)*PLAYERS], PLAYERS*sizeof(BoplRlAction));
                 for (int i=0; i<PLAYERS; i++) phase.fresh[i]=1;
                 phase.ticks=state->header.episode_ticks;
-                for (int i=0; i<PLAYERS; i++) { slot->rewards[i]=0; slot->terminals[i]=0; }
+                uint64_t tb=__rdtsc();
+                bopl_step_clear(env);   /* bopl_step_begin_from's outputs cleared, as before every step */
                 uint64_t t0=__rdtsc();
+                begin+=t0-tb;
                 if (bopl_rl_step_sampled(slot->world, phase.actions, PLAYERS, 3, 1)) { fprintf(stderr, "%s: step failed: %s\n", names[slot->game], bopl_rl_error(slot->world)); return 1; }
                 uint64_t t1=__rdtsc();
                 bopl_step_sample(env, bopl_rl_sample(slot->world));
@@ -136,8 +138,8 @@ int main(int argc, char **argv) {
     wall=seconds()-wall;
     uint64_t corpus_hash=0;
     for (int g=0; g<n; g++) corpus_hash=mix(corpus_hash, game_hash[g]);
-    printf("{\"games\": %d, \"worlds\": %d, \"decisions\": %"PRIu64", \"wall_s\": %.2f, \"hash\": \"%016"PRIx64"\", \"sim_cyc\": %.1f, \"sample_cyc\": %.1f, \"finish_cyc\": %.1f, \"load1\": %.2f}\n",
-           n, k, decisions, wall, hashing?corpus_hash:0, (double)sim/(double)decisions, (double)sample/(double)decisions, (double)finish/(double)decisions, load1());
+    printf("{\"games\": %d, \"worlds\": %d, \"decisions\": %"PRIu64", \"wall_s\": %.2f, \"hash\": \"%016"PRIx64"\", \"sim_cyc\": %.1f, \"begin_cyc\": %.1f, \"sample_cyc\": %.1f, \"finish_cyc\": %.1f, \"load1\": %.2f}\n",
+           n, k, decisions, wall, hashing?corpus_hash:0, (double)sim/(double)decisions, (double)begin/(double)decisions, (double)sample/(double)decisions, (double)finish/(double)decisions, load1());
     for (int s=0; s<k; s++) bopl_rl_close(slots[s].world);
     return 0;
 }

@@ -2,7 +2,7 @@
 # Paired A/B of two writer builds of eval/env_ilv_train.c (make env-ilv-train
 # OUT=... from each tree): both run at once, one per SMT sibling of a core
 # (CPUS, default 5,11), sides swapped each round. Prints the median ratio of
-# sample+finish TSC cycles per decision (cand/base) over the rounds, with the
+# begin+sample+finish TSC cycles per decision (cand/base) over the rounds, with the
 # finish and sample ratios apart and the sim's as a control (expect 1.00).
 #   eval/perf/env_ilv_train_ab.sh <base_bin> <cand_bin> [games=60] [rounds=10] [worlds=23]
 # Exactness is a separate run of each with BOPL_ENV_ILV_HASH=1 (same "hash").
@@ -22,7 +22,7 @@ import sys, json, statistics as st
 L=[json.loads(l) for l in sys.stdin if l.strip()]
 r=[];rf=[];rs=[];b=[];c=[];sim=[]
 for x,y in zip(L[0::2],L[1::2]):
-    tb=x['sample_cyc']+x['finish_cyc']; tc=y['sample_cyc']+y['finish_cyc']
+    tb=x.get('begin_cyc',0)+x['sample_cyc']+x['finish_cyc']; tc=y.get('begin_cyc',0)+y['sample_cyc']+y['finish_cyc']
     r.append(tc/tb); b.append(tb); c.append(tc); sim.append(y['sim_cyc']/x['sim_cyc'])
     rf.append(y['finish_cyc']/x['finish_cyc']); rs.append(y['sample_cyc']/x['sample_cyc'])
-print('sample+finish TSC/decision: base %.0f cand %.0f; ratio median %.4f mean %.4f sd %.4f n=%d (finish %.4f sample %.4f) sim %.4f' % (st.median(b), st.median(c), st.median(r), st.mean(r), st.stdev(r) if len(r)>1 else 0, len(r), st.median(rf), st.median(rs), st.median(sim)))"
+print('begin+sample+finish TSC/decision: base %.0f cand %.0f; ratio median %.4f mean %.4f sd %.4f n=%d (finish %.4f sample %.4f) sim %.4f' % (st.median(b), st.median(c), st.median(r), st.mean(r), st.stdev(r) if len(r)>1 else 0, len(r), st.median(rf), st.median(rs), st.median(sim)))"

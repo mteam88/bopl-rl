@@ -1407,11 +1407,16 @@ typedef struct { BoplRlAction actions[6]; int fresh[6], holds[6]; uint32_t ticks
  * decision for begin, the state after its ticks for finish) so the agent shim
  * (bopl_agent.c) can run this exact bookkeeping on states a running game
  * hands it; the plain variants read it from env->world. */
-static void bopl_step_begin_from(BoplPuffer *env, BoplStepPhase *phase, const BoplRlState *before) {
+/* The step's outputs cleared before the sim's step (bopl_step_begin_from;
+ * eval/env_ilv_train.c calls it alone, as it builds the phase itself). */
+static void bopl_step_clear(BoplPuffer *env) {
     float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
     memset(telemetry, 0, (size_t)env->players*BOPL_TELEMETRY_SIZE*sizeof(float));
     for (int s=0; s<env->num_agents; s++) { *env->reward_ptr[s]=0; *env->terminal_ptr[s]=0; }
     env->stepped++;
+}
+static void bopl_step_begin_from(BoplPuffer *env, BoplStepPhase *phase, const BoplRlState *before) {
+    bopl_step_clear(env);
     memset(phase, 0, sizeof(*phase));
     BoplRlAction *actions=phase->actions;
     int *fresh=phase->fresh, *holds=phase->holds;
