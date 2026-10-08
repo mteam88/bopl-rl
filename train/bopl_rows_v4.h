@@ -821,6 +821,12 @@ enum {
 BOPL4D_FN int bopl4_state_words(uint32_t e, uint32_t s) {
     return BOPL4_STATE_OFFSET+BOPL4_STATE_BASE_WORDS+(int)e*BOPL4_STATE_ENTITY_WORDS+(int)s*BOPL4_STATE_SLIME_WORDS+(int)(e+3)/4;
 }
+/* The entities a shipped state holds at most (and the slot, BOPL4_PACK_P,
+ * holds with 2 slimes): past BOPL4_ENTITIES the row keeps the nearest
+ * BOPL4_ENTITIES of them, as the CPU writer's bopl_nearest does. 2026-10-08:
+ * the test corpus's crowded states (6.4% of its rows, all 2 slimes) reach 71
+ * live entities. */
+enum { BOPL4_STATE_ENTITIES=80 };
 
 #if defined(__GNUC__) && !defined(__clang__) && !defined(__CUDACC__)
 #pragma GCC pop_options

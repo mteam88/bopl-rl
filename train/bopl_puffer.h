@@ -818,6 +818,36 @@ static void bopl4_census_note(BoplPuffer *env, const Bopl4Census *c) {
         if (ability<BOPL_ABILITY_COUNT) env->counters.entity_rows[ability]+=c->source_counts[ability-1];
     }
 }
+/* bopl4_census_note for a row of a state that ships more than
+ * BOPL4_ENTITIES entities: the census, and when more than BOPL4_ENTITIES of
+ * them are visible, the nearest BOPL4_ENTITIES as bopl_encode_v4_row keeps
+ * them (its pass: rope thinning, visibility, the surface distance, a pickup's
+ * offset, bopl_nearest), whose sources say what each ability overflows. */
+static void bopl4_crowded_note(BoplPuffer *env, const BoplRlState *state, int a) {
+    Bopl4Census c; bopl4_census(state, a, &c);
+    if (c.count<=BOPL4_ENTITIES) { bopl4_census_note(env, &c); return; }
+    const BoplRlPlayer *self=&state->players[a];
+    double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
+    uint32_t nearest[BOPL4_ENTITIES]; double distances[BOPL4_ENTITIES];
+    int count=0;
+    for (uint32_t i=0; i<state->header.entity_count;) {
+        int end=(state->entities[i].kind==3)?bopl_rope_group_end(state, i):(int)i+1;
+        int group=end-(int)i;
+        for (int j=0; j<group; j++) {
+            const BoplRlEntity *entity=&state->entities[i+j];
+            if (entity->kind==3 && !bopl_rope_span_kept(j, group)) continue;
+            if (!bopl_entity_visible(state, entity, self->id)) continue;
+            double distance=bopl_surface_distance(entity, self_x, self_y);
+            if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
+            bopl_nearest(nearest, distances, &count, BOPL4_ENTITIES, i+(uint32_t)j, distance);
+        }
+        i=(uint32_t)end;
+    }
+    bopl_note_overflow(env, c.count, count, c.visible_slimes, c.visible_slots);
+    bopl_note_entity_rows(env, state, nearest, count, c.source_counts);
+}
+_Static_assert(BOPL4_STATE_OFFSET+BOPL4_STATE_BASE_WORDS+BOPL4_STATE_ENTITIES*BOPL4_STATE_ENTITY_WORDS+2*BOPL4_STATE_SLIME_WORDS
+               +(BOPL4_STATE_ENTITIES+3)/4<=BOPL4_PACK_P, "a state of BOPL4_STATE_ENTITIES entities and 2 slimes fits a slot");
 /* What the rows of one encode share when they ship their state, found by
  * the first row that tries (state NULL until then):
  * - The entities shipped (runs of entity indices, in order): every one but
@@ -839,9 +869,9 @@ typedef struct {
     const unsigned char *image; size_t image_bytes;   /* its image with the trig (fits), else NULL */
     /* With image: the shipped entities' bopl_fix(x), bopl_fix(y) and whether
      * they move (inverse_mass > 0), for every row's sectors. */
-    double entity_x[BOPL4_ENTITIES], entity_y[BOPL4_ENTITIES]; uint8_t movable[BOPL4_ENTITIES];
+    double entity_x[BOPL4_STATE_ENTITIES], entity_y[BOPL4_STATE_ENTITIES]; uint8_t movable[BOPL4_STATE_ENTITIES];
     int fits, shared_census, census_ready;
-    uint32_t shipped, runs, run_begin[BOPL4_ENTITIES], run_count[BOPL4_ENTITIES];
+    uint32_t shipped, runs, run_begin[BOPL4_STATE_ENTITIES], run_count[BOPL4_STATE_ENTITIES];
     Bopl4Census census;
     float trig[2*BOPL4_SLIMES];
 } Bopl4Shared;
@@ -856,8 +886,8 @@ static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
     for (uint32_t i=0; i<entities; i++) {
         const BoplRlEntity *entity=&state->entities[i];
         ropes|=entity->kind==3;
-        if ((entity->flags&(BOPL_ENTITY_ACTIVE|BOPL_ENTITY_DESTROYED))!=BOPL_ENTITY_ACTIVE || shipped>BOPL4_ENTITIES) continue;
-        if (shipped<BOPL4_ENTITIES) {
+        if ((entity->flags&(BOPL_ENTITY_ACTIVE|BOPL_ENTITY_DESTROYED))!=BOPL_ENTITY_ACTIVE || shipped>BOPL4_STATE_ENTITIES) continue;
+        if (shipped<BOPL4_STATE_ENTITIES) {
             uint32_t source=entity->reserved[0];
             if (shared->shared_census && source>0 && source<=BOPL_ABILITY_COUNT) { c->source_counts[source-1]++; c->source_mask|=1ull<<(source-1); }
             if (runs && shared->run_begin[runs-1]+shared->run_count[runs-1]==i) shared->run_count[runs-1]++;
@@ -867,7 +897,7 @@ static void bopl4_shared_init(Bopl4Shared *shared, const BoplRlState *state) {
     }
     if (ropes) { shipped=entities; runs=1; shared->run_begin[0]=0; shared->run_count[0]=entities; }
     shared->shipped=shipped; shared->runs=runs;
-    shared->fits=shipped<=BOPL4_ENTITIES && slimes<=BOPL4_SLIMES && bopl4_state_words(shipped, slimes)<=BOPL4_PACK_P;
+    shared->fits=shipped<=BOPL4_STATE_ENTITIES && slimes<=BOPL4_SLIMES && bopl4_state_words(shipped, slimes)<=BOPL4_PACK_P;
     if (!shared->fits) return;
     for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &shared->trig[2*i], &shared->trig[2*i+1]);
     if (shared->shared_census && !ropes) {
@@ -886,7 +916,7 @@ static void bopl4_shared_from_copy(Bopl4Shared *shared, const BoplStateCopy *cop
     shared->state=state; shared->census_ready=0; shared->shared_census=1;
     for (uint32_t i=0; i<state->header.player_count; i++) if (state->players[i].flags&4) shared->shared_census=0;
     shared->shipped=entities; shared->runs=1; shared->run_begin[0]=0; shared->run_count[0]=entities;
-    shared->fits=entities<=BOPL4_ENTITIES && slimes<=BOPL4_SLIMES && bopl4_state_words(entities, slimes)<=BOPL4_PACK_P;
+    shared->fits=entities<=BOPL4_STATE_ENTITIES && slimes<=BOPL4_SLIMES && bopl4_state_words(entities, slimes)<=BOPL4_PACK_P;
     if (!shared->fits) return;
     float *trig=(float*)(copy->image+(size_t)entities*sizeof(BoplRlEntity)+(size_t)slimes*sizeof(BoplRlSlime));
     for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &trig[2*i], &trig[2*i+1]);
@@ -905,6 +935,7 @@ static void bopl4_shared_from_copy(Bopl4Shared *shared, const BoplStateCopy *cop
     }
 }
 static void bopl4_count_row(BoplPuffer *env, const BoplRlState *state, int a, Bopl4Shared *shared) {
+    if (shared->shipped>BOPL4_ENTITIES) { bopl4_crowded_note(env, state, a); return; }
     if (!shared->shared_census) { Bopl4Census c; bopl4_census(state, a, &c); bopl4_census_note(env, &c); return; }
     if (!shared->census_ready) { bopl4_census(state, a, &shared->census); shared->census_ready=1; }
     bopl4_census_note(env, &shared->census);

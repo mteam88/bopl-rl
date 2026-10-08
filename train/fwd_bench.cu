@@ -131,6 +131,7 @@ struct Bench {
     int rows, apb, nb = 4, H, G, num_atns, mask_stride, pack_bytes, state_numel[BR_MAX_GROUPS], state_rows[BR_MAX_GROUPS];
     int frag = 4;   // the dump's GEMM weight order: 1 to 3 are converted (frag_convert), 4 is br_frag_pack_lane's
     int setw = 2;   // the dump's packed W2 order: 1 (D, I) row-major is converted, 2 is br4_w2_index's
+    int slot_words = BOPL4_PACK_P;   // the dump's packed slot stride (no key: 2048, BOPL4_PACK_P before 2026-10-08)
     BrPlan p = {};
     Br4Plan q = {};
     std::map<std::string, Weights> weights;
@@ -164,13 +165,14 @@ struct Bench {
         frag = m.kv.count("frag") ? m.i("frag") : 1;
         if (frag < 1 || frag > 4) { fprintf(stderr, "unknown weight order frag %d\n", frag); exit(1); }
         setw = m.kv.count("setw") ? m.i("setw") : 1;
+        slot_words = m.kv.count("slot_words") ? m.i("slot_words") : 2048;
         if (setw < 1 || setw > 2) { fprintf(stderr, "unknown set weight order setw %d\n", setw); exit(1); }
         if (q.JW != q.FD + 8 * q.D || q.W != H + q.P || q.LNW != std::max(H, std::max(q.W, q.C))) { fprintf(stderr, "plan widths disagree with the dump\n"); exit(1); }
         for (auto& n : names) {
             Step s; s.dir = root + "/" + n;
             Meta sm = read_meta(s.dir + "/meta");
             s.wdir = sm.kv["weights"]; s.t = sm.i("t");
-            s.packed = slurp(s.dir + "/packed"); s.host_rows = slurp(s.dir + "/host_rows"); s.rng_pre = slurp(s.dir + "/rng_pre");
+            s.packed = restride(slurp(s.dir + "/packed"), slot_words); s.host_rows = slurp(s.dir + "/host_rows"); s.rng_pre = slurp(s.dir + "/rng_pre");
             for (int g = 0; g < G; g++) s.state_pre[g] = slurp(s.dir + "/state_pre" + std::to_string(g));
             if (!weights.count(s.wdir)) weights[s.wdir] = load_weights(s.wdir);
             steps.push_back(std::move(s));
@@ -179,6 +181,15 @@ struct Bench {
         act_sizes = (int*)dev_upload(as);
         fprintf(stderr, "fwd_bench: %zu steps, %zu weight snapshots, %d rows (%d groups, %d tiles), H %d, set %d/%d, critic %d\n",
                 steps.size(), weights.size(), rows, G, p.tiles[G], H, q.D, q.I, q.C);
+    }
+    // A dump's slots (rows of `words` floats, then the pack in the tail) at BOPL4_PACK_P floats a slot.
+    std::vector<char> restride(std::vector<char> b, int words) const {
+        if (words == BOPL4_PACK_P) return b;
+        const size_t from = (size_t)words * sizeof(float), to = (size_t)BOPL4_PACK_P * sizeof(float), tail = b.size() - rows * from;
+        std::vector<char> out(rows * to + tail);
+        for (int r = 0; r < rows; r++) memcpy(&out[r * to], &b[r * from], std::min(from, to));
+        memcpy(&out[rows * to], &b[rows * from], tail);
+        return out;
     }
     // The second fragment order (frag 2): the B operand of the untransposed
     // product, a lane's float4 the k = 2 tid4 + {0, 1} + 8 s of column gid of

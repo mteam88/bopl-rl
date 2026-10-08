@@ -43,7 +43,7 @@ enum {
     BOPL4_PACK_STATE_WORDS=5,               /* mode 4: the head word holding the slot's used length (Bopl4StateHead.words) */
     BOPL4_PACK_FIXED=BOPL4_FLAT+BOPL4_PRIVILEGED,             /* 540 */
     BOPL4_PACK_ROWS_OFFSET=BOPL4_PACK_HEADER+BOPL4_PACK_FIXED, /* 548 */
-    BOPL4_PACK_P=2048,                      /* floats per slot: the prefixes (to ~1600 with 23 entities) and a scene (to ~420) */
+    BOPL4_PACK_P=3072,                      /* floats per slot: a state of up to BOPL4_STATE_ENTITIES entities (bopl_rows_v4.h), the prefixes and a scene (to ~420) */
     BOPL4_PACK_SCENE_FIXED=BOPL4_OBS_TERRAIN_OFFSET+BOPL4_PRIVILEGED,             /* 240 */
     BOPL4_PACK_SCENE_ROWS_OFFSET=BOPL4_PACK_HEADER+BOPL4_PACK_SCENE_FIXED         /* 248 */
 };

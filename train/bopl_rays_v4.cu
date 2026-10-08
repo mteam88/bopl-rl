@@ -62,9 +62,16 @@ struct Br4Walls {
     float radius[BR4_WALLS], key[BR4_WALLS];
     unsigned char index[BR4_WALLS];             // the wall's index in lethal_at's order (aligned walls first)
 };
+// A shipped scene's words at most (bopl4f_scene_words), and raw's size: what
+// it took when a slot was 2048 floats, which holds four blocks an SM.
+// 2026-10-08 (fwd_bench, 32 SMs): sized to the scene (15.2 KB a block) six
+// fit and with 4 streams the rays crowd the other kernels, 4 streams +2.3 us
+// (1 stream -0.5 us); five +0.6 us, three +8 us.
+constexpr int BR4_SCENE_WORDS = BOPL4F_SCENE_HEAD + 9 * BOPL4F_WALLS + 6 * BOPL4F_CIRCLES, BR4_RAW_WORDS = 2048 - BOPL4_PACK_HEADER;
+static_assert(BR4_RAW_WORDS >= BR4_SCENE_WORDS, "raw holds a scene");
 struct Br4Shared {
-    // The slot from the scene on (modes 2, 3), one coalesced read; then the walls' keys unsorted.
-    float raw[BOPL4_PACK_P - BOPL4_PACK_HEADER];
+    // The scene's words from the slot (modes 2, 3), one coalesced read; then the walls' keys unsorted.
+    float raw[BR4_RAW_WORDS];
     Bopl4Scene s;
     Br4Walls w;
     // Per circle what no ray changes: its offset from the body (px, py), px * px + py * py and its radius squared,
@@ -76,6 +83,7 @@ struct Br4Shared {
     int hit[16], edge_drop[16], dash_landing;
 };
 static_assert(sizeof(Br4Shared) <= 48 * 1024, "static shared memory");
+static_assert(BR4_SCENE_WORDS >= BR4_WALLS, "the walls' keys fit raw");
 static_assert(BR4_RAYS_THREADS >= BR4_WALLS && BR4_WALLS % 32 == 0, "a thread per wall; the keys in whole warps");
 static_assert(offsetof(Bopl4StateHead, words) == BOPL4_PACK_STATE_WORDS * 4, "the unpack reads a mode-4 slot's length there");
 
@@ -103,16 +111,18 @@ __device__ __forceinline__ float br4_wall_sdf(const Br4Shared& sh, int j, float 
 }
 
 // The scene from its packed form (bopl4f_scene_write), by the whole block:
-// the slot's words from the scene to its end copied in one pass (one memory
-// round trip: every load in flight before any store; a load and its store an
-// iteration took eight round trips, ~3 us), then taken apart in shared memory.
+// the slot's words from the scene on (as many as a scene can take, to the
+// slot's end) copied in one pass (one memory round trip: every load in flight
+// before any store; a load and its store an iteration took eight round trips,
+// ~3 us), then taken apart in shared memory.
 __device__ static void br4_scene_load(const float* __restrict__ slot, int at, Br4Shared& sh) {
-    constexpr int T = BR4_RAYS_THREADS, NL = (BOPL4_PACK_P - BOPL4_PACK_HEADER + T - 1) / T;
+    constexpr int T = BR4_RAYS_THREADS, NL = (BR4_SCENE_WORDS + T - 1) / T;
+    const int n = min(BOPL4_PACK_P - at, BR4_SCENE_WORDS);
     float v[NL];
     #pragma unroll
-    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < BOPL4_PACK_P - at) v[t] = slot[at + t * T + threadIdx.x];
+    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < n) v[t] = slot[at + t * T + threadIdx.x];
     #pragma unroll
-    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < BOPL4_PACK_P - at) sh.raw[t * T + threadIdx.x] = v[t];
+    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < n) sh.raw[t * T + threadIdx.x] = v[t];
     __syncthreads();
     const float* in = sh.raw;
     Bopl4Scene* s = &sh.s;
@@ -199,8 +209,9 @@ __device__ static void br4_scene_prepare(Br4Shared& sh) {
 //       the scene's head and the nearby slimes (a lane a slime, at its rank),
 //       and the slots (likewise), from P1's; per (row, entity): the
 //       nearest, every kept entity at its rank by (distance, index), which is
-//       bopl_nearest's stable order (there are at most BOPL4_ENTITIES),
-//       unless a distance is NaN, when the row runs bopl_nearest as written
+//       bopl_nearest's stable order, the ranks below BOPL4_ENTITIES kept (of
+//       a state's up to BOPL4_STATE_ENTITIES), unless a distance is NaN, when
+//       the row runs bopl_nearest as written
 //   P3  (every thread) a warp per row places the scene's circles (the nearest entities',
 //       then the nearby slimes', by a ballot's prefix), a warp per row its
 //       walls (the first BOPL4F_WALLS candidates in entity order, likewise)
@@ -238,11 +249,12 @@ struct Br4ERow : Br4Meta {
     double candidate_distance[BOPL4_PLAYERS], body_vx[BOPL4_PLAYERS], body_vy[BOPL4_PLAYERS];
     int is_candidate[BOPL4_PLAYERS];
     Bopl4SlimeSeen seen[BOPL4_SLIMES];
-    double distance[BOPL4_ENTITIES], top[BOPL4_ENTITIES];
-    float wall[BOPL4_ENTITIES][9], ecirc[BOPL4_ENTITIES][5], scirc[BOPL4_SLIMES][5];
-    int32_t ecls[BOPL4_ENTITIES], scls[BOPL4_SLIMES];
-    unsigned char kept[BOPL4_ENTITIES], kind[BOPL4_ENTITIES], lethal[BOPL4_ENTITIES], skew[BOPL4_ENTITIES], ehas[BOPL4_ENTITIES],
-                  shas[BOPL4_SLIMES];
+    double distance[BOPL4_STATE_ENTITIES], top[BOPL4_STATE_ENTITIES];
+    unsigned long long dkey[BOPL4_STATE_ENTITIES];   // per entity: its distance's br4e_key if kept, else past every kept one's
+    float wall[BOPL4_STATE_ENTITIES][9], ecirc[BOPL4_STATE_ENTITIES][5], scirc[BOPL4_SLIMES][5];
+    int32_t ecls[BOPL4_STATE_ENTITIES], scls[BOPL4_SLIMES];
+    unsigned char kept[BOPL4_STATE_ENTITIES], kind[BOPL4_STATE_ENTITIES], lethal[BOPL4_STATE_ENTITIES], skew[BOPL4_STATE_ENTITIES],
+                  ehas[BOPL4_STATE_ENTITIES], shas[BOPL4_SLIMES];
 };
 struct Br4EShared {
     Br4ERow row[BR4E_ROWS];
@@ -250,7 +262,7 @@ struct Br4EShared {
     int off[BR4E_KINDS * BR4E_ROWS + 1], cnt[BR4E_KINDS * BR4E_ROWS];   // P1's items: kind-major, then row; off[last] the end
     unsigned long long slot_key[BR4E_ROWS][3 * BOPL4_SLIMES];             // P2's slot candidates in index order
     unsigned short slot_index[BR4E_ROWS][3 * BOPL4_SLIMES];
-    unsigned char walls[BR4E_ROWS][BOPL4_ENTITIES];                       // the scene's wall candidates in entity order
+    unsigned char walls[BR4E_ROWS][BOPL4_STATE_ENTITIES];                 // the scene's wall candidates in entity order
 };
 static_assert(BOPL4_SLIMES <= 32, "P2's slime pass a lane a slime");
 static_assert(sizeof(Br4EShared) <= 48 * 1024, "static shared memory");
@@ -297,7 +309,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
             w.out = dense + (long)r * BOPL_OBS_STRIDE;
             w.scene = scenes + r;
             for (int i = 0; i < (int)(sizeof(w.c) / 4); i++) ((int32_t*)&w.c)[i] = 0;   // words: memset would store bytes
-            w.time_stop = BOPL4_ENTITIES; w.nan = 0;
+            w.time_stop = BOPL4_STATE_ENTITIES; w.nan = 0;
         }
     }
     __syncthreads();
@@ -404,10 +416,12 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                 const BoplRlEntity* entity = &state->entities[k];
                 const int kept = bopl4_entity_kept(state, (uint32_t)k, self->id);
                 w.kept[k] = (unsigned char)kept;
+                unsigned long long key = ~0ull;   // above every non-NaN double's
                 if (kept) {
                     double distance = bopl_surface_distance(entity, bopl_fix(self->x), bopl_fix(self->y));
                     if (entity->flags & BOPL_ENTITY_PICKUP) distance -= 1.0e12;
                     w.distance[k] = distance;
+                    key = br4e_key(distance);
                     if (distance != distance) w.nan = 1;
                     atomicAdd(&w.c.active_count, 1);
                     const uint32_t source = entity->reserved[0];
@@ -420,6 +434,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                     if (state->header.player_time_scale == 0 && (entity->flags & BOPL_ENTITY_TIMER_KNOWN) && entity->clock_rate > 0)
                         atomicMin(&w.time_stop, k);
                 }
+                w.dkey[k] = key;
             } else if (q == 2) {
                 // Slime k: its circle, what the slime pass needs of it.
                 const BoplRlSlime* slime = &state->slimes[k];
@@ -516,8 +531,8 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                     if (lane == 0) {
                         w.slot_count = n < BOPL4_SLOTS ? n : BOPL4_SLOTS;
                         // The counts' rest; the nearest if a distance is NaN.
-                        w.c.count = w.c.active_count;
-                        if (w.time_stop < BOPL4_ENTITIES) { w.c.time_stop_known = 1; w.c.time_stop_remaining = w.st.entities[w.time_stop].reserved[1]; }
+                        w.c.count = min(w.c.active_count, (int)BOPL4_ENTITIES);
+                        if (w.time_stop < BOPL4_STATE_ENTITIES) { w.c.time_stop_known = 1; w.c.time_stop_remaining = w.st.entities[w.time_stop].reserved[1]; }
                         if (w.nan) {
                             double distances[BOPL4_ENTITIES];
                             int count = 0;
@@ -527,7 +542,8 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                 }
             }
         } else {
-            // The nearest: every kept entity at its rank by (distance, index).
+            // The nearest: every kept entity at its rank by (distance, index), from the keys (an entity not kept
+            // ranks after every kept one).
             const int at0 = BR4E_ROWS, i0 = sh.off[at0];   // the entity pass's items
             for (int i = u - 64; i < sh.off[2 * BR4E_ROWS] - i0; i += BR4E_REST - 64) {
                 int at = at0;
@@ -535,11 +551,11 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                 const int k = i + i0 - sh.off[at];
                 Br4ERow& w = sh.row[at - at0];
                 if (k >= sh.cnt[at] || w.nan || !w.kept[k]) continue;
-                const unsigned long long d = br4e_key(w.distance[k]);
+                const unsigned long long d = w.dkey[k];
                 int rank = 0;
-                for (int j = 0; j < w.E; j++)
-                    if (w.kept[j]) { const unsigned long long e = br4e_key(w.distance[j]); rank += e < d || (e == d && j < k); }
-                w.nearest[rank] = (uint32_t)k;
+                #pragma unroll 4
+                for (int j = 0; j < w.E; j++) { const unsigned long long e = w.dkey[j]; rank += e < d || (e == d && j < k); }
+                if (rank < BOPL4_ENTITIES) w.nearest[rank] = (uint32_t)k;   // past BOPL4_ENTITIES the row keeps none
             }
         }
     }
@@ -549,7 +565,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
     if (warp < BR4E_ROWS && sh.valid[warp]) {
         Br4ERow& w = sh.row[warp];
         Bopl4Scene* s = w.scene;
-        const int count = w.c.active_count, total = count + w.slime_count;
+        const int count = w.c.count, total = count + w.slime_count;
         int base = 0;
         for (int i0 = 0; i0 < total; i0 += 32) {
             const int i = i0 + lane;
@@ -612,7 +628,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
         const Br4ERow& w = sh.row[lr];
         const int sets[4][3] = {{BOPL4_OBS_PLAYER_OFFSET, BOPL4_PLAYER_FEATURES * w.P, BOPL4_PLAYER_FEATURES * BOPL4_PLAYERS},
                                 {BOPL4_OBS_SLOT_OFFSET, BOPL4_SLOT_FEATURES * w.slot_count, BOPL4_SLOT_FEATURES * BOPL4_SLOTS},
-                                {BOPL4_OBS_ENTITY_OFFSET, BOPL4_ENTITY_FEATURES * w.c.active_count, BOPL4_ENTITY_FEATURES * BOPL4_ENTITIES},
+                                {BOPL4_OBS_ENTITY_OFFSET, BOPL4_ENTITY_FEATURES * w.c.count, BOPL4_ENTITY_FEATURES * BOPL4_ENTITIES},
                                 {BOPL4_OBS_SLIME_OFFSET, BOPL4_SLIME_FEATURES * w.slime_count, BOPL4_SLIME_FEATURES * BOPL4_SLIMES}};
         for (int q = 0; q < 4; q++) for (int i = sets[q][1] + t; i < sets[q][2]; i += BR4E_THREADS) w.out[sets[q][0] + i] = 0.0f;
     }
@@ -621,7 +637,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
         const int lr = t;
         Br4ERow& w = sh.row[lr];
         const int valid = sh.valid[lr];
-        const int n[BR4E_SEGS] = {valid ? w.c.active_count : 0, valid ? w.slime_count : 0, valid ? w.slot_count : 0, valid ? w.P : 0,
+        const int n[BR4E_SEGS] = {valid ? w.c.count : 0, valid ? w.slime_count : 0, valid ? w.slot_count : 0, valid ? w.P : 0,
                                   valid, valid, valid};
         for (int q = 0; q < BR4E_SEGS; q++) counts[(r0 + lr) * 8 + q] = n[q];
         if (valid && w.enemy.player) w.enemy.player = &metas[r0 + lr].st.players[w.enemy.player - w.st.players];

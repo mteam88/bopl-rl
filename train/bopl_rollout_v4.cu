@@ -781,21 +781,30 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
 // mapped host buffer; mode 3 the same, its terrain and rays from bopl4_rays_rows. Either way the device row equals the host row bit for
 // bit (bopl4_transport_check counts the floats that differ, dump mode only).
 // A slot's used words, from its head in device memory: a mode-4 slot's head
-// gives them, a mode-1 slot is its header, a mode-3 slot its header and scene
-// (bopl4f_scene_words; the counts are in the DMA head), the rest the whole
-// slot. 2026-10-08 (fwd_bench, 1 stream, nsys): mode 3 read its whole slot,
-// 5 KB of PCIe reads a row for a scene the DMA head already held; ~half the
-// dumps carry 2 to 10 such rows (45+ entities), and the unpack's mean drops
-// 13.1 to 11.3 us, the sample's end 2.0 us.
+// gives them, a mode-1 slot is its header, a mode-0 slot its header, fixed
+// block and prefixes (the counts are in the header), a mode-2 or 3 slot to
+// its scene's end (hdr[5] and bopl4f_scene_words when the scene's counts are
+// in the DMA head, else as far as a scene can reach). 2026-10-08 (fwd_bench,
+// 1 stream, nsys): mode 3 read its whole slot, 5 KB of PCIe reads a row for a
+// scene the DMA head already held; ~half the dumps carry 2 to 10 such rows
+// (45+ entities), and the unpack's mean drops 13.1 to 11.3 us, the sample's
+// end 2.0 us.
 __device__ __forceinline__ int bopl4_slot_used(const unsigned* hdr) {
     const unsigned mode = hdr[0];
     if (mode == BOPL4_PACK_MODE_STATE) return (int)hdr[BOPL4_PACK_STATE_WORDS];
     if (mode == BOPL4_PACK_MODE_DENSE) return BOPL4_PACK_HEADER;
-    if (mode == BOPL4_PACK_MODE_DENSE_SCENE && hdr[5] + 4 <= (unsigned)BR4_PACK_DMA_WORDS) {
+    if (mode == BOPL4_PACK_MODE_ROWS) {
+        const Bopl4PackSet sets[BOPL4_PACK_SETS] = BOPL4_PACK_TABLE;
+        int used = BOPL4_PACK_ROWS_OFFSET;
+        #pragma unroll
+        for (int s = 0; s < BOPL4_PACK_SETS; s++) used += (int)hdr[1 + s] * sets[s].width;
+        return used;
+    }
+    if (hdr[5] + 4 <= (unsigned)BR4_PACK_DMA_WORDS) {
         const unsigned* sc = hdr + hdr[5];
         return (int)hdr[5] + BOPL4F_SCENE_HEAD + 5 * (int)sc[1] + 9 * (int)sc[2] + 6 * (int)sc[3];
     }
-    return BOPL4_PACK_P;
+    return min((int)hdr[5] + BOPL4F_SCENE_HEAD + 9 * BOPL4F_WALLS + 6 * BOPL4F_CIRCLES, (int)BOPL4_PACK_P);
 }
 __global__ void bopl4_unpack_rows(const float* __restrict__ host_packed, float* __restrict__ packed, const float* __restrict__ host_rows,
                                   float* __restrict__ dense, int rows, int tail_bytes) {
