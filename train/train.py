@@ -498,13 +498,21 @@ def main():
         os.environ[key] = str(value)
     (output/'game-logs').mkdir(exist_ok=True)
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
-    # Policy v4 wants the whole GPU shared on stream priority: its training
+    # Policy v4 wanted the whole GPU shared on stream priority: its training
     # pass and its rollout chain are both several times v3's, and on the 24/24
     # green-context split of 'auto' each is SM-bound (v4-lite, w128 b4: train
     # 0.107 -> 0.090 s, rollout 0.120 -> 0.114 s, +5% sps when shared; 32/16
-    # and 16/32 are worse either way). v3 keeps the measured 'auto'
-    # Scheduling only: the numbers do not change.
-    os.environ.setdefault('BOPL_GPU_SPLIT', '0' if a.encoder == 'v4' else 'auto')
+    # and 16/32 are worse either way). Since the GEMM, sets and encode work of
+    # 2026-10-08 the spec shape (w256 b4) has the training pass short enough
+    # for 16 SMs: 32/16 beats shared in 3 of 3 rounds (1.142M vs 1.058M,
+    # 1.150M vs 1.089M, 0.948M vs 0.935M sps; train_s 0.052 vs 0.044 s
+    # against 0.057 s of rollout wall), 40/8 is train-bound (0.093 s, 0.69M).
+    # If the rollout gets much faster, training becomes the wall again:
+    # re-measure 32 against 0. The serial trainer (BOPL_ASYNC=0) keeps the
+    # whole GPU: an explicit count would still partition it. v3 keeps the
+    # measured 'auto'. Scheduling only: the numbers do not change.
+    serial = os.environ.get('BOPL_ASYNC', '1').strip() == '0'
+    os.environ.setdefault('BOPL_GPU_SPLIT', ('0' if serial else '32') if a.encoder == 'v4' else 'auto')
     v4_shape = a.v4_shape
     if a.encoder == 'v4':
         for name, (variable, key) in V4_SHAPE.items():
