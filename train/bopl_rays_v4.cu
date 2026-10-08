@@ -64,6 +64,9 @@ struct Br4Shared {
     float raw[BOPL4_PACK_P - BOPL4_PACK_HEADER];
     Bopl4Scene s;
     Br4Walls w;
+    // Per circle what no ray changes: its offset from the body (px, py), px * px + py * py and its radius squared,
+    // padded for the surfaces' unrolled reads.
+    float4 circle[BOPL4F_CIRCLES + 4 * BR4_LANES];
     unsigned reach[BR4_GROUPS];                 // a group's reach, as the bits of a non-negative float
     float probes[2], sdf_at[5], lethal, aim_out[2][BOPL4_RAY_FEATURES];
     int hit[16], edge_drop[16], dash_landing;
@@ -96,9 +99,15 @@ __device__ __forceinline__ float br4_wall_sdf(const Br4Shared& sh, int j, float 
 
 // The scene from its packed form (bopl4f_scene_write), by the whole block:
 // the slot's words from the scene to its end copied in one pass (one memory
-// round trip), then taken apart in shared memory.
-__device__ static void br4_scene_load(const float* slot, int at, Br4Shared& sh) {
-    for (int i = threadIdx.x; i < BOPL4_PACK_P - at; i += blockDim.x) sh.raw[i] = slot[at + i];
+// round trip: every load in flight before any store; a load and its store an
+// iteration took eight round trips, ~3 us), then taken apart in shared memory.
+__device__ static void br4_scene_load(const float* __restrict__ slot, int at, Br4Shared& sh) {
+    constexpr int T = BR4_RAYS_THREADS, NL = (BOPL4_PACK_P - BOPL4_PACK_HEADER + T - 1) / T;
+    float v[NL];
+    #pragma unroll
+    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < BOPL4_PACK_P - at) v[t] = slot[at + t * T + threadIdx.x];
+    #pragma unroll
+    for (int t = 0; t < NL; t++) if (t * T + (int)threadIdx.x < BOPL4_PACK_P - at) sh.raw[t * T + threadIdx.x] = v[t];
     __syncthreads();
     const float* in = sh.raw;
     Bopl4Scene* s = &sh.s;
@@ -123,12 +132,16 @@ __device__ static void br4_scene_load(const float* slot, int at, Br4Shared& sh) 
 }
 // The walls unified for the marches, sorted by their cull keys (their SDFs
 // at the body, the anchors): thread j wall j, its rank among the keys, ties
-// by index.
+// by index. The circles' terms of bopl4f_surfaces that no ray changes.
 __device__ static void br4_scene_prepare(Br4Shared& sh) {
     const Bopl4Scene* s = &sh.s;
     const int na = s->axis_count, n = na + s->rot_count, j = threadIdx.x;
     const float inf = __int_as_float(0x7f800000);
     if (j < BR4_GROUPS) sh.reach[j] = 0u;
+    for (int i = j; i < s->circle_count; i += blockDim.x) {
+        const float px = s->cx[i] - s->x, py = s->cy[i] - s->y;
+        sh.circle[i] = make_float4(px, py, px * px + py * py, s->cr[i] * s->cr[i]);
+    }
     float key = inf;
     if (j < na) {
         const float a = bopl4f_axis_sdf(s, j, s->x, s->y);
@@ -659,18 +672,21 @@ __device__ static float br4_surfaces(const Br4Shared& sh, int lane, float dx, fl
     if (dy > 1e-9f) { float d = bopl4f_div(BOPL4F_BLAST_Y - y, dy); if (d >= 0.0f && d < best) { best = d; *cls = 2; } }
     if (dx > 1e-9f) { float d = bopl4f_div(BOPL4F_BLAST_X - x, dx); if (d >= 0.0f && d < best) { best = d; *cls = 2; } }
     if (dx < -1e-9f) { float d = bopl4f_div(-BOPL4F_BLAST_X - x, dx); if (d >= 0.0f && d < best) { best = d; *cls = 2; } }
-    // The first circle at the least distance below the planes' best.
+    // The first circle at the least distance below the planes' best: four circles a lane at once, without
+    // branches (a circle the ray misses, or past the count, is dropped by the select).
     float cbest = best;
     int win = -1;
-    for (int i = lane; i < s->circle_count; i += BR4_LANES) {
-        float px = s->cx[i] - x, py = s->cy[i] - y;
-        float along = px * dx + py * dy;
-        if (along < 0.0f) continue;
-        float perp2 = (px * px + py * py) - along * along, r2 = s->cr[i] * s->cr[i];
-        if (perp2 > r2) continue;
-        float d = along - bopl4f_sqrt(r2 - perp2);
-        d = d < 0.0f ? 0.0f : d;
-        if (d < cbest) { cbest = d; win = i; }
+    for (int i0 = lane; i0 < s->circle_count; i0 += 4 * BR4_LANES) {
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            const int i = i0 + k * BR4_LANES;
+            const float4 c = sh.circle[i];
+            const float along = c.x * dx + c.y * dy, perp2 = c.z - along * along;
+            float d = along - bopl4f_sqrt(c.w - perp2);
+            d = d < 0.0f ? 0.0f : d;
+            const bool take = i < s->circle_count && !(along < 0.0f) && !(perp2 > c.w) && d < cbest;
+            cbest = take ? d : cbest; win = take ? i : win;
+        }
     }
     const unsigned m = br4_ray_mask();
     #pragma unroll
