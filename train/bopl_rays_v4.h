@@ -76,9 +76,20 @@ static void bopl4f_dirs_init(Bopl4Dirs *dirs) {
     for (int k=0; k<16; k++) { double a=6.28318530717958647692*k/16.0; dirs->dash[k][0]=(float)cos(a); dirs->dash[k][1]=(float)sin(a); }
 }
 
+/* On the GPU __fsqrt_rn's own steps without its branch to the slow path
+ * (taken for 0, under 2^-101, inf, NaN and negatives): one reconvergence
+ * point per call kept a march step's walls from overlapping. Tiny inputs are
+ * scaled by 2^100 (exact, the root by 2^-50), 0 and inf are their own roots,
+ * the rest is NaN as the steps leave it: equal to __fsqrt_rn on all 2^32
+ * inputs (checked exhaustively on the RTX 5070). */
 BOPL4F_FN float bopl4f_sqrt(float v) {
 #ifdef __CUDA_ARCH__
-    return __fsqrt_rn(v);
+    const bool tiny = v < 0x1p-100f;
+    const float x = tiny ? v * 0x1p100f : v;
+    float r;
+    asm("rsqrt.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
+    const float y = __fmul_rn(x, r), e = __fmaf_rn(-y, y, x), s = __fmaf_rn(e, __fmul_rn(r, 0.5f), y);
+    return x == 0.0f || x == __int_as_float(0x7f800000) ? v : tiny ? s * 0x1p-50f : s;
 #else
     return sqrtf(v);
 #endif
