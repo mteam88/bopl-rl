@@ -45,7 +45,7 @@ struct Br4SetsArgs {
 #define BR4_SET_THREADS 256   // = BR4_POOL_SPLIT: thread (d, part) of the pooling below
 #define BR4_POOL_SPLIT 256    // the mean pool's summation order (br4_set_block)
 #define BR4_MAX_SET_ROWS 48   // the largest set
-#define BR4_BLOCK_SET_ROWS 64 // set rows (valid or not) one block holds: samples per block x the set's rows
+#define BR4_BLOCK_SET_ROWS 96 // set rows (valid or not) one block holds: samples per block x the set's rows
 static_assert(BR4_SET_THREADS == BR4_POOL_SPLIT, "a thread per (channel, pooling part)");
 static_assert(BOPL4_PLAYERS <= BR4_MAX_SET_ROWS && BOPL4_SLOTS <= BR4_MAX_SET_ROWS && BOPL4_ENTITIES <= BR4_MAX_SET_ROWS && BOPL4_SLIMES <= BR4_MAX_SET_ROWS, "set rows");
 
@@ -54,6 +54,9 @@ __device__ __forceinline__ float br4_bf(float v) { return __bfloat162float(__flo
 // Samples per block for set s: as many as fit BR4_BLOCK_SET_ROWS set rows,
 // the players 4 (their pooling runs sample after sample: 10 a block made the
 // players' blocks the longest; 4 measured 23.8 -> 21.8 us the launch).
+// 96 rows (2 entity, 4 slot, 3 slime samples; 172 blocks for 128 rows) over
+// 64 (1, 2, 2; 288 blocks, three waves at two blocks an SM): a block's cost
+// is mostly its latency chain, not its rows; 23.7 -> 19.7 us the launch.
 __host__ __device__ constexpr int br4_samples_of(int s) {
     return s == 0 ? 4 : BR4_BLOCK_SET_ROWS / (s == 1 ? BOPL4_SLOTS : s == 2 ? BOPL4_ENTITIES : BOPL4_SLIMES);
 }
@@ -66,21 +69,22 @@ constexpr int br4_stage_bf16() {   // the largest samples x obs block (elements)
 }
 constexpr int br4_max_features() { return br4_cmax(br4_cmax(v4::SPEC[0].features, v4::SPEC[1].features), br4_cmax(v4::SPEC[2].features, v4::SPEC[3].features)); }
 // Dynamic shared, per block (the largest set's sizes):
-//   xs     the block's samples' obs blocks, fp32 (features rounded to bf16 as the trainer rounds them)
+//   xs     the block's samples' obs blocks, bf16 (the features rounded as the trainer rounds them)
 //   w1     the set's W1^T (features, I) bf16
-//          (xs and w1 together are then h2: (valid rows of the block, D) bf16)
+//          (xs and w1 together are then the pooling's parts: (samples, parts, D) max and sum)
 //   h1     (valid rows of the block, I) fp32 (bf16-rounded)
 //   meta   per staged row: valid flag, embedding id; per valid row: its xs offset and id;
 //          per sample: valid rows and the first one's index
 struct Br4SetSmem { int w1, h1, meta, total; };
 constexpr int BR4_SET_META = 4 * BR4_BLOCK_SET_ROWS + 2 * 32;
-constexpr Br4SetSmem br4_set_smem(int D, int I) {
-    return Br4SetSmem{br4_align16(br4_stage_bf16() * 4),
-                      br4_cmax(br4_align16(br4_stage_bf16() * 4) + br4_align16(br4_max_features() * I * 2), BR4_BLOCK_SET_ROWS * D * 2),
-                      br4_cmax(br4_align16(br4_stage_bf16() * 4) + br4_align16(br4_max_features() * I * 2), BR4_BLOCK_SET_ROWS * D * 2) + BR4_BLOCK_SET_ROWS * I * 4,
-                      br4_cmax(br4_align16(br4_stage_bf16() * 4) + br4_align16(br4_max_features() * I * 2), BR4_BLOCK_SET_ROWS * D * 2) + BR4_BLOCK_SET_ROWS * I * 4 + BR4_SET_META * 4};
+constexpr int br4_max_samples() { return br4_cmax(br4_cmax(br4_samples_of(0), br4_samples_of(1)), br4_cmax(br4_samples_of(2), br4_samples_of(3))); }
+constexpr Br4SetSmem br4_set_smem(int I) {
+    return Br4SetSmem{br4_align16(br4_stage_bf16() * 2),
+                      br4_cmax(br4_align16(br4_stage_bf16() * 2) + br4_align16(br4_max_features() * I * 2), br4_max_samples() * BR4_POOL_SPLIT * 8),
+                      br4_cmax(br4_align16(br4_stage_bf16() * 2) + br4_align16(br4_max_features() * I * 2), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 4,
+                      br4_cmax(br4_align16(br4_stage_bf16() * 2) + br4_align16(br4_max_features() * I * 2), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 4 + BR4_SET_META * 4};
 }
-static size_t br4_sets_smem(int D, int I) { return (size_t)br4_set_smem(D, I).total; }
+static size_t br4_sets_smem(int I) { return (size_t)br4_set_smem(I).total; }
 // One group's set weights into the chain's layout: W1 transposed to (features, I)
 // bf16 (thread i of the h1 loop reads column i: coalesced), W2 (D, I) bf16.
 // The values are the bf16 roundings br4_sets applied on the fly before.
@@ -104,10 +108,12 @@ __host__ __device__ constexpr int br4_set_order(int y) { return y == 0 ? 2 : y =
 // pooling has a fixed order too: per channel d, parts = BR4_POOL_SPLIT / D
 // partial max and sum, part p over the sample's valid rows j = p, p + parts,
 // ... in order from 0, combined part 0, 1, ...; the mean is the sum / n.
-// Thread (d, p) is lane-adjacent to the channel's other parts, so the parts
-// combine by shuffles. Global reads are one round: the weights before the
-// PDL wait (they do not depend on the previous kernel), then the samples'
-// obs blocks and E[id] rows. The weights are read once per block of samples.
+// The h2 thread (d, c) computes the rows m = c, c + parts, ... in order, and
+// those are, per sample, exactly the rows of one part (p = c - the sample's
+// first row, mod parts) in the part's order: it pools them as they come, h2
+// is never stored, and the parts combine through shared. Global reads are
+// one round: the weights before the PDL wait (they do not depend on the
+// previous kernel), then the samples' obs blocks and E[id] rows. The weights are read once per block of samples.
 template <int S, int I>
 __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int row0, int cnt, unsigned char* smem) {
     constexpr v4::Spec sp = v4::SPEC[S];
@@ -115,7 +121,7 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
     static_assert(T % I == 0 && I % 8 == 0, "set inner width");
     static_assert(sp.width % 2 == 0, "obs rows as bf16 pairs");
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, D = a.D, parts = BR4_POOL_SPLIT / D;
-    float* xs = (float*)smem;
+    __nv_bfloat16* xs = (__nv_bfloat16*)smem;
     __nv_bfloat16* w1s = (__nv_bfloat16*)(smem + a.sm_w1);
     float* h1 = (float*)(smem + a.sm_h1);
     int* flag = (int*)(smem + a.sm_meta);             // (K, rows)
@@ -170,7 +176,7 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
         int e = t * T + tid, k = e / N, rem = e - k * N;
         if (e < K * N && k < cnt) {
             int r = rem / sp.width, c = rem - r * sp.width;
-            xs[e] = br4_bf(v[t]);
+            xs[e] = __float2bfloat16(v[t]);
             if (c == 0) flag[k * sp.rows + r] = v[t] != 0.0f;
             if (sp.id_col >= 0 && c == sp.id_col) ids[k * sp.rows + r] = v4::embedding_id(v[t]);
         }
@@ -214,11 +220,11 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
         constexpr int js = T / I;
         const int i = tid % I;
         for (int m0 = tid / I; m0 < M; m0 += R * js) {
-            const float2* xr[R]; float acc[R], ev[R];
+            const __nv_bfloat162* xr[R]; float acc[R], ev[R];
             #pragma unroll
             for (int r = 0; r < R; r++) {
                 int m = m0 + r * js, mm = m < M ? m : m0;
-                xr[r] = (const float2*)(xs + vrow[mm]); acc[r] = 0.0f;
+                xr[r] = (const __nv_bfloat162*)(xs + vrow[mm]); acc[r] = 0.0f;
                 ev[r] = sp.id_col >= 0 ? br4_bf(E[(long)vid[mm] * I + i]) : 0.0f;
             }
             #pragma unroll 4
@@ -226,14 +232,14 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
                 float w0 = __bfloat162float(w1s[(2 * fp) * I + i]), w1 = __bfloat162float(w1s[(2 * fp + 1) * I + i]);
                 #pragma unroll
                 for (int r = 0; r < R; r++) {
-                    float2 x = xr[r][fp];
+                    float2 x = __bfloat1622float2(xr[r][fp]);
                     acc[r] = fmaf(w0, x.x, acc[r]); acc[r] = fmaf(w1, x.y, acc[r]);
                 }
             }
             if (F & 1) {
                 float w = __bfloat162float(w1s[(F - 1) * I + i]);
                 #pragma unroll
-                for (int r = 0; r < R; r++) acc[r] = fmaf(w, ((const float*)xr[r])[F - 1], acc[r]);
+                for (int r = 0; r < R; r++) acc[r] = fmaf(w, __bfloat162float(((const __nv_bfloat16*)xr[r])[F - 1]), acc[r]);
             }
             #pragma unroll
             for (int r = 0; r < R; r++) {
@@ -247,67 +253,53 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
         }
     }
     __syncthreads();
-    // h2[j][d] = bf(relu(sum_i W2[d][i] h1[j][i])) (the trainer pools bf16-stored h2), pooled per sample;
-    // the W2 row as fp32 from here on
-    float wf[I];
+    // h2[m][d] = bf(relu(sum_i W2[d][i] h1[m][i])) (the trainer pools bf16-stored h2), pooled per sample
+    // as it comes (thread (d, c): rows c, c + parts, ...); the W2 row converted from bf16 8 at a time
+    const int c = tid / D;
+    int kb[K], kn[K]; float best[K], sum[K];
     #pragma unroll
-    for (int q = 0; q < I / 8; q++) {
-        const __nv_bfloat162* w2 = (const __nv_bfloat162*)&wreg[q];
+    for (int k = 0; k < K; k++) { kb[k] = k < cnt ? bk[k] : M; kn[k] = k < cnt ? nk[k] : 0; best[k] = 0.0f; sum[k] = 0.0f; }
+    for (int m0 = c; m0 < M; m0 += R * parts) {
+        const float4* hr[R]; float acc[R];
         #pragma unroll
-        for (int t = 0; t < 4; t++) { float2 w = __bfloat1622float2(w2[t]); wf[8 * q + 2 * t] = w.x; wf[8 * q + 2 * t + 1] = w.y; }
-    }
-    __nv_bfloat16* hv = (__nv_bfloat16*)smem;   // over xs and w1 (h1 is done with them)
-    {
-        const int js = T / D > 0 ? T / D : 1;
-        for (int d = dw; d < D; d += T) {   // (D > T: the thread's next channel; its W2 row reloaded)
-            if (d != dw) {
-                const uint4* wrow = (const uint4*)(a.w.w2[grp][S] + (long)d * I);
-                #pragma unroll
-                for (int q = 0; q < I / 8; q++) {
-                    uint4 u = __ldg(wrow + q);
-                    const __nv_bfloat162* w2 = (const __nv_bfloat162*)&u;
-                    #pragma unroll
-                    for (int t = 0; t < 4; t++) { float2 w = __bfloat1622float2(w2[t]); wf[8 * q + 2 * t] = w.x; wf[8 * q + 2 * t + 1] = w.y; }
-                }
-            }
-            for (int m0 = tid / D; m0 < M; m0 += R * js) {
-                const float4* hr[R]; float acc[R];
-                #pragma unroll
-                for (int r = 0; r < R; r++) { int m = m0 + r * js; hr[r] = (const float4*)(h1 + (m < M ? m : m0) * I); acc[r] = 0.0f; }
-                #pragma unroll
-                for (int q = 0; q < I / 4; q++) {
-                    #pragma unroll
-                    for (int r = 0; r < R; r++) {
-                        float4 x = hr[r][q];
-                        acc[r] = fmaf(wf[4 * q], x.x, acc[r]); acc[r] = fmaf(wf[4 * q + 1], x.y, acc[r]);
-                        acc[r] = fmaf(wf[4 * q + 2], x.z, acc[r]); acc[r] = fmaf(wf[4 * q + 3], x.w, acc[r]);
-                    }
-                }
-                #pragma unroll
-                for (int r = 0; r < R; r++) { int m = m0 + r * js; if (m < M) hv[m * D + d] = __float2bfloat16(fmaxf(acc[r], 0.0f)); }
+        for (int r = 0; r < R; r++) { int m = m0 + r * parts; hr[r] = (const float4*)(h1 + (m < M ? m : m0) * I); acc[r] = 0.0f; }
+        #pragma unroll
+        for (int q = 0; q < I / 8; q++) {
+            const __nv_bfloat162* w2 = (const __nv_bfloat162*)&wreg[q];
+            float wf[8];
+            #pragma unroll
+            for (int t = 0; t < 4; t++) { float2 w = __bfloat1622float2(w2[t]); wf[2 * t] = w.x; wf[2 * t + 1] = w.y; }
+            #pragma unroll
+            for (int r = 0; r < R; r++) {
+                float4 x = hr[r][2 * q], y = hr[r][2 * q + 1];
+                acc[r] = fmaf(wf[0], x.x, acc[r]); acc[r] = fmaf(wf[1], x.y, acc[r]);
+                acc[r] = fmaf(wf[2], x.z, acc[r]); acc[r] = fmaf(wf[3], x.w, acc[r]);
+                acc[r] = fmaf(wf[4], y.x, acc[r]); acc[r] = fmaf(wf[5], y.y, acc[r]);
+                acc[r] = fmaf(wf[6], y.z, acc[r]); acc[r] = fmaf(wf[7], y.w, acc[r]);
             }
         }
+        #pragma unroll
+        for (int r = 0; r < R; r++) {
+            const int m = m0 + r * parts;
+            const float v = br4_bf(fmaxf(acc[r], 0.0f));
+            #pragma unroll
+            for (int k = 0; k < K; k++) if (m < M && m >= kb[k] && m < kb[k] + kn[k]) { best[k] = fmaxf(best[k], v); sum[k] += v; }
+        }
     }
-    br_pdl_release();   // the flat GEMM launches under the pooling
+    br_pdl_release();   // the flat GEMM launches under the parts' combine
+    // the parts (sample k, part p, channel d) over xs and w1 (h1 is done with them), then combined in part order
+    float2* pp = (float2*)smem;
+    #pragma unroll
+    for (int k = 0; k < K; k++) if (k < cnt) pp[(k * parts + (c - kb[k] % parts + parts) % parts) * D + dw] = make_float2(best[k], sum[k]);
     __syncthreads();
-    // pooling, per sample k and channel d: thread (d, part), parts lane-adjacent
-    const int d = tid / parts, part = tid - d * parts;
-    for (int k = 0; k < cnt; k++) {
-        const int n = nk[k];
-        const __nv_bfloat16* hk = hv + bk[k] * D + d;
-        float best = 0.0f, sum = 0.0f;
-        for (int j = part; j < n; j += parts) { float v = __bfloat162float(hk[j * D]); best = fmaxf(best, v); sum += v; }
-        // part 0 + part 1 + ... (the channel's parts are lanes d * parts + p)
-        float tb = best, ts = sum;
-        for (int p = 1; p < parts; p++) {
-            float ob = __shfl_down_sync(0xffffffffu, best, p), os = __shfl_down_sync(0xffffffffu, sum, p);
-            tb = fmaxf(tb, ob); ts += os;
-        }
-        if (part == 0) {
-            float* out = a.joined + (long)(row0 + k) * a.ldj + a.col0 + 2 * D * S;
-            out[d] = n ? tb : 0.0f;
-            out[D + d] = n && a.mean_pool ? ts / n : 0.0f;
-        }
+    for (int e = tid; e < cnt * D; e += T) {
+        const int k = e / D, d = e - k * D, n = nk[k];
+        float2 t = pp[k * parts * D + d];
+        float tb = t.x, ts = t.y;
+        for (int p = 1; p < parts; p++) { float2 o = pp[(k * parts + p) * D + d]; tb = fmaxf(tb, o.x); ts += o.y; }
+        float* out = a.joined + (long)(row0 + k) * a.ldj + a.col0 + 2 * D * S;
+        out[d] = n ? tb : 0.0f;
+        out[D + d] = n && a.mean_pool ? ts / n : 0.0f;
     }
 }
 // grid (blocks of the four sets): the entities' blocks first (the longest), then slots, slimes, players
@@ -333,17 +325,17 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     }
 }
 static void br4_sets_init(int D, int I) {
-    int smem = (int)br4_sets_smem(D, I);
+    int smem = (int)br4_sets_smem(I);
     auto k = I == 64 ? br4_sets<64> : br4_sets<128>;
     assert(cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess);
     assert(cudaFuncSetAttribute(k, cudaFuncAttributePreferredSharedMemoryCarveout, (int)cudaSharedmemCarveoutMaxShared) == cudaSuccess);
 }
 static void br4_sets_launch(Br4SetsArgs a, cudaStream_t stream) {
-    const Br4SetSmem L = br4_set_smem(a.D, a.I);
+    const Br4SetSmem L = br4_set_smem(a.I);
     a.sm_w1 = L.w1; a.sm_h1 = L.h1; a.sm_meta = L.meta;
     int blocks = 0;
     for (int s = 0; s < 4; s++) blocks += br4_set_blocks(a.g, s);
-    size_t smem = br4_sets_smem(a.D, a.I);
+    size_t smem = br4_sets_smem(a.I);
     if (a.I == 64) br_launch_pdl(br4_sets<64>, dim3(blocks), dim3(BR4_SET_THREADS), smem, stream, a);
     else br_launch_pdl(br4_sets<128>, dim3(blocks), dim3(BR4_SET_THREADS), smem, stream, a);
 }
@@ -589,7 +581,7 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p) {
             assert(cudaMalloc((void**)&w.w2b[k], (size_t)q->D * q->I * sizeof(__nv_bfloat16)) == cudaSuccess);
         }
     }
-    size_t smem = br4_sets_smem(q->D, q->I);
+    size_t smem = br4_sets_smem(q->I);
     br4_sets_init(q->D, q->I);
     p->v4 = q;
     fprintf(stderr, "bopl batched rollout forward: policy v4 chain (set %d/%d, flat %d, ffn %d, critic %d%s), %.1f KB shared per set block, W2 rows in registers\n",
