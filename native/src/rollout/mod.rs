@@ -3905,6 +3905,135 @@ impl<'a, T> IntoIterator for &'a mut Unchecked<T> {
     }
 }
 
+/// `platform_dynamics`: indexed as `Unchecked` is, and with the platforms
+/// whose integration is settled (`settled`, bit `i` for platform `i`).
+/// Any mutable access through `DerefMut`, `IndexMut` or `&mut` iteration
+/// clears the bits of what it reaches (all of them, or the one indexed), so
+/// a body can only stay settled through `settled_mut`, whose callers leave
+/// what integration reads bit for bit as it was.
+pub struct PlatformBodies {
+    list: Vec<PlatformDynamics>,
+    settled: u64,
+    /// The physics step `settled` holds for: a pass at another settles
+    /// nothing it has not integrated at that one.
+    settled_dt: u64,
+}
+
+impl Clone for PlatformBodies {
+    fn clone(&self) -> Self {
+        Self { list: self.list.clone(), settled: self.settled, settled_dt: self.settled_dt }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.list.clone_from(&source.list);
+        self.settled = source.settled;
+        self.settled_dt = source.settled_dt;
+    }
+}
+
+impl std::ops::Deref for PlatformBodies {
+    type Target = Vec<PlatformDynamics>;
+    #[inline(always)]
+    fn deref(&self) -> &Vec<PlatformDynamics> {
+        &self.list
+    }
+}
+
+impl std::ops::DerefMut for PlatformBodies {
+    #[inline(always)]
+    #[track_caller]
+    fn deref_mut(&mut self) -> &mut Vec<PlatformDynamics> {
+        self.settled = 0;
+        &mut self.list
+    }
+}
+
+impl std::ops::Index<usize> for PlatformBodies {
+    type Output = PlatformDynamics;
+    #[inline(always)]
+    #[track_caller]
+    fn index(&self, index: usize) -> &PlatformDynamics {
+        debug_assert!(index < self.list.len(), "platform index {index} out of {}", self.list.len());
+        // SAFETY: every platform index is below the count, which debug
+        // builds check above.
+        unsafe { self.list.get_unchecked(index) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for PlatformBodies {
+    #[inline(always)]
+    #[track_caller]
+    fn index_mut(&mut self, index: usize) -> &mut PlatformDynamics {
+        debug_assert!(index < self.list.len(), "platform index {index} out of {}", self.list.len());
+        // `wrapping_shl` takes the shift mod 64: past 64 platforms (which
+        // never settle) a bit of a lower one goes too, which only costs it
+        // a pass.
+        self.settled &= !1u64.wrapping_shl(index as u32);
+        // SAFETY: as for `index`.
+        unsafe { self.list.get_unchecked_mut(index) }
+    }
+}
+
+impl std::ops::Index<std::ops::RangeTo<usize>> for PlatformBodies {
+    type Output = [PlatformDynamics];
+    #[inline(always)]
+    fn index(&self, range: std::ops::RangeTo<usize>) -> &[PlatformDynamics] {
+        &self.list[range]
+    }
+}
+
+impl<'a> IntoIterator for &'a PlatformBodies {
+    type Item = &'a PlatformDynamics;
+    type IntoIter = std::slice::Iter<'a, PlatformDynamics>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.list.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut PlatformBodies {
+    type Item = &'a mut PlatformDynamics;
+    type IntoIter = std::slice::IterMut<'a, PlatformDynamics>;
+    #[track_caller]
+    fn into_iter(self) -> Self::IntoIter {
+        use std::ops::DerefMut;
+        self.deref_mut().iter_mut()
+    }
+}
+
+impl PlatformBodies {
+    fn with_capacity(capacity: usize) -> Self {
+        Self { list: Vec::with_capacity(capacity), settled: 0, settled_dt: 0 }
+    }
+    /// The settled bodies, for a pass integrating at `dt`: none unless the
+    /// last pass integrated at it too.
+    #[inline(always)]
+    fn settled_for(&mut self, dt: Fix) -> u64 {
+        let same = self.settled_dt == dt.bits();
+        self.settled_dt = dt.bits();
+        if same { self.settled } else { 0 }
+    }
+    /// Platform `index`'s dynamics, its settled bit kept: the caller writes
+    /// nothing integration reads unless it is what was there, bit for bit
+    /// (or clears the bit itself with `unsettle`).
+    #[inline(always)]
+    fn settled_mut(&mut self, index: usize) -> &mut PlatformDynamics {
+        debug_assert!(index < self.list.len(), "platform index {index} out of {}", self.list.len());
+        // SAFETY: as for `index`.
+        unsafe { self.list.get_unchecked_mut(index) }
+    }
+    #[inline(always)]
+    fn unsettle(&mut self, index: usize) {
+        self.settled &= !1u64.wrapping_shl(index as u32);
+    }
+    /// Platforms `a` and `b`'s dynamics (`a != b`), their bits cleared.
+    #[inline(always)]
+    #[track_caller]
+    fn pair_mut(&mut self, a: usize, b: usize) -> [&mut PlatformDynamics; 2] {
+        self.unsettle(a);
+        self.unsettle(b);
+        self.list.get_disjoint_mut([a, b]).expect("two platforms in range")
+    }
+}
+
 #[derive(Clone)]
 pub struct PlayerSlot {
     pub base: Player,
@@ -5714,7 +5843,7 @@ pub struct RolloutWorld {
     /// Parallel to `platforms`: rigid body and home spring state. This and
     /// the other tables parallel to `platforms` are `Unchecked`, as
     /// `platforms` is: every platform index the sim forms is below the count.
-    pub platform_dynamics: Unchecked<PlatformDynamics>,
+    pub platform_dynamics: PlatformBodies,
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
     /// usize::MAX for spawned (ability) platforms.
     pub platform_defs: Unchecked<usize>,
@@ -5975,7 +6104,7 @@ impl RolloutWorld {
             platform_epoch: 1,
             platform_rows_epoch: 0,
             scratch: PlatformScratch::new(),
-            platform_dynamics: Unchecked(Vec::with_capacity(64)),
+            platform_dynamics: PlatformBodies::with_capacity(64),
             platform_defs: Unchecked(Vec::with_capacity(64)),
             platform_kinds: Unchecked(Vec::with_capacity(64)),
             authored_platforms: 0,
@@ -9234,8 +9363,15 @@ impl RolloutWorld {
             self.sync_tesla_line(node_index);
         }
         if self.platforms.iter().any(|platform| platform.collider.inner.center != platform.surface.center) {
-            for platform in self.platforms.iter_mut() {
-                platform.collider.inner.center = platform.surface.center;
+            // Written only where it changes a bit, so the rest keep their
+            // settled bits and bounds lanes.
+            let bits = |v: Vec2| [v.x.bits(), v.y.bits()];
+            for i in 0..self.platforms.len() {
+                let platform = &self.platforms[i];
+                if bits(platform.collider.inner.center) != bits(platform.surface.center) {
+                    let platform = &mut self.platforms[i];
+                    platform.collider.inner.center = platform.surface.center;
+                }
             }
         }
         self.refresh_actor_entities();
@@ -36204,7 +36340,7 @@ impl RolloutWorld {
     fn platform_spring_active(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) {
         debug_assert!(self.platforms[i].active);
         let tick = self.tick;
-        let dynamics = &mut self.platform_dynamics[i];
+        let dynamics = &self.platform_dynamics[i];
         // A body instantiated this pass joins the Updater on the next.
         if dynamics.init_tick > tick {
             return;
@@ -36213,7 +36349,9 @@ impl RolloutWorld {
             self.platform_sink(data, updater_dt, i);
         }
         let position = self.platforms[i].surface.center;
-        Self::spring_step(&mut self.platform_dynamics[i], position, updater_dt, tick);
+        if Self::spring_step(self.platform_dynamics.settled_mut(i), position, updater_dt, tick) {
+            self.platform_dynamics.unsettle(i);
+        }
     }
 
     /// AnimateVelocity.UpdateSim's spring on `dynamics`, which reads the
@@ -36223,10 +36361,15 @@ impl RolloutWorld {
     /// conversions: their intermediate fixed-point rounding is observable
     /// over long-running springs (notably map 2's orbiter), so simplifying
     /// this to `velocity += spring * DT` drifts.
+    ///
+    /// Whether it changed what integration reads but the force: the angular
+    /// velocity, which it rewrites with the home rotation interpolated. (A
+    /// settled platform is skipped only with its force `+0`, so an impulse
+    /// of `±0`, at rest, keeps it settled.)
     #[inline(always)]
-    fn spring_step(dynamics: &mut PlatformDynamics, position: Vec2, updater_dt: Fix, tick: u32) {
+    fn spring_step(dynamics: &mut PlatformDynamics, position: Vec2, updater_dt: Fix, tick: u32) -> bool {
         if dynamics.intro_disabled {
-            return;
+            return false;
         }
         let spring = if dynamics.float_next_frame {
             dynamics.float_next_frame = false;
@@ -36244,15 +36387,19 @@ impl RolloutWorld {
         let floating = (-dynamics.body.velocity * dynamics.mu * updater_dt).div_nonzero(inverse_mass);
         let (added, floating) = (impulse * Fix::from_int(60), floating * Fix::from_int(60));
         dynamics.spring_step = Some((tick, added, floating, position));
+        let mut changed = false;
         if dynamics.interpolate_rotation_home {
             let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
             if angle_delta.abs() > Fix::PI {
                 angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
             }
-            dynamics.body.angular_velocity = (dynamics.body.angular_velocity
+            let angular_velocity = (dynamics.body.angular_velocity
                 + angle_delta * dynamics.rotation_speed * updater_dt)
                 * dynamics.rotation_keep;
+            changed = angular_velocity.bits() != dynamics.body.angular_velocity.bits();
+            dynamics.body.angular_velocity = angular_velocity;
         }
+        changed
     }
 
     /// AnimateVelocity's sudden-death sinking, with the session flag up or a
@@ -37051,30 +37198,37 @@ impl RolloutWorld {
         // The center the spring reads, taken with the active test's platform:
         // only `sticky_finish` may move it (`platform_sink` writes the
         // dynamics alone), and it re-reads it.
+        // The dynamics are held with the platform's settled bit kept: each
+        // step here clears it if it writes what integration reads, and
+        // whatever these call writes them through `IndexMut`, which does.
         let mut center = self.platforms[i].surface.center;
-        let mut dynamics = &mut self.platform_dynamics[i];
+        let mut dynamics = self.platform_dynamics.settled_mut(i);
         let ease = Self::sticky_step(dynamics, updater_dt, time_scale, sudden_death);
         if ease.is_some() || dynamics.surface_shape_dirty {
             self.sticky_finish(i, ease);
             center = self.platforms[i].surface.center;
-            dynamics = &mut self.platform_dynamics[i];
+            dynamics = self.platform_dynamics.settled_mut(i);
         }
         debug_assert!(self.platforms[i].active);
         if dynamics.init_tick <= tick {
             if sudden_death || dynamics.sudden_death_delay.is_some() {
                 self.platform_sink(data, updater_dt, i);
-                dynamics = &mut self.platform_dynamics[i];
+                dynamics = self.platform_dynamics.settled_mut(i);
             }
             debug_assert!(center == self.platforms[i].surface.center);
-            Self::spring_step(dynamics, center, updater_dt, tick);
+            if Self::spring_step(dynamics, center, updater_dt, tick) {
+                self.platform_dynamics.unsettle(i);
+                dynamics = self.platform_dynamics.settled_mut(i);
+            }
         }
         let shook = Self::shakes(dynamics);
         if shook {
             self.platform_shake_sample(data, updater_dt, i);
-            dynamics = &mut self.platform_dynamics[i];
+            dynamics = self.platform_dynamics.settled_mut(i);
         }
         debug_assert!(self.platforms[i].active);
         if Self::body_step(dynamics, tick) {
+            self.platform_dynamics.unsettle(i);
             self.platforms_changed();
         }
         shook
@@ -37212,12 +37366,14 @@ impl RolloutWorld {
     fn platform_body_update_active(&mut self, i: usize) {
         debug_assert!(self.platforms[i].active);
         let tick = self.tick;
-        if Self::body_step(&mut self.platform_dynamics[i], tick) {
+        if Self::body_step(self.platform_dynamics.settled_mut(i), tick) {
+            self.platform_dynamics.unsettle(i);
             self.platforms_changed();
         }
     }
 
-    /// BoplBody.UpdateSim on `dynamics`: whether the body rescaled.
+    /// BoplBody.UpdateSim on `dynamics`: whether the body rescaled. Its
+    /// magnet hold and `body_scale` are nothing integration reads.
     #[inline(always)]
     fn body_step(dynamics: &mut PlatformDynamics, tick: u32) -> bool {
         dynamics.hold.update_sim();
@@ -37302,7 +37458,7 @@ impl RolloutWorld {
     fn platform_sticky_active(&mut self, updater_dt: Fix, i: usize) {
         debug_assert!(self.platforms[i].active);
         let (time_scale, sudden_death) = (self.player_time_scale, self.sudden_death);
-        let dynamics = &mut self.platform_dynamics[i];
+        let dynamics = self.platform_dynamics.settled_mut(i);
         let ease = Self::sticky_step(dynamics, updater_dt, time_scale, sudden_death);
         if ease.is_some() || dynamics.surface_shape_dirty {
             self.sticky_finish(i, ease);
@@ -37311,6 +37467,7 @@ impl RolloutWorld {
 
     /// StickyRoundedRectangle.UpdateSim's drop countdown and scale-up clock
     /// on `dynamics`: the eased-back scale if a grown platform eases back.
+    /// It writes nothing integration reads.
     #[inline(always)]
     fn sticky_step(dynamics: &mut PlatformDynamics, updater_dt: Fix, time_scale: Fix, sudden_death: bool) -> Option<Fix> {
         if dynamics.drop_players_frames >= 0 {
@@ -38392,6 +38549,146 @@ impl RolloutWorld {
         }
     }
 
+    /// DetPhysics' integration of each active rounded body (with its
+    /// composite) and its collider's sync, for every platform not settled.
+    /// A platform settles (bit `i` of the result, for platform `i < 64`)
+    /// when integrating it again would change nothing (`integration_idles`)
+    /// and stays settled while nothing writes what integration reads (any
+    /// mutable access clears its bit) but the force (`spring_step` adds `±0`
+    /// to it at rest, which leaves `+0`): `settled` platforms whose force is
+    /// `+0` are skipped. The step is a function of the body, the root body's
+    /// force, the transform rotation (taken, so `None` after), the surface
+    /// center and the collider's inverse extents, and on a body it leaves
+    /// as it was it writes the surface and collider it wrote the last time.
+    /// Returns the settled platforms, the ones it integrated (whose bounds
+    /// may have moved; all bits past 64 platforms) and whether any is
+    /// inactive.
+    #[inline(always)]
+    fn integrate_platforms(
+        platforms: &mut [Platform],
+        dynamics: &mut [PlatformDynamics],
+        settled: u64,
+        physics_dt: Fix,
+    ) -> (u64, u64, bool) {
+        let mut inactive = false;
+        let mut settled_out = 0u64;
+        let mut moved = if platforms.len() > 64 { u64::MAX } else { 0 };
+        let dynamics = &mut dynamics[..platforms.len()];
+        for index in 0..platforms.len() {
+            let (platform, dynamics) = (&mut platforms[index], &mut dynamics[index]);
+            let bit = if index < 64 { 1u64 << index } else { 0 };
+            // Only an active platform settles, and a write of `active`
+            // clears its bit.
+            if settled & bit != 0 && (dynamics.body.force.x.bits() | dynamics.body.force.y.bits()) == 0 {
+                debug_assert!(platform.active);
+                #[cfg(debug_assertions)]
+                {
+                    let (mut p, mut d) = (platform.clone(), *dynamics);
+                    Self::integrate_platform(&mut p, &mut d, physics_dt);
+                    let v = |v: Vec2| [v.x.bits(), v.y.bits()];
+                    let state = |p: &Platform, d: &PlatformDynamics| {
+                        [
+                            v(d.body.velocity),
+                            v(d.body.force),
+                            [d.body.angular_velocity.bits(), d.body.orientation.bits()],
+                            v(d.root_body.force),
+                            [d.root_body.orientation.bits(), u64::from(d.transform_rotation.is_some())],
+                            v(d.composite_position),
+                            v(p.surface.center),
+                            v(p.surface.right),
+                            v(p.surface.up),
+                            v(p.collider.inner.center),
+                            v(p.collider.inner.right),
+                            v(p.collider.inner.up),
+                        ]
+                    };
+                    debug_assert_eq!(state(&p, &d), state(platform, dynamics), "settled platform {index} moves on its integration");
+                }
+                settled_out |= bit;
+                continue;
+            }
+            if !platform.active {
+                inactive = true;
+                continue;
+            }
+            if Self::integrate_platform(platform, dynamics, physics_dt) {
+                settled_out |= bit;
+            }
+            moved |= bit;
+        }
+        (settled_out, moved, inactive)
+    }
+
+    /// `integrate_platforms`' step for one active platform: whether the
+    /// next one would change nothing, with nothing but `±0` added to the
+    /// force between.
+    #[inline(always)]
+    fn integrate_platform(platform: &mut Platform, dynamics: &mut PlatformDynamics, physics_dt: Fix) -> bool {
+        if dynamics.attached_children != 0 {
+            // SyncAllPhysicsObjectsToFixTransformPosition discards any
+            // prior Box/RR correction of CompositeBody.position and
+            // re-anchors the composite on its rounded-root FixTransform.
+            dynamics.composite_position = platform.surface.center;
+            // The rounded rect's own force joins the combined body's.
+            dynamics.body.force += dynamics.root_body.force;
+            dynamics.root_body.force = Vec2::ZERO;
+        }
+        if let Some(rotation) = dynamics.transform_rotation.take() {
+            dynamics.body.orientation = rotation;
+        }
+        let shift = if dynamics.attached_children != 0 {
+            dynamics.body.integrate_composite(physics_dt, Fix::from_int(-40))
+        } else {
+            dynamics.body.integrate(physics_dt, Fix::from_int(-40))
+        };
+        // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
+        let (basis, right, up) = dynamics.basis_axes(platform.collider.inner.inverse_extents);
+        if dynamics.attached_children != 0 {
+            dynamics.root_body.orientation = dynamics.body.orientation;
+            dynamics.composite_position += shift;
+        } else {
+            dynamics.composite_position = platform.surface.center + shift;
+        }
+        platform.surface.center += shift;
+        platform.surface.right = basis;
+        platform.surface.up = basis.perp();
+        let inner = &mut platform.collider.inner;
+        inner.center = platform.surface.center;
+        inner.right = right;
+        inner.up = up;
+        // `+0` velocity, `±0` angular velocity: the bits a rotating body
+        // or a moving one fails on.
+        let body = &dynamics.body;
+        (body.velocity.x.bits() | body.velocity.y.bits() | body.angular_velocity.bits() << 1) == 0
+            && Self::integration_idles(dynamics, platform.surface.center, physics_dt)
+    }
+
+    /// Whether integrating `dynamics` at `center` again, with its force
+    /// `+0` and the root body's too (as integration leaves them) and no
+    /// transform rotation, leaves the body's velocity, force, angular
+    /// velocity and orientation and the center as they are: then it writes
+    /// the composite position, surface and collider as they are as well,
+    /// from the same orientation, center and inverse extents.
+    #[inline(never)]
+    fn integration_idles(dynamics: &PlatformDynamics, center: Vec2, physics_dt: Fix) -> bool {
+        let mut body = dynamics.body;
+        debug_assert_eq!([body.force.x.bits(), body.force.y.bits()], [0, 0]);
+        debug_assert!(dynamics.transform_rotation.is_none());
+        debug_assert!(dynamics.attached_children == 0 || [dynamics.root_body.force.x.bits(), dynamics.root_body.force.y.bits()] == [0, 0]);
+        let shift = if dynamics.attached_children != 0 {
+            body.integrate_composite(physics_dt, Fix::from_int(-40))
+        } else {
+            body.integrate(physics_dt, Fix::from_int(-40))
+        };
+        let bits = |v: Vec2| [v.x.bits(), v.y.bits()];
+        let was = &dynamics.body;
+        bits(body.velocity) == bits(was.velocity)
+            && bits(body.force) == bits(was.force)
+            && body.angular_velocity.bits() == was.angular_velocity.bits()
+            && body.orientation.bits() == was.orientation.bits()
+            && bits(center + shift) == bits(center)
+    }
+
     fn platforms_tick(&mut self, data: &data::RolloutData, physics_dt: Fix) {
         // DetPhysics.Simulate opens with RemoveDestroyedColliders.
         self.remove_destroyed_colliders();
@@ -38434,45 +38731,15 @@ impl RolloutWorld {
         // platform is synchronized after the others integrate: each touches
         // only its own platform, body and children.
         debug_assert_eq!(self.platforms.len(), self.platform_dynamics.len());
-        let mut inactive = false;
-        for (platform, dynamics) in self.platforms.iter_mut().zip(self.platform_dynamics.iter_mut()) {
-            if !platform.active {
-                inactive = true;
-                continue;
-            }
-            if dynamics.attached_children != 0 {
-                // SyncAllPhysicsObjectsToFixTransformPosition discards any
-                // prior Box/RR correction of CompositeBody.position and
-                // re-anchors the composite on its rounded-root FixTransform.
-                dynamics.composite_position = platform.surface.center;
-                // The rounded rect's own force joins the combined body's.
-                dynamics.body.force += dynamics.root_body.force;
-                dynamics.root_body.force = Vec2::ZERO;
-            }
-            if let Some(rotation) = dynamics.transform_rotation.take() {
-                dynamics.body.orientation = rotation;
-            }
-            let shift = if dynamics.attached_children != 0 {
-                dynamics.body.integrate_composite(physics_dt, Fix::from_int(-40))
-            } else {
-                dynamics.body.integrate(physics_dt, Fix::from_int(-40))
-            };
-            // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
-            let (basis, right, up) = dynamics.basis_axes(platform.collider.inner.inverse_extents);
-            if dynamics.attached_children != 0 {
-                dynamics.root_body.orientation = dynamics.body.orientation;
-                dynamics.composite_position += shift;
-            } else {
-                dynamics.composite_position = platform.surface.center + shift;
-            }
-            platform.surface.center += shift;
-            platform.surface.right = basis;
-            platform.surface.up = basis.perp();
-            let inner = &mut platform.collider.inner;
-            inner.center = platform.surface.center;
-            inner.right = right;
-            inner.up = up;
-        }
+        let settled = self.platform_dynamics.settled_for(physics_dt) & self.platforms.settled();
+        let (settled, moved, inactive) = Self::integrate_platforms(
+            self.platforms.integration_mut(),
+            &mut self.platform_dynamics.list,
+            settled,
+            physics_dt,
+        );
+        self.platform_dynamics.settled = settled;
+        self.platforms.integrated(settled, moved);
         if inactive {
             for i in 0..self.platforms.len() {
                 if !self.platforms[i].active {
@@ -38611,13 +38878,8 @@ impl RolloutWorld {
             } else {
                 self.platform_dynamics[b].composite_position
             };
-            let (body_a, body_b) = if a < b {
-                let (left, right) = self.platform_dynamics.split_at_mut(b);
-                (&mut left[a].body, &mut right[0].body)
-            } else {
-                let (left, right) = self.platform_dynamics.split_at_mut(a);
-                (&mut right[0].body, &mut left[b].body)
-            };
+            let [dynamics_a, dynamics_b] = self.platform_dynamics.pair_mut(a, b);
+            let (body_a, body_b) = (&mut dynamics_a.body, &mut dynamics_b.body);
             resolve(contact, body_a, body_b, pos_a, pos_b);
             // PositionalCorrection receives the two rounded-rectangle child
             // inverse masses. ResolveCollision redirects impulses through a

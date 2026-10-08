@@ -350,12 +350,14 @@ impl World {
 /// (`RoundedRect::bounds`, already widened by `Bounds::may_reach`'s 1e-6
 /// margin) in lanes of eight, so a query is a few vector compares instead of
 /// re-deriving the bounds from each 150-byte `Platform`. Marked stale by
-/// `invalidate`, it rebuilds itself from the platforms of the next query.
+/// `invalidate`, it rebuilds itself from the platforms of the next query;
+/// lanes marked by `invalidate_lanes`, it rebuilds those.
 #[derive(Debug)]
 pub struct PlatformBounds {
     chunks: RefCell<Vec<BoundsChunk>>,
     len: Cell<usize>,
     stale: Cell<bool>,
+    stale_lanes: Cell<u64>,
 }
 
 impl Default for PlatformBounds {
@@ -364,6 +366,7 @@ impl Default for PlatformBounds {
             chunks: RefCell::new(Vec::new()),
             len: Cell::new(0),
             stale: Cell::new(true),
+            stale_lanes: Cell::new(0),
         }
     }
 }
@@ -374,12 +377,14 @@ impl Clone for PlatformBounds {
             chunks: RefCell::new(self.chunks.borrow().clone()),
             len: self.len.clone(),
             stale: self.stale.clone(),
+            stale_lanes: self.stale_lanes.clone(),
         }
     }
     fn clone_from(&mut self, source: &Self) {
         self.chunks.get_mut().clone_from(&source.chunks.borrow());
         self.len.set(source.len.get());
         self.stale.set(source.stale.get());
+        self.stale_lanes.set(source.stale_lanes.get());
     }
 }
 
@@ -506,6 +511,10 @@ impl BoundsChunk {
 pub struct Platforms {
     list: Vec<Platform>,
     bounds: PlatformBounds,
+    /// Bit `i` while platform `i`'s integration is settled: cleared, as the
+    /// bounds are invalidated, by every mutable access (all bits through
+    /// `DerefMut`, one through `IndexMut`), set only by the integration.
+    pub(crate) settled: u64,
 }
 
 impl Clone for Platforms {
@@ -513,11 +522,13 @@ impl Clone for Platforms {
         Self {
             list: self.list.clone(),
             bounds: self.bounds.clone(),
+            settled: self.settled,
         }
     }
     fn clone_from(&mut self, source: &Self) {
         self.list.clone_from(&source.list);
         self.bounds.clone_from(&source.bounds);
+        self.settled = source.settled;
     }
 }
 
@@ -526,6 +537,7 @@ impl From<Vec<Platform>> for Platforms {
         Self {
             list,
             bounds: PlatformBounds::default(),
+            settled: 0,
         }
     }
 }
@@ -554,6 +566,7 @@ impl<'a> IntoIterator for &'a Platforms {
 impl std::ops::DerefMut for Platforms {
     fn deref_mut(&mut self) -> &mut Vec<Platform> {
         self.bounds.invalidate();
+        self.settled = 0;
         &mut self.list
     }
 }
@@ -580,6 +593,7 @@ impl std::ops::IndexMut<usize> for Platforms {
         debug_assert!(index < self.list.len(), "platform index {index} out of {}", self.list.len());
         // As `deref_mut`: a platform may move.
         self.bounds.invalidate();
+        self.settled &= !1u64.wrapping_shl(index as u32);
         // SAFETY: as for `index`.
         unsafe { self.list.get_unchecked_mut(index) }
     }
@@ -588,6 +602,24 @@ impl std::ops::IndexMut<usize> for Platforms {
 impl Platforms {
     pub fn with_capacity(capacity: usize) -> Self {
         Vec::with_capacity(capacity).into()
+    }
+    /// The platforms settled in their integration (bit `i`, platform `i`).
+    #[inline(always)]
+    pub(crate) fn settled(&self) -> u64 {
+        self.settled
+    }
+    /// The list for the integration, without clearing settled bits or
+    /// invalidating any bounds: `integrated` follows with what it moved.
+    #[inline(always)]
+    pub(crate) fn integration_mut(&mut self) -> &mut [Platform] {
+        &mut self.list
+    }
+    /// After `integration_mut`: the platforms now settled, and the ones the
+    /// integration wrote, whose bounds lanes are stale.
+    #[inline(always)]
+    pub(crate) fn integrated(&mut self, settled: u64, moved: u64) {
+        self.settled = settled;
+        self.bounds.invalidate_lanes(moved);
     }
     pub fn terrain(&self) -> Terrain<'_> {
         Terrain {
@@ -601,15 +633,35 @@ impl PlatformBounds {
     fn invalidate(&mut self) {
         *self.stale.get_mut() = true;
     }
+    /// Platform `i`'s lane stale for each bit `i` of `lanes`.
+    #[inline(always)]
+    fn invalidate_lanes(&mut self, lanes: u64) {
+        *self.stale_lanes.get_mut() |= lanes;
+    }
     fn refresh(&self, platforms: &[Platform]) {
+        let margin = Fix::from_f64(1e-6);
         if !self.stale.get() && self.len.get() == platforms.len() {
+            // `len` passed the full rebuild's count assert: at most 64.
+            let mut lanes = self.stale_lanes.get();
+            if lanes != 0 {
+                self.stale_lanes.set(0);
+                let mut chunks = self.chunks.borrow_mut();
+                while lanes != 0 {
+                    let index = lanes.trailing_zeros() as usize;
+                    lanes &= lanes - 1;
+                    if let (Some(chunk), Some(platform)) = (chunks.get_mut(index / BOUNDS_LANES), platforms.get(index)) {
+                        chunk.set_lane(index % BOUNDS_LANES, &platform.collider, margin);
+                    }
+                }
+            }
+            #[cfg(debug_assertions)]
+            self.check(platforms);
             return;
         }
         assert!(
             platforms.len() <= 64,
             "platform count exceeds the candidate mask"
         );
-        let margin = Fix::from_f64(1e-6);
         let mut chunks = self.chunks.borrow_mut();
         // A chunk's lanes past the platforms stay `EMPTY`: the lanes in use
         // are all rewritten below, and the rest only change with the count.
@@ -619,10 +671,28 @@ impl PlatformBounds {
         }
         self.len.set(platforms.len());
         self.stale.set(false);
+        self.stale_lanes.set(0);
         for (chunk, group) in chunks.iter_mut().zip(platforms.chunks(BOUNDS_LANES)) {
             for (lane, platform) in group.iter().enumerate() {
                 chunk.set_lane(lane, &platform.collider, margin);
             }
+        }
+    }
+    /// Every lane as a full rebuild would write it.
+    #[cfg(debug_assertions)]
+    fn check(&self, platforms: &[Platform]) {
+        let margin = Fix::from_f64(1e-6);
+        let chunks = self.chunks.borrow();
+        for (index, platform) in platforms.iter().enumerate() {
+            let mut fresh = BoundsChunk::EMPTY;
+            fresh.set_lane(0, &platform.collider, margin);
+            let chunk = &chunks[index / BOUNDS_LANES];
+            let lane = index % BOUNDS_LANES;
+            debug_assert_eq!(
+                [chunk.max_x[lane], chunk.min_x[lane], chunk.max_y[lane], chunk.min_y[lane]].map(f64::to_bits),
+                [fresh.max_x[0], fresh.min_x[0], fresh.max_y[0], fresh.min_y[0]].map(f64::to_bits),
+                "platform {index}'s bounds lane is stale"
+            );
         }
     }
     /// The bits of `mask` whose platforms' bounds meet `[lo, hi]`, with the
