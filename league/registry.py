@@ -35,6 +35,7 @@ MAP_TAG_SPELLED = 8
 LEAGUE = HERE / 'league.json'
 PAYOFF = HERE / 'payoff.jsonl'
 SIM = ROOT / 'native/target/release/libbopl_sim.so'
+SIM_EQUIVALENT = HERE / 'sim-equivalent.json'
 SCHEMA = 1
 ANCHOR = 'random'
 KINDS = ('main', 'exploiter', 'specialist', 'scripted', 'random', 'human')
@@ -131,7 +132,23 @@ def condition(sim_sha256, loadouts, maps, episode_ticks=7200, delay=9):
 
 def rating_condition():
     """(key, detail) of the league's condition on the tree's simulator."""
-    return condition(sha256_file(SIM), OWN_KIT, map_catalogue.parse_map_ids(MAPS), EPISODE_TICKS, DELAY)
+    return condition(sim_identity(SIM), OWN_KIT, map_catalogue.parse_map_ids(MAPS), EPISODE_TICKS, DELAY)
+
+
+def sim_identity(path):
+    """The library hash a condition is keyed on: the file's own, unless
+    sim-equivalent.json lists it as proven exact against a library the league
+    already plays under, in which case that library's. A throughput build that
+    moves code but no arithmetic changes the file hash and nothing else; keying
+    on the raw hash left every in-run rating on stage65 with no games to fit
+    (2026-10-08). An entry needs proof, not intent: the exact gate (12.4k games,
+    every ability on every map, DR_TOL=0) and equal env_bench hashes."""
+    sha = sha256_file(path)
+    if SIM_EQUIVALENT.exists():
+        entry = json.loads(SIM_EQUIVALENT.read_text()).get('builds', {}).get(sha)
+        if entry:
+            return entry['as']
+    return sha
 
 
 # ---- members -----------------------------------------------------------------
