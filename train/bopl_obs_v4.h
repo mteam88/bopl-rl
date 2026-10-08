@@ -303,7 +303,13 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
  * for every row of the state. */
 static void bopl4_privileged(BoplPuffer *env, const BoplRlState *state, int a, const BoplRlSlime *const *bodies,
                              const BoplRlAction *enemy_action, const int *enemy_hold_left, const uint16_t *enemy_held) {
-    float *out=bopl_obs_row(env, a)+BOPL4_OBS_PRIVILEGED_OFFSET;
+    /* A row shipped as its state (pack mode 4) is not read on the host
+     * unless checked (BOPL_RAYS_CHECK): its block is written in the slot,
+     * just stored, and not in the row's cold lines for bopl_pack_rows to copy. */
+    float *row=bopl_obs_row(env, a);
+    int state_row=bopl4_state_row(row);
+    float *out=state_row>=0 && !bopl4_check_rows()?bopl4_state_rows[state_row].slot+BOPL4_STATE_FIXED_OFFSET+BOPL4_PREVIOUS
+                                                  :row+BOPL4_OBS_PRIVILEGED_OFFSET;
     memset(out, 0, BOPL4_PRIVILEGED*sizeof(float));
     if (!state) return;
     const BoplRlPlayer *self=&state->players[a];
@@ -342,8 +348,7 @@ static void bopl4_privileged(BoplPuffer *env, const BoplRlState *state, int a, c
     }
     /* How stale the actor's delayed view of the enemy is: true relative
      * position now minus the opponent block's delayed one. */
-    const float *opp=bopl_obs_row(env, a)+BOPL4_OBS_OPPONENT_OFFSET;
-    int state_row=bopl4_state_row(bopl_obs_row(env, a));
+    const float *opp=row+BOPL4_OBS_OPPONENT_OFFSET;
     if (state_row>=0) {
         /* The GPU writes the opponent block, so 43/44 too (bopl_rows_v4.h bopl4_stale_enemy). */
         bopl4_state_rows[state_row].enemy=enemy!=NULL;

@@ -141,7 +141,12 @@ typedef struct {
     unsigned char *image; size_t image_capacity;
     int valid, compact;
     uint64_t source_mask; uint8_t source_counts[BOPL_ABILITY_COUNT];
+    /* To 128 bytes: the publish's swap of three copies (bopl_step_finish_from)
+     * is then whole 64-byte moves, where 80 bytes went as two overlapping ones
+     * through a stack temporary that the reload could not forward from. */
+    uint8_t pad[128-40-BOPL_ABILITY_COUNT];
 } BoplStateCopy;
+_Static_assert(sizeof(BoplStateCopy)==128, "the copy is two 64-byte moves");
 _Static_assert(BOPL_ABILITY_COUNT<=64, "source_mask holds every source ability");
 static void bopl_state_copy(BoplStateCopy *copy, const BoplRlState *state) {
     if (!state) { copy->valid=0; return; }
@@ -501,7 +506,8 @@ static void bopl_pack_rows(BoplPuffer *env) {
             float *slot=bopl4_state_rows[state_row].slot;
             Bopl4StateHead *head=(Bopl4StateHead*)slot;
             memcpy(slot+BOPL4_STATE_FIXED_OFFSET, obs+BOPL4_OBS_PREVIOUS_OFFSET, BOPL4_PREVIOUS*sizeof(float));
-            memcpy(slot+BOPL4_STATE_FIXED_OFFSET+BOPL4_PREVIOUS, obs+BOPL4_OBS_PRIVILEGED_OFFSET, BOPL4_PRIVILEGED*sizeof(float));
+            /* The critic block went straight to the slot (bopl4_privileged) unless the host row is checked. */
+            if (check) memcpy(slot+BOPL4_STATE_FIXED_OFFSET+BOPL4_PREVIOUS, obs+BOPL4_OBS_PRIVILEGED_OFFSET, BOPL4_PRIVILEGED*sizeof(float));
             if (bopl4_state_rows[state_row].enemy) {
                 head->flags|=BOPL4_STATE_ENEMY;
                 head->enemy_dx=bopl4_state_rows[state_row].enemy_dx; head->enemy_dy=bopl4_state_rows[state_row].enemy_dy;
@@ -1050,10 +1056,14 @@ static void bopl_encode_copy(BoplPuffer *env, const BoplStateCopy *copy, int cou
 }
 /* The critic-only block of every v4 row from the undelayed state `now`
  * (bopl4_privileged); `actions` may be NULL (episode start). */
-static void bopl_encode_privileged(BoplPuffer *env, const BoplRlState *now, const BoplRlAction *actions) {
-    const BoplRlSlime *bodies[BOPL_MAX_PLAYERS]={0};
+/* Every player's controlling slime in `now` (NULL past its players). */
+static void bopl_controlling_bodies(const BoplRlState *now, const BoplRlSlime **bodies) {
+    for (int i=0; i<BOPL_MAX_PLAYERS; i++) bodies[i]=NULL;
     if (now) for (uint32_t i=0; i<now->header.player_count && i<BOPL_MAX_PLAYERS; i++)
         bodies[i]=bopl_controlling_slime(now, now->players[i].id, bopl_fix(now->players[i].x), bopl_fix(now->players[i].y));
+}
+static void bopl_encode_privileged_bodies(BoplPuffer *env, const BoplRlState *now, const BoplRlAction *actions,
+                                          const BoplRlSlime *const *bodies) {
     for (int a=0; a<env->players; a++) {
         if (bopl_layout_of(env, a)!=4) continue;
         int enemy=-1;
@@ -1062,6 +1072,11 @@ static void bopl_encode_privileged(BoplPuffer *env, const BoplRlState *now, cons
         bopl4_privileged(env, now, a, bodies, enemy>=0 && actions?&actions[enemy]:NULL,
                          enemy>=0?&env->hold_left[enemy]:NULL, enemy>=0?&env->held[enemy]:NULL);
     }
+}
+static void bopl_encode_privileged(BoplPuffer *env, const BoplRlState *now, const BoplRlAction *actions) {
+    const BoplRlSlime *bodies[BOPL_MAX_PLAYERS];
+    bopl_controlling_bodies(now, bodies);
+    bopl_encode_privileged_bodies(env, now, actions, bodies);
 }
 /* Apply the hold head: a free button state adopts the head's buttons and
  * latches them for BOPL_HOLD_LENGTHS[hold] decisions; a latched one ignores
@@ -1073,20 +1088,23 @@ static uint16_t bopl_latch(BoplPuffer *env, int player, uint16_t buttons, int ho
     for (int bit=0; bit<4; bit++) env->hold_run[player][bit]=(applied&(1<<bit))?env->hold_run[player][bit]+1:0;
     return applied;
 }
-static uint16_t bopl_bow_buttons(const BoplPuffer *env, int player) {
-    const BoplRlState *state=bopl_rl_state(env->world);
-    if (!state || player<0 || player>=(int)state->header.player_count) return 0;
-    const BoplRlPlayer *self=&state->players[player];
-    const BoplRlSlime *controller=bopl_controlling_slime(
-        state, self->id, bopl_fix(self->x), bopl_fix(self->y));
+static uint16_t bopl_bow_buttons_of(const BoplRlSlime *controller) {
     if (!controller) return 0;
     uint16_t buttons=0;
     for (int slot=0; slot<3; slot++)
         if ((controller->ability_flags[slot]&1) && controller->abilities[slot]==4) buttons|=(uint16_t)(1u<<(slot+1));
     return buttons;
 }
-/* Publish the action mask for player i's next decision from its latch state. */
-static void bopl_write_mask(BoplPuffer *env, int player) {
+static uint16_t bopl_bow_buttons(const BoplPuffer *env, int player) {
+    const BoplRlState *state=bopl_rl_state(env->world);
+    if (!state || player<0 || player>=(int)state->header.player_count) return 0;
+    const BoplRlPlayer *self=&state->players[player];
+    return bopl_bow_buttons_of(bopl_controlling_slime(state, self->id, bopl_fix(self->x), bopl_fix(self->y)));
+}
+/* Publish the action mask for player i's next decision from its latch state.
+ * bodies: every player's controlling slime in bopl_rl_state(env->world)
+ * (bopl_controlling_bodies), or NULL to look the player's up there. */
+static void bopl_write_mask_bodies(BoplPuffer *env, int player, const BoplRlSlime *const *bodies) {
     unsigned char *mask=env->mask_ptr[bopl_slot(env, player)];
     if (!mask) return;
     memset(mask, 1, BOPL_LOGITS);
@@ -1095,7 +1113,8 @@ static void bopl_write_mask(BoplPuffer *env, int player) {
         mask[BOPL_ACT_AIM+env->held[player]]=1;
         mask[BOPL_ACT_AIM+BOPL_ACT_BUTTONS]=1;
     } else {
-        uint16_t bows=bopl_bow_buttons(env, player), latched=0;
+        uint16_t bows=bodies?(player>=0 && player<BOPL_MAX_PLAYERS?bopl_bow_buttons_of(bodies[player]):0)
+                            :bopl_bow_buttons(env, player), latched=0;
         for (int slot=0; slot<3; slot++) if ((bows&(1u<<(slot+1))) && env->hold_run[player][slot+1]>0)
             latched|=(uint16_t)(1u<<(slot+1));
         if (latched)
@@ -1103,6 +1122,7 @@ static void bopl_write_mask(BoplPuffer *env, int player) {
                 if (b&latched) mask[BOPL_ACT_AIM+b]=0;
     }
 }
+static void bopl_write_mask(BoplPuffer *env, int player) { bopl_write_mask_bodies(env, player, NULL); }
 static uint32_t bopl_side_random(BoplPuffer *env) {
     uint32_t x=env->side_rng; x^=x<<13; x^=x>>17; x^=x<<5; return env->side_rng=x;
 }
@@ -1514,7 +1534,10 @@ static void bopl_step_advance(BoplPuffer *env, const BoplStepPhase *phase) {
         bopl_step_sample(env, bopl_rl_sample(env->world));
     } else if (bopl_rl_step(env->world, actions, env->players, (uint32_t)env->repeat)) bopl_failed(env, "step");
 }
-static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, const BoplRlState *state) {
+/* world: `state` is bopl_rl_state(env->world) (bopl_step_finish), so the
+ * masks take the controlling slimes the critic block finds in it; the agent
+ * shim's states are not its world's (it has none) and its masks are its own. */
+static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, const BoplRlState *state, int world) {
     float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
     const BoplRlAction *actions=phase->actions;
     const int *fresh=phase->fresh, *holds=phase->holds;
@@ -1530,32 +1553,43 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
         uint32_t events[BOPL_EVENT_FIELDS], previous[BOPL_EVENT_FIELDS];
         memcpy(events, &state->telemetry[i], sizeof(events));
         memcpy(previous, &env->previous_telemetry[i], sizeof(previous));
-        for (int field=0; field<BOPL_EVENT_FIELDS; field++) {
+        for (int field=0; field<BOPL_EVENT_FIELDS; field++)
             if (events[field]<previous[field]) bopl_failed(env, "telemetry counter regressed");
-            stats[field]=(float)(events[field]-previous[field]);
+        BoplCounters *c=&env->counters;
+        /* Each field is summed into the learner's counters as it is stored
+         * (the same single add per field and decision), not reloaded from the
+         * row after: a vector load of fields just stored one by one waits for
+         * the stores to retire instead of forwarding. */
+        for (int field=0; field<BOPL_EVENT_FIELDS; field++) {
+            float value=(float)(events[field]-previous[field]);
+            stats[field]=value;
+            if (learner) c->telemetry[field]+=value;
         }
         BoplOutcome o=bopl_outcome(state, i, decided, env->kills[i], env->deaths[i],
                                    env->reward_kill, env->reward_timeout);
         if (o.kills<0) bopl_failed(env, "opponent kill counter regressed");
-        stats[BOPL_REWARD_KILLS]=env->reward_kill*(float)o.kills;
-        stats[BOPL_REWARD_DEATHS]=-env->reward_kill*(float)o.deaths;
         /* Terminal reward as paid: the win/loss outcome, or the timeout penalty
          * both players receive on truncation (0 in the phase-1 comparison). */
-        stats[BOPL_REWARD_OUTCOME]=o.outcome;
-        stats[BOPL_EPISODES]=(float)terminal;
-        stats[BOPL_WINS]=(float)o.won;
-        stats[BOPL_TIMEOUTS]=terminal && o.truncated;
-        stats[BOPL_TICKS]=(float)(state->header.episode_ticks-ticks);
+        float tail[BOPL_TELEMETRY_SIZE-BOPL_EVENT_FIELDS];
+        tail[BOPL_REWARD_OUTCOME-BOPL_EVENT_FIELDS]=o.outcome;
+        tail[BOPL_REWARD_KILLS-BOPL_EVENT_FIELDS]=env->reward_kill*(float)o.kills;
+        tail[BOPL_REWARD_DEATHS-BOPL_EVENT_FIELDS]=-env->reward_kill*(float)o.deaths;
+        tail[BOPL_EPISODES-BOPL_EVENT_FIELDS]=(float)terminal;
+        tail[BOPL_WINS-BOPL_EVENT_FIELDS]=(float)o.won;
+        tail[BOPL_TIMEOUTS-BOPL_EVENT_FIELDS]=terminal && o.truncated;
+        tail[BOPL_TICKS-BOPL_EVENT_FIELDS]=(float)(state->header.episode_ticks-ticks);
+        for (int field=BOPL_EVENT_FIELDS; field<BOPL_TELEMETRY_SIZE; field++) {
+            stats[field]=tail[field-BOPL_EVENT_FIELDS];
+            if (learner) c->telemetry[field]+=tail[field-BOPL_EVENT_FIELDS];
+        }
         env->previous_telemetry[i]=state->telemetry[i];
         /* Retain the original arithmetic/order for the actual PPO reward. */
         float reward=o.shaping+o.outcome;
         *env->reward_ptr[slot]=reward; env->returns[i]+=reward;
-        BoplCounters *c=&env->counters;
         c->game_steps++;
         if (learner) {
             c->learner_steps++;
             c->kills+=(double)o.kills;
-            for (int field=0; field<BOPL_TELEMETRY_SIZE; field++) c->telemetry[field]+=stats[field];
             for (int bit=0; bit<4; bit++) c->buttons[bit]+=(actions[i].buttons>>bit)&1u;
             if (fresh[i]) env->log.hold_choice[holds[i]]++; else env->log.latched_decisions++;
         } else c->opponent_game_decisions++;
@@ -1612,20 +1646,25 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
         env->delayed_counted[cursor]=env->sample_counted; env->sample_counted=1;
         env->delay_cursor=(env->delay_cursor+1)%2;
     } else compute_observations_from(env, state);
+    const BoplRlSlime *bodies[BOPL_MAX_PLAYERS];
+    bopl_controlling_bodies(state, bodies);
     if (!terminal) for (int i=0; i<env->players; i++) {
         // Own button history is known immediately; it is not world information.
         float *previous=bopl_obs_row(env, i)+bopl_previous_offset(env, i);
         bopl_previous_action(previous, actions[i], env->hold_left[i], env->hold_run[i]);
         if (bopl_layout_of(env, i)==4) bopl4_previous_history(previous, env->action_history[i], actions[i]);
-        bopl_write_mask(env, i);
+        bopl_write_mask_bodies(env, i, world?bodies:NULL);
     }
     /* The critic's privileged block sees the world as it is now, not as the
      * actor's delayed rows do. */
-    bopl_encode_privileged(env, state, actions);
+    bopl_encode_privileged_bodies(env, state, actions, bodies);
+}
+static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, const BoplRlState *state) {
+    bopl_step_finish_with(env, phase, state, 0);
 }
 static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
     bopl4_defer=env->pack_out!=NULL; bopl4_pending_count=0; bopl4_state_count=0;
-    bopl_step_finish_from(env, phase, bopl_rl_state(env->world));
+    bopl_step_finish_with(env, phase, bopl_rl_state(env->world), 1);
     bopl4_defer=0;
     if (env->pack_out) bopl_pack_rows(env);   /* the rows are final for this step */
 }
