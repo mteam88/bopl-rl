@@ -455,15 +455,26 @@ static int br_gemm_col_tiles(int K, int N, int* units) {
 }
 
 // TF32: dst_g = src_g (N, K) in B-fragment order (br_frag_index), zero padded to
-// 16 k x 8 n; one thread per destination element.
+// 16 k x 8 n; one thread per destination float4 (a lane's fragment: column n,
+// rows k0, k0 + 4, k0 + 8, k0 + 12), so the stores are whole float4s in
+// order and a warp's loads are 8 columns x 16 consecutive k (64-byte runs).
+// The thread-per-element form strided both sides (1.03 ms per update).
 __global__ void br_transpose_frag(BrLinear src, BrLinear dst, int N, int K) {
     const float* s = src.w[blockIdx.z];
-    float* d = (float*)dst.w[blockIdx.z];
-    int ntiles = (N + 7) / 8, Kp = (K + 15) / 16 * 16, Np = ntiles * 8;
-    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= (long)Kp * Np) return;
-    int k = (int)(i / Np), n = (int)(i % Np);
-    d[br_frag_index(k, n, ntiles)] = (k < K && n < N) ? s[(long)n * K + k] : 0.f;
+    float4* d = (float4*)dst.w[blockIdx.z];
+    int ntiles = (N + 7) / 8, Kp = (K + 15) / 16 * 16;
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;   /* destination float4 */
+    if (i >= (long)Kp / 16 * ntiles * 32) return;
+    int lane = (int)(i & 31), tile = (int)(i >> 5);
+    int kpair = tile / ntiles, ntile = tile - kpair * ntiles;
+    int n = ntile * 8 + (lane >> 2), k0 = kpair * 16 + (lane & 3);
+    float v[4];
+    #pragma unroll
+    for (int e = 0; e < 4; e++) {   /* e = s * 2 + half: k = k0 + 8 s + 4 half */
+        int k = k0 + (e >> 1) * 8 + (e & 1) * 4;
+        v[e] = (k < K && n < N) ? s[(long)n * K + k] : 0.f;
+    }
+    d[i] = make_float4(v[0], v[1], v[2], v[3]);
 }
 // fp32: dst_g[k][n] = src_g[n][k] for every group (grid.z), 32x32 tiles through shared memory.
 __global__ void br_transpose(BrLinear src, BrLinear dst, int N, int K, int ldt) {
@@ -572,7 +583,7 @@ static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* o
 // order, or the (K, ldt) transpose for the fp32 path.
 static void br_transpose_launch(const BrPlan& p, const BrLinear& src, const BrLinear& dst, int n, int N, int K, int ldt, cudaStream_t stream) {
     if (p.tf32) {
-        long total = br_frag_floats(K, N);
+        long total = br_frag_floats(K, N) / 4;
         br_transpose_frag<<<dim3((unsigned)((total + 255) / 256), 1, n), 256, 0, stream>>>(src, dst, N, K);
     } else {
         dim3 grid((K + 31) / 32, (N + 31) / 32, n);
