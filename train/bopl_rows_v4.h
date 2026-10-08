@@ -104,6 +104,15 @@ BOPL4D_FN double bopl4_div_const(double x, double c, double rc) {
 __constant__ static const double bopl4_arc_t[31]={
     0.0, 1/15.0, 2/15.0, 3/15.0, 4/15.0, 5/15.0, 6/15.0, 7/15.0, 8/15.0, 9/15.0, 10/15.0, 11/15.0, 12/15.0, 13/15.0, 14/15.0,
     15/15.0, 16/15.0, 17/15.0, 18/15.0, 19/15.0, 20/15.0, 21/15.0, 22/15.0, 23/15.0, 24/15.0, 25/15.0, 26/15.0, 27/15.0, 28/15.0, 29/15.0, 30/15.0};
+/* And the fall 0.5*BOPL4_GRAVITY*t*t at each, folded in the host's order. */
+#define BOPL4_ARC_G(k) (0.5*BOPL4_GRAVITY*((k)/15.0)*((k)/15.0))
+__constant__ static const double bopl4_arc_g[31]={
+    BOPL4_ARC_G(0), BOPL4_ARC_G(1), BOPL4_ARC_G(2), BOPL4_ARC_G(3), BOPL4_ARC_G(4), BOPL4_ARC_G(5), BOPL4_ARC_G(6), BOPL4_ARC_G(7),
+    BOPL4_ARC_G(8), BOPL4_ARC_G(9), BOPL4_ARC_G(10), BOPL4_ARC_G(11), BOPL4_ARC_G(12), BOPL4_ARC_G(13), BOPL4_ARC_G(14),
+    BOPL4_ARC_G(15), BOPL4_ARC_G(16), BOPL4_ARC_G(17), BOPL4_ARC_G(18), BOPL4_ARC_G(19), BOPL4_ARC_G(20), BOPL4_ARC_G(21),
+    BOPL4_ARC_G(22), BOPL4_ARC_G(23), BOPL4_ARC_G(24), BOPL4_ARC_G(25), BOPL4_ARC_G(26), BOPL4_ARC_G(27), BOPL4_ARC_G(28),
+    BOPL4_ARC_G(29), BOPL4_ARC_G(30)};
+#undef BOPL4_ARC_G
 #endif
 BOPL4D_FN int bopl_ally(const BoplRlState *state, uint32_t owner, const BoplRlPlayer *self) {
     for (uint32_t i=0; i<state->header.player_count; i++)
@@ -243,6 +252,30 @@ BOPL4D_FN void bopl4_relation(float *out, double dx, double dy, double dvx, doub
         /* Arc under gravity (observer assumed on the ground), sampled every
          * 1/15 s to the horizon; the nearest sample's distance and time. */
         double best=r-radius, best_t=0.0, best_squared=dx*dx+dy*dy;
+#ifdef __CUDA_ARCH__
+        /* The device scans the squares alone (FP64 is its bound, and the
+         * sqrt at each improving sample diverged across the warp: the
+         * ballistic rows' warps were the writer's tail). The loop below
+         * keeps the first strict minimum of d = sqrt(squared)-radius over
+         * the samples (k = 0 the start), and d is monotone in the square:
+         * so best is d at the least square m, best_t the first sample whose
+         * d rounds to it. That is m's first sample `at` unless an earlier
+         * one's square lies close enough above m to round to the same d;
+         * all of those are at least `before` (the least square before
+         * `at`), and none rounds to it when before > hi: sqrt(before) is
+         * then past sqrt(m)+slack, more than an ulp of best apart. Else
+         * (never seen) the loop. The squares are non-negative and never
+         * NaN, so they compare as integers (DSETP is FP64). */
+        double m=best_squared, before=INFINITY;
+        int at=0;
+        for (int k=1; k<=30; k++) {
+            double t=bopl4_arc_t[k], px=dx+dvx*t, py=dy+dvy*t-bopl4_arc_g[k], squared=px*px+py*py;
+            if (__double_as_longlong(squared)<__double_as_longlong(m)) { before=m; m=squared; at=k; }
+        }
+        double s=sqrt(m), slack=(fabs(s-radius)+s+fabs(radius))*0x1p-50+0x1p-1000, hi=(s+slack)*(s+slack)*(1.0+0x1p-45);
+        if (before>hi) { best=s-radius; best_t=bopl4_arc_t[at]; }
+        else
+#endif
         for (int k=1; k<=30; k++) {
 #ifdef __CUDA_ARCH__
             double t=bopl4_arc_t[k];
