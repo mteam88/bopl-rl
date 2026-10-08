@@ -834,6 +834,9 @@ typedef struct {
     const BoplRlState *state;
     const BoplStateCopy *copy;   /* the state's copy, when it is one (bopl_encode_copy) */
     const unsigned char *image; size_t image_bytes;   /* its image with the trig (fits), else NULL */
+    /* With image: the shipped entities' bopl_fix(x), bopl_fix(y) and whether
+     * they move (inverse_mass > 0), for every row's sectors. */
+    double entity_x[BOPL4_ENTITIES], entity_y[BOPL4_ENTITIES]; uint8_t movable[BOPL4_ENTITIES];
     int fits, shared_census, census_ready;
     uint32_t shipped, runs, run_begin[BOPL4_ENTITIES], run_count[BOPL4_ENTITIES];
     Bopl4Census census;
@@ -885,6 +888,10 @@ static void bopl4_shared_from_copy(Bopl4Shared *shared, const BoplStateCopy *cop
     float *trig=(float*)(copy->image+(size_t)entities*sizeof(BoplRlEntity)+(size_t)slimes*sizeof(BoplRlSlime));
     for (uint32_t i=0; i<slimes; i++) bopl4_sincos(&state->slimes[i], &trig[2*i], &trig[2*i+1]);
     shared->image=copy->image; shared->image_bytes=(size_t)((unsigned char*)(trig+2*slimes)-copy->image);
+    for (uint32_t i=0; i<entities; i++) {
+        const BoplRlEntity *entity=&state->entities[i];
+        shared->entity_x[i]=bopl_fix(entity->x); shared->entity_y[i]=bopl_fix(entity->y); shared->movable[i]=entity->inverse_mass>0;
+    }
     if (shared->shared_census && copy->compact) {
         Bopl4Census *c=&shared->census;
         c->count=(int)entities; c->visible_slimes=(int)slimes; c->visible_slots=0;
@@ -958,7 +965,26 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     double self_x=bopl_fix(state->players[a].x), self_y=bopl_fix(state->players[a].y);
     /* One run (a copy): the sectors read the source, not the slot just stored. */
     const BoplRlEntity *source=shared->runs==1?&state->entities[shared->run_begin[0]]:shipped;
-    for (uint32_t i=0; i<entities; i++) {
+    if (shared->image) {
+        /* bopl4_sector without its branches, over the positions found once
+         * for every row: off the octant edges, its sign/steep case as a
+         * select; an entity near an edge gets 8 here and bopl4_sector after. */
+        unsigned char edges=0;
+#ifdef __clang__
+#pragma clang loop interleave_count(1)   /* ~18 entities: an 8-wide body, not 32 */
+#endif
+        for (uint32_t i=0; i<entities; i++) {
+            double dx=shared->entity_x[i]-self_x, dy=shared->entity_y[i]-self_y;
+            double ax=fabs(dx), ay=fabs(dy), big=fmax(ax, ay);
+            int edge=(fmin(ax, ay)<=1e-6*big) | (fabs(ax-ay)<=1e-6*big);
+            int steep=ay>ax;
+            int sector=dy<0 ? (dx<0?steep:3-steep) : (dx>0?4+steep:7-steep);
+            unsigned char value=shared->movable[i]?(unsigned char)(edge?8:sector):0;
+            sectors[i]=value; edges|=value==8;
+        }
+        if (edges) for (uint32_t i=0; i<entities; i++)
+            if (sectors[i]==8) sectors[i]=(unsigned char)bopl4_sector(shared->entity_x[i]-self_x, shared->entity_y[i]-self_y);
+    } else for (uint32_t i=0; i<entities; i++) {
         const BoplRlEntity *entity=&source[i];
         sectors[i]=entity->inverse_mass>0?(unsigned char)bopl4_sector(bopl_fix(entity->x)-self_x, bopl_fix(entity->y)-self_y):0;
     }
