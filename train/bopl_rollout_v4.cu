@@ -71,7 +71,7 @@ constexpr int br4_stage_floats() {   // the largest samples x staged obs block (
 // Dynamic shared, per block (the largest set's sizes):
 //   xs     the block's samples' obs blocks, fp32 bf16-rounded (the features rounded as the trainer
 //          rounds them), rows br4_stage_width apart (then the pooling's parts: (samples, parts, D) max and sum)
-//   h1     (valid rows of the block, I) fp32 (bf16-rounded)
+//   h1     (valid rows of the block, I) bf16 (the values are bf16-rounded; h2 reads 8 a load)
 //   meta   per staged row: valid flag, embedding id; per valid row: its xs offset and id;
 //          per sample: valid rows and the first one's index
 struct Br4SetSmem { int h1, meta, total; };
@@ -79,8 +79,8 @@ constexpr int BR4_SET_META = 4 * BR4_BLOCK_SET_ROWS + 2 * 32;
 constexpr int br4_max_samples() { return br4_cmax(br4_cmax(br4_samples_of(0), br4_samples_of(1)), br4_cmax(br4_samples_of(2), br4_samples_of(3))); }
 constexpr Br4SetSmem br4_set_smem(int I) {
     return Br4SetSmem{br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8),
-                      br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 4,
-                      br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 4 + BR4_SET_META * 4};
+                      br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 2,
+                      br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 2 + BR4_SET_META * 4};
 }
 static size_t br4_sets_smem(int I) { return (size_t)br4_set_smem(I).total; }
 // One group's set weights into the chain's layout: W1 transposed to (features, I)
@@ -105,7 +105,7 @@ __host__ __device__ constexpr int br4_set_order(int y) { return y == 0 ? 2 : y =
 // h1 of the valid rows m0, m0 + js, ... (NR of them, all < M) for channel i: see br4_set_block
 template <int S, int I, int NR>
 __device__ __forceinline__ void br4_h1_rows(const float* xs, const int* vrow, const int* vid, const float* E,
-                                            const float (&w)[v4::SPEC[S].features], float* h1, int m0, int js, int i) {
+                                            const float (&w)[v4::SPEC[S].features], unsigned short* h1, int m0, int js, int i) {
     constexpr v4::Spec sp = v4::SPEC[S];
     constexpr int F = sp.features;
     const float* xr[NR]; float acc[NR], ev[NR];
@@ -133,30 +133,34 @@ __device__ __forceinline__ void br4_h1_rows(const float* xs, const int* vrow, co
     for (int r = 0; r < NR; r++) {
         float v = acc[r];
         if (sp.id_col >= 0) v += ev[r];
-        h1[(m0 + r * js) * I + i] = br4_bf(fmaxf(v, 0.0f));
+        h1[(m0 + r * js) * I + i] = __bfloat16_as_ushort(__float2bfloat16(fmaxf(v, 0.0f)));   // br4_bf's value, stored as bf16
     }
 }
+// acc + w.lo x.lo, then + w.hi x.hi for two bf16 pairs: fma.rn.f32.bf16 is fmaf of the bf16 values (exact in
+// fp32, one rounding: bit-identical to fmaf(float(w), float(x), acc) over every bf16 w, a sample of x and
+// specials, subnormals and NaNs in acc), with no conversion instructions (FHFMA.BF16 reads either half).
+__device__ __forceinline__ float br4_fma_bf2(unsigned w, unsigned x, float acc) {
+    asm("{ .reg .b16 wl, wh, xl, xh; mov.b32 {wl, wh}, %1; mov.b32 {xl, xh}, %2;\n\t"
+        "fma.rn.f32.bf16 %0, wl, xl, %0;\n\tfma.rn.f32.bf16 %0, wh, xh, %0; }" : "+f"(acc) : "r"(w), "r"(x));
+    return acc;
+}
 // h2 of the valid rows m0, m0 + parts, ... (NR of them, all < M) for this thread's channel, pooled
-// into its samples' running max and sum: see br4_set_block
+// into its samples' running max and sum: see br4_set_block. W2's row and h1 stay bf16: a 16-byte load
+// is 8 of a row's h1 (half the shared loads of fp32 h1), each pair a bf16 fma.
 template <int K, int I, int NR>
-__device__ __forceinline__ void br4_h2_rows(const float* h1, const uint4 (&wreg)[I / 8], int m0, int parts,
+__device__ __forceinline__ void br4_h2_rows(const unsigned short* h1, const uint4 (&wreg)[I / 8], int m0, int parts,
                                             const int (&kb)[K], const int (&kn)[K], float (&best)[K], float (&sum)[K]) {
-    const float4* hr[NR]; float acc[NR];
+    const uint4* hr[NR]; float acc[NR];
     #pragma unroll
-    for (int r = 0; r < NR; r++) { hr[r] = (const float4*)(h1 + (m0 + r * parts) * I); acc[r] = 0.0f; }
+    for (int r = 0; r < NR; r++) { hr[r] = (const uint4*)(h1 + (m0 + r * parts) * I); acc[r] = 0.0f; }
     #pragma unroll
     for (int q = 0; q < I / 8; q++) {
-        const __nv_bfloat162* w2 = (const __nv_bfloat162*)&wreg[q];
-        float wf[8];
-        #pragma unroll
-        for (int t = 0; t < 4; t++) { float2 w = __bfloat1622float2(w2[t]); wf[2 * t] = w.x; wf[2 * t + 1] = w.y; }
+        const uint4 w = wreg[q];
         #pragma unroll
         for (int r = 0; r < NR; r++) {
-            float4 x = hr[r][2 * q], y = hr[r][2 * q + 1];
-            acc[r] = fmaf(wf[0], x.x, acc[r]); acc[r] = fmaf(wf[1], x.y, acc[r]);
-            acc[r] = fmaf(wf[2], x.z, acc[r]); acc[r] = fmaf(wf[3], x.w, acc[r]);
-            acc[r] = fmaf(wf[4], y.x, acc[r]); acc[r] = fmaf(wf[5], y.y, acc[r]);
-            acc[r] = fmaf(wf[6], y.z, acc[r]); acc[r] = fmaf(wf[7], y.w, acc[r]);
+            const uint4 x = hr[r][q];
+            acc[r] = br4_fma_bf2(w.x, x.x, acc[r]); acc[r] = br4_fma_bf2(w.y, x.y, acc[r]);
+            acc[r] = br4_fma_bf2(w.z, x.z, acc[r]); acc[r] = br4_fma_bf2(w.w, x.w, acc[r]);
         }
     }
     #pragma unroll
@@ -190,7 +194,7 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
     constexpr int W4 = br4_stage_width(S);
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, D = a.D, parts = BR4_POOL_SPLIT / D;
     float* xs = (float*)smem;
-    float* h1 = (float*)(smem + a.sm_h1);
+    unsigned short* h1 = (unsigned short*)(smem + a.sm_h1);
     int* flag = (int*)(smem + a.sm_meta);             // (K, rows)
     int* ids = flag + BR4_BLOCK_SET_ROWS;          // (K, rows)
     int* vrow = ids + BR4_BLOCK_SET_ROWS;          // valid row m: xs offset
@@ -323,7 +327,7 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
 }
 // grid (blocks of the four sets): the entities' blocks first (the longest), then slots, slimes, players
 template <int I>
-__global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
+__global__ void __launch_bounds__(BR4_SET_THREADS, I == 64 ? 2 : 1) br4_sets(Br4SetsArgs a) {
     extern __shared__ __align__(16) unsigned char smem[];
     int b = blockIdx.x;
     #pragma unroll
