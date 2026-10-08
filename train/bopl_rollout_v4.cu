@@ -27,7 +27,7 @@
 // (the trainer logs set_overflow when it drops any).
 #pragma once
 
-struct Br4SetWeights {   // per group g and set s: W1^T bf16 (features, I), W2 bf16 (D, I) packed by br4_prepare, E fp32 (IDS, I) as stored
+struct Br4SetWeights {   // per group g and set s: W1^T bf16 (features, I), W2 bf16 run-major (br4_w2_index) packed by br4_prepare, E fp32 (IDS, I) as stored
     const __nv_bfloat16* w1t[BR_MAX_GROUPS][4];
     const __nv_bfloat16* w2[BR_MAX_GROUPS][4];
     const float* emb[BR_MAX_GROUPS];
@@ -84,12 +84,15 @@ constexpr Br4SetSmem br4_set_smem(int I) {
 }
 static size_t br4_sets_smem(int I) { return (size_t)br4_set_smem(I).total; }
 // One group's set weights into the chain's layout: W1 transposed to (features, I)
-// bf16 (thread i of the h1 loop reads column i: coalesced), W2 (D, I) bf16.
-// The values are the bf16 roundings br4_sets applied on the fly before.
+// bf16 (thread i of the h1 loop reads column i: coalesced), W2 bf16 in runs of
+// 8 columns, run-major ((I / 8, D, 8): thread d of the h2 loop reads its row's
+// run q at q D + d, so a warp's load is 512 contiguous bytes, not 32 rows'
+// 16 apiece). The values are the bf16 roundings br4_sets applied on the fly before.
+__host__ __device__ inline long br4_w2_index(int d, int i, int D) { return ((long)(i >> 3) * D + d) * 8 + (i & 7); }
 __global__ void br4_pack_set_weights(const float* w1, int features, const float* w2, int D, int I, __nv_bfloat16* w1t, __nv_bfloat16* w2b) {
     int i = blockIdx.x * blockDim.x + threadIdx.x, n1 = I * features, n2 = D * I;
     if (i < n1) { int f = i / I, ii = i - f * I; w1t[i] = __float2bfloat16(w1[(long)ii * features + f]); }
-    else if (i < n1 + n2) w2b[i - n1] = __float2bfloat16(w2[i - n1]);
+    else if (i < n1 + n2) { int d = (i - n1) / I, ii = i - n1 - d * I; w2b[br4_w2_index(d, ii, D)] = __float2bfloat16(w2[i - n1]); }
 }
 // Blocks of set s per group: its rows in runs of br4_samples_of(s) samples (one group's weights per block).
 __host__ __device__ inline int br4_set_blocks(const BrGroups& g, int s) {
@@ -204,9 +207,9 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
     const int dw = tid % D;   // the h2 channel (and W2 row) of this thread
     uint4 wreg[I / 8];
     {
-        const uint4* wrow = (const uint4*)(a.w.w2[grp][S] + (long)dw * I);
+        const uint4* wrow = (const uint4*)a.w.w2[grp][S] + dw;
         #pragma unroll
-        for (int k = 0; k < I / 8; k++) wreg[k] = __ldg(wrow + k);
+        for (int k = 0; k < I / 8; k++) wreg[k] = __ldg(wrow + k * D);
     }
     br_pdl_wait();
     if (S == 0) {   // the rows' copies into the rollout tensors (the old cast kernels), by the players' blocks

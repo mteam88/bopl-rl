@@ -130,6 +130,7 @@ struct Bench {
     Meta m;
     int rows, apb, nb = 4, H, G, num_atns, mask_stride, pack_bytes, state_numel[BR_MAX_GROUPS], state_rows[BR_MAX_GROUPS];
     int frag = 4;   // the dump's GEMM weight order: 1 to 3 are converted (frag_convert), 4 is br_frag_pack_lane's
+    int setw = 2;   // the dump's packed W2 order: 1 (D, I) row-major is converted, 2 is br4_w2_index's
     BrPlan p = {};
     Br4Plan q = {};
     std::map<std::string, Weights> weights;
@@ -162,6 +163,8 @@ struct Bench {
         q.JW = m.i("JW"); q.W = m.i("W"); q.LNW = m.i("LNW");
         frag = m.kv.count("frag") ? m.i("frag") : 1;
         if (frag < 1 || frag > 4) { fprintf(stderr, "unknown weight order frag %d\n", frag); exit(1); }
+        setw = m.kv.count("setw") ? m.i("setw") : 1;
+        if (setw < 1 || setw > 2) { fprintf(stderr, "unknown set weight order setw %d\n", setw); exit(1); }
         if (q.JW != q.FD + 8 * q.D || q.W != H + q.P || q.LNW != std::max(H, std::max(q.W, q.C))) { fprintf(stderr, "plan widths disagree with the dump\n"); exit(1); }
         for (auto& n : names) {
             Step s; s.dir = root + "/" + n;
@@ -240,7 +243,14 @@ struct Bench {
             if (q.C) { t.cin = upf("cin", q.W, q.C); t.b1 = upf("b1", q.C, q.C); t.b2 = upf("b2", q.C, q.C); w.cout[g] = up("cout"); }
             for (int s = 0; s < 4; s++) {
                 t.w1t[s] = (__nv_bfloat16*)up(("w1t" + std::to_string(s)).c_str());
-                t.w2b[s] = (__nv_bfloat16*)up(("w2b" + std::to_string(s)).c_str());
+                std::vector<char> w2 = slurp(pre + "w2b" + std::to_string(s));
+                if (setw == 1) {
+                    std::vector<char> o(w2.size());
+                    for (int d = 0; d < q.D; d++)
+                        for (int i = 0; i < q.I; i++) memcpy(&o[br4_w2_index(d, i, q.D) * 2], &w2[((size_t)d * q.I + i) * 2], 2);
+                    w2.swap(o);
+                }
+                t.w2b[s] = (__nv_bfloat16*)dev_upload(w2);
             }
             w.emb[g] = up("emb");
         }

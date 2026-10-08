@@ -94,6 +94,7 @@ static void br_dump_pre(PuffeRL* pufferl, int buf, int t, cudaStream_t stream, s
     int nv = 0, na = 0; const signed char* hch = (hc && env_head_consume_map) ? env_head_consume_map(&nv, &na) : nullptr;
     fprintf(m, "hc_rows %d\nhc_stride %d\n", hch ? nv : 0, hc ? hc_stride : 0);
     fprintf(m, "frag 4\n");   // the GEMM weights in br_frag_pack_lane's order (fwd_bench converts the older orders 1 (no key) to 3)
+    fprintf(m, "setw 2\n");   // the sets' W2 in br4_w2_index's order (fwd_bench converts the older (D, I) order, 1 (no key))
     fclose(m);
     if (hch) brd_write(dir + "/head_consume", hch, (size_t)nv * na, false);
     brd_write(dir + "/act_sizes", pufferl->act_sizes_puf.data, (size_t)p.num_atns * 4, true);
