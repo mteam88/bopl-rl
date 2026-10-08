@@ -75,6 +75,98 @@ static void bopl4_scene_fill(Bopl4Scene *s, const BoplRlState *state, const uint
 }
 _Static_assert(BOPL4F_BLAST_X==BOT_BLAST_X && BOPL4F_BLAST_Y==BOT_BLAST_Y, "the rays' blast planes are the bots'");
 _Static_assert(BOPL4_SLIME_RADIUS==BOT_SLIME_RADIUS, "the scene's slime radius is the bots'");
+/* One state's entity relations (bopl4_relation of an entity versus a
+ * player), kept across that state's rows on this thread. An entity row needs
+ * its body versus the observer (part 1) and versus the observer's primary
+ * enemy (part 3), and the enemy is another player whose own row asks the
+ * same relation as its part 1: in 1v1 each player's enemy is the other, so
+ * every entity both rows keep was related twice to each player. The
+ * relation is a pure function of its arguments, so a key (player, entity)
+ * serves both parts when the player's position and body velocity are the
+ * same doubles in both (the row's self_x, self_y, self_vx, self_vy; the
+ * enemy's x, y, vx, vy: bopl_fix of the same fields and the same
+ * bopl_controlling_slime), which `observer` checks bit for bit, and the
+ * ablation's one relational bit agrees. Live between bopl4_relations_open
+ * and _close (bopl_encode_shared, one state's rows); stamp = generation
+ * marks a stored relation. */
+static __thread struct {
+    const BoplRlState *state;
+    uint64_t generation, *stamp;
+    float (*relation)[BOPL4_RELATION];
+    size_t capacity;
+    uint32_t entities;
+    int relational;                         /* the ablation bit of the stored relations, -1 none yet */
+    int observer_set[BOPL_MAX_PLAYERS];
+    double observer[BOPL_MAX_PLAYERS][4];
+} bopl4_relations;
+static void bopl4_relations_open(const BoplRlState *state) {
+    bopl4_relations.state=NULL;
+    if (!state || state->header.player_count>BOPL_MAX_PLAYERS) return;
+    size_t need=(size_t)state->header.player_count*state->header.entity_count;
+    if (need>bopl4_relations.capacity) {
+        size_t capacity=need<1024?1024:need*2;
+        uint64_t *stamp=realloc(bopl4_relations.stamp, capacity*sizeof(*stamp));
+        if (!stamp) return;
+        bopl4_relations.stamp=stamp;
+        memset(stamp, 0, capacity*sizeof(*stamp));   /* generation starts at 1: nothing stored */
+        float (*relation)[BOPL4_RELATION]=realloc(bopl4_relations.relation, capacity*sizeof(*relation));
+        if (!relation) { bopl4_relations.capacity=0; return; }
+        bopl4_relations.relation=relation; bopl4_relations.capacity=capacity;
+    }
+    bopl4_relations.generation++;
+    bopl4_relations.state=state; bopl4_relations.entities=state->header.entity_count;
+    bopl4_relations.relational=-1;
+    memset(bopl4_relations.observer_set, 0, sizeof(bopl4_relations.observer_set));
+}
+static void bopl4_relations_close(void) { bopl4_relations.state=NULL; }
+/* The cache key of `player` (an index into state->players) as an observer at
+ * (x, y, vx, vy) for this row, or -1 to relate without the cache. */
+static int bopl4_relation_key(const BoplRlState *state, const BoplRlPlayer *player, double x, double y, double vx, double vy, int ablation) {
+    if (bopl4_relations.state!=state || !player) return -1;
+    int relational=(ablation&BOPL4_ABLATE_RELATIONAL)!=0;
+    if (bopl4_relations.relational>=0 && bopl4_relations.relational!=relational) return -1;
+    int p=(int)(player-state->players);
+    if (p<0 || p>=(int)state->header.player_count) return -1;
+    double at[4]={x, y, vx, vy};
+    if (!bopl4_relations.observer_set[p]) {
+        memcpy(bopl4_relations.observer[p], at, sizeof(at)); bopl4_relations.observer_set[p]=1;
+    } else if (memcmp(bopl4_relations.observer[p], at, sizeof(at))) return -1;
+    bopl4_relations.relational=relational;
+    return p;
+}
+/* bopl4_entity_part's relation of entity `index` versus an observer at
+ * (x, y, vx, vy), from the cache under `key` when there is one. */
+static const float *bopl4_entity_relation(float *scratch, const BoplRlState *state, uint32_t index, int key,
+                                          double x, double y, double vx, double vy, int ablation) {
+    size_t at=(size_t)key*bopl4_relations.entities+index;
+    if (key>=0 && bopl4_relations.stamp[at]==bopl4_relations.generation) return bopl4_relations.relation[at];
+    const BoplRlEntity *entity=&state->entities[index];
+    double ex=bopl_fix(entity->x), ey=bopl_fix(entity->y), evx=bopl_fix(entity->vx), evy=bopl_fix(entity->vy);
+    double radius=bopl_fix(entity->radius);
+    int projectile=(entity->flags&BOPL_ENTITY_PROJECTILE)!=0 && entity->inverse_mass>0;
+    float *out=key>=0?bopl4_relations.relation[at]:scratch;
+    bopl4_relation(out, ex-x, ey-y, evx-vx, evy-vy, radius, projectile, ablation);
+    if (key>=0) bopl4_relations.stamp[at]=bopl4_relations.generation;
+    return out;
+}
+/* bopl4_entity_row (parts 0-3) with parts 1 and 3's relations through the
+ * cache: self_key and enemy_key from bopl4_relation_key. */
+static void bopl4_entity_row_keyed(float *row, const BoplRlState *state, uint32_t index, const BoplRlPlayer *self,
+                                   double self_x, double self_y, double self_vx, double self_vy, const Bopl4Enemy *enemy, int ablation,
+                                   int self_key, int enemy_key) {
+    const BoplRlEntity *entity=&state->entities[index];
+    float scratch[BOPL4_RELATION];
+    bopl4_entity_part(row, 0, state, entity, self, self_x, self_y, self_vx, self_vy, enemy, ablation);
+    const float *relation=bopl4_entity_relation(scratch, state, index, self_key, self_x, self_y, self_vx, self_vy, ablation);
+    for (int f=1; f<BOPL4_RELATION; f++) row[33+f]=relation[f];
+    bopl4_entity_part(row, 2, state, entity, self, self_x, self_y, self_vx, self_vy, enemy, ablation);
+    row[45]=row[46]=0.0f;
+    if (enemy->known) {
+        int projectile=(entity->flags&BOPL_ENTITY_PROJECTILE)!=0 && entity->inverse_mass>0;
+        const float *versus=bopl4_entity_relation(scratch, state, index, enemy_key, enemy->x, enemy->y, enemy->vx, enemy->vy, ablation);
+        row[45]=versus[0]; row[46]=projectile?versus[10]:versus[8];
+    }
+}
 /* Encode `state` into player a's v4 row. Same contract as the v3 row writer:
  * every feature stored, unused set slots zeroed (with the bopl_written record
  * of the previous encode), the own-action tail zeroed and the privileged block
@@ -170,9 +262,11 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
                        slot_indices[i]%3, self, self_x, self_y, &enemy);
     bopl_zero_tail(obs+BOPL4_OBS_SLOT_OFFSET, BOPL4_SLOT_FEATURES, slot_count, prev_slots, BOPL4_SLOTS);
 
+    int self_key=bopl4_relation_key(state, self, self_x, self_y, self_vx, self_vy, ablation);
+    int enemy_key=enemy.known?bopl4_relation_key(state, enemy.player, enemy.x, enemy.y, enemy.vx, enemy.vy, ablation):-1;
     for (int i=0; i<count; i++)
-        bopl4_entity_row(obs+BOPL4_OBS_ENTITY_OFFSET+(size_t)i*BOPL4_ENTITY_FEATURES, state, &state->entities[nearest[i]], self,
-                         self_x, self_y, self_vx, self_vy, &enemy, ablation);
+        bopl4_entity_row_keyed(obs+BOPL4_OBS_ENTITY_OFFSET+(size_t)i*BOPL4_ENTITY_FEATURES, state, nearest[i], self,
+                               self_x, self_y, self_vx, self_vy, &enemy, ablation, self_key, enemy_key);
     bopl_zero_tail(obs+BOPL4_OBS_ENTITY_OFFSET, BOPL4_ENTITY_FEATURES, count, prev_entities, BOPL4_ENTITIES);
 
     for (int i=0; i<slime_count; i++) {

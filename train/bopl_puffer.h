@@ -996,6 +996,7 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     return 1;
 }
 static void bopl_encode_shared(BoplPuffer *env, const BoplRlState *state, int count_overflow, Bopl4Shared *shared) {
+    bopl4_relations_open(state);   /* the CPU rows of this state share their entity relations */
     for (int a=0; a<env->players; a++) {
         if (!state) {
             float *obs=bopl_obs_row(env, a);
@@ -1004,6 +1005,7 @@ static void bopl_encode_shared(BoplPuffer *env, const BoplRlState *state, int co
             if (!bopl4_encode_state(env, state, a, count_overflow, shared)) bopl_encode_v4_row(env, state, a, count_overflow);
         } else bopl_encode_v3_row(env, state, a, count_overflow);
     }
+    bopl4_relations_close();
 }
 static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
     Bopl4Shared shared; shared.state=NULL; shared.copy=NULL; shared.image=NULL;
