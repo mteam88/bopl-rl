@@ -4034,386 +4034,84 @@ impl PlatformBodies {
     }
 }
 
+/// One body's slot.
+///
+/// `repr(C)`, its fields in this order: the body, then the small fields a
+/// tick touches (the entity indices, cooldowns and timers, the death,
+/// black-hole, drill and ground-destroyed state, the reported position and
+/// the published flags; `PLAYER_SLOT_HOT_END`), then the slime's own body,
+/// the forms, the rewind ring and the rest, which most ticks leave alone.
 #[derive(Clone)]
+#[repr(C, align(64))]
 pub struct PlayerSlot {
     pub base: Player,
-    /// The player this body belongs to: its own index for a player's slot, and
-    /// that slot's index for an extra body past `RolloutWorld::player_count`.
-    pub owner: usize,
-    pub team: u32,
-    pub keyboard: bool,
-    pub stocks: u32,
-    pub kills: u32,
-    pub deaths: u32,
-    /// Player.playersAndClonesStillAlive: the round starts it at 1, each
-    /// SpawnClone and SpawnAbilityLessClone adds one and each Player.Kill
-    /// takes one, so a second killPlayer on a dead slime leaves it at -1
-    /// (GameSessionHandler.cs:287, PlayerCollision.cs:226-248,
-    /// Player.cs:450-474). Kept on the player's own slot.
-    pub bodies_alive: i32,
-    /// Player.ExtraLife (ReviveStatus.cs), kept on the player's own slot.
-    pub extra_life: u8,
-    pub cause_of_death: u32,
-    /// Updater.SimulationTicks passed to Player.Kill for the elimination that
-    /// removed the player's final body. GameSessionHandler uses this to pick
-    /// the most recently eliminated player(s) when every team is out.
-    pub death_tick: u32,
-    pub won: bool,
-    pub out: bool, // dead with no stock left
-    /// The slime object died while ability-less clones kept Player.IsAlive
-    /// true (Player.Kill with playersAndClonesStillAlive > 1).
-    pub slime_gone: bool,
-    /// The slime is a stock clone of an ability-less clone: SpawnClone copied
-    /// its empty ability list (PlayerCollision.cs:255), so every slot is
-    /// empty rather than a NullAbility.
-    pub abilityless: bool,
-    /// SlimeController.abilities.Count: the slots past it publish no
-    /// cooldown, keep Init's -1.5 timer, and cast nothing.
-    pub ability_count: usize,
-    /// Ability catalog ids per slot, and which slots this backend simulates.
-    pub abilities: [u32; 3],
-    /// Incremented whenever a stock/revival clone instantiates fresh ability prefabs.
-    /// One per ability slot: each ability instance's identity. A pickup
-    /// replaces the third slot's instance; a replacement slime all three.
-    pub ability_generation: [u32; 3],
-    /// Pickup-created ability prefabs are serialized inactive, but their
-    /// Awake registrations become visible on the scheduler's following pass.
-    pub ability_instantiated: [bool; 3],
-    /// Hierarchy range reserved when a pickup callback instantiates its
-    /// inactive ability prefab; the collider joins DetPhysics next pass.
-    pub pending_ability_hierarchy: [u32; 3],
-    pub timers: [Fix; 3],
-    pub cooldowns: [Fix; 3],
     /// PlayerBody's live rope binding. Rope abilities are instant and leave
     /// the ordinary slime active, so this state advances with normal motion.
     pub rope: Option<usize>,
-    pub rope_top: bool,
-    pub rope_attach_tick: u32,
-    /// PlayerBody's private prevImposedVel and prevExternalVel, per body: the
-    /// slime's, then each ability slot's form. A body keeps its own until it
-    /// next steps with a rope, so a form hands the rope back to a slime whose
-    /// history is from before the form.
-    pub rope_prev: [(Vec2, Vec2); 4],
-    /// PlayerBody.extraSwingForce: SlimeController's airborne steer on a
-    /// rope, added to the rope force by the slime body's next late pass.
-    pub rope_swing_force: Vec2,
-    pub(crate) web_swing: [rope_abilities::WebSwingState; 3],
-    pub(crate) grapple: [rope_abilities::GrappleState; 3],
-    pub active: ActiveAbility,
+    /// A stock death's pass and the destroyed slime GameObject's FixTransform
+    /// position, where UnGround left it: `base` is SpawnClone's new slime from
+    /// then on (PlayerCollision.cs:176-191).
+    pub stock_death: Option<(u32, Vec2)>,
+    pub throw_item: ThrowItemState,
+    /// A hole `BlackHoleClap.FireCommon` instantiated last pass, with its
+    /// position and place in the spawn order. It is created on the next pass
+    /// even if the form died later in the pass that fired it.
+    pub pending_black_hole: Option<(Vec2, u32)>,
+    pub drill: DrillState,
+    pub beam: BeamState,
+    /// Player.Position when that tie kept an earlier write of this pass over
+    /// the one in `reported_position`, with the pass it belongs to.
+    pub tie_position: Option<(u32, Vec2)>,
+    /// Player.Position when SetPosition's priority gave the pass to another
+    /// of the player's SlimeControllers than the one publishing it here.
+    pub position_override: Option<(u32, Vec2)>,
+    /// A pass the disabled SlimeController left Player.Position unset, so a
+    /// body clone's SetPosition wins it.
+    pub unpublished_tick: Option<u32>,
+    /// The ground it stood on was destroyed. Unity keeps the rider grounded
+    /// until its own next update, then ungrounds it.
+    pub ground_destroyed: Option<DestroyedGround>,
+    /// Where the form's FixTransform stopped when its GameObject went
+    /// inactive: an exit, or a teleport hiding the form.
+    pub form_frozen: Option<FrozenForm>,
+    /// The player this body belongs to: its own index for a player's slot, and
+    /// that slot's index for an extra body past `RolloutWorld::player_count`.
+    pub owner: usize,
+    /// SlimeController.abilities.Count: the slots past it publish no
+    /// cooldown, keep Init's -1.5 timer, and cast nothing.
+    pub ability_count: usize,
+    pub timers: [Fix; 3],
+    pub cooldowns: [Fix; 3],
     pub active_slot: usize,
-    /// The slime's own PlayerPhysics and PlayerBody while a form's stand in
-    /// for them as `base`: they go inactive with the form
-    /// (SlimeController.cs:190) and keep the state this pass's Move left
-    /// them, until the form exits and they are `base` again. Empty otherwise.
-    pub slime: Player,
-    /// The pass `slime` went inactive on.
-    pub slime_tick: u32,
-    /// The inactive SlimeController's currentState.
-    pub inactive_obs_state: u32,
     /// The pass and the body position before this player's updaters ran on
     /// it: an Updater object older than the form still sees it there.
     pub pass_start: (u32, Vec2),
-    pub ability_entry_action: Action,
-    /// The live form's Ability.playerInfo: the PlayerInfo SlimeController
-    /// handed it at entry (Ability.cs:91, SlimeController.cs:643-680).
-    pub player_info: PlayerInfo,
     /// Player.Scale, which ScaleChanger mutates after the player updaters.
     pub player_scale: Fix,
     /// DPhysicsBox stores inverse extents and updates them by the rounded
     /// old-to-new scale ratio. Keeping that representation reproduces the
     /// few-raw-unit drift that an absolute authored_extents * scale loses.
     pub body_collider_scale: Fix,
-    /// Each ability slot's form object.
-    pub forms: [FormBody; 3],
-    /// Player.isInvisible and its two clocks. `was_invisible` belongs to the
-    /// currently active SlimeController and drives cooldown restoration.
-    pub invisible: bool,
     pub invisible_time: Fix,
-    pub was_invisible: bool,
-    /// SlimeController.wasInvisibileWhenEnteredAbility.
-    pub invisible_at_form_entry: bool,
-    /// Between onEnterAbility and the onExitAbility that answers it.
-    pub ability_entered: bool,
-    /// SlimeController.UpdateSim got past OldUpdate this pass, so the caller
-    /// runs its invisibility comparison.
-    pub slime_updated: bool,
-    /// A Duplicator clone's SlimeController.Spawn clears Player.InSparkShot,
-    /// InMachoThrow and InPlatformTransform while the original stays in its
-    /// form; only the next form entry sets them again.
-    pub form_flags_cleared: bool,
-    /// The body whose form entry last set those Player flags; they follow
-    /// its form until any other body of the player leaves one.
-    pub form_flag_body: usize,
-    /// The form this body was last seen in by the form-flag bookkeeping.
-    pub form_seen: ActiveAbility,
     pub ability_time: Fix,
     /// SlimeController/Ability publishes Player.Position before the live body
     /// advances later in the same updater pass.
     pub reported_position: Vec2,
-    pub reported_tick: u32,
-    /// Where the form's FixTransform stopped when its GameObject went
-    /// inactive: an exit, or a teleport hiding the form.
-    pub form_frozen: Option<FrozenForm>,
     /// The form row `set_active_form` entered since the last row sync.
     pub form_entered: usize,
-    /// `active` when `refresh_actor_entities` last ran: a form entered or
-    /// left since moves the rows `actor_rows_fresh` vouches for.
-    pub rows_active: ActiveAbility,
-    /// The ground it stood on was destroyed. Unity keeps the rider grounded
-    /// until its own next update, then ungrounds it.
-    pub ground_destroyed: Option<DestroyedGround>,
-    pub bow: BowState,
-    pub rock: RockState,
-    pub roll: RollState,
-    /// Each Roll's own Ability.KillPlayersOnContact: EnterAbility clears it,
-    /// ReleaseDash sets it, and the Roll in another slot keeps its own.
-    pub roll_lethal: [bool; 3],
-    pub meteor: MeteorState,
-    pub push: PushState,
-    pub gun: GunState,
-    pub magnet: MagnetState,
-    /// Each equipped GunTransform or MagnetGun prefab mutates its serialized
-    /// FirepointOffset by Ability.OnScaleChanged's incremental scale
-    /// multiplier.
-    pub gun_firepoint_offsets: [Vec2; 3],
-    /// Each MagnetGun's `extraOffset`, set from the object it picks up and
-    /// never cleared: it outlasts the hold and the use, into the next cast.
-    pub magnet_extra_offsets: [Vec2; 3],
-    /// Each MachoThrow2's `boulderType`: the ground it was last entered on,
-    /// kept through an airborne entry. Its boulders are ice when that was.
-    pub macho_boulder_ice: [bool; 3],
-    /// Each slot's Ability.prevScale: the Player.Scale its last UpdateSim saw.
-    /// Every form keeps one; a gun telescopes its FirepointOffset and a
-    /// ThrowItem2 rescales its payload by the change.
-    pub gun_prev_scales: [Fix; 3],
-    /// PlayerPhysics.gravity_modifier on each slot's GunTransform, MagnetGun or
-    /// BowTransform form. Entering airborne sets 0.03 and firing sets 1, but entering
-    /// grounded leaves it alone, so a form whose ground vanishes inside Move
-    /// falls with whatever its last use left.
-    pub form_gravity: [Fix; 3],
-    pub ragdoll: RagdollState,
-    /// SlimeController.magnetHolder: the MagnetGun that last took the slime,
-    /// until a ragdoll times out (SlimeController.cs:114, 1038-1058).
-    pub magnet_holder: Option<MagnetGun>,
-    pub eating: EatingState,
-    /// SlimeController.abilityCooldownTimers past the ability list: Init's
-    /// -1.5, which only a FrozenSolid's Shatter changes, to zero.
-    pub spare_timer: Fix,
-    /// (pass, holder hierarchy, body position before that FrozenSolid or
-    /// Poke Ball pinned it). An earlier-spawned Mjolnir updates before the
-    /// holder, so it strikes and homes on the body where it was.
-    pub pinned_from: (u32, u32, Vec2),
-    /// A lower-hierarchy transformed form was cancelled by Freeze after this
-    /// pass's Player.UpdatePlayer publication. Keep that earlier publication
-    /// while the restored SlimeController finishes its same-pass movement.
-    pub freeze_form_exit_tick: u32,
-    /// The slime's PlayerCollision.isInvulnerableMask, which IsInvulnerable
-    /// tests whole. A bit is not reference counted: every Poke Ball release
-    /// clears the shared bit even when a second ball still retains and pins
-    /// the same victim.
-    pub invulnerable: u32,
-    /// PlayerCollision.wasKilledThisFrame: set when OnCollide reaches its
-    /// kill, cleared by the slime's next UpdateSim (PlayerCollision.cs:74-77,
-    /// 449-470).
-    pub was_killed_tick: Option<u32>,
-    /// PlayerCollision.ignoredCollider by IgnoreColliderInd: each ignored
-    /// collider's row hierarchy, 0 for none (PlayerCollision.cs:8-16, 52,
-    /// 287-298). Ability.EnterAbility overwrites the form's list with the
-    /// slime's and ExitAbility copies it back, and the slime's is idle while
-    /// a form is up, so one list serves both (Ability.cs:95-98, 146-149).
-    pub ignored: [u32; 6],
-    /// A stock death's pass and the destroyed slime GameObject's FixTransform
-    /// position, where UnGround left it: `base` is SpawnClone's new slime from
-    /// then on (PlayerCollision.cs:176-191).
-    pub stock_death: Option<(u32, Vec2)>,
-    /// PokeBall mutates a victim after RlObservation has sampled the slime's
-    /// controller fields. Preserve that pre-callback row for the current pass.
-    pub late_obs_tick: u32,
-    pub late_obs_position: Vec2,
-    pub late_obs_rotation: Fix,
-    pub late_obs_state: u32,
-    pub missile: MissileFormState,
-    pub throw_item: ThrowItemState,
-    pub cast_spell: CastSpellState,
-    pub spike_cast: SpikeCastState,
-    pub plant_cast: PlantCastState,
-    /// `Spike.currentSpike` belongs to each equipped ability object. The
-    /// spawned attack survives form exit, while recasting this same slot
-    /// destroys and replaces it.
-    pub spike_attacks: [Option<usize>; 3],
-    pub platform: PlatformState,
-    /// PlatformTransform's hurtBox.enabled belongs to each equipped ability
-    /// object: OnEnterAbility enables it and CreatePlatform disables it, so a
-    /// second Platform slot keeps its own until that prefab is cast.
-    pub platform_hurtbox_disabled: [bool; 3],
-    pub gust: GustState,
-    pub revival: RevivalState,
-    pub black_hole_cast: BlackHoleCastState,
-    /// A hole `BlackHoleClap.FireCommon` instantiated last pass, with its
-    /// position and place in the spawn order. It is created on the next pass
-    /// even if the form died later in the pass that fired it.
-    pub pending_black_hole: Option<(Vec2, u32)>,
-    pub macho_throw: MachoThrowState,
-    pub drill: DrillState,
-    pub beam: BeamState,
-    /// OrbEffectPrefab is lazily instantiated and retained by each equipped
-    /// Beam prefab when its exit animation is interrupted by the shorter air
-    /// form exit. A completed whiteExit destroys it and the next cast creates
-    /// a fresh instance.
-    pub beam_orb_slots: [Option<usize>; 3],
     /// HitboxCombo instantiates these on the first Drill cast for each live
     /// equipped prefab. Old stock instances leave their inactive rows behind.
     pub drill_hitbox_entities: [[usize; 3]; 3],
-    /// Each of those boxes' DPhysicsBox.Scale history. The setter divides the
-    /// inverse extents by `(One / old) * new` (DPhysicsBox.cs:204-218), and the
-    /// boxes outlive each use, so the drift carries over like `forms`.
-    /// Zero marks a box never scaled.
-    pub drill_hitbox_scales: [[Fix; 3]; 3],
-    /// BlackHoleClap sets Ability.isCastable=false after firing. This belongs
-    /// to the equipped prefab instance, so duplicate slots are independent.
-    pub black_hole_castable: [bool; 3],
-    /// Marker owned by each equipped Revival instance. Recasting the same
-    /// instance ends its previous marker before creating another.
-    pub revival_markers: [Option<usize>; 3],
-    /// A replacement clone is queued on death, then held hidden while the
-    /// ReviveEffect wisp and doubly-registered particle reach this marker.
-    pub revival_clone_pending: bool,
-    /// A stock death instantiates its replacement in the callback, but the
-    /// new prefab's colliders and SlimeController register next pass.
-    pub stock_clone_pending: bool,
-    /// Spawn hierarchies are claimed when SpawnClone runs inside the death
-    /// callback, for a stock or a Revival clone. This matters when one
-    /// explosion kills multiple players: the first clone is instantiated
-    /// before the second death effect exists.
-    pub clone_player_hierarchy: u32,
-    pub clone_ability_hierarchy: [u32; 3],
-    pub stock_indicator_hierarchy: [u32; 3],
-    pub revival_target_marker: Option<usize>,
-    /// Where SpawnClone put the pending Revival clone: the marker's
-    /// GetPos() in the killing pass (PlayerCollision.cs:150), or the exit of
-    /// a Portal that took it later in that pass.
-    pub revival_clone_position: Vec2,
-    pub revival_effect_ticks: u32,
-    /// The waiting Revival clone's hurtBox.enabled: its Init's
-    /// BeforeSpawnInit enables it when a Portal had UnGrounded the clone out
-    /// of State.nothing in its SpawnClone pass (SlimeController.cs:516-525).
-    pub revival_hurtbox: bool,
-    /// ReviveEffect's position, where its particle starts.
-    pub revival_effect_position: Vec2,
-    /// ReviveParticle's distanceToTravel and distanceTravelled after Shoot.
-    pub revival_particle: Option<(Fix, Fix)>,
-    /// The ReviveEffect's place in Updater's list: the pass after the kill
-    /// that instantiated it, and its prefab's base. Every clone of that kill
-    /// shares it.
-    pub revival_effect_appended: u32,
-    pub revival_effect_hierarchy: u32,
-    /// This clone's index in the ReviveEffect's playersToRevive, the order
-    /// Shoot sends their particles in.
-    pub revival_clone_id: usize,
-    /// The ReviveParticle's place in Updater's list, from Shoot.
-    pub revival_particle_appended: u32,
-    pub revival_particle_hierarchy: u32,
-    /// Marker owned by each equipped Teleport instance. The first cast fills
-    /// it; the second consumes it and queues the two-way area swap.
-    pub teleport_markers: [Option<usize>; 3],
-    /// InstantAbility.ignoreNextCooldown of each slot's Teleport prefab: set
-    /// when the cast leaves a marker, cleared by the cast that uses it.
-    pub teleport_ignore_cooldown: [bool; 3],
-    /// PortalGun references belong to each equipped ability prefab. Closing
-    /// and replacing a pair does not require searching the global pool.
-    pub portal_blue: [Option<usize>; 3],
-    pub portal_orange: [Option<usize>; 3],
-    pub teleport_pending_marker: Option<usize>,
-    pub teleport_pending_position: Vec2,
-    /// TeleportedObjectEffect disables the moved GameObject while its visual
-    /// copy shakes. The visual has no observation row, but its RNG and strict
-    /// duration boundary are simulation-visible.
-    pub teleport_effect_active: bool,
-    pub teleport_effect_time: Fix,
-    /// The effect's Updater hierarchy, and the pass its UpdateSim reenabled
-    /// the player: updatables below it already saw the player inactive.
-    pub teleport_effect_hierarchy: u32,
-    /// (pass, TeleportIndicator hierarchy, position before it moved the
-    /// player): an older Mjolnir still finds the slime there, active.
-    pub teleported_from: (u32, u32, Vec2),
-    pub teleport_effect_released_tick: Option<u32>,
-    /// A TeleportIndicator older than a Black Hole fires at the hole's turn,
-    /// ahead of teleport_effects_tick; its new effect first updates next pass.
-    pub teleport_effect_appended: u32,
-    /// QuantumTunnel disables a Blink victim immediately, relocates it near
-    /// the end of the visual lifetime, then reenables it on a later pass.
-    pub blink_tunnel_active: bool,
-    pub blink_tunnel_appended: u32,
-    /// The tunnel's first updater hierarchy; its release steps earlier ones.
-    pub blink_tunnel_hierarchy: u32,
-    pub blink_tunnel_age: Fix,
-    pub blink_tunnel_released: bool,
-    /// Player.Position when that tie kept an earlier write of this pass over
-    /// the one in `reported_position`, with the pass it belongs to.
-    pub tie_position: Option<(u32, Vec2)>,
-    /// A pass the disabled SlimeController left Player.Position unset, so a
-    /// body clone's SetPosition wins it.
-    pub unpublished_tick: Option<u32>,
-    /// Player.positionSetterLastFrame: the row id of the SlimeController
-    /// whose SetPosition won the last pass, or `u32::MAX` for none.
-    pub position_setter_last: u32,
-    /// Player.Position when SetPosition's priority gave the pass to another
-    /// of the player's SlimeControllers than the one publishing it here.
-    pub position_override: Option<(u32, Vec2)>,
-    pub gold_mushroom: [GoldMushroomState; 3],
-    pub rewind: RewindState,
-    /// SlimeController.currentState as the policy observes it. The .NET enum
-    /// never takes the `ability` value (nothing assigns it), so the state
-    /// freezes at its pre-ability value while an ability runs.
-    pub obs_state: u32,
-    /// Countdown for the land/stop/turn animation states.
-    pub state_ticks: u32,
-    pub facing_right: bool,
     /// SlimeController.prevInput: the previous pass's ground alignment of the
     /// movement stick (SlimeController.cs:127/889). `run` ends on a sign
     /// change against *this*, not against the sprite facing.
     pub prev_input_align: Fix,
-    /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
-    /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
-    pub unspawned: u32,
-    /// SlimeController.hasSpawned: off on a new slime, on from Spawn, off again
-    /// from PrepareToRevive (SlimeController.cs:575, 623). UpdateSim returns
-    /// before Move while it is off (1079), and a Magnet passes over the slime
-    /// (MagnetGun.cs:609).
-    pub has_spawned: bool,
-    /// Respawn countdown while holding a consumed stock (StockRespawn).
-    pub respawn_ticks: u32,
-    /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
-    pub respawn_spawn_ticks: u32,
-    pub respawn_selected: usize,
-    /// The pass Updater appended this stock's StockRespawnChooser. BeginChoice
-    /// adds it to a bare GameObject outside any prefab, so it registers with
-    /// HierarchyNumber 0, ahead of everything appended with it
-    /// (StockRespawn.cs:67-70).
-    pub chooser_appended: u32,
-    /// The pass the chooser called ReSpawnFast.
-    pub chooser_finished_tick: Option<u32>,
-    /// The chooser's three RevivePositionIndicators: the Revival marker
-    /// prefab, live bodies in `revival_marker_pool`.
-    pub stock_indicator_markers: [Option<usize>; 3],
-    /// Player.InputProfile's frame-edge state is updated even without a live
-    /// controllable slime and is what the stock chooser reads.
-    pub input_jump_was_down: bool,
     /// Last movement input accepted by Player.ForceSetInputProfile. New
     /// packets are ignored for an unprotected player during Time Stop.
     pub last_movement_input: Vec2,
-    /// The packet Player.OverrideInputWithNetworkInput last accepted: it
-    /// skips the write for a player time is stopped for (Player.cs:623-641),
-    /// so every read that pass sees the packet from before the stop.
-    pub input_packet: CAction,
     /// SlimeController.inputVector: the stick as of the slime's last own
     /// pass, which is the pass that entered its current ability.
     pub slime_input: Vec2,
-    /// Last complete input accepted by Player.ForceSetInputProfile. Active
-    /// ability updaters still read this retained profile during Time Stop,
-    /// even though new network/replay packets are ignored.
-    pub last_action: Action,
-    pub telemetry: CTelemetry,
     // Fixed entity table indices.
     /// The form collider each equipped slot's own ability prefab registered.
     /// Player instantiates one prefab per slot, so a loadout holding an
@@ -4423,13 +4121,7 @@ pub struct PlayerSlot {
     pub circle_entity: usize,
     pub rock_entity: usize,
     pub roll_entity: usize,
-    /// Each Rock slot's collider hierarchy, reserved by its prefab.
-    pub rock_hierarchy: [u32; 3],
     pub push_entity: usize,
-    /// Current Freeze prefab for each equipped slot. `freeze_entity` below is
-    /// the one selected by `active_slot`, retained as the hot-path alias used
-    /// by collider queries and observation refresh.
-    pub freeze_entities: [usize; 3],
     pub freeze_entity: usize,
     pub blink_entity: usize,
     pub growth_ray_entity: usize,
@@ -4439,22 +4131,8 @@ pub struct PlayerSlot {
     pub gust_entity: usize,
     pub revival_entity: usize,
     pub body_entity: usize,
-    /// The pass Updater appended this body's updatables: 0 for a slime from
-    /// the scene, the pass it registered for a respawned or promoted one.
-    pub body_appended: u32,
-    /// The pass Updater appended each equipped ability prefab's updatables.
-    pub form_appended: [u32; 3],
-    /// Dash hurtbox for each equipped slot: a loadout may hold Dash twice,
-    /// and each Dash prefab owns its own box. `dash_entity` is the one the
-    /// last Dash entry selected.
-    pub dash_entities: [usize; 3],
     pub dash_entity: usize,
     pub bow_entity: usize,
-    /// Current thrown-ability prefab for each equipped slot. Grenade, Smoke,
-    /// Tack, Mjolnir, Poke Ball and Missile all register one, so a loadout may
-    /// hold up to three at once; `throw_entity` is the one selected by
-    /// `active_slot`, the alias the collider queries use.
-    pub throw_entities: [usize; 3],
     pub throw_entity: usize,
     pub mine_entity: usize,
     pub spike_entity: usize,
@@ -4466,7 +4144,342 @@ pub struct PlayerSlot {
     pub macho_throw_entity: usize,
     pub drill_entity: usize,
     pub beam_entity: usize,
+    pub black_hole_cast: BlackHoleCastState,
+    pub team: u32,
+    pub stocks: u32,
+    pub deaths: u32,
+    pub cause_of_death: u32,
+    /// Ability catalog ids per slot, and which slots this backend simulates.
+    pub abilities: [u32; 3],
+    pub reported_tick: u32,
+    /// A lower-hierarchy transformed form was cancelled by Freeze after this
+    /// pass's Player.UpdatePlayer publication. Keep that earlier publication
+    /// while the restored SlimeController finishes its same-pass movement.
+    pub freeze_form_exit_tick: u32,
+    /// The slime's PlayerCollision.isInvulnerableMask, which IsInvulnerable
+    /// tests whole. A bit is not reference counted: every Poke Ball release
+    /// clears the shared bit even when a second ball still retains and pins
+    /// the same victim.
+    pub invulnerable: u32,
+    pub revival_effect_ticks: u32,
+    pub blink_tunnel_appended: u32,
+    /// The tunnel's first updater hierarchy; its release steps earlier ones.
+    pub blink_tunnel_hierarchy: u32,
+    /// SlimeController.currentState as the policy observes it. The .NET enum
+    /// never takes the `ability` value (nothing assigns it), so the state
+    /// freezes at its pre-ability value while an ability runs.
+    pub obs_state: u32,
+    /// Countdown for the land/stop/turn animation states.
+    pub state_ticks: u32,
+    /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
+    /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
+    pub unspawned: u32,
+    /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
+    pub respawn_spawn_ticks: u32,
+    /// The packet Player.OverrideInputWithNetworkInput last accepted: it
+    /// skips the write for a player time is stopped for (Player.cs:623-641),
+    /// so every read that pass sees the packet from before the stop.
+    pub input_packet: CAction,
+    pub telemetry: CTelemetry,
+    /// The pass Updater appended this body's updatables: 0 for a slime from
+    /// the scene, the pass it registered for a respawned or promoted one.
+    pub body_appended: u32,
+    /// The pass Updater appended each equipped ability prefab's updatables.
+    pub form_appended: [u32; 3],
+    pub keyboard: bool,
+    pub won: bool,
+    pub rope_top: bool,
+    pub was_invisible: bool,
+    /// Each MachoThrow2's `boulderType`: the ground it was last entered on,
+    /// kept through an airborne entry. Its boulders are ice when that was.
+    pub macho_boulder_ice: [bool; 3],
+    /// BlackHoleClap sets Ability.isCastable=false after firing. This belongs
+    /// to the equipped prefab instance, so duplicate slots are independent.
+    pub black_hole_castable: [bool; 3],
+    /// The waiting Revival clone's hurtBox.enabled: its Init's
+    /// BeforeSpawnInit enables it when a Portal had UnGrounded the clone out
+    /// of State.nothing in its SpawnClone pass (SlimeController.cs:516-525).
+    pub revival_hurtbox: bool,
+    /// InstantAbility.ignoreNextCooldown of each slot's Teleport prefab: set
+    /// when the cast leaves a marker, cleared by the cast that uses it.
+    pub teleport_ignore_cooldown: [bool; 3],
+    /// The form this body was last seen in by the form-flag bookkeeping.
+    pub form_seen: ActiveAbility,
+    /// `active` when `refresh_actor_entities` last ran: a form entered or
+    /// left since moves the rows `actor_rows_fresh` vouches for.
+    pub rows_active: ActiveAbility,
+    /// The slime's own PlayerPhysics and PlayerBody while a form's stand in
+    /// for them as `base`: they go inactive with the form
+    /// (SlimeController.cs:190) and keep the state this pass's Move left
+    /// them, until the form exits and they are `base` again. Empty otherwise.
+    pub slime: Player,
+    pub(crate) web_swing: [rope_abilities::WebSwingState; 3],
+    pub(crate) grapple: [rope_abilities::GrappleState; 3],
+    /// The live form's Ability.playerInfo: the PlayerInfo SlimeController
+    /// handed it at entry (Ability.cs:91, SlimeController.cs:643-680).
+    pub player_info: PlayerInfo,
+    /// Each ability slot's form object.
+    pub forms: [FormBody; 3],
+    /// SlimeController.magnetHolder: the MagnetGun that last took the slime,
+    /// until a ragdoll times out (SlimeController.cs:114, 1038-1058).
+    pub magnet_holder: Option<MagnetGun>,
+    pub missile: MissileFormState,
+    /// `Spike.currentSpike` belongs to each equipped ability object. The
+    /// spawned attack survives form exit, while recasting this same slot
+    /// destroys and replaces it.
+    pub spike_attacks: [Option<usize>; 3],
+    pub macho_throw: MachoThrowState,
+    /// OrbEffectPrefab is lazily instantiated and retained by each equipped
+    /// Beam prefab when its exit animation is interrupted by the shorter air
+    /// form exit. A completed whiteExit destroys it and the next cast creates
+    /// a fresh instance.
+    pub beam_orb_slots: [Option<usize>; 3],
+    /// Marker owned by each equipped Revival instance. Recasting the same
+    /// instance ends its previous marker before creating another.
+    pub revival_markers: [Option<usize>; 3],
+    pub revival_target_marker: Option<usize>,
+    /// ReviveParticle's distanceToTravel and distanceTravelled after Shoot.
+    pub revival_particle: Option<(Fix, Fix)>,
+    /// Marker owned by each equipped Teleport instance. The first cast fills
+    /// it; the second consumes it and queues the two-way area swap.
+    pub teleport_markers: [Option<usize>; 3],
+    /// PortalGun references belong to each equipped ability prefab. Closing
+    /// and replacing a pair does not require searching the global pool.
+    pub portal_blue: [Option<usize>; 3],
+    pub portal_orange: [Option<usize>; 3],
+    pub teleport_pending_marker: Option<usize>,
+    /// The chooser's three RevivePositionIndicators: the Revival marker
+    /// prefab, live bodies in `revival_marker_pool`.
+    pub stock_indicator_markers: [Option<usize>; 3],
+    pub eating: EatingState,
+    pub magnet: MagnetState,
+    /// PlayerCollision.wasKilledThisFrame: set when OnCollide reaches its
+    /// kill, cleared by the slime's next UpdateSim (PlayerCollision.cs:74-77,
+    /// 449-470).
+    pub was_killed_tick: Option<u32>,
+    pub teleport_effect_released_tick: Option<u32>,
+    /// The pass the chooser called ReSpawnFast.
+    pub chooser_finished_tick: Option<u32>,
+    pub push: PushState,
+    pub gun: GunState,
+    pub gold_mushroom: [GoldMushroomState; 3],
+    pub bow: BowState,
+    pub meteor: MeteorState,
+    pub platform: PlatformState,
+    pub rock: RockState,
+    pub roll: RollState,
+    pub rewind: RewindState,
+    /// PlayerBody's private prevImposedVel and prevExternalVel, per body: the
+    /// slime's, then each ability slot's form. A body keeps its own until it
+    /// next steps with a rope, so a form hands the rope back to a slime whose
+    /// history is from before the form.
+    pub rope_prev: [(Vec2, Vec2); 4],
+    /// PlayerBody.extraSwingForce: SlimeController's airborne steer on a
+    /// rope, added to the rope force by the slime body's next late pass.
+    pub rope_swing_force: Vec2,
+    /// The body whose form entry last set those Player flags; they follow
+    /// its form until any other body of the player leaves one.
+    pub form_flag_body: usize,
+    /// Each equipped GunTransform or MagnetGun prefab mutates its serialized
+    /// FirepointOffset by Ability.OnScaleChanged's incremental scale
+    /// multiplier.
+    pub gun_firepoint_offsets: [Vec2; 3],
+    /// Each MagnetGun's `extraOffset`, set from the object it picks up and
+    /// never cleared: it outlasts the hold and the use, into the next cast.
+    pub magnet_extra_offsets: [Vec2; 3],
+    /// Each slot's Ability.prevScale: the Player.Scale its last UpdateSim saw.
+    /// Every form keeps one; a gun telescopes its FirepointOffset and a
+    /// ThrowItem2 rescales its payload by the change.
+    pub gun_prev_scales: [Fix; 3],
+    /// PlayerPhysics.gravity_modifier on each slot's GunTransform, MagnetGun or
+    /// BowTransform form. Entering airborne sets 0.03 and firing sets 1, but entering
+    /// grounded leaves it alone, so a form whose ground vanishes inside Move
+    /// falls with whatever its last use left.
+    pub form_gravity: [Fix; 3],
+    pub ragdoll: RagdollState,
+    /// SlimeController.abilityCooldownTimers past the ability list: Init's
+    /// -1.5, which only a FrozenSolid's Shatter changes, to zero.
+    pub spare_timer: Fix,
+    /// (pass, holder hierarchy, body position before that FrozenSolid or
+    /// Poke Ball pinned it). An earlier-spawned Mjolnir updates before the
+    /// holder, so it strikes and homes on the body where it was.
+    pub pinned_from: (u32, u32, Vec2),
+    /// PlayerCollision.ignoredCollider by IgnoreColliderInd: each ignored
+    /// collider's row hierarchy, 0 for none (PlayerCollision.cs:8-16, 52,
+    /// 287-298). Ability.EnterAbility overwrites the form's list with the
+    /// slime's and ExitAbility copies it back, and the slime's is idle while
+    /// a form is up, so one list serves both (Ability.cs:95-98, 146-149).
+    pub ignored: [u32; 6],
+    pub late_obs_position: Vec2,
+    pub late_obs_rotation: Fix,
+    pub cast_spell: CastSpellState,
+    pub spike_cast: SpikeCastState,
+    pub plant_cast: PlantCastState,
+    pub gust: GustState,
+    pub revival: RevivalState,
+    /// Each of those boxes' DPhysicsBox.Scale history. The setter divides the
+    /// inverse extents by `(One / old) * new` (DPhysicsBox.cs:204-218), and the
+    /// boxes outlive each use, so the drift carries over like `forms`.
+    /// Zero marks a box never scaled.
+    pub drill_hitbox_scales: [[Fix; 3]; 3],
+    /// Where SpawnClone put the pending Revival clone: the marker's
+    /// GetPos() in the killing pass (PlayerCollision.cs:150), or the exit of
+    /// a Portal that took it later in that pass.
+    pub revival_clone_position: Vec2,
+    /// ReviveEffect's position, where its particle starts.
+    pub revival_effect_position: Vec2,
+    /// This clone's index in the ReviveEffect's playersToRevive, the order
+    /// Shoot sends their particles in.
+    pub revival_clone_id: usize,
+    pub teleport_pending_position: Vec2,
+    pub teleport_effect_time: Fix,
+    /// (pass, TeleportIndicator hierarchy, position before it moved the
+    /// player): an older Mjolnir still finds the slime there, active.
+    pub teleported_from: (u32, u32, Vec2),
+    pub blink_tunnel_age: Fix,
+    pub respawn_selected: usize,
+    /// Current Freeze prefab for each equipped slot. `freeze_entity` below is
+    /// the one selected by `active_slot`, retained as the hot-path alias used
+    /// by collider queries and observation refresh.
+    pub freeze_entities: [usize; 3],
+    /// Dash hurtbox for each equipped slot: a loadout may hold Dash twice,
+    /// and each Dash prefab owns its own box. `dash_entity` is the one the
+    /// last Dash entry selected.
+    pub dash_entities: [usize; 3],
+    /// Current thrown-ability prefab for each equipped slot. Grenade, Smoke,
+    /// Tack, Mjolnir, Poke Ball and Missile all register one, so a loadout may
+    /// hold up to three at once; `throw_entity` is the one selected by
+    /// `active_slot`, the alias the collider queries use.
+    pub throw_entities: [usize; 3],
+    pub kills: u32,
+    /// Player.playersAndClonesStillAlive: the round starts it at 1, each
+    /// SpawnClone and SpawnAbilityLessClone adds one and each Player.Kill
+    /// takes one, so a second killPlayer on a dead slime leaves it at -1
+    /// (GameSessionHandler.cs:287, PlayerCollision.cs:226-248,
+    /// Player.cs:450-474). Kept on the player's own slot.
+    pub bodies_alive: i32,
+    /// Updater.SimulationTicks passed to Player.Kill for the elimination that
+    /// removed the player's final body. GameSessionHandler uses this to pick
+    /// the most recently eliminated player(s) when every team is out.
+    pub death_tick: u32,
+    /// Incremented whenever a stock/revival clone instantiates fresh ability prefabs.
+    /// One per ability slot: each ability instance's identity. A pickup
+    /// replaces the third slot's instance; a replacement slime all three.
+    pub ability_generation: [u32; 3],
+    /// Hierarchy range reserved when a pickup callback instantiates its
+    /// inactive ability prefab; the collider joins DetPhysics next pass.
+    pub pending_ability_hierarchy: [u32; 3],
+    pub rope_attach_tick: u32,
+    /// The pass `slime` went inactive on.
+    pub slime_tick: u32,
+    /// The inactive SlimeController's currentState.
+    pub inactive_obs_state: u32,
+    /// PokeBall mutates a victim after RlObservation has sampled the slime's
+    /// controller fields. Preserve that pre-callback row for the current pass.
+    pub late_obs_tick: u32,
+    pub late_obs_state: u32,
+    /// Spawn hierarchies are claimed when SpawnClone runs inside the death
+    /// callback, for a stock or a Revival clone. This matters when one
+    /// explosion kills multiple players: the first clone is instantiated
+    /// before the second death effect exists.
+    pub clone_player_hierarchy: u32,
+    pub clone_ability_hierarchy: [u32; 3],
+    pub stock_indicator_hierarchy: [u32; 3],
+    /// The ReviveEffect's place in Updater's list: the pass after the kill
+    /// that instantiated it, and its prefab's base. Every clone of that kill
+    /// shares it.
+    pub revival_effect_appended: u32,
+    pub revival_effect_hierarchy: u32,
+    /// The ReviveParticle's place in Updater's list, from Shoot.
+    pub revival_particle_appended: u32,
+    pub revival_particle_hierarchy: u32,
+    /// The effect's Updater hierarchy, and the pass its UpdateSim reenabled
+    /// the player: updatables below it already saw the player inactive.
+    pub teleport_effect_hierarchy: u32,
+    /// A TeleportIndicator older than a Black Hole fires at the hole's turn,
+    /// ahead of teleport_effects_tick; its new effect first updates next pass.
+    pub teleport_effect_appended: u32,
+    /// Player.positionSetterLastFrame: the row id of the SlimeController
+    /// whose SetPosition won the last pass, or `u32::MAX` for none.
+    pub position_setter_last: u32,
+    /// Respawn countdown while holding a consumed stock (StockRespawn).
+    pub respawn_ticks: u32,
+    /// The pass Updater appended this stock's StockRespawnChooser. BeginChoice
+    /// adds it to a bare GameObject outside any prefab, so it registers with
+    /// HierarchyNumber 0, ahead of everything appended with it
+    /// (StockRespawn.cs:67-70).
+    pub chooser_appended: u32,
+    /// Each Rock slot's collider hierarchy, reserved by its prefab.
+    pub rock_hierarchy: [u32; 3],
+    pub ability_entry_action: Action,
+    /// Last complete input accepted by Player.ForceSetInputProfile. Active
+    /// ability updaters still read this retained profile during Time Stop,
+    /// even though new network/replay packets are ignored.
+    pub last_action: Action,
+    pub out: bool, // dead with no stock left
+    /// The slime object died while ability-less clones kept Player.IsAlive
+    /// true (Player.Kill with playersAndClonesStillAlive > 1).
+    pub slime_gone: bool,
+    /// The slime is a stock clone of an ability-less clone: SpawnClone copied
+    /// its empty ability list (PlayerCollision.cs:255), so every slot is
+    /// empty rather than a NullAbility.
+    pub abilityless: bool,
+    /// Pickup-created ability prefabs are serialized inactive, but their
+    /// Awake registrations become visible on the scheduler's following pass.
+    pub ability_instantiated: [bool; 3],
+    /// Player.isInvisible and its two clocks. `was_invisible` belongs to the
+    /// currently active SlimeController and drives cooldown restoration.
+    pub invisible: bool,
+    /// SlimeController.wasInvisibileWhenEnteredAbility.
+    pub invisible_at_form_entry: bool,
+    /// Between onEnterAbility and the onExitAbility that answers it.
+    pub ability_entered: bool,
+    /// SlimeController.UpdateSim got past OldUpdate this pass, so the caller
+    /// runs its invisibility comparison.
+    pub slime_updated: bool,
+    /// A Duplicator clone's SlimeController.Spawn clears Player.InSparkShot,
+    /// InMachoThrow and InPlatformTransform while the original stays in its
+    /// form; only the next form entry sets them again.
+    pub form_flags_cleared: bool,
+    /// Each Roll's own Ability.KillPlayersOnContact: EnterAbility clears it,
+    /// ReleaseDash sets it, and the Roll in another slot keeps its own.
+    pub roll_lethal: [bool; 3],
+    /// PlatformTransform's hurtBox.enabled belongs to each equipped ability
+    /// object: OnEnterAbility enables it and CreatePlatform disables it, so a
+    /// second Platform slot keeps its own until that prefab is cast.
+    pub platform_hurtbox_disabled: [bool; 3],
+    /// A replacement clone is queued on death, then held hidden while the
+    /// ReviveEffect wisp and doubly-registered particle reach this marker.
+    pub revival_clone_pending: bool,
+    /// A stock death instantiates its replacement in the callback, but the
+    /// new prefab's colliders and SlimeController register next pass.
+    pub stock_clone_pending: bool,
+    /// TeleportedObjectEffect disables the moved GameObject while its visual
+    /// copy shakes. The visual has no observation row, but its RNG and strict
+    /// duration boundary are simulation-visible.
+    pub teleport_effect_active: bool,
+    /// QuantumTunnel disables a Blink victim immediately, relocates it near
+    /// the end of the visual lifetime, then reenables it on a later pass.
+    pub blink_tunnel_active: bool,
+    pub blink_tunnel_released: bool,
+    pub facing_right: bool,
+    /// SlimeController.hasSpawned: off on a new slime, on from Spawn, off again
+    /// from PrepareToRevive (SlimeController.cs:575, 623). UpdateSim returns
+    /// before Move while it is off (1079), and a Magnet passes over the slime
+    /// (MagnetGun.cs:609).
+    pub has_spawned: bool,
+    /// Player.InputProfile's frame-edge state is updated even without a live
+    /// controllable slime and is what the stock chooser reads.
+    pub input_jump_was_down: bool,
+    pub active: ActiveAbility,
+    /// Player.ExtraLife (ReviveStatus.cs), kept on the player's own slot.
+    pub extra_life: u8,
 }
+
+/// The end of `PlayerSlot`'s hot fields: the body and the small fields after
+/// it fill no more than the 28 cache lines from its start.
+const PLAYER_SLOT_HOT_END: usize = std::mem::offset_of!(PlayerSlot, rows_active) + 1;
+const _: () = assert!(PLAYER_SLOT_HOT_END <= 28 * 64 && std::mem::align_of::<PlayerSlot>() == 64);
 
 /// The slime hurtbox clamps an assigned Scale to its serialized bounds,
 /// MinScale `(Fix)0.3f` and MaxScale 3 (Player.prefab), and its FixTransform
