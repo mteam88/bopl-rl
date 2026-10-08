@@ -40921,13 +40921,49 @@ impl RolloutWorld {
         (owner, row.reserved[0])
     }
 
+    /// The component flags, timers and clock rates the rows publish. A
+    /// removed row (E_REMOVED) keeps whatever it held: none is published
+    /// (`state_entities` drops it), its metadata bits, `reserved[1]` and
+    /// `clock_rate` are read nowhere else, and rows never move, so one comes
+    /// back only through `pooled_row`, whose caller writes it whole (39% of
+    /// the rows a pass, on the test corpus). Debug builds run the full pass
+    /// on a copy and assert every live row equal, then poison the removed
+    /// rows' metadata, so that a read of it shows in the debug build's hash.
     fn refresh_entity_metadata(&mut self) {
+        #[cfg(debug_assertions)]
+        let reference = {
+            let saved = self.entities.clone();
+            self.refresh_entity_metadata_pass::<false>();
+            std::mem::replace(&mut self.entities, saved)
+        };
+        self.refresh_entity_metadata_pass::<true>();
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(self.entities.len(), reference.len());
+            let poison = self.tick.wrapping_mul(0x9E37_79B9);
+            for (index, (row, reference)) in self.entities.iter_mut().zip(&reference).enumerate() {
+                if row.flags & E_REMOVED == 0 {
+                    assert!(*row == *reference, "row {index} differs from the full metadata pass");
+                } else {
+                    row.flags = (row.flags & !E_COMPONENT_METADATA) | (poison & E_COMPONENT_METADATA);
+                    row.reserved[1] = poison ^ 0x5A5A_5A5A;
+                    row.clock_rate = i64::from(poison).wrapping_neg();
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn refresh_entity_metadata_pass<const SKIP_REMOVED: bool>(&mut self) {
         let mut held = HeldAbilities::EMPTY;
         self.fill_held_abilities(&mut held);
         #[cfg(debug_assertions)]
         let held_slots = self.live_slime_abilities();
         let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in &mut self.entities {
+            if SKIP_REMOVED && row.flags & E_REMOVED != 0 {
+                continue;
+            }
             row.flags &= !E_COMPONENT_METADATA;
             row.reserved[1] = 0;
             row.clock_rate = 0;
@@ -41078,6 +41114,10 @@ impl RolloutWorld {
                 {
                     item.ability
                 } else if row.flags & E_PROJECTILE != 0
+                    // A removed row's E_PROJECTILE may be a pass old when
+                    // removed rows are skipped; what it decides there, the
+                    // row's reserved[0], is never read again.
+                    && (!SKIP_REMOVED || row.flags & E_REMOVED == 0)
                     && held.holds(row.owner, ABILITY_BOW)
                 {
                     // With no thrower to credit, SourceAbility's last loop
