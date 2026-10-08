@@ -554,6 +554,26 @@ __constant__ unsigned char br4r_count[BR4R_KINDS] = {0, 0, 0, 0, 1, 1, 2, 3, 3, 
 __constant__ unsigned char br4r_part[BR4R_KINDS] = {0, 1, 2, 3, 0, 1, 0, 0, 1, 0, 1, 0, 1, 2, 0};
 static_assert(BR4R_KINDS == 15, "the tables above");
 struct Br4IShared { int pre[BR4E_SEGS][BR4R_MAX_ROWS + 1], base[BR4R_KINDS + 1], wsum[BR4E_SEGS][BR4_RAYS_THREADS / 32]; };
+// Columns [LO, HI) of an item's row from the thread's copy to dst, A the
+// floats dst is aligned to (16 bytes: 4): each store as wide as the
+// alignment allows. A writer function's scattered float stores to the row
+// (one sector a lane, the parts' rows lying apart) clogged the SM's L1 for
+// every warp on it, the rays' shared loads too.
+template <int LO, int HI, int A>
+__device__ __forceinline__ void br4_put(float* __restrict__ dst, const float* row) {
+    #pragma unroll
+    for (int i = LO; i < HI;) {
+        if (A == 4 && i % 4 == 0 && i + 4 <= HI) { *(float4*)(dst + i) = *(const float4*)(row + i); i += 4; }
+        else if (i % 2 == 0 && i + 2 <= HI) { *(float2*)(dst + i) = *(const float2*)(row + i); i += 2; }
+        else { dst[i] = row[i]; i += 1; }
+    }
+}
+static_assert(BOPL_OBS_STRIDE % 4 == 0 && BOPL4_OBS_ENTITY_OFFSET % 4 == 0 && BOPL4_ENTITY_FEATURES % 4 == 0 && BOPL4_OBS_PLAYER_OFFSET % 4 == 0 &&
+              BOPL4_PLAYER_FEATURES % 4 == 0 && BOPL4_OBS_GLOBAL_OFFSET % 4 == 0, "the 16-byte rows");
+static_assert(BOPL4_OBS_SLIME_OFFSET % 2 == 0 && BOPL4_SLIME_FEATURES % 2 == 0 && BOPL4_OBS_SLOT_OFFSET % 2 == 0 && BOPL4_SLOT_FEATURES % 2 == 0 &&
+              BOPL4_OBS_SELF_OFFSET % 2 == 0 && BOPL4_OBS_OPPONENT_OFFSET % 2 == 0, "the 8-byte rows");
+static_assert(BOPL4_ENTITY_FEATURES == 48 && BOPL4_SLIME_FEATURES == 42 && BOPL4_SLOT_FEATURES == 18 && BOPL4_PLAYER_FEATURES == 32 &&
+              BOPL_PLAYER_FEATURES == 20 && BOPL4_SELF == 44 && BOPL4_OPPONENT == 56 && BOPL4_GLOBAL == 66, "the parts' columns below");
 __device__ static void br4_items(const Br4Meta* __restrict__ metas, const int* __restrict__ counts, int rows, int block, int blocks,
                                  Br4IShared& sh) {
     constexpr int T = BR4_RAYS_THREADS, W = T / 32;
@@ -609,37 +629,56 @@ __device__ static void br4_items(const Br4Meta* __restrict__ metas, const int* _
         const BoplRlSlime* slimes = state->slimes;
         const Bopl4Enemy* enemy = &w.enemy;
         float* out = w.out;
+        // The part is written to the thread's row, then its columns to the row in memory.
+        alignas(16) float row[BOPL4_GLOBAL];
         if (q == 0) {
-            bopl4_entity_part(out + BOPL4_OBS_ENTITY_OFFSET + (size_t)k * BOPL4_ENTITY_FEATURES, part, state, &entities[w.nearest[k]], self,
-                              w.x, w.y, w.vx, w.vy, enemy, w.ablation);
+            float* dst = out + BOPL4_OBS_ENTITY_OFFSET + (size_t)k * BOPL4_ENTITY_FEATURES;
+            bopl4_entity_part(row, part, state, &entities[w.nearest[k]], self, w.x, w.y, w.vx, w.vy, enemy, w.ablation);
+            if (part == 0) { br4_put<0, 33, 4>(dst, row); br4_put<47, 48, 4>(dst, row); }
+            else if (part == 1) br4_put<34, 45, 4>(dst, row);
+            else if (part == 2) br4_put<33, 34, 4>(dst, row);
+            else br4_put<45, 47, 4>(dst, row);
         } else if (q == 1) {
+            float* dst = out + BOPL4_OBS_SLIME_OFFSET + (size_t)k * BOPL4_SLIME_FEATURES;
             const uint32_t j = w.nearby[k];
             const BoplRlSlime* slime = &slimes[j];
-            bopl4_slime_part(out + BOPL4_OBS_SLIME_OFFSET + (size_t)k * BOPL4_SLIME_FEATURES, part, state, slime, self, w.x, w.y, w.vx,
-                             w.vy, enemy, slime == w.controller || slime == w.enemy_controller, w.trig[2 * j], w.trig[2 * j + 1], w.ablation);
+            bopl4_slime_part(row, part, state, slime, self, w.x, w.y, w.vx, w.vy, enemy, slime == w.controller || slime == w.enemy_controller,
+                             w.trig[2 * j], w.trig[2 * j + 1], w.ablation);
+            if (part == 0) br4_put<0, 30, 2>(dst, row);
+            else br4_put<30, 42, 2>(dst, row);
         } else if (q == 2) {
-            bopl4_slot_row(out + BOPL4_OBS_SLOT_OFFSET + (size_t)k * BOPL4_SLOT_FEATURES, state, &slimes[w.slots[k] / 3],
-                           w.slots[k] % 3, self, w.x, w.y, enemy);
+            bopl4_slot_row(row, state, &slimes[w.slots[k] / 3], w.slots[k] % 3, self, w.x, w.y, enemy);
+            br4_put<0, BOPL4_SLOT_FEATURES, 2>(out + BOPL4_OBS_SLOT_OFFSET + (size_t)k * BOPL4_SLOT_FEATURES, row);
         } else if (q == 3) {
+            float* dst = out + BOPL4_OBS_PLAYER_OFFSET + (size_t)k * BOPL4_PLAYER_FEATURES;
             const uint32_t index = k == 0 ? (uint32_t)w.a : ((uint32_t)k <= (uint32_t)w.a ? (uint32_t)k - 1 : (uint32_t)k);
-            bopl4_player_part(out + BOPL4_OBS_PLAYER_OFFSET + (size_t)k * BOPL4_PLAYER_FEATURES, part, state, &state->players[index], self,
-                              w.x, w.y, w.vx, w.vy, w.ablation);
+            bopl4_player_part(row, part, state, &state->players[index], self, w.x, w.y, w.vx, w.vy, w.ablation);
+            if (part == 0) br4_put<0, 20, 4>(dst, row);
+            else br4_put<20, 32, 4>(dst, row);
         } else if (q == 4) {
-            float* self_block = out + BOPL4_OBS_SELF_OFFSET;
+            float* dst = out + BOPL4_OBS_SELF_OFFSET;
             const int c = w.controller ? (int)(w.controller - slimes) : -1;
-            if (part == 0) bopl_player_features(self_block, state, self, self, w.x, w.y);
-            else bopl4_body(self_block + BOPL_PLAYER_FEATURES, w.controller, c < 0 ? 0.0f : w.trig[2 * c], c < 0 ? 0.0f : w.trig[2 * c + 1]);
-        } else if (q == 5) {
-            float* opp = out + BOPL4_OBS_OPPONENT_OFFSET;
-            const int c = enemy->slime ? (int)(enemy->slime - slimes) : -1;
-            bopl4_opponent_part(opp, part, state, enemy, self, w.x, w.y, w.vx, w.vy,
-                                c < 0 ? 0.0f : w.trig[2 * c], c < 0 ? 0.0f : w.trig[2 * c + 1], w.ablation);
-            if (part == 0 && (w.flags & BOPL4_STATE_ENEMY)) {
-                out[BOPL4_OBS_PRIVILEGED_OFFSET + 43] = bopl4_stale_enemy(w.enemy_dx, opp[9]);
-                out[BOPL4_OBS_PRIVILEGED_OFFSET + 44] = bopl4_stale_enemy(w.enemy_dy, opp[10]);
+            if (part == 0) { bopl_player_features(row, state, self, self, w.x, w.y); br4_put<0, 20, 2>(dst, row); }
+            else {
+                bopl4_body(row + BOPL_PLAYER_FEATURES, w.controller, c < 0 ? 0.0f : w.trig[2 * c], c < 0 ? 0.0f : w.trig[2 * c + 1]);
+                br4_put<20, 44, 2>(dst, row);
             }
+        } else if (q == 5) {
+            float* dst = out + BOPL4_OBS_OPPONENT_OFFSET;
+            const int c = enemy->slime ? (int)(enemy->slime - slimes) : -1;
+            bopl4_opponent_part(row, part, state, enemy, self, w.x, w.y, w.vx, w.vy,
+                                c < 0 ? 0.0f : w.trig[2 * c], c < 0 ? 0.0f : w.trig[2 * c + 1], w.ablation);
+            if (part == 0) {
+                br4_put<0, 20, 2>(dst, row);
+                if (w.flags & BOPL4_STATE_ENEMY) {
+                    out[BOPL4_OBS_PRIVILEGED_OFFSET + 43] = bopl4_stale_enemy(w.enemy_dx, row[9]);
+                    out[BOPL4_OBS_PRIVILEGED_OFFSET + 44] = bopl4_stale_enemy(w.enemy_dy, row[10]);
+                }
+            } else if (part == 1) br4_put<20, 44, 2>(dst, row);
+            else br4_put<44, 56, 2>(dst, row);
         } else {
-            bopl4_global_block(out, state, &w.c, (uint32_t)w.max_ticks, (w.flags & BOPL4_STATE_SPACE) != 0, w.controller, 0, 1);
+            bopl4_global_block(row, state, &w.c, (uint32_t)w.max_ticks, (w.flags & BOPL4_STATE_SPACE) != 0, w.controller, 0, 1);
+            br4_put<0, BOPL4_GLOBAL, 4>(out + BOPL4_OBS_GLOBAL_OFFSET, row);
         }
     }
 }
