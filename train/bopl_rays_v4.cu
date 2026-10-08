@@ -264,7 +264,7 @@ __device__ __forceinline__ unsigned long long br4e_or(unsigned long long v) {
     return v;
 }
 
-__global__ void __launch_bounds__(BR4E_THREADS, 3) bopl4_encode_rows(const float* __restrict__ packed, float* __restrict__ dense, int rows,
+__global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float* __restrict__ packed, float* __restrict__ dense, int rows,
                                                                 Bopl4Scene* __restrict__ scenes, Br4Meta* __restrict__ metas,
                                                                 int* __restrict__ counts) {
     __shared__ Br4EShared sh;
