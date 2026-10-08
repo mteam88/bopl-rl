@@ -135,7 +135,7 @@ struct Bench {
     const Weights* cur = nullptr;
     std::vector<Step> steps;
     std::vector<Lane> lanes;
-    float *packed_dev, *packed_host, *host_rows, *host_rows_dev, *h_actions;
+    float *packed_dev, *packed_host, *packed_mapped, *host_rows, *host_rows_dev, *h_actions;
     int* act_sizes;
 
     void load(const std::string& root, int max_steps) {
@@ -196,7 +196,8 @@ struct Bench {
     void setup() {
         size_t slot = BOPL4_PACK_P, slots = (size_t)nb * apb;
         ck(cudaMalloc((void**)&packed_dev, slots * slot * sizeof(float)), "packed_dev");
-        ck(cudaHostAlloc((void**)&packed_host, slots * slot * sizeof(float), cudaHostAllocPortable), "packed_host");
+        ck(cudaHostAlloc((void**)&packed_host, slots * slot * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "packed_host");
+        ck(cudaHostGetDevicePointer((void**)&packed_mapped, packed_host, 0), "packed_host alias");
         for (size_t r = 0; r < slots; r++) ((unsigned*)(packed_host + r * slot))[0] = BOPL4_PACK_MODE_DENSE;
         ck(cudaMemcpy(packed_dev, packed_host, slots * slot * sizeof(float), cudaMemcpyHostToDevice), "packed init");
         ck(cudaHostAlloc((void**)&host_rows, slots * BOPL_OBS_STRIDE * sizeof(float), cudaHostAllocMapped | cudaHostAllocPortable), "host_rows");
@@ -241,9 +242,11 @@ struct Bench {
         Lane& L = lanes[b];
         const int start = b * apb;
         size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), off = (size_t)start * slot_bytes;
-        ck(cudaMemcpyAsync((char*)packed_dev + off, (const char*)packed_host + off, (size_t)rows * slot_bytes + pack_bytes, cudaMemcpyHostToDevice, L.s), "h2d");
+        ck(cudaMemcpy2DAsync((char*)packed_dev + off, slot_bytes, (const char*)packed_host + off, slot_bytes,
+                             (size_t)BR4_PACK_DMA_WORDS * sizeof(float), rows, cudaMemcpyHostToDevice, L.s), "h2d");
         const float* hr = host_rows_dev + (size_t)start * BOPL_OBS_STRIDE;
-        bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, L.s>>>(packed_dev + (size_t)start * BOPL4_PACK_P, hr, L.dense, rows);
+        bopl4_unpack_rows<<<bopl4_unpack_blocks(rows, pack_bytes), BR4_UNPACK_THREADS, 0, L.s>>>(
+            packed_mapped + (size_t)start * BOPL4_PACK_P, packed_dev + (size_t)start * BOPL4_PACK_P, hr, L.dense, rows, pack_bytes);
         bopl4_rays_launch(packed_dev + (size_t)start * BOPL4_PACK_P, L.dense, rows, L.s);
         const char* pk = (const char*)packed_dev + (size_t)(start + rows) * slot_bytes;
         const float* rewards = (const float*)pk;

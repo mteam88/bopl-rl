@@ -534,6 +534,7 @@ struct BrPlan {
     int actions_zero_copy;  // sampler writes actions into the mapped host buffer
     int graph_copies;    // H2D / D2H memcpys captured into the forward graph (BOPL_GRAPH_COPIES, default 1)
     int transport_check; // dump mode (train.py --dump-rows): count device-row floats that differ from the host row
+    const float* packed_mapped;  // the device alias of vec->packed_host (bopl4_unpack_rows reads the slots' tails there)
     int tf32;            // tensor-core tf32 GEMMs (BOPL_TF32, default 1) or fp32 FMAs
     int sparse;          // stage only the populated obs slots (BOPL_OBS_SPARSE, default 1)
     int rows;            // live rows per buffer (bank_layout end)
@@ -580,6 +581,18 @@ static void br_transpose_launch(const BrPlan& p, const BrLinear& src, const BrLi
 }
 
 constexpr int BR4_UNPACK_THREADS = 256;   // bopl4_unpack_rows (bopl_rollout_v4.cu)
+// The words at the head of every packed slot the H2D copy carries (a 2D copy
+// of the buffer's slots); bopl4_unpack_rows reads the rest of a slot's used
+// words from the mapped host slot. A mode-4 slot uses ~1000 of its 2048 words
+// (median; p90 ~1400). 2026-10-07 (fwd_bench, 200 spec steps; actions ready,
+// us): the whole-slot memcpy 177 (1 stream) / 371 (4 streams at once, per
+// stream); every used word read by the unpack 152 / 388 (the GPU's own PCIe
+// reads are slower than the copy engine's under load); heads of 512, 640,
+// 768, 1024, 1280 words 158, 155, 155, 157, 170 / 367, 364, 361, 360, 365.
+constexpr int BR4_PACK_DMA_WORDS = 768;
+static_assert(BR4_PACK_DMA_WORDS % 4 == 0 && BR4_PACK_DMA_WORDS >= BOPL4_PACK_HEADER, "whole float4s, the slot's header included");
+// bopl4_unpack_rows' grid: a block per row, then the pack's 16-byte units a thread each.
+static int bopl4_unpack_blocks(int rows, int tail_bytes) { return rows + (tail_bytes + 16 * BR4_UNPACK_THREADS - 1) / (16 * BR4_UNPACK_THREADS); }
 #ifndef BR_KERNELS_ONLY  // the trainer-side part (needs pufferlib.cu); microbenchmarks include only the kernels above
 // Policy v4 chain hooks (bopl_rollout_v4.cu, included at the end of this file).
 static const char* br4_check(PuffeRL* pufferl);
@@ -590,7 +603,8 @@ static const float* br4_dec_rows(BrPlan& p, int buf);
 // Packed observation transport (bopl_obs_pack.h): the unpack of one buffer's
 // slots into its dense device rows, the dump-mode check of those rows against
 // the host rows, and the env-side registration (binding.c: the env struct).
-__global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows);
+__global__ void bopl4_unpack_rows(const float* __restrict__ host_packed, float* __restrict__ packed, const float* __restrict__ host_rows,
+                                  float* __restrict__ dense, int rows, int tail_bytes);
 __global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches);
 extern "C" void bopl4_rays_init(const float* packed, long slots);
 extern "C" void bopl4_rays_launch(const float* packed, float* dense, int rows, cudaStream_t stream);
@@ -916,7 +930,8 @@ static void br_init(PuffeRL* pufferl) {
         // bopl4_rays_rows writes the terrain and rays of mode-2 rows.
         if (is_v4 && p->graph_copies && vec->mapped) {
             size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), n = (size_t)vec->total_agents * slot_bytes;
-            assert(cudaHostAlloc((void**)&vec->packed_host, n, cudaHostAllocPortable) == cudaSuccess);
+            assert(cudaHostAlloc((void**)&vec->packed_host, n, cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess);
+            assert(cudaHostGetDevicePointer((void**)&p->packed_mapped, vec->packed_host, 0) == cudaSuccess);
             assert(cudaMalloc((void**)&vec->packed_dev, n) == cudaSuccess);
             assert(cudaMalloc((void**)&vec->transport_mismatch, sizeof(int)) == cudaSuccess);
             cudaMemset(vec->transport_mismatch, 0, sizeof(int));
@@ -1048,19 +1063,23 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     }
     float* env_actions = (p.actions_zero_copy ? vec->dev_actions : vec->gpu_actions) + (long)start * p.num_atns;
     if (p.graph_copies && vec->packed_host) {
-        // Packed rows: one memcpy of the buffer's slots (+ the pack in their
-        // tail), then the dense device rows rebuilt for the chain.
+        // Packed rows: one 2D copy of the head of every slot of the buffer,
+        // then the dense device rows rebuilt for the chain (the unpack reads
+        // the rest of each slot's used words, and the pack in their tail,
+        // from the mapped host slots).
         size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), off = (size_t)start * slot_bytes;
-        size_t bytes = (size_t)rows * slot_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);
-        cudaMemcpyAsync((char*)vec->packed_dev + off, (const char*)vec->packed_host + off, bytes, cudaMemcpyHostToDevice, stream);
+        cudaMemcpy2DAsync((char*)vec->packed_dev + off, slot_bytes, (const char*)vec->packed_host + off, slot_bytes,
+                          (size_t)BR4_PACK_DMA_WORDS * sizeof(float), rows, cudaMemcpyHostToDevice, stream);
         if (!vec->pack_in_tail) cudaMemcpyAsync(vec->pack_dev[buf], vec->pack_host[buf], vec->pack_bytes, cudaMemcpyHostToDevice, stream);
+        const int tail = vec->pack_in_tail ? vec->pack_bytes : 0;
         // The dense row is rebuilt straight into the rollout tensor's rows for
         // this step (the trainer reads them there) and the chain reads it from
         // there too: no device copy of the observation row (br4_sets used to
         // copy gpu_observations -> rollout_obs, 19 KB per row per step).
         const float* host_rows = (const float*)vec->dev_observations + (long)start * BOPL_OBS_STRIDE;
         float* dense = puf_slice(rollouts.observations, t, start, rows).data;
-        bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows);
+        bopl4_unpack_rows<<<bopl4_unpack_blocks(rows, tail), BR4_UNPACK_THREADS, 0, stream>>>(
+            p.packed_mapped + (long)start * BOPL4_PACK_P, vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows, tail);
         // The terrain and rays of the rows with a scene. (The rays on a side
         // stream beside br4_sets, joined before the flat GEMM, measured no
         // faster, 2026-10-06; again with br4_sets at 23.5 us, 2026-10-07

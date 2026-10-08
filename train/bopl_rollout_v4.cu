@@ -738,17 +738,36 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
 #endif  // BR_KERNELS_ONLY
 
 // ---- packed observation transport (bopl_obs_pack.h) ----------------------
-// One block per row. Mode 0: the flat and privileged blocks, then each set's
+// One block per row, after the H2D copy of the slots' first
+// BR4_PACK_DMA_WORDS words: first the rest of the slot's used words from the
+// mapped host slot (a mode-4 slot's head gives its length; the other modes'
+// whole slot), then per mode. The blocks past `rows` copy the reward /
+// terminal / mask pack in the buffer's idle tail (tail_bytes, 0 when the
+// pack is copied on its own). Mode 4 rows are done then. Mode 0: the flat and privileged blocks, then each set's
 // prefix rows followed by zeros to the block's end; mode 2 the same without
 // the terrain and rays, which bopl4_rays_rows writes next. Mode 1 (the slot did not
 // fit, or the row has no writer record): the dense row straight from the
 // mapped host buffer; mode 3 the same, its terrain and rays from bopl4_rays_rows. Either way the device row equals the host row bit for
 // bit (bopl4_transport_check counts the floats that differ, dump mode only).
-__global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows) {
+__global__ void bopl4_unpack_rows(const float* __restrict__ host_packed, float* __restrict__ packed, const float* __restrict__ host_rows,
+                                  float* __restrict__ dense, int rows, int tail_bytes) {
     br_pdl_wait(); br_pdl_release();   /* launched after a memcpy (no PDL edge in); lets br4_sets pre-launch */
     const int r = blockIdx.x;
-    if (r >= rows) return;
-    const float* slot = packed + (long)r * BOPL4_PACK_P;
+    if (r >= rows) {   // (the 16-byte units round up into the idle tail's own slots)
+        const float4* src = (const float4*)(host_packed + (long)rows * BOPL4_PACK_P);
+        float4* dst = (float4*)(packed + (long)rows * BOPL4_PACK_P);
+        const int i = (r - rows) * blockDim.x + threadIdx.x;
+        if (i < (tail_bytes + 15) / 16) dst[i] = src[i];
+        return;
+    }
+    float* slot = packed + (long)r * BOPL4_PACK_P;
+    {
+        const unsigned* head = (const unsigned*)slot;
+        const int used = head[0] == BOPL4_PACK_MODE_STATE ? (int)head[BOPL4_PACK_STATE_WORDS] : BOPL4_PACK_P;
+        const float4* src = (const float4*)(host_packed + (long)r * BOPL4_PACK_P);
+        for (int i = BR4_PACK_DMA_WORDS / 4 + threadIdx.x; i < (used + 3) / 4; i += blockDim.x) ((float4*)slot)[i] = src[i];
+        __syncthreads();
+    }
     float* out = dense + (long)r * BOPL_OBS_STRIDE;
     const unsigned* hdr = (const unsigned*)slot;
     if (hdr[0] == BOPL4_PACK_MODE_STATE) return;   /* bopl4_rays_rows writes the whole row */

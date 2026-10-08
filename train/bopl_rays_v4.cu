@@ -65,6 +65,7 @@ struct Br4Shared {
     int hit[16], edge_drop[16], dash_landing;
 };
 static_assert(sizeof(Br4Shared) <= 48 * 1024, "static shared memory");
+static_assert(offsetof(Bopl4StateHead, words) == BOPL4_PACK_STATE_WORDS * 4, "the unpack reads a mode-4 slot's length there");
 
 __device__ __forceinline__ void br4_bar(int id, int threads) { asm volatile("bar.sync %0, %1;" ::"r"(id), "r"(threads) : "memory"); }
 __device__ __forceinline__ int br4_bar_or(int id, int threads, int p) {
