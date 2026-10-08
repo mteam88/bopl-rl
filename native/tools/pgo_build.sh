@@ -20,4 +20,11 @@ CARGO_TARGET_DIR=target/pgo-gen RUSTFLAGS="-C target-cpu=native -Cprofile-genera
   cargo build --release --bin pgo-train "$@"
 LLVM_PROFILE_FILE="$WORK/raw/pgo-%p-%m.profraw" target/pgo-gen/release/pgo-train "$WORK/corpus"
 "$PROFDATA" merge -o "$WORK/merged.profdata" "$WORK"/raw/pgo-*.profraw
-RUSTFLAGS="-C target-cpu=native -Cprofile-use=$WORK/merged.profdata" cargo build --release "$@"
+# The profile-use build places blocks by LLVM's ext-TSP model (fall-throughs
+# and short jumps weighted by the profile's edge counts) instead of the
+# default chain placement: -0.27% sim instructions, -0.3% cycles. The sim's
+# code misses are capacity (a tick touches ~84 KB of code lines, all from
+# L2), so layout buys little; machine function splitting and hot/cold
+# splitting were neutral to +0.4%.
+RUSTFLAGS="-C target-cpu=native -Cprofile-use=$WORK/merged.profdata -C llvm-args=-enable-ext-tsp-block-placement" \
+  cargo build --release "$@"
