@@ -2104,6 +2104,7 @@ impl RolloutWorld {
     /// before the first resolves (DetPhysics.cs:3052-3089). Its callbacks the
     /// rollout reacts to are a hook's, a hole's, a Rock's bounce off another
     /// Rock and a Smoke's, which reads `cc_contacts`.
+    #[inline(never)]
     pub(super) fn circle_circle_group(&mut self, data: &data::RolloutData) {
         let sweep_x = self.sweep_x();
         // The parts in the order taken, with their layers, stay for the
@@ -2317,6 +2318,7 @@ impl RolloutWorld {
     /// is built before the first resolves, each queues A's OnCollide then
     /// B's, and ResolveCollision works on a child's CompositeBody while
     /// PositionalCorrection takes its own inverse mass (DetPhysics.cs:3131-3168).
+    #[inline(never)]
     pub(super) fn box_box_group(&mut self, data: &data::RolloutData) {
         #[cfg(debug_assertions)]
         let sweep_x = self.sweep_x();

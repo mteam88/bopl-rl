@@ -21909,6 +21909,7 @@ impl RolloutWorld {
         self.smoke_cloud_update(cloud_index, data, updater_dt);
     }
 
+    #[inline(never)]
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         // Every cloud in Updater order: `cloud_keys` sorts the same (key,
         // slot) pairs `updater_order` would.
@@ -34649,6 +34650,7 @@ impl RolloutWorld {
         }
     }
 
+    #[inline(never)]
     fn thrown_items_integrate(
         &mut self,
         data: &data::RolloutData,
@@ -35513,6 +35515,7 @@ impl RolloutWorld {
     /// the Box/RoundedRect group and before Circle/Circle, with the walls as
     /// its narrow phase sees them. Rigid pairs resolve in sweep order, and
     /// GrenadeExplode observes Player-layer overlaps only after all of them.
+    #[inline(never)]
     fn circle_wall_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.wall_parts);
         parts.clear();
@@ -35633,6 +35636,7 @@ impl RolloutWorld {
 
     /// The Circle/Circle group, then the Circle/Box group built from the
     /// corrected circles, then the Smoke callbacks.
+    #[inline(never)]
     fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) {
         for item in &self.thrown_items {
             let Some(entity) = item.entity.filter(|_| item.active) else {
