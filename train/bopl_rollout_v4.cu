@@ -356,6 +356,7 @@ struct Br4RowsArgs {
     const float* res; int ldres;      // residual added to x first (modes 1, 2), or nullptr
     float* y; int ldy;                // mode 1: x + res written back here (the trunk output y), mode 2: unused
     float* out; int ldout;            // LN output; mode 2: the decoder row (value at column vcol)
+    float* values;                    // mode 2: the value again, (rows,) (the rollout's values)
     const float* priv; int ldpriv, P; // mode 1: privileged block appended before the LN (P = 0: none)
     int vcol;
     BrGroups g;
@@ -399,7 +400,7 @@ __global__ void __launch_bounds__(256) br4_rows(Br4RowsArgs a) {
         float dot = 0.0f;
         for (int c = threadIdx.x; c < W; c += blockDim.x) dot = fmaf((rowbuf[c] - mu) * r, cout[c], dot);
         dot = br4_block_sum(dot, scratch);
-        if (threadIdx.x == 0) a.out[(long)row * a.ldout + a.vcol] = dot;
+        if (threadIdx.x == 0) { a.out[(long)row * a.ldout + a.vcol] = dot; a.values[row] = dot; }
     } else {
         for (int c = threadIdx.x; c < W; c += blockDim.x) a.out[(long)row * a.ldout + c] = (rowbuf[c] - mu) * r;
     }
@@ -411,6 +412,7 @@ struct Br4Wt {   // one group's GEMM-side weights (br_prepare) and the set MLPs'
 };
 struct Br4Acts {
     float *joined, *enc, *comb, *gru[2], *ln, *f, *y, *z, *lnc, *b, *z2, *dec;
+    cudaStream_t critic; cudaEvent_t fork, join;   // the critic's branch (br4_run, br4_join)
 };
 struct Br4Plan {
     int FD, D, I, F, C, P, mean_pool, JW, W, LNW;
@@ -421,9 +423,17 @@ struct Br4Plan {
 // The v4 chain from the live obs rows to the decoder rows A.dec (logits, value
 // at column dec_cols), rollout copies included. The caller samples. Kernels
 // only: the trainer (br4_chain) and the forward bench (fwd_bench.cu) call it.
+// The critic runs on its own branch beside the actor and the sampler and
+// writes the learner rows' values itself: the caller samples on `stream`
+// (values from the decoder row for the rows from p.g.end[1] on) and joins
+// the branch with br4_join before anything that reads the value column; the
+// env step waits only for the actions (br_forward's actions_ready).
+// 2026-10-07 (fwd_bench, 200 spec steps): the step's graph 195 -> 178 us on
+// 1 stream, 407 -> 388 us per stream with 4 at once; spec trainer eval_gpu
+// 0.348 -> 0.305 ms per buffer step (with the sampler's aim pass).
 struct Br4Groups { const float* emb[BR_MAX_GROUPS]; const float* cout[BR_MAX_GROUPS]; float* state[BR_MAX_GROUPS]; int state_rows[BR_MAX_GROUPS]; };
 static void br4_run(BrPlan& p, int buf, const Br4Groups& gr, const float* obs, const float* rewards, const float* terminals,
-                    float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream) {
+                    float* rollout_obs, float* rollout_rewards, float* rollout_terminals, float* values, cudaStream_t stream) {
     Br4Plan& q = *p.v4; Br4Acts& A = q.acts[buf];
     int rows = p.rows, H = p.H;
     Br4SetsArgs sa = {};
@@ -472,8 +482,13 @@ static void br4_run(BrPlan& p, int buf, const Br4Groups& gr, const float* obs, c
     }
     ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
     br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
+    if (q.C) {
+        cudaEventRecord(A.fork, stream);
+        cudaStreamWaitEvent(A.critic, A.fork, 0);
+    }
     br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
+        cudaStream_t cs = A.critic;
         // The critic runs over the learner's rows only (group 0, its own row
         // tiles): the frozen banks' values are never read (their advantages
         // are zeroed, the statistics take learner rows), and their value
@@ -482,18 +497,24 @@ static void br4_run(BrPlan& p, int buf, const Br4Groups& gr, const float* obs, c
         // GEMMs (K, N = 512) and the two LNs.
         BrPlan pl = p; pl.g.n = 1;
         const int crows = p.g.end[1];
-        br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
+        br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, cs);
         ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
-        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
-        br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
-        br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, cs, ra);
+        br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, cs);
+        br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, cs);
         ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
-        ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
-        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
+        ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout; ra.values = values;
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, cs, ra);
+        cudaEventRecord(A.join, cs);
     }
 }
+static void br4_join(BrPlan& p, int buf, cudaStream_t stream) {
+    if (p.v4 && p.v4->C) cudaStreamWaitEvent(stream, p.v4->acts[buf].join, 0);
+}
+// The rows whose value the critic writes (the sampler writes the rest from the decoder row).
+static int br4_value_rows(const BrPlan& p) { return p.v4 && p.v4->C ? p.g.end[1] : 0; }
 
 
 #ifndef BR_KERNELS_ONLY
@@ -539,6 +560,13 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p) {
         zalloc(&a.ln, (size_t)apb * q->LNW); zalloc(&a.f, (size_t)apb * q->F); zalloc(&a.y, (size_t)apb * H);
         zalloc(&a.z, (size_t)apb * q->C); zalloc(&a.lnc, (size_t)apb * q->C); zalloc(&a.b, (size_t)apb * q->C); zalloc(&a.z2, (size_t)apb * q->C);
         zalloc(&a.dec, (size_t)apb * p->ld_dec);
+        if (q->C) {   // same (highest) priority and partition as the buffer streams
+            int prio_least = 0, prio_greatest = 0;
+            cudaDeviceGetStreamPriorityRange(&prio_least, &prio_greatest);
+            a.critic = bopl_make_stream(pufferl, true, prio_greatest);
+            assert(cudaEventCreateWithFlags(&a.fork, cudaEventDisableTiming) == cudaSuccess);
+            assert(cudaEventCreateWithFlags(&a.join, cudaEventDisableTiming) == cudaSuccess);
+        }
     }
     for (int g = 0; g < p->g.n; g++) {
         Br4Wt& w = q->wt[g];
@@ -602,6 +630,7 @@ static void br4_free(PuffeRL* pufferl, BrPlan* p) {
     for (int b = 0; b < pufferl->hypers.num_buffers; b++) {
         Br4Acts& a = q->acts[b];
         for (float* ptr : {a.joined, a.enc, a.comb, a.gru[0], a.gru[1], a.ln, a.f, a.y, a.z, a.lnc, a.b, a.z2, a.dec}) cudaFree(ptr);
+        if (a.critic) { cudaStreamDestroy(a.critic); cudaEventDestroy(a.fork); cudaEventDestroy(a.join); }
     }
     for (int g = 0; g < p->g.n; g++) {
         Br4Wt& w = q->wt[g];
@@ -618,7 +647,7 @@ static void br4_free(PuffeRL* pufferl, BrPlan* p) {
 // that are not the plan's own (the embedding and critic_out as stored, the
 // recurrent state of this buffer).
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
-                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream) {
+                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, float* values, cudaStream_t stream) {
     Br4Groups gr = {};
     for (int g = 0; g < p.g.n; g++) {
         PolicyWeights* w; PrecisionTensor* s;
@@ -627,7 +656,7 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         gr.cout[g] = ((v4::DecWeights*)w->decoder)->critic_out.data;
         gr.state[g] = s->data; gr.state_rows[g] = (int)s->shape[1];
     }
-    br4_run(p, buf, gr, obs, rewards, terminals, rollout_obs, rollout_rewards, rollout_terminals, stream);
+    br4_run(p, buf, gr, obs, rewards, terminals, rollout_obs, rollout_rewards, rollout_terminals, values, stream);
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +701,7 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
     HypersT& hypers = pufferl->hypers;
     RolloutBuf rollouts = rollout_slot_view(pufferl->rollouts, pufferl->write_slot, hypers.horizon);
     int apb = pufferl->vec->total_agents / hypers.num_buffers, start = buf * apb;
+    br4_join(p, buf, stream);
     cudaStreamSynchronize(stream);
     std::vector<float> ours((size_t)p.rows * p.ld_dec);
     cudaMemcpy(ours.data(), dec_rows, ours.size() * sizeof(float), cudaMemcpyDeviceToHost);

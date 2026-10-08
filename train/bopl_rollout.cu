@@ -60,6 +60,13 @@ static void br_launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_
     cudaError_t e = cudaLaunchKernelEx(&cfg, kernel, std::forward<Args>(args)...);
     if (e != cudaSuccess) { fprintf(stderr, "br_launch_pdl: %s\n", cudaGetErrorString(e)); abort(); }
 }
+// An event the host polls: an external event node of the graph when the
+// stream is capturing (the flag is an error outside capture).
+static void br_record_external(cudaEvent_t e, cudaStream_t stream) {
+    cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
+    cudaStreamIsCapturing(stream, &cs);
+    cudaEventRecordWithFlags(e, stream, cs == cudaStreamCaptureStatusActive ? cudaEventRecordExternal : cudaEventRecordDefault);
+}
 
 #define BR_MAX_GROUPS 9   // learner + up to 8 frozen banks
 #define BR_MAX_LAYERS 4
@@ -591,7 +598,9 @@ extern "C" void bopl_pack_register(void* envs, int start, int count, const float
 static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
-                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream);
+                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, float* values, cudaStream_t stream);
+static void br4_join(BrPlan& p, int buf, cudaStream_t stream);
+static int br4_value_rows(const BrPlan& p);
 #endif  // BR_KERNELS_ONLY
 // ---------------------------------------------------------------------------
 // Sampler: sample_logits_warp with the env's byte mask as input and the
@@ -602,6 +611,7 @@ struct BrSampleArgs {
     const float* dec; int ld_dec, A_total; // (rows, ld_dec >= dec_cols + 1): raw logits then the value
     int dec_cols, aim_fourier, aim_ar;       // bopl_aim.h: A_total game logits are materialised from dec_cols columns
     const int* act_sizes; int num_atns;
+    int value_rows;                        // rows below this have their value written by the chain (the v4 critic)
     const unsigned char* env_mask; int mask_stride;  // NULL when the env has no mask
     float* rollout_mask;                   // (rows, mask_stride) float copy for training
     float* env_actions;                    // (rows, num_atns)
@@ -727,7 +737,7 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
     }
     if (lane == 0) {
         a.logprobs[idx] = total_log_prob;
-        a.values[idx] = logits[a.dec_cols];
+        if (idx >= a.value_rows) a.values[idx] = logits[a.dec_cols];
         a.rng[idx] = state;
     }
 }
@@ -827,6 +837,13 @@ static void br_init(PuffeRL* pufferl) {
     vec->actions_zero_copy = p->actions_zero_copy;
     vec->live_per_buffer = p->rows;
     vec->graph_copies = p->graph_copies;
+    if (br4_value_rows(*p) && (p->graph_copies || p->actions_zero_copy)) {
+        // The env step waits for the actions alone (br_forward records the
+        // event once they are in host memory), not for the critic's branch.
+        vec->actions_ready = (cudaEvent_t*)calloc(pufferl->hypers.num_buffers, sizeof(cudaEvent_t));
+        for (int b = 0; b < pufferl->hypers.num_buffers; b++)
+            assert(cudaEventCreateWithFlags(&vec->actions_ready[b], cudaEventDisableTiming) == cudaSuccess);
+    }
     if (p->zero_copy == 0) {
         int nb = pufferl->hypers.num_buffers;
         size_t row_bytes = (size_t)BS_OBS * sizeof(float);
@@ -941,6 +958,10 @@ static void br_free(PuffeRL* pufferl) {
         for (int l = 0; l < p->layers; l++) cudaFree(w.gru[l]);
     }
     StaticVec* vec = (StaticVec*)pufferl->vec;
+    if (vec && vec->actions_ready) {
+        for (int b = 0; b < pufferl->hypers.num_buffers; b++) cudaEventDestroy(vec->actions_ready[b]);
+        free(vec->actions_ready); vec->actions_ready = nullptr;
+    }
     if (vec && vec->pack_host) {
         if (!vec->pack_in_tail)
             for (int b = 0; b < pufferl->hypers.num_buffers; b++) { cudaFreeHost(vec->pack_host[b]); cudaFree(vec->pack_dev[b]); }
@@ -1020,7 +1041,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     const float* dec_rows = A.dec;
     br_check_pre(pufferl, buf, stream);
     if (p.v4) {
-        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, stream);
+        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, val_dst.data, stream);
         dec_rows = br4_dec_rows(p, buf);
     } else {
     // Per-group weights (set-encoder MLPs as stored, GEMM weights transposed by
@@ -1071,6 +1092,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     smp.dec = dec_rows; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
     smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
     smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
+    smp.value_rows = br4_value_rows(p);
     smp.env_mask = mask; smp.mask_stride = p.mask_stride; smp.rollout_mask = mask_dst.data;
     smp.env_actions = env_actions; smp.rollout_actions = act_dst.data;
     smp.logprobs = lp_dst.data; smp.values = val_dst.data;
@@ -1080,6 +1102,8 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     if (p.graph_copies && !p.actions_zero_copy)
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);
+    if (vec->actions_ready) br_record_external(vec->actions_ready[buf], stream);
+    br4_join(p, buf, stream);
 }
 #include "bopl_rollout_v4.cu"
 
@@ -1105,22 +1129,23 @@ static void br_chain_rows(PuffeRL* pufferl, const float* host_obs, int count, in
         cudaMemcpyAsync(pufferl->actor_param_puf.data, pufferl->param_puf.data,
                         numel(pufferl->param_puf.shape) * sizeof(precision_t), cudaMemcpyDeviceToDevice, stream);
     br_prepare(pufferl, stream);
-    float *obs, *rewards, *terminals, *rew_copy, *term_copy;
+    float *obs, *rewards, *terminals, *rew_copy, *term_copy, *values;
     size_t obs_bytes = (size_t)rows * BOPL_OBS_STRIDE * sizeof(float), row_bytes = (size_t)rows * sizeof(float);
     cudaMalloc((void**)&obs, obs_bytes); cudaMemsetAsync(obs, 0, obs_bytes, stream);
     cudaMalloc((void**)&rewards, row_bytes); cudaMemsetAsync(rewards, 0, row_bytes, stream);
     cudaMalloc((void**)&terminals, row_bytes); cudaMemsetAsync(terminals, 0, row_bytes, stream);
-    cudaMalloc((void**)&rew_copy, row_bytes); cudaMalloc((void**)&term_copy, row_bytes);
+    cudaMalloc((void**)&rew_copy, row_bytes); cudaMalloc((void**)&term_copy, row_bytes); cudaMalloc((void**)&values, row_bytes);
     cudaMemcpy2DAsync(obs + (long)p.g.end[0] * BOPL_OBS_STRIDE, BOPL_OBS_STRIDE * sizeof(float), host_obs, (size_t)obs_width * sizeof(float),
                       (size_t)obs_width * sizeof(float), count, cudaMemcpyHostToDevice, stream);
     PrecisionTensor* state = &pufferl->buffer_states[0];
     cudaMemsetAsync(state->data, 0, (size_t)numel(state->shape) * sizeof(float), stream);
-    br4_chain(pufferl, p, 0, obs, rewards, terminals, obs, rew_copy, term_copy, stream);
+    br4_chain(pufferl, p, 0, obs, rewards, terminals, obs, rew_copy, term_copy, values, stream);
+    br4_join(p, 0, stream);
     const float* dec = br4_dec_rows(p, 0) + (long)p.g.end[0] * p.ld_dec;
     cudaMemcpy2DAsync(host_dec, (size_t)(p.dec_cols + 1) * sizeof(float), dec, (size_t)p.ld_dec * sizeof(float),
                       (size_t)(p.dec_cols + 1) * sizeof(float), count, cudaMemcpyDeviceToHost, stream);
     cudaError_t e = cudaStreamSynchronize(stream);
-    cudaFree(obs); cudaFree(rewards); cudaFree(terminals); cudaFree(rew_copy); cudaFree(term_copy);
+    cudaFree(obs); cudaFree(rewards); cudaFree(terminals); cudaFree(rew_copy); cudaFree(term_copy); cudaFree(values);
     if (e != cudaSuccess) throw std::runtime_error(std::string("bopl_chain_rows: ") + cudaGetErrorString(e));
 }
 #endif  // BR_KERNELS_ONLY

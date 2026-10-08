@@ -123,7 +123,7 @@ struct Lane {
     curandStatePhilox4_32_10_t* rng;
     float* state[BR_MAX_GROUPS];
     cudaGraphExec_t graph = nullptr;
-    cudaEvent_t e0, e1;
+    cudaEvent_t e0, e1, ready;   // ready: the actions in host memory (br_forward's actions_ready; the critic may still run)
 };
 
 struct Bench {
@@ -215,12 +215,14 @@ struct Bench {
             a.dec = z((size_t)apb * p.ld_dec);
             Lane& L = lanes[b];
             ck(cudaStreamCreateWithPriority(&L.s, cudaStreamNonBlocking, hi), "stream");
+            ck(cudaStreamCreateWithPriority(&a.critic, cudaStreamNonBlocking, hi), "critic stream");
+            cudaEventCreateWithFlags(&a.fork, cudaEventDisableTiming); cudaEventCreateWithFlags(&a.join, cudaEventDisableTiming);
             L.dense = z((size_t)rows * BOPL_OBS_STRIDE); L.rew = z(rows); L.term = z(rows);
             L.actions = z((size_t)rows * num_atns); L.env_actions = z((size_t)rows * num_atns); L.logprobs = z(rows); L.values = z(rows);
             L.mask = z((size_t)rows * mask_stride);
             L.rng = dev_alloc<curandStatePhilox4_32_10_t>(rows);
             for (int g = 0; g < G; g++) L.state[g] = z(state_numel[g]);
-            cudaEventCreate(&L.e0); cudaEventCreate(&L.e1);
+            cudaEventCreate(&L.e0); cudaEventCreate(&L.e1); cudaEventCreate(&L.ready);
         }
         br4_sets_init(q.D, q.I);
     }
@@ -249,17 +251,19 @@ struct Bench {
         const unsigned char* mask = mask_stride ? (const unsigned char*)(pk + 2 * rows * sizeof(float)) : nullptr;
         Br4Groups gr = {};
         for (int g = 0; g < G; g++) { gr.emb[g] = cur->emb[g]; gr.cout[g] = cur->cout[g]; gr.state[g] = L.state[g]; gr.state_rows[g] = state_rows[g]; }
-        br4_run(p, b, gr, L.dense, rewards, terminals, L.dense, L.rew, L.term, L.s);
+        br4_run(p, b, gr, L.dense, rewards, terminals, L.dense, L.rew, L.term, L.values, L.s);
         BrSampleArgs smp = {};
         smp.dec = q.acts[b].dec; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
         smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
-        smp.act_sizes = act_sizes; smp.num_atns = num_atns;
+        smp.act_sizes = act_sizes; smp.num_atns = num_atns; smp.value_rows = br4_value_rows(p);
         smp.env_mask = mask; smp.mask_stride = mask_stride; smp.rollout_mask = L.mask;
         smp.env_actions = L.env_actions; smp.rollout_actions = L.actions;
         smp.logprobs = L.logprobs; smp.values = L.values; smp.rng = L.rng;
         smp.head_consume = nullptr; smp.hc_stride = 0; smp.rows = rows;
         br_launch_pdl(br_sample, dim3((rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS), dim3(SAMPLE_WARP_ROWS * 32), 0, L.s, smp);
         ck(cudaMemcpyAsync(h_actions + (size_t)start * num_atns, L.env_actions, (size_t)rows * num_atns * sizeof(float), cudaMemcpyDeviceToHost, L.s), "d2h");
+        br_record_external(L.ready, L.s);
+        br4_join(p, b, L.s);
     }
     // The outputs of buffer b's last forward, by name (the dump's out_* / *_post files).
     std::vector<std::pair<std::string, std::vector<char>>> outputs(int b) {
@@ -377,13 +381,14 @@ int main(int argc, char** argv) {
         }
     };
     for (int w = 0; w < 50; w++) for (int b = 0; b < B.nb; b++) { ck(cudaGraphLaunch(B.lanes[b].graph, B.lanes[b].s), "warm"); ck(cudaStreamSynchronize(B.lanes[b].s), "warm sync"); }
-    std::vector<float> one, four, span;
+    std::vector<float> one, four, span, one_ready, four_ready;
     for (int r = 0; r < reps && streams != 4; r++) {
         rotate(r);
         Lane& L = B.lanes[0];
         cudaEventRecord(L.e0, L.s); cudaGraphLaunch(L.graph, L.s); cudaEventRecord(L.e1, L.s);
         ck(cudaStreamSynchronize(L.s), "sync");
         float ms; cudaEventElapsedTime(&ms, L.e0, L.e1); one.push_back(ms * 1000);
+        cudaEventElapsedTime(&ms, L.e0, L.ready); one_ready.push_back(ms * 1000);
     }
     for (int r = 0; r < reps && streams != 1; r++) {
         rotate(r);
@@ -392,12 +397,15 @@ int main(int argc, char** argv) {
         float first = 0, last = 0;
         for (int b = 0; b < B.nb; b++) {
             float ms, a; cudaEventElapsedTime(&ms, B.lanes[b].e0, B.lanes[b].e1); four.push_back(ms * 1000);
+            cudaEventElapsedTime(&ms, B.lanes[b].e0, B.lanes[b].ready); four_ready.push_back(ms * 1000);
             cudaEventElapsedTime(&a, B.lanes[0].e0, B.lanes[b].e0); first = std::min(first, a);
             cudaEventElapsedTime(&a, B.lanes[0].e0, B.lanes[b].e1); last = std::max(last, a);
         }
         span.push_back((last - first) * 1000);
     }
-    printf("latency (us, GPU events around the step's graph, %d reps): 1 stream median %.1f p10 %.1f p90 %.1f | 4 streams at once: per stream median %.1f p10 %.1f p90 %.1f, all four done in median %.1f\n",
-           reps, pct(one, 0.5), pct(one, 0.1), pct(one, 0.9), pct(four, 0.5), pct(four, 0.1), pct(four, 0.9), pct(span, 0.5));
+    printf("latency (us, GPU events around the step's graph, %d reps): 1 stream median %.1f p10 %.1f p90 %.1f | 4 streams at once: per stream median %.1f p10 %.1f p90 %.1f, all four done in median %.1f"
+           " | actions ready: 1 stream median %.1f, 4 streams per stream median %.1f\n",
+           reps, pct(one, 0.5), pct(one, 0.1), pct(one, 0.9), pct(four, 0.5), pct(four, 0.1), pct(four, 0.9), pct(span, 0.5),
+           pct(one_ready, 0.5), pct(four_ready, 0.5));
     return 0;
 }

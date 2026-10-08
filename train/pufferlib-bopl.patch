@@ -3543,7 +3543,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-19 22:00:11.168998834 -0400
 +++ puffer-overlay/vecenv.h	2026-09-19 21:39:52.839593874 -0400
-@@ -97,6 +97,36 @@
+@@ -97,6 +97,40 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
      int* agent_perm;
@@ -3566,6 +3566,10 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    int zero_copy;
 +    int actions_zero_copy;
 +    int graph_copies;     // the H2D / D2H memcpys are nodes of the forward's CUDA graph
++    // [num_buffers] or NULL: recorded by the forward once the buffer's actions
++    // are in host memory, ahead of the rest of its graph (the critic); the env
++    // step waits for this rather than for the stream.
++    struct CUevent_st** actions_ready;
 +    int live_per_buffer;
 +    char** pack_host;     // [num_buffers] pinned: rewards | terminals | mask of the live rows
 +    char** pack_dev;      // [num_buffers] device copies (the forward reads these)
@@ -3580,7 +3584,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  } StaticVec;
  
  // Callback types
-@@ -113,12 +143,20 @@
+@@ -113,12 +147,20 @@
  // Functions implemented by env's static library
  StaticVec* create_static_vec(int total_agents, int num_buffers, int gpu, Dict* vec_kwargs, Dict* env_kwargs);
  void static_vec_reset(StaticVec* vec);
@@ -3601,7 +3605,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  void static_vec_seq_step(StaticVec* vec);
  void static_vec_render(StaticVec* vec, int env_id);
  void static_vec_read_profile(StaticVec* vec, float out[NUM_EVAL_PROF]);
-@@ -186,9 +224,11 @@
+@@ -186,9 +228,11 @@
  #define cudaMemcpyHostToDevice 1
  #define cudaMemcpyDeviceToHost 2
  #define cudaHostAllocPortable 1
@@ -3613,7 +3617,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  extern cudaError_t cudaMalloc(void**, size_t);
  extern cudaError_t cudaMemcpy(void*, const void*, size_t, cudaMemcpyKind);
  extern cudaError_t cudaMemcpyAsync(void*, const void*, size_t, cudaMemcpyKind, cudaStream_t);
-@@ -201,6 +241,11 @@
+@@ -201,6 +245,13 @@
  extern cudaError_t cudaStreamCreateWithFlags(cudaStream_t*, unsigned int);
  extern cudaError_t cudaStreamQuery(cudaStream_t);
  extern const char* cudaGetErrorString(cudaError_t);
@@ -3622,10 +3626,12 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +extern cudaError_t cudaEventCreateWithFlags(cudaEvent_t*, unsigned int);
 +extern cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t);
 +extern cudaError_t cudaEventElapsedTime(float*, cudaEvent_t, cudaEvent_t);
++extern cudaError_t cudaEventQuery(cudaEvent_t);
++extern cudaError_t cudaEventSynchronize(cudaEvent_t);
  
  #define OMP_WAITING 5
  #define OMP_RUNNING 6
-@@ -217,13 +262,163 @@
+@@ -217,13 +268,163 @@
  #endif
  
  
@@ -3790,7 +3796,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  };
  
  typedef struct StaticOMPArg {
-@@ -235,7 +430,317 @@
+@@ -235,7 +436,317 @@
      thread_init_fn thread_init;
  } StaticOMPArg;
  
@@ -4109,7 +4115,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  static void* static_omp_threadmanager(void* arg) {
      StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
      StaticVec* vec = worker_arg->vec;
-@@ -246,98 +751,264 @@
+@@ -246,98 +757,269 @@
      net_callback_fn net_callback = worker_arg->net_callback;
      thread_init_fn thread_init = worker_arg->thread_init;
  
@@ -4152,6 +4158,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            bopl_futex_wait(&buffer_states[buf], s);
          }
          cudaStream_t stream = vec->streams[buf];
++        cudaEvent_t ready = vec->actions_ready ? vec->actions_ready[buf] : NULL;
  
          float* my_accum = &threading->accum[buf * NUM_EVAL_PROF];
 -        struct timespec t0, t1;
@@ -4179,13 +4186,14 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            int64_t t_issued = bopl_now_ns();
 +            if (prof) atomic_fetch_add_explicit(&threading->stat_launch_ns, t_issued - t0, memory_order_relaxed);
 +            if (gpu_wait == 0) {
-+                cudaStreamSynchronize(stream);
++                if (ready) cudaEventSynchronize(ready);
++                else cudaStreamSynchronize(stream);
 +            } else {
 +                // Poll; between polls step another buffer's envs (steal) while the
 +                // GPU is predicted to be more than steal_margin away from done (a
 +                // steal in the tail delays noticing the ready stream by a whole
 +                // c_step), then pause between tight polls.
-+                while (cudaStreamQuery(stream) == cudaErrorNotReady) {
++                while ((ready ? cudaEventQuery(ready) : cudaStreamQuery(stream)) == cudaErrorNotReady) {
 +                    if (prof) atomic_fetch_add_explicit(&threading->stat_polls, 1, memory_order_relaxed);
 +                    if (steal && (steal_margin < 0 || bopl_now_ns() - t_issued + steal_margin < gpu_ema)
 +                        && bopl_pool_steal(threading, envs, buf, buf)) continue;
@@ -4195,16 +4203,6 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            int64_t t1 = bopl_now_ns();
 +            gpu_ema = gpu_ema ? (gpu_ema * 7 + (t1 - t_issued)) / 8 : (t1 - t_issued);
 +            my_accum[EVAL_GPU] += (float)(t1 - t0) / 1e6f;
-+            if (gpu_prof && t > 0) {
-+                float ms_h2d = 0, ms_fwd = 0, ms_d2h = 0;
-+                cudaEventElapsedTime(&ms_h2d, ev[0], ev[1]);
-+                cudaEventElapsedTime(&ms_fwd, ev[1], ev[2]);
-+                cudaEventElapsedTime(&ms_d2h, ev[2], ev[3]);
-+                atomic_fetch_add_explicit(&threading->stat_gpu_h2d_ns, (long long)(ms_h2d * 1e6f), memory_order_relaxed);
-+                atomic_fetch_add_explicit(&threading->stat_gpu_fwd_ns, (long long)(ms_fwd * 1e6f), memory_order_relaxed);
-+                atomic_fetch_add_explicit(&threading->stat_gpu_d2h_ns, (long long)(ms_d2h * 1e6f), memory_order_relaxed);
-+                atomic_fetch_add_explicit(&threading->stat_gpu_steps, 1, memory_order_relaxed);
-+            }
  
              memset(&vec->rewards[agent_start], 0, agents_per_buffer * sizeof(float));
              memset(&vec->terminals[agent_start], 0, agents_per_buffer * sizeof(float));
@@ -4252,6 +4250,18 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            int64_t t2 = bopl_now_ns();
 +            if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, t2 - ts, memory_order_relaxed);
 +            my_accum[EVAL_ENV_STEP] += (float)(t2 - t1) / 1e6f;
++            if (gpu_prof && t > 0) {
++                // (after the env step: the stream's tail may run past `ready`)
++                cudaEventSynchronize(ev[3]);
++                float ms_h2d = 0, ms_fwd = 0, ms_d2h = 0;
++                cudaEventElapsedTime(&ms_h2d, ev[0], ev[1]);
++                cudaEventElapsedTime(&ms_fwd, ev[1], ev[2]);
++                cudaEventElapsedTime(&ms_d2h, ev[2], ev[3]);
++                atomic_fetch_add_explicit(&threading->stat_gpu_h2d_ns, (long long)(ms_h2d * 1e6f), memory_order_relaxed);
++                atomic_fetch_add_explicit(&threading->stat_gpu_fwd_ns, (long long)(ms_fwd * 1e6f), memory_order_relaxed);
++                atomic_fetch_add_explicit(&threading->stat_gpu_d2h_ns, (long long)(ms_d2h * 1e6f), memory_order_relaxed);
++                atomic_fetch_add_explicit(&threading->stat_gpu_steps, 1, memory_order_relaxed);
++            }
 +
 +            if (gpu_prof) cudaEventRecord(ev[0], stream);
 +            bopl_upload(vec, buf, stream);
@@ -4328,7 +4338,8 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +                switch (job->state) {
 +                case BOPL_BUF_GPU: {
 +                    if (prof) atomic_fetch_add_explicit(&th->stat_polls, 1, memory_order_relaxed);
-+                    if (cudaStreamQuery(vec->streams[buf]) == cudaErrorNotReady) break;
++                    cudaEvent_t ready = vec->actions_ready ? vec->actions_ready[buf] : NULL;
++                    if ((ready ? cudaEventQuery(ready) : cudaStreamQuery(vec->streams[buf])) == cudaErrorNotReady) break;
 +                    int64_t now = bopl_now_ns();
 +                    my_accum[EVAL_GPU] += (float)(now - job->t_launch) / 1e6f;
 +                    memset(&vec->rewards[agent_start], 0, agents_per_buffer * sizeof(float));
@@ -4426,7 +4437,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -418,11 +1089,17 @@
+@@ -418,11 +1100,17 @@
      vec->size = num_envs;
  
      size_t obs_elem_size = obs_element_size();
@@ -4448,7 +4459,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
          cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
          cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
-@@ -449,9 +1126,11 @@
+@@ -449,9 +1137,11 @@
      vec->action_mask_size = MY_ACTION_MASK;
      size_t mask_bytes = (size_t)total_agents * MY_ACTION_MASK * sizeof(unsigned char);
      if (gpu) {
@@ -4461,7 +4472,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      } else {
          vec->action_mask = (unsigned char*)calloc(total_agents * MY_ACTION_MASK, sizeof(unsigned char));
          vec->gpu_action_mask = vec->action_mask;
-@@ -576,6 +1255,7 @@
+@@ -576,6 +1266,7 @@
              (size_t)vec->total_agents * MY_ACTION_MASK * sizeof(unsigned char),
              cudaMemcpyHostToDevice);
  #endif
@@ -4469,7 +4480,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1271,90 @@
+@@ -591,6 +1282,90 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -4560,7 +4571,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1367,11 @@
+@@ -603,7 +1378,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -4573,7 +4584,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -611,10 +1379,21 @@
+@@ -611,10 +1390,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -4597,7 +4608,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1407,7 @@
+@@ -628,6 +1418,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -4605,7 +4616,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1503,48 @@
+@@ -723,6 +1514,48 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }
