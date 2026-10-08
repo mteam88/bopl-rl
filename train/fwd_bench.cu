@@ -129,6 +129,7 @@ struct Lane {
 struct Bench {
     Meta m;
     int rows, apb, nb = 4, H, G, num_atns, mask_stride, pack_bytes, state_numel[BR_MAX_GROUPS], state_rows[BR_MAX_GROUPS];
+    bool frag_v1 = false;   // the dump's GEMM weights are in the first fragment order (frag_from_v1)
     BrPlan p = {};
     Br4Plan q = {};
     std::map<std::string, Weights> weights;
@@ -159,6 +160,7 @@ struct Bench {
         br_tiles(p.g, p.tiles);
         q.FD = m.i("FD"); q.D = m.i("D"); q.I = m.i("I"); q.F = m.i("F"); q.C = m.i("C"); q.P = m.i("P"); q.mean_pool = m.i("mean_pool");
         q.JW = m.i("JW"); q.W = m.i("W"); q.LNW = m.i("LNW");
+        frag_v1 = !m.kv.count("frag");
         if (q.JW != q.FD + 8 * q.D || q.W != H + q.P || q.LNW != std::max(H, std::max(q.W, q.C))) { fprintf(stderr, "plan widths disagree with the dump\n"); exit(1); }
         for (auto& n : names) {
             Step s; s.dir = root + "/" + n;
@@ -174,17 +176,30 @@ struct Bench {
         fprintf(stderr, "fwd_bench: %zu steps, %zu weight snapshots, %d rows (%d groups, %d tiles), H %d, set %d/%d, critic %d\n",
                 steps.size(), weights.size(), rows, G, p.tiles[G], H, q.D, q.I, q.C);
     }
+    // Dumps without a frag key hold the GEMM weights in the first fragment
+    // order (a step's k at slots k % 4 + 4 (k / 4 % 2)); br_frag_index's order
+    // is a permutation of each 16 k x 8 n block of it.
+    static std::vector<char> frag_from_v1(std::vector<char> b) {
+        std::vector<char> out(b.size());
+        const float* src = (const float*)b.data(); float* dst = (float*)out.data();
+        for (size_t blk = 0; blk < b.size() / 512; blk++)
+            for (int lane = 0; lane < 32; lane++)
+                for (int e = 0; e < 4; e++)
+                    dst[blk * 128 + br_frag_index((e >> 1) * 8 + (e & 1) * 4 + (lane & 3), lane >> 2, 1)] = src[blk * 128 + lane * 4 + e];
+        return out;
+    }
     Weights load_weights(const std::string& wdir) {
         Weights w = {};
         for (int g = 0; g < G; g++) {
             std::string pre = wdir + "/g" + std::to_string(g) + "_";
             auto up = [&](const char* name) { return (float*)dev_upload(slurp(pre + name)); };
+            auto upf = [&](const char* name) { std::vector<char> b = slurp(pre + name); return (float*)dev_upload(frag_v1 ? frag_from_v1(b) : b); };
             Br4Wt& t = w.wt[g];
-            t.flat = up("flat"); t.fusion = up("fusion");
-            for (int l = 0; l < p.layers; l++) t.gru[l] = up(("gru" + std::to_string(l)).c_str());
-            if (q.F) { t.ffn_in = up("ffn_in"); t.ffn_out = up("ffn_out"); }
-            t.actor = up("actor");
-            if (q.C) { t.cin = up("cin"); t.b1 = up("b1"); t.b2 = up("b2"); w.cout[g] = up("cout"); }
+            t.flat = upf("flat"); t.fusion = upf("fusion");
+            for (int l = 0; l < p.layers; l++) t.gru[l] = upf(("gru" + std::to_string(l)).c_str());
+            if (q.F) { t.ffn_in = upf("ffn_in"); t.ffn_out = upf("ffn_out"); }
+            t.actor = upf("actor");
+            if (q.C) { t.cin = upf("cin"); t.b1 = upf("b1"); t.b2 = upf("b2"); w.cout[g] = up("cout"); }
             for (int s = 0; s < 4; s++) {
                 t.w1t[s] = (__nv_bfloat16*)up(("w1t" + std::to_string(s)).c_str());
                 t.w2b[s] = (__nv_bfloat16*)up(("w2b" + std::to_string(s)).c_str());

@@ -200,10 +200,15 @@ __global__ void __launch_bounds__(BS_E, 12) br_encode_entity(BrEncodeArgs a) {
 // fixed order (deterministic). TF32 (default, like cuBLAS' BOPL_TF32 mode): mma.sync
 // m16n8k8 tensor-core steps, inputs rounded to tf32, fp32 accumulate; the
 // weights are stored in the B-fragment order (br_transpose_frag) so a lane's
-// operands are one float4 and a warp's load is 512 contiguous bytes. fp32
+// operands are one float4 and a warp's load is 512 contiguous bytes, and a
+// lane reads its A operands straight from the rows (see br_frag_index). fp32
 // (BOPL_TF32=0): CUDA-core FMAs over the plain transposed weights (K, ldb), a
 // thread owns one column and all 16 rows. Row tiles never straddle a group
-// (tiles[] = cumulative 16-row tiles per group). K must be even.
+// (tiles[] = cumulative 16-row tiles per group). Slots past the chunk count
+// (K = 304: 5 chunks for the 8 slots, K = 384: 6) have no warp, the block is
+// that much narrower: their partials were zero tiles, and adding +0 to the
+// slot sum (which starts at +0, so is never -0) does not change it. K must
+// be even.
 #define BR_TM 16
 #define BR_TN 32
 #define BR_TK 64
@@ -213,7 +218,6 @@ struct BrGemmArgs {
     const float* in; int ld_in;
     float* out; int ld_out;
     int K, N, ldb, relu;  // ldb: fp32 = row stride of the (K, ldb) transposed weights; tf32 = n-tiles (ceil(N/8))
-    int units;            // column-subtile rounds per block: a block covers units * (8 / sub) subtiles
     BrGroups g;
     BrLinear wt;  // per-group weights: fp32 (K, ldb) transposed; tf32 fragment order (see br_frag_index)
     int tiles[BR_MAX_GROUPS + 1];
@@ -222,10 +226,17 @@ struct BrGemmArgs {
 // TF32 fragment-order weight layout: element (k, n) of the (K, N) operand B.
 // mma.m16n8k8 B fragment: lane = 4*groupID + tid4 holds b0 = B[tid4][groupID],
 // b1 = B[tid4 + 4][groupID] of an 8x8 (k, n) tile; two k-steps (16 k) of one
-// n-tile form the lane's float4 {b0(s0), b1(s0), b0(s1), b1(s1)}.
+// n-tile form the lane's float4 {b0(s0), b1(s0), b0(s1), b1(s1)}. The k of a
+// step go to the fragment's k slots permuted: slot tid4 takes k = 2 tid4,
+// slot tid4 + 4 takes k = 2 tid4 + 1, so a lane's A operands of a step are two
+// adjacent floats of a row, one float2 load from global, with no shared
+// memory round. The A side is permuted the same way and the mma's 8-product
+// sum does not depend on the order of its products (measured: 0 of 384k
+// sums differ under four permutations, wide exponent range, with and without
+// an accumulator), so the bits are those of the unpermuted step.
 __host__ __device__ __forceinline__ long br_frag_index(int k, int n, int ntiles) {
     int kstep = k >> 3, kk = k & 7, ntile = n >> 3, gid = n & 7;
-    int kpair = kstep >> 1, s = kstep & 1, tid4 = kk & 3, half = kk >> 2;
+    int kpair = kstep >> 1, s = kstep & 1, tid4 = kk >> 1, half = kk & 1;
     return (((long)kpair * ntiles + ntile) * 32 + gid * 4 + tid4) * 4 + s * 2 + half;
 }
 __host__ __device__ __forceinline__ long br_frag_floats(int K, int N) {
@@ -240,128 +251,93 @@ __device__ __forceinline__ void br_mma(float* c, const unsigned* a, unsigned b0,
         : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
+// Warps per column subtile: the K slots that have a chunk.
+__host__ __device__ __forceinline__ int br_gemm_slots(int K, int* sub) {
+    const int nchunks = (K + BR_TK - 1) / BR_TK;
+    int s = 1;
+    while (s < nchunks && s < BR_KG) s <<= 1;
+    *sub = s;
+    return nchunks < s ? nchunks : s;
+}
 
-// The GEMM's block body as a device function: row tile rt of the grouped
-// problem a, column-subtile groups ctile0 .. ctile0 + units - 1 (a group is
-// the BR_KG / sub subtiles one round of the block covers), A tiles in As. The
-// row-tile / column-tile arithmetic is the caller's, so the same body serves
-// br_gemm (one block per (rt, ctile)) and a kernel that runs several GEMMs
-// of a chain in sequence for one row tile. pdl: griddepcontrol.wait before
-// the first read of A (the predecessor's output) and launch_dependents under
-// the last epilogue; a chain kernel orders its stages itself and passes
-// false. The values are those of br_gemm as it was launched per GEMM: the
-// same chunk -> warp assignment, mma order and partial-sum order for any
-// (ctile0, units) split, so the sums are bit-identical to the one-round grid.
+// Shared floats per warp: fp32 stages its A chunk (16 x 64) there, TF32 only
+// its 16 x 32 C tile (the fp32 C tile aliases the A chunk).
+template <bool TF32> __host__ __device__ constexpr int br_gemm_warp_smem() { return TF32 ? BR_TM * BR_TN : BR_TM * BR_TK; }
+
+// The GEMM's block body: the row tile from row0 of group grp, column subtile
+// set ctile (the BR_KG / sub subtiles one block covers), the warps' shared
+// tiles at As (br_gemm_warp_smem floats each). pdl: griddepcontrol.wait
+// before the first read of A (the predecessor's output) and
+// launch_dependents under the epilogue.
 template <bool TF32>
-__device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int rt, int ctile0, int units, float (*As)[BR_TM * BR_TK], bool pdl) {
+__device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int grp, int row0, int ctile, float* As, bool pdl) {
+    constexpr int WS = br_gemm_warp_smem<TF32>();
     // PDL: the B operand (weights) does not depend on the predecessor, so
     // the first chunk's B loads are issued before griddepcontrol.wait and
     // their latency overlaps the predecessor's tail; A (the predecessor's
     // output) is read after it. A warp with no chunk waits after the loop.
     bool waited = !pdl;
-    int grp = 0;
-    while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
-    const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
     const int row_end = a.g.end[grp + 1];
     const int K = a.K, N = a.N, ldb = a.ldb;
     const int nchunks = (K + BR_TK - 1) / BR_TK;
-    // sub = warps per column subtile (power of two >= nchunks, <= BR_KG).
-    int sub = 1;
-    while (sub < nchunks && sub < BR_KG) sub <<= 1;
+    // sub = K slots per column subtile (power of two >= nchunks, <= BR_KG), used of them with a chunk (a warp each)
+    int sub;
+    const int used = br_gemm_slots(K, &sub);
     const int subtiles = BR_KG / sub;
-    const int tid = threadIdx.x, warp = tid / BR_TN, c = tid % BR_TN;
-    const int kg = warp % sub;  // this warp's K slot within its subtile
+    const int tid = threadIdx.x, warp = tid / BR_TN, c = tid % BR_TN, nthreads = subtiles * used * BR_TN;
+    const int kg = warp % used;  // this warp's K slot within its subtile
+    const int col0 = (ctile * subtiles + warp / used) * BR_TN;
     const float* __restrict__ Wt = a.wt.w[grp];
-    float* Aw = As[warp];
-    // Rounds over the block's column subtiles (units of them per warp): the
-    // same chunk -> warp assignment and partial-sum order as one round per
-    // block, so the sums are bit-identical for any units; fewer, longer blocks
-    // hold fewer SMs while the training pass runs beside the rollout.
-    for (int u = 0; u < units; u++) {
-    const int col0 = ((ctile0 + u) * subtiles + warp / sub) * BR_TN;
-
-    // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row i%16,
-    // k-quad i/16), 8 instructions per chunk (the float2 form took 16). The
-    // lanes stay along the rows: the fragment layout's row stride is 16
-    // floats, so lanes spanning rows and k-halves keep the smem stores at
-    // 4-way conflicts (lanes along k would make them 8-way). K is even; the
-    // tail quad past K is masked per pair.
-    // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row i%16,
-    // k-quad i/16), 8 instructions per chunk (the float2 form took 16). The
-    // lanes stay along the rows: the fragment layout's row stride is 16
-    // floats, so lanes spanning rows and k-halves keep the smem stores at
-    // 4-way conflicts (lanes along k would make them 8-way). K is even; the
-    // tail quad past K is masked per pair.
-    float4 av[BR_TK / 8];
-    // float4 row loads when the rows are 16-byte aligned (every v4 input; v3's
-    // flat block has a stride of 98), scalar loads otherwise: the same values.
-    // (An alignment abort here instead broke v3; check_dump caught it.)
-    const bool a4 = (a.ld_in & 3) == 0 && (((size_t)a.in) & 15) == 0;
-    auto load_a = [&](int k0) {
+    float* Aw = As + warp * WS;
+    const int lane = c;
+    const int gid = lane >> 2, tid4 = lane & 3;
+    const int ntiles = ldb, ntile0 = col0 >> 3;
+    // B chunk: 4 k-pairs (64 k) x 4 n-tiles (32 columns), one float4 per lane each,
+    // a warp instruction reads 512 contiguous bytes. k-pairs past K are zero padding
+    // in the fragment buffer (br_frag_floats rounds K up to 16). n-tiles past ntiles
+    // (the block's column span exceeds N, e.g. narrow decoders) are outside the
+    // buffer: skip them, their columns are dropped by the epilogue anyway.
+    float4 bf[4][4];
+    auto load_b = [&](int k0) {
         #pragma unroll
-        for (int j = 0; j < BR_TK / 8; j++) {
-            int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 2);
-            const float* src = a.in + (long)(row0 + r) * a.ld_in + k;
-            if (row0 + r < row_end && k + 3 < K && a4) av[j] = *(const float4*)src;
-            else if (row0 + r < row_end && k < K)
-                av[j] = make_float4(src[0], k + 1 < K ? src[1] : 0.f, k + 2 < K ? src[2] : 0.f, k + 3 < K ? src[3] : 0.f);
-            else av[j] = make_float4(0.f, 0.f, 0.f, 0.f);
-        }
-    };
-    // TF32 layout: A fragment order [kstep][lane][4] (a0 = A[gid][tid4], a1 = A[gid+8][tid4],
-    // a2 = A[gid][tid4+4], a3 = A[gid+8][tid4+4]) so a lane's k-step operand is one float4.
-    auto store_a = [&]() {
-        #pragma unroll
-        for (int j = 0; j < BR_TK / 8; j++) {
-            int i = c + j * 32, r = i & 15, k = (i >> 4) << 2;
-            const float v[4] = {av[j].x, av[j].y, av[j].z, av[j].w};
+        for (int kp = 0; kp < 4; kp++)
             #pragma unroll
-            for (int q = 0; q < 4; q++) {
-                int kq = k + q;
-                if (TF32) {
-                    int kstep = kq >> 3, kk = kq & 7, lane = (r & 7) * 4 + (kk & 3), slot = (r >> 3) + 2 * (kk >> 2);
-                    Aw[(kstep * 32 + lane) * 4 + slot] = v[q];
-                } else {
-                    Aw[kq * BR_TM + r] = v[q];
-                }
+            for (int t = 0; t < 4; t++) {
+                long kpair = (k0 >> 4) + kp;
+                bf[kp][t] = (ntile0 + t < ntiles)
+                    ? *(const float4*)(Wt + ((kpair * ntiles + ntile0 + t) * 32 + lane) * 4)
+                    : make_float4(0.f, 0.f, 0.f, 0.f);
             }
-        }
     };
     if constexpr (TF32) {
-        const int lane = c;
-        const int gid = lane >> 2, tid4 = lane & 3;
-        const int ntiles = ldb, ntile0 = col0 >> 3;
         float acc[4][4];
         #pragma unroll
         for (int t = 0; t < 4; t++) { acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f; }
-        // B chunk: 4 k-pairs (64 k) x 4 n-tiles (32 columns), one float4 per lane each,
-        // a warp instruction reads 512 contiguous bytes. k-pairs past K are zero padding
-        // in the fragment buffer (br_frag_floats rounds K up to 16). n-tiles past ntiles
-        // (the block's column span exceeds N, e.g. narrow decoders) are outside the
-        // buffer: skip them, their columns are dropped by the epilogue anyway.
-        float4 bf[4][4];
-        auto load_b = [&](int k0) {
-            #pragma unroll
-            for (int kp = 0; kp < 4; kp++)
-                #pragma unroll
-                for (int t = 0; t < 4; t++) {
-                    long kpair = (k0 >> 4) + kp;
-                    bf[kp][t] = (ntile0 + t < ntiles)
-                        ? *(const float4*)(Wt + ((kpair * ntiles + ntile0 + t) * 32 + lane) * 4)
-                        : make_float4(0.f, 0.f, 0.f, 0.f);
-                }
-        };
+        // A operands of step ks (k slots permuted, see br_frag_index): rows gid
+        // and gid + 8 at k = 8 ks + 2 tid4 + {0, 1}, a float2 each (K is even:
+        // a pair is past K whole); 16 loads per chunk, every 32-byte sector
+        // used whole. Scalar loads for rows that are not 8-byte aligned.
+        // (The A chunk went through shared memory before, to the fragment
+        // order: one GEMM in a graph of 20 chained launches, 1 stream, the
+        // critic's 384 x 384 5.1 -> 4.0 us, the fusion's 1280 x 256 11.6 ->
+        // 9.5 us.)
+        const bool a2 = (a.ld_in & 1) == 0 && (((size_t)a.in) & 7) == 0;
+        const bool r0 = row0 + gid < row_end, r1 = row0 + gid + 8 < row_end;
+        const float* x0 = a.in + (long)(row0 + gid) * a.ld_in;
+        const float* x1 = x0 + 8L * a.ld_in;
         for (int ch = kg; ch < nchunks; ch += sub) {
             load_b(ch * BR_TK);
             if (!waited) { br_pdl_wait(); waited = true; }
-            load_a(ch * BR_TK);
-            __syncwarp();
-            store_a();
-            __syncwarp();
+            float2 xa[BR_TK / 8], xb[BR_TK / 8];
             #pragma unroll
             for (int ks = 0; ks < BR_TK / 8; ks++) {
-                float4 av4 = *(const float4*)(Aw + (ks * 32 + lane) * 4);
-                unsigned a[4] = {br_tf32(av4.x), br_tf32(av4.y), br_tf32(av4.z), br_tf32(av4.w)};
+                int k = ch * BR_TK + ks * 8 + 2 * tid4;
+                xa[ks] = r0 && k < K ? (a2 ? *(const float2*)(x0 + k) : make_float2(x0[k], x0[k + 1])) : make_float2(0.f, 0.f);
+                xb[ks] = r1 && k < K ? (a2 ? *(const float2*)(x1 + k) : make_float2(x1[k], x1[k + 1])) : make_float2(0.f, 0.f);
+            }
+            #pragma unroll
+            for (int ks = 0; ks < BR_TK / 8; ks++) {
+                unsigned a[4] = {br_tf32(xa[ks].x), br_tf32(xb[ks].x), br_tf32(xa[ks].y), br_tf32(xb[ks].y)};
                 #pragma unroll
                 for (int t = 0; t < 4; t++) {
                     float4 b = bf[ks >> 1][t];
@@ -370,8 +346,7 @@ __device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int rt, int ct
                 }
             }
         }
-        __syncthreads();  // every warp is done with its A tile: reuse as C tiles
-        float* Cw = As[warp];  // [16][32]: c0 (gid, 2 tid4), c1 (gid, 2 tid4 + 1), c2/c3 at row gid + 8
+        float* Cw = Aw;  // [16][32]: c0 (gid, 2 tid4), c1 (gid, 2 tid4 + 1), c2/c3 at row gid + 8
         #pragma unroll
         for (int t = 0; t < 4; t++) {
             Cw[gid * BR_TN + t * 8 + tid4 * 2] = acc[t][0];
@@ -380,6 +355,32 @@ __device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int rt, int ct
             Cw[(gid + 8) * BR_TN + t * 8 + tid4 * 2 + 1] = acc[t][3];
         }
     } else {
+        // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row
+        // i%16, k-quad i/16), staged as [k][row] for float4 row reads. K is
+        // even; the tail quad past K is masked per pair. float4 row loads when
+        // the rows are 16-byte aligned (v3's flat block has a stride of 98),
+        // scalar loads otherwise: the same values.
+        float4 av[BR_TK / 8];
+        const bool a4 = (a.ld_in & 3) == 0 && (((size_t)a.in) & 15) == 0;
+        auto load_a = [&](int k0) {
+            #pragma unroll
+            for (int j = 0; j < BR_TK / 8; j++) {
+                int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 2);
+                const float* src = a.in + (long)(row0 + r) * a.ld_in + k;
+                if (row0 + r < row_end && k + 3 < K && a4) av[j] = *(const float4*)src;
+                else if (row0 + r < row_end && k < K)
+                    av[j] = make_float4(src[0], k + 1 < K ? src[1] : 0.f, k + 2 < K ? src[2] : 0.f, k + 3 < K ? src[3] : 0.f);
+                else av[j] = make_float4(0.f, 0.f, 0.f, 0.f);
+            }
+        };
+        auto store_a = [&]() {
+            #pragma unroll
+            for (int j = 0; j < BR_TK / 8; j++) {
+                int i = c + j * 32, r = i & 15, k = (i >> 4) << 2;
+                Aw[(k + 0) * BR_TM + r] = av[j].x; Aw[(k + 1) * BR_TM + r] = av[j].y;
+                Aw[(k + 2) * BR_TM + r] = av[j].z; Aw[(k + 3) * BR_TM + r] = av[j].w;
+            }
+        };
         const int col = col0 + c;
         const float* __restrict__ Wc = Wt + min(col, N - 1);
         float acc[BR_TM];
@@ -408,55 +409,58 @@ __device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int rt, int ct
                 acc[12] = fmaf(x3.x, w, acc[12]); acc[13] = fmaf(x3.y, w, acc[13]); acc[14] = fmaf(x3.z, w, acc[14]); acc[15] = fmaf(x3.w, w, acc[15]);
             }
         }
-        __syncthreads();
-        float* Cw = As[warp];
+        __syncwarp();  // the warp is done with its A chunk: reuse as its C tile
         #pragma unroll
-        for (int r = 0; r < BR_TM; r++) Cw[r * BR_TN + c] = acc[r];
+        for (int r = 0; r < BR_TM; r++) Aw[r * BR_TN + c] = acc[r];
     }
     if (!waited) { br_pdl_wait(); waited = true; }
     __syncthreads();
-    if (pdl && u == units - 1) br_pdl_release();   // the dependent launches under this epilogue
-    // Per subtile, sum its warps' partial tiles in warp order and write the valid entries.
-    for (int o = tid; o < subtiles * BR_TM * BR_TN; o += BR_THREADS) {
-        int st = o / (BR_TM * BR_TN), e = o % (BR_TM * BR_TN), r = e / BR_TN, cc = e % BR_TN;
-        float v = 0.f;
-        for (int w = st * sub; w < (st + 1) * sub; w++) v += As[w][r * BR_TN + cc];
-        int row = row0 + r, cl = ((ctile0 + u) * subtiles + st) * BR_TN + cc;
-        if (row < row_end && cl < N) {
-            if (a.relu) v = fmaxf(0.f, v);
-            a.out[(long)row * a.ld_out + cl] = v;
+    if (pdl) br_pdl_release();   // the dependent launches under this epilogue
+    // Per subtile, sum its warps' partial tiles in slot order and write the
+    // valid entries, 4 adjacent columns a thread (each its own sum; the
+    // scalar form took 0.2 us more of a critic GEMM).
+    const bool o4 = (a.ld_out & 3) == 0 && (((size_t)a.out) & 15) == 0;
+    for (int o = tid; o < subtiles * BR_TM * BR_TN / 4; o += nthreads) {
+        int st = o / (BR_TM * BR_TN / 4), e = (o % (BR_TM * BR_TN / 4)) * 4, r = e / BR_TN, cc = e % BR_TN;
+        float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+        for (int w = st * used; w < (st + 1) * used; w++) {
+            float4 p = *(const float4*)&As[w * WS + r * BR_TN + cc];
+            v.x += p.x; v.y += p.y; v.z += p.z; v.w += p.w;
         }
-    }
-    __syncthreads();  // the C tiles are read before the next round's A tiles overwrite them
+        if (a.relu) { v.x = fmaxf(0.f, v.x); v.y = fmaxf(0.f, v.y); v.z = fmaxf(0.f, v.z); v.w = fmaxf(0.f, v.w); }
+        int row = row0 + r, cl = (ctile * subtiles + st) * BR_TN + cc;
+        if (row < row_end) {
+            float* dst = a.out + (long)row * a.ld_out + cl;
+            if (cl + 3 < N && o4) *(float4*)dst = v;
+            else {
+                const float vv[4] = {v.x, v.y, v.z, v.w};
+                #pragma unroll
+                for (int q = 0; q < 4; q++) if (cl + q < N) dst[q] = vv[q];
+            }
+        }
     }
 }
 
 template <bool TF32>
 __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
-    // Per-warp A tile (16 x 64): TF32 in A-fragment order [kstep][lane][4],
-    // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
-    // the K loop.
-    __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
-    br_gemm_tile<TF32>(a, blockIdx.x, blockIdx.y * a.units, a.units, As, true);
+    __shared__ __align__(16) float As[BR_KG * br_gemm_warp_smem<TF32>()];   // TF32 16 KB, fp32 32 KB
+    const int rt = blockIdx.x;
+    int grp = 0;
+    while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
+    br_gemm_tile<TF32>(a, grp, a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM, blockIdx.y, As, true);
 }
 
-// Column-tile count of br_gemm's grid for a GEMM of depth K over N columns,
-// and the rounds per block: 1, one subtile set per block (more rounds per
-// block shrink the grid u-fold and were measured a wash: +1% wall, +5%
-// rollout time; kept as a parameter of the kernel, fixed here).
-static int br_gemm_units() { return 1; }
-static int br_gemm_col_tiles(int K, int N, int* units) {
-    int nchunks = (K + BR_TK - 1) / BR_TK, sub = 1;
-    while (sub < nchunks && sub < BR_KG) sub <<= 1;
+// Column-subtile sets of br_gemm's grid for a GEMM of depth K over N columns.
+static int br_gemm_col_tiles(int K, int N) {
+    int sub;
+    br_gemm_slots(K, &sub);
     int cols = (BR_KG / sub) * BR_TN;
-    int tiles = (N + cols - 1) / cols;
-    *units = std::min(br_gemm_units(), tiles);
-    return (tiles + *units - 1) / *units;
+    return (N + cols - 1) / cols;
 }
 
 // TF32: dst_g = src_g (N, K) in B-fragment order (br_frag_index), zero padded to
 // 16 k x 8 n; one thread per destination float4 (a lane's fragment: column n,
-// rows k0, k0 + 4, k0 + 8, k0 + 12), so the stores are whole float4s in
+// rows k0, k0 + 1, k0 + 8, k0 + 9), so the stores are whole float4s in
 // order and a warp's loads are 8 columns x 16 consecutive k (64-byte runs).
 // The thread-per-element form strided both sides (1.03 ms per update).
 __global__ void br_transpose_frag(BrLinear src, BrLinear dst, int N, int K) {
@@ -467,11 +471,11 @@ __global__ void br_transpose_frag(BrLinear src, BrLinear dst, int N, int K) {
     if (i >= (long)Kp / 16 * ntiles * 32) return;
     int lane = (int)(i & 31), tile = (int)(i >> 5);
     int kpair = tile / ntiles, ntile = tile - kpair * ntiles;
-    int n = ntile * 8 + (lane >> 2), k0 = kpair * 16 + (lane & 3);
+    int n = ntile * 8 + (lane >> 2), k0 = kpair * 16 + 2 * (lane & 3);
     float v[4];
     #pragma unroll
-    for (int e = 0; e < 4; e++) {   /* e = s * 2 + half: k = k0 + 8 s + 4 half */
-        int k = k0 + (e >> 1) * 8 + (e & 1) * 4;
+    for (int e = 0; e < 4; e++) {   /* e = s * 2 + half: k = k0 + 8 s + half (br_frag_index) */
+        int k = k0 + (e >> 1) * 8 + (e & 1);
         v[e] = (k < K && n < N) ? s[(long)n * K + k] : 0.f;
     }
     d[i] = make_float4(v[0], v[1], v[2], v[3]);
@@ -574,9 +578,10 @@ static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* o
     if (p.tf32) a.ldb = (N + 7) / 8;  // n-tiles of the fragment layout
     a.g = p.g; a.wt = wt;
     memcpy(a.tiles, p.tiles, sizeof(a.tiles));
-    dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N, &a.units));
-    if (p.tf32) br_launch_pdl(br_gemm<true>, grid, dim3(BR_THREADS), 0, stream, a);
-    else br_launch_pdl(br_gemm<false>, grid, dim3(BR_THREADS), 0, stream, a);
+    int sub, used = br_gemm_slots(K, &sub);
+    dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N)), block((BR_KG / sub) * used * BR_TN);
+    if (p.tf32) br_launch_pdl(br_gemm<true>, grid, block, 0, stream, a);
+    else br_launch_pdl(br_gemm<false>, grid, block, 0, stream, a);
 }
 
 // dst[g] = the GEMM-side layout of src[g] (N, K) for groups 0..n-1: tf32 fragment
