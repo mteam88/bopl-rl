@@ -5523,11 +5523,18 @@ struct PlatformScratch {
     clone_actions: [CAction; MAX_BODIES],
     clone_action_count: usize,
     clone_jump_pressed: [bool; MAX_BODIES],
-    /// Players whose first clone to update this pass took Player.Position.
-    clones_positioned: [bool; MAX_BODIES],
+    /// Players whose first clone to update this pass took Player.Position,
+    /// bit `owner`.
+    clones_positioned: u32,
     /// The SlimeController that took Player.Position that way, as a
-    /// `PositionCall`.
+    /// `PositionCall`, where `clone_published` has the owner's bit (an
+    /// entry without it is a past pass's): `clone_publisher()`. Clearing
+    /// the bits, not the 384-byte array, starts a pass.
     clone_publisher: [Option<PositionCall>; MAX_BODIES],
+    clone_published: u32,
+    /// Debug builds' reference: the publishers, all cleared every pass.
+    #[cfg(debug_assertions)]
+    clone_publisher_reference: [Option<PositionCall>; MAX_BODIES],
     /// Rows a retired extra body or a promoted clone still holds this pass.
     retired_holds: Vec<RetiredHold>,
     /// Every SlimeController's SetPosition this pass, with the Updater
@@ -5781,6 +5788,24 @@ impl WallLanes {
 }
 
 impl PlatformScratch {
+    /// The SlimeController a clone's or extra body's update had take
+    /// Player.Position for `owner` this pass.
+    fn clone_publisher(&self, owner: usize) -> Option<PositionCall> {
+        let publisher = if self.clone_published & (1 << owner) != 0 { self.clone_publisher[owner] } else { None };
+        #[cfg(debug_assertions)]
+        assert!(publisher == self.clone_publisher_reference[owner], "clone publisher {owner} differs from the cleared reference");
+        publisher
+    }
+
+    fn set_clone_publisher(&mut self, owner: usize, call: PositionCall) {
+        self.clone_publisher[owner] = Some(call);
+        self.clone_published |= 1 << owner;
+        #[cfg(debug_assertions)]
+        {
+            self.clone_publisher_reference[owner] = Some(call);
+        }
+    }
+
     fn new() -> Self {
         PlatformScratch {
             item_order: Vec::with_capacity(192),
@@ -9061,13 +9086,17 @@ impl RolloutWorld {
         } else {
             actions.len()
         };
-        let mut player_order = [0usize; MAX_BODIES];
+        // The order and keys are built where the turns read them: built in
+        // locals, their copy over read the entries just stored one by one
+        // as a few wide loads, which no store forwards. The turns read only
+        // the first `turn_count` of the order, and the keys it names.
+        for index in 0..player_count {
+            let key = self.player_turn_key(index);
+            self.scratch.turn_key[index] = key;
+        }
+        let (player_order, player_key) = (&mut self.scratch.turn_order, &self.scratch.turn_key);
         for (index, value) in player_order[..player_count].iter_mut().enumerate() {
             *value = index;
-        }
-        let mut player_key = [(0, 0, 0); MAX_BODIES];
-        for (index, value) in player_key[..player_count].iter_mut().enumerate() {
-            *value = self.player_turn_key(index);
         }
         // The (key, index) pairs are distinct, so any sort gives sort_by_key's
         // order; the walk mostly keeps index order, which insertion keeps.
@@ -9088,15 +9117,17 @@ impl RolloutWorld {
         // Player.Position, a tack's proximity test sees it before it moves,
         // and a portal tests the slime where the last pass
         // left it, so the slime's own update skips gravity after the jump.
-        self.scratch.clones_positioned = [false; MAX_BODIES];
-        self.scratch.clone_publisher = [None; MAX_BODIES];
+        self.scratch.clones_positioned = 0;
+        self.scratch.clone_published = 0;
+        #[cfg(debug_assertions)]
+        {
+            self.scratch.clone_publisher_reference = [None; MAX_BODIES];
+        }
         self.scratch.position_calls.clear();
         self.scratch.updater_hierarchy = 0;
         // Forms that ended earlier in the pass cleared the Player's form
         // flags before any body's turn can set them again.
         self.track_form_flags();
-        self.scratch.turn_order = player_order;
-        self.scratch.turn_key = player_key;
         self.scratch.turn_count = player_count;
         self.scratch.next_turn = 0;
         // A clone older than a slime or form takes its turn in their walk.
@@ -9112,7 +9143,8 @@ impl RolloutWorld {
         // comes ahead of its owner's already reads this pass's jump edge, and
         // the edge after a Time Stop compares with the last pass's buttons.
         self.scratch.clone_jump_pressed = [false; MAX_BODIES];
-        for &index in &player_order[..player_count] {
+        for turn in 0..player_count {
+            let index = self.scratch.turn_order[turn];
             if index >= self.player_count && !self.players[index].base.alive {
                 continue;
             }
@@ -37763,10 +37795,10 @@ impl RolloutWorld {
         self.scratch.position_calls.push((tag, call, key, 0));
         if (self.players[owner].slime_gone
             || self.players[owner].unpublished_tick == Some(self.tick))
-            && !self.scratch.clones_positioned[owner]
+            && self.scratch.clones_positioned & (1 << owner) == 0
         {
-            self.scratch.clones_positioned[owner] = true;
-            self.scratch.clone_publisher[owner] = Some(call);
+            self.scratch.clones_positioned |= 1 << owner;
+            self.scratch.set_clone_publisher(owner, call);
             self.players[owner].reported_position =
                 self.abilityless_clones[clone_index].base.position;
             self.players[owner].reported_tick = self.tick;
@@ -39054,12 +39086,12 @@ impl RolloutWorld {
         if self.players[owner].base.alive
             || !self.players[body].base.alive
             || self.players[body].revival_clone_pending
-            || self.scratch.clones_positioned[owner]
+            || self.scratch.clones_positioned & (1 << owner) != 0
         {
             return;
         }
-        self.scratch.clones_positioned[owner] = true;
-        self.scratch.clone_publisher[owner] = Some(PositionCall::Body(body));
+        self.scratch.clones_positioned |= 1 << owner;
+        self.scratch.set_clone_publisher(owner, PositionCall::Body(body));
         let slot = &self.players[body];
         let position =
             if slot.reported_tick == self.tick { slot.reported_position } else { slot.base.position };
@@ -39081,7 +39113,7 @@ impl RolloutWorld {
             PositionCall::Body(body) => {
                 let own = self.players[body].owner == body
                     && called & (1 << body) == 0
-                    && self.scratch.clone_publisher[body].is_none_or(|publisher| publisher == call);
+                    && self.scratch.clone_publisher(body).is_none_or(|publisher| publisher == call);
                 called |= 1 << body;
                 own
             }
@@ -39112,7 +39144,7 @@ impl RolloutWorld {
         self.scratch.position_calls.sort_by_key(|&(tag, _, _, _)| tag);
         for owner in 0..self.player_count {
             let owner_called = self.scratch.position_calls.iter().any(|&(_, call, _, _)| call == PositionCall::Body(owner));
-            let published = self.scratch.clone_publisher[owner]
+            let published = self.scratch.clone_publisher(owner)
                 .or(owner_called.then_some(PositionCall::Body(owner)));
             let last = self.players[owner].position_setter_last;
             let mut setter: Option<(PositionCall, u32, usize)> = None;
@@ -39563,9 +39595,9 @@ impl RolloutWorld {
         let index = if !destroyed && index != owner && revival_marker.is_none() && last {
             // A body dying in its own turn has already published its place.
             if self.players[index].reported_tick == self.tick
-                && !self.scratch.clones_positioned[owner]
+                && self.scratch.clones_positioned & (1 << owner) == 0
             {
-                self.scratch.clones_positioned[owner] = true;
+                self.scratch.clones_positioned |= 1 << owner;
                 self.players[owner].reported_position = self.players[index].reported_position;
                 self.players[owner].reported_tick = self.tick;
             }

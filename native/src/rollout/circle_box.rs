@@ -1462,11 +1462,15 @@ impl RolloutWorld {
             debug_assert_eq!(body_box, self.body_part_circle(i) == Some(false));
             if body_box {
                 let (part, layer) = self.body_layered(i, data);
-                let bounds = match swept_players {
-                    Some(players) => players.get(i).copied(),
-                    None => self.swept_bounds(Swept::Part(part)),
-                };
-                push(parts, self.group_part_bounded(part, layer, bounds, sweep_x, data));
+                // A part per arm: one bounds both arms wrote went through a
+                // stack slot, its tag and box stored apart and then read
+                // as one, which no store forwards.
+                match swept_players {
+                    Some(players) => {
+                        push(parts, self.group_part_bounded(part, layer, players.get(i).copied(), sweep_x, data))
+                    }
+                    None => push(parts, self.group_part(part, layer, sweep_x, data)),
+                }
             }
         }
         for i in 0..self.abilityless_clones.len() {

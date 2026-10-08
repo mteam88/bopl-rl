@@ -1399,8 +1399,12 @@ impl Player {
     }
     /// A DetPhysics sync of the hurtbox to the body.
     pub(crate) fn sync_collider(&mut self, inverse_extents: Vec2) {
-        self.move_collider(inverse_extents);
-        self.synced = self.collider;
+        // Both from the box in registers: `synced = collider` reloaded the
+        // box just stored in pieces as one wide load, which no store
+        // forwards.
+        let collider = self.moved_collider(inverse_extents);
+        self.collider = collider;
+        self.synced = collider;
     }
     /// The standalone slice's hurtbox inverseExtents: the authored box, the
     /// Dash body's while it dashes, at the body's scale.
@@ -1420,18 +1424,23 @@ impl Player {
     /// currently has: the slime hurtbox's, or the Dash body's own while it
     /// dashes (Dash.cs:70-72).
     pub(crate) fn move_collider(&mut self, inv: Vec2) {
+        self.collider = self.moved_collider(inv);
+    }
+    /// `move_collider`'s box, with the rotation it takes recorded.
+    #[inline(always)]
+    fn moved_collider(&mut self, inv: Vec2) -> OrientedBox {
         if self.rotation() != self.collider_rotation || self.collider_basis == Vec2::ZERO {
             self.collider_basis = Vec2::angle(self.rotation());
             self.collider_rotation = self.rotation();
         }
         self.collider_up = self.up();
         let basis = self.collider_basis;
-        self.collider = OrientedBox {
+        OrientedBox {
             center: self.position,
             right: (Vec2::RIGHT / inv.x).complex_mul(basis),
             up: (Vec2::UP / inv.y).complex_mul(basis),
             inverse_extents: inv,
-        };
+        }
     }
     /// PlayerPhysics.UnGround's body half (PlayerPhysics.cs:362-376): lift off
     /// `surface`, the retained attachedGround the caller resolved, and keep
