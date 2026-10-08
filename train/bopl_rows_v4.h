@@ -127,6 +127,20 @@ __constant__ static const double bopl4_arc_g[31]={
     BOPL4_ARC_G(15), BOPL4_ARC_G(16), BOPL4_ARC_G(17), BOPL4_ARC_G(18), BOPL4_ARC_G(19), BOPL4_ARC_G(20), BOPL4_ARC_G(21),
     BOPL4_ARC_G(22), BOPL4_ARC_G(23), BOPL4_ARC_G(24), BOPL4_ARC_G(25), BOPL4_ARC_G(26), BOPL4_ARC_G(27), BOPL4_ARC_G(28),
     BOPL4_ARC_G(29), BOPL4_ARC_G(30)};
+/* The same in FP32 for the arc's filter (each the double's rounding). */
+__constant__ static const float bopl4_arc_tf[31]={
+    0.0f, (float)(1/15.0), (float)(2/15.0), (float)(3/15.0), (float)(4/15.0), (float)(5/15.0), (float)(6/15.0), (float)(7/15.0),
+    (float)(8/15.0), (float)(9/15.0), (float)(10/15.0), (float)(11/15.0), (float)(12/15.0), (float)(13/15.0), (float)(14/15.0),
+    (float)(15/15.0), (float)(16/15.0), (float)(17/15.0), (float)(18/15.0), (float)(19/15.0), (float)(20/15.0), (float)(21/15.0),
+    (float)(22/15.0), (float)(23/15.0), (float)(24/15.0), (float)(25/15.0), (float)(26/15.0), (float)(27/15.0), (float)(28/15.0),
+    (float)(29/15.0), (float)(30/15.0)};
+__constant__ static const float bopl4_arc_gf[31]={
+    (float)BOPL4_ARC_G(0), (float)BOPL4_ARC_G(1), (float)BOPL4_ARC_G(2), (float)BOPL4_ARC_G(3), (float)BOPL4_ARC_G(4), (float)BOPL4_ARC_G(5),
+    (float)BOPL4_ARC_G(6), (float)BOPL4_ARC_G(7), (float)BOPL4_ARC_G(8), (float)BOPL4_ARC_G(9), (float)BOPL4_ARC_G(10), (float)BOPL4_ARC_G(11),
+    (float)BOPL4_ARC_G(12), (float)BOPL4_ARC_G(13), (float)BOPL4_ARC_G(14), (float)BOPL4_ARC_G(15), (float)BOPL4_ARC_G(16), (float)BOPL4_ARC_G(17),
+    (float)BOPL4_ARC_G(18), (float)BOPL4_ARC_G(19), (float)BOPL4_ARC_G(20), (float)BOPL4_ARC_G(21), (float)BOPL4_ARC_G(22), (float)BOPL4_ARC_G(23),
+    (float)BOPL4_ARC_G(24), (float)BOPL4_ARC_G(25), (float)BOPL4_ARC_G(26), (float)BOPL4_ARC_G(27), (float)BOPL4_ARC_G(28), (float)BOPL4_ARC_G(29),
+    (float)BOPL4_ARC_G(30)};
 #undef BOPL4_ARC_G
 #endif
 BOPL4D_FN int bopl_ally(const BoplRlState *state, uint32_t owner, const BoplRlPlayer *self) {
@@ -283,7 +297,30 @@ BOPL4D_FN void bopl4_relation(float *out, double dx, double dy, double dvx, doub
          * NaN, so they compare as integers (DSETP is FP64). */
         double m=best_squared, before=INFINITY;
         int at=0;
+        /* The squares are filtered in FP32 first (a sample's 8 FP64 ops x 30
+         * were the ballistic items' tail). Each FP32 square is within
+         * err = 2^-18 (A^2+B^2) of the FP64 one, A and B the sums of the
+         * terms' sizes (|dx|+|dvx|t, |dy|+|dvy|t+fall): over 4x the worst
+         * rounding of the conversions, products and sums; the 2^-60 in B
+         * covers underflow. `least` (the least sq+err) bounds m from above,
+         * and `cut` bounds hi below for any m up to it; a sample whose
+         * sq-err passes cut is past hi, so it is neither the least nor
+         * rounds to it, and dropping it changes neither m, at nor the
+         * answer to before > hi. The rest take the FP64 square as before.
+         * A NaN or overflowed bound keeps the sample. */
+        float fx=(float)dx, fy=(float)dy, fvx=(float)dvx, fvy=(float)dvy, ax=fabsf(fx), ay=fabsf(fy)+0x1p-60f, avx=fabsf(fvx), avy=fabsf(fvy);
+        float lo[31], least=(float)best_squared*(1.0f+0x1p-20f);
         for (int k=1; k<=30; k++) {
+            float t=bopl4_arc_tf[k], g=bopl4_arc_gf[k], px=__fmaf_rn(fvx, t, fx), py=__fmaf_rn(fvy, t, fy)-g;
+            float a=__fmaf_rn(avx, t, ax), b=__fmaf_rn(avy, t, ay+g), err=__fmaf_rn(a, a, b*b)*0x1p-18f, squared=__fmaf_rn(px, px, py*py);
+            lo[k]=squared-err; least=fminf(least, squared+err);
+        }
+        float fr=(float)radius, cut=__fmaf_rn(least, 1.0f+0x1p-20f, fr*fr*0x1p-40f+0x1p-100f);
+        unsigned keep=0;
+        for (int k=1; k<=30; k++) keep|=(unsigned)!(lo[k]>cut)<<k;
+        while (keep) {
+            int k=__ffs(keep)-1;
+            keep&=keep-1;
             double t=bopl4_arc_t[k], px=dx+dvx*t, py=dy+dvy*t-bopl4_arc_g[k], squared=px*px+py*py;
             if (__double_as_longlong(squared)<__double_as_longlong(m)) { before=m; m=squared; at=k; }
         }
