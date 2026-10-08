@@ -247,7 +247,10 @@ struct Br4EShared {
     Br4ERow row[BR4E_ROWS];
     int valid[BR4E_ROWS];
     int off[BR4E_KINDS * BR4E_ROWS + 1], cnt[BR4E_KINDS * BR4E_ROWS];   // P1's items: kind-major, then row; off[last] the end
+    unsigned long long slot_key[BR4E_ROWS][3 * BOPL4_SLIMES];             // P2's slot candidates in index order
+    unsigned short slot_index[BR4E_ROWS][3 * BOPL4_SLIMES];
 };
+static_assert(BOPL4_SLIMES <= 32, "P2's slime pass a lane a slime");
 static_assert(sizeof(Br4EShared) <= 48 * 1024, "static shared memory");
 static_assert(BOPL4_PLAYERS == 6, "BoplRlState holds six players");
 
@@ -333,9 +336,19 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
         int kind = BOPL4_SCENE_NONE;
         double top = 0.0, length = 0.0, unit = 0.0;
         if (on && (kind = bopl4_scene_class(e, &top)) == BOPL4_SCENE_WALL) {
-            const double x = bopl_fix(j < 2 ? e->right_x : e->up_x), y = bopl_fix(j < 2 ? e->right_y : e->up_y);
-            length = bopl4_axis_length(x, y);
-            if (length > 1e-6) unit = (j & 1 ? y : x) / length;
+            const int64_t fx = j < 2 ? e->right_x : e->up_x, fy = j < 2 ? e->right_y : e->up_y;
+            if (fx == 0 || fy == 0) {
+                // An axis along x or y (most walls): the square root of x * x + 0 is |x| (in binary floating point
+                // the correctly rounded root of RN(x * x) is |x|; a nonzero bopl_fix is at least 2^-32, far from
+                // underflow) and the quotient is +-1 or +0, so neither FP64 square root nor division runs.
+                const int64_t c = j & 1 ? fy : fx;
+                length = fabs(bopl_fix(fx == 0 ? fy : fx));
+                if (length > 1e-6) unit = c == 0 ? 0.0 : c > 0 ? 1.0 : -1.0;
+            } else {
+                const double x = bopl_fix(fx), y = bopl_fix(fy);
+                length = bopl4_axis_length(x, y);
+                if (length > 1e-6) unit = (j & 1 ? y : x) / length;
+            }
         }
         const double u1 = __shfl_down_sync(0xffffffffu, unit, 1), u2 = __shfl_down_sync(0xffffffffu, unit, 2);
         const double u3 = __shfl_down_sync(0xffffffffu, unit, 3), ey = __shfl_down_sync(0xffffffffu, length, 2);
@@ -409,37 +422,89 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
         br4_bar(1, BR4E_REST);
 
         // P2
-        if (uwarp == 0) {
-            if (lane < BR4E_ROWS && sh.valid[lane]) {
-                // The observer, its body, the primary enemy, the scene's head, the slime pass.
-                Br4ERow& w = sh.row[lane];
-                const BoplRlState* state = &w.st;
-                const BoplRlPlayer* self = &state->players[w.a];
-                const double self_x = bopl_fix(self->x), self_y = bopl_fix(self->y);
+        if (uwarp < 2) {
+            for (int lr = 0; lr < BR4E_ROWS; lr++) {
+                if (!sh.valid[lr]) continue;
+                Br4ERow& w = sh.row[lr];
+                // The primary enemy, in both warps: bopl4_enemy_consider over the candidates in player order
+                // takes the first of the known ones (else of all) at the least distance, and a distance (a sum
+                // of squares) is never NaN, so its key orders it.
+                int best = -1, best_known = 0;
+                unsigned long long best_key = 0ull;
+                for (int i = 0; i < w.P; i++) {
+                    if (!w.is_candidate[i]) continue;
+                    const int known = w.candidate[i].known;
+                    const unsigned long long key = br4e_key(w.candidate_distance[i]);
+                    if (best < 0 || known > best_known || (known == best_known && key < best_key)) { best = i; best_known = known; best_key = key; }
+                }
                 const BoplRlSlime* controller = w.bodies[w.a];
-                w.x = self_x; w.y = self_y; w.controller = controller;
-                w.vx = w.body_vx[w.a]; w.vy = w.body_vy[w.a];
-                Bopl4Enemy enemy{};   // zero, as bopl4_primary_enemy's memset (in registers)
-                double enemy_distance = 0.0;
-                for (int i = 0; i < w.P; i++)
-                    if (w.is_candidate[i]) bopl4_enemy_consider(&enemy, &enemy_distance, &w.candidate[i], w.candidate_distance[i]);
-                w.enemy = enemy;
-                w.enemy_controller = w.enemy.player ? w.bodies[w.enemy.player - state->players] : NULL;
-                bopl4_scene_head(w.scene, w.ablation, self_x, self_y, w.vx, w.vy, (w.flags & BOPL4_STATE_AIMED) != 0, w.aim_dx, w.aim_dy, &w.enemy);
-                int visible_slots;
-                bopl4_slime_pass_of(state, self, self_x, self_y, controller, w.enemy_controller, w.seen,
-                                    w.nearby, &w.slime_count, w.slots, &w.slot_count, &w.c.visible_slimes, &visible_slots);
-            }
-        } else if (uwarp == 1) {
-            if (lane < BR4E_ROWS && sh.valid[lane]) {
-                // The counts' rest; the nearest if a distance is NaN.
-                Br4ERow& w = sh.row[lane];
-                w.c.count = w.c.active_count;
-                if (w.time_stop < BOPL4_ENTITIES) { w.c.time_stop_known = 1; w.c.time_stop_remaining = w.st.entities[w.time_stop].reserved[1]; }
-                if (w.nan) {
-                    double distances[BOPL4_ENTITIES];
-                    int count = 0;
-                    for (int k = 0; k < w.E; k++) if (w.kept[k]) bopl_nearest(w.nearest, distances, &count, BOPL4_ENTITIES, (uint32_t)k, w.distance[k]);
+                const BoplRlSlime* enemy_controller = best >= 0 ? w.bodies[best] : NULL;
+                // bopl4_slime_pass_of's two lists, a lane a slime: each is bopl_nearest's bounded stable
+                // order, an entry at its rank by (key, index) (the distances and priorities are sums of squares
+                // and constants, never NaN), kept below the capacity. Warp 0 the nearby slimes, warp 1 the slots.
+                const int S = w.S, i = lane;
+                const Bopl4SlimeSeen& seen = w.seen[i < S ? i : 0];
+                if (uwarp == 0) {
+                    const int visible = i < S && !seen.hidden;
+                    const unsigned vm = __ballot_sync(0xffffffffu, visible);
+                    const unsigned long long key = visible ? br4e_key(seen.distance) : 0ull;
+                    int rank = 0;
+                    for (int j = 0; j < S; j++) {
+                        const unsigned long long o = __shfl_sync(0xffffffffu, key, j);
+                        rank += (vm >> j & 1u) && (o < key || (o == key && j < i));
+                    }
+                    if (visible) w.nearby[rank] = (uint32_t)i;
+                    if (lane == 0) {
+                        // The observer, its body, the primary enemy, the scene's head.
+                        const BoplRlPlayer* self = &w.st.players[w.a];
+                        const double self_x = bopl_fix(self->x), self_y = bopl_fix(self->y);
+                        w.x = self_x; w.y = self_y; w.controller = controller;
+                        w.vx = w.body_vx[w.a]; w.vy = w.body_vy[w.a];
+                        Bopl4Enemy enemy{};   // zero, as bopl4_primary_enemy's memset (in registers)
+                        if (best >= 0) enemy = w.candidate[best];
+                        w.enemy = enemy; w.enemy_controller = enemy_controller;
+                        w.slime_count = w.c.visible_slimes = __popc(vm);   // at most BOPL4_SLIMES
+                        bopl4_scene_head(w.scene, w.ablation, self_x, self_y, w.vx, w.vy, (w.flags & BOPL4_STATE_AIMED) != 0, w.aim_dx, w.aim_dy, &w.enemy);
+                    }
+                } else {
+                    // The slots of the slimes not hidden (or forced: a controlling body), in index order
+                    // (slime * 3 + slot) at their prefix by ballots, then each at its rank among them.
+                    const BoplRlSlime* slime = &w.st.slimes[i];
+                    const unsigned bits = i < S && (!seen.hidden || slime == controller || slime == enemy_controller) ? (unsigned)seen.slots : 0u;
+                    const unsigned below = (1u << lane) - 1u;
+                    int at = 0, n = 0;
+                    #pragma unroll
+                    for (int q = 0; q < 3; q++) {
+                        const unsigned b = __ballot_sync(0xffffffffu, bits >> q & 1u);
+                        at += __popc(b & below); n += __popc(b);
+                    }
+                    #pragma unroll
+                    for (int q = 0; q < 3; q++) {
+                        if (!(bits >> q & 1u)) continue;
+                        double priority = seen.priority[q];
+                        if (slime == controller) priority -= 1.0e12; else if (slime == enemy_controller) priority -= 1.0e11;
+                        sh.slot_key[lr][at] = br4e_key(priority); sh.slot_index[lr][at] = (unsigned short)(i * 3 + q);
+                        at++;
+                    }
+                    __syncwarp();
+                    for (int c = lane; c < n; c += 32) {
+                        const unsigned long long key = sh.slot_key[lr][c];
+                        int rank = 0;
+                        for (int d = 0; d < n; d++) { const unsigned long long o = sh.slot_key[lr][d]; rank += o < key || (o == key && d < c); }
+                        if (rank < BOPL4_SLOTS) w.slots[rank] = sh.slot_index[lr][c];
+                    }
+                    __syncwarp();
+                    if (lane == 0) {
+                        w.slot_count = n < BOPL4_SLOTS ? n : BOPL4_SLOTS;
+                        // The counts' rest; the nearest if a distance is NaN.
+                        w.c.count = w.c.active_count;
+                        if (w.time_stop < BOPL4_ENTITIES) { w.c.time_stop_known = 1; w.c.time_stop_remaining = w.st.entities[w.time_stop].reserved[1]; }
+                        if (w.nan) {
+                            double distances[BOPL4_ENTITIES];
+                            int count = 0;
+                            for (int k = 0; k < w.E; k++) if (w.kept[k]) bopl_nearest(w.nearest, distances, &count, BOPL4_ENTITIES, (uint32_t)k, w.distance[k]);
+                        }
+                    }
                 }
             }
         } else {
