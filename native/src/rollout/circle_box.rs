@@ -1454,22 +1454,33 @@ impl RolloutWorld {
                 push(parts, self.known_part(Part::Line(i), sweep_x, data));
             }
         }
-        for i in 0..self.players.len() {
+        let body_box = |i: usize| {
             let body_box = match box_bodies {
                 Some(bodies) => bodies >> i & 1 != 0,
                 None => self.body_part_circle(i) == Some(false),
             };
             debug_assert_eq!(body_box, self.body_part_circle(i) == Some(false));
-            if body_box {
-                let (part, layer) = self.body_layered(i, data);
-                // A part per arm: one bounds both arms wrote went through a
-                // stack slot, its tag and box stored apart and then read
-                // as one, which no store forwards.
-                match swept_players {
-                    Some(players) => {
-                        push(parts, self.group_part_bounded(part, layer, players.get(i).copied(), sweep_x, data))
+            body_box
+        };
+        // A loop per source of the bounds: in one loop the part went to
+        // `group_part` by memory, and the swept arm's push read the part's
+        // tag and index stored apart as one, as it did a bounds both arms
+        // wrote; no store forwards either.
+        match swept_players {
+            Some(players) => {
+                for i in 0..self.players.len() {
+                    if body_box(i) {
+                        let (part, layer) = self.body_layered(i, data);
+                        push(parts, self.group_part_bounded(part, layer, players.get(i).copied(), sweep_x, data));
                     }
-                    None => push(parts, self.group_part(part, layer, sweep_x, data)),
+                }
+            }
+            None => {
+                for i in 0..self.players.len() {
+                    if body_box(i) {
+                        let (part, layer) = self.body_layered(i, data);
+                        push(parts, self.group_part(part, layer, sweep_x, data));
+                    }
                 }
             }
         }

@@ -1097,12 +1097,18 @@ impl RestMemo {
     fn step(&mut self, body: &mut Body, center: &mut Vec2, dt: Fix, row: Option<&mut CEntity>) {
         if !self.holds(body, *center, dt) {
             let before = (*Self::bits(body), [center.x.bits(), center.y.bits()]);
-            *center += body.integrate(dt, Fix::ZERO);
-            let raws = Fix::raw_array([center.x, center.y, body.velocity.x, body.velocity.y]);
-            if (*Self::bits(body), [center.x.bits(), center.y.bits()]) == before {
+            // The step on a copy, compared and then stored whole: the body
+            // read back after its fields were stored waited on those stores.
+            let mut moved = *body;
+            let mut moved_center = *center;
+            moved_center += moved.integrate(dt, Fix::ZERO);
+            let raws = Fix::raw_array([moved_center.x, moved_center.y, moved.velocity.x, moved.velocity.y]);
+            if (*Self::bits(&moved), [moved_center.x.bits(), moved_center.y.bits()]) == before {
                 *self = Self { body: before.0, center: before.1, dt: dt.bits(), raws };
-                debug_assert!(self.holds(body, *center, dt));
+                debug_assert!(self.holds(&moved, moved_center, dt));
             }
+            *body = moved;
+            *center = moved_center;
             if let Some(row) = row {
                 [row.x, row.y, row.vx, row.vy] = raws;
             }
@@ -21290,22 +21296,31 @@ impl RolloutWorld {
             }
             debug_assert!(self.destroyed_rows || !wrote, "register_pending_objects: a destroyed row with destroyed_rows down");
         }
-        let mut pending = std::mem::take(&mut self.scratch.pending_objects);
-        pending.clear();
         // Every object that can come up below was instantiated through
         // `register_members`, which advances `next_spawn_hierarchy`, or was
         // queued in a list or a player's flag. After a walk that left
         // nothing waiting, the scan finds nothing until one of them moves.
         let quiet = self.scratch.pending_quiet == Some(self.next_spawn_hierarchy) && self.nothing_queued_to_register();
+        // Nearly every pass: with nothing pending, all below comes to these
+        // clears. The list stays in place; taken and put back, its length,
+        // just stored, was read back with the rest of it as one, which no
+        // store forwards.
         if quiet {
             #[cfg(debug_assertions)]
             {
+                let mut pending = Vec::new();
                 self.collect_pending_objects(data, &mut pending);
                 debug_assert!(pending.is_empty(), "an object came up for registration without advancing next_spawn_hierarchy");
             }
-        } else {
-            self.collect_pending_objects(data, &mut pending);
+            self.scratch.pending_objects.clear();
+            self.pending_black_holes.clear();
+            self.pending_duplicated_rocks.clear();
+            self.pending_orphan_abilities.clear();
+            return;
         }
+        let mut pending = std::mem::take(&mut self.scratch.pending_objects);
+        pending.clear();
+        self.collect_pending_objects(data, &mut pending);
         pending.sort_unstable_by_key(|&(hierarchy_base, _, index)| (hierarchy_base, index));
         for &(_, kind, index) in &pending {
             match kind {
@@ -21349,10 +21364,8 @@ impl RolloutWorld {
         self.pending_black_holes.clear();
         self.pending_duplicated_rocks.clear();
         self.pending_orphan_abilities.clear();
-        if !quiet {
-            self.scratch.pending_quiet =
-                (pending.is_empty() && !self.unregistered_objects_waiting()).then_some(self.next_spawn_hierarchy);
-        }
+        self.scratch.pending_quiet =
+            (pending.is_empty() && !self.unregistered_objects_waiting()).then_some(self.next_spawn_hierarchy);
         // A registration turns an object on, appended by this pass or
         // before (a marker, an arrow, a clapped Black Hole).
         if !pending.is_empty() {
