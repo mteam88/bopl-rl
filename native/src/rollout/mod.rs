@@ -5911,6 +5911,11 @@ pub struct RolloutWorld {
     platform_epoch: u64,
     /// `platform_epoch` the platform entity rows were written for.
     platform_rows_epoch: u64,
+    /// The platforms settled (in both `platforms` and `platform_dynamics`)
+    /// when their entity rows were last written and skipped by every
+    /// integration since (bit `i`, platform `i`): with the bit still set in
+    /// both now, nothing has written what the row reads since.
+    platform_rows_settled: u64,
     /// Buffers of the platform physics stage, kept between ticks so a level
     /// with moving platforms does not allocate on every tick.
     scratch: PlatformScratch,
@@ -6187,6 +6192,7 @@ impl RolloutWorld {
             platforms: Platforms::with_capacity(64),
             platform_epoch: 1,
             platform_rows_epoch: 0,
+            platform_rows_settled: 0,
             scratch: PlatformScratch::new(),
             platform_dynamics: PlatformBodies::with_capacity(64),
             platform_defs: Unchecked(Vec::with_capacity(64)),
@@ -6318,6 +6324,7 @@ impl RolloutWorld {
         self.platforms.clone_from(&src.platforms);
         self.platform_epoch = src.platform_epoch;
         self.platform_rows_epoch = src.platform_rows_epoch;
+        self.platform_rows_settled = src.platform_rows_settled;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_kinds.clone_from(&src.platform_kinds);
@@ -6451,6 +6458,7 @@ impl RolloutWorld {
             platforms: _,
             platform_epoch: _,
             platform_rows_epoch: _,
+            platform_rows_settled: _,
             scratch: _,
             platform_dynamics: _,
             platform_defs: _,
@@ -38884,6 +38892,7 @@ impl RolloutWorld {
         // The platforms the integration skipped: settled since the last one
         // (`moved` has every bit past 64 platforms, so none then).
         let skipped = settled & !moved;
+        self.platform_rows_settled &= skipped;
         self.platforms.integrated(settled, moved);
         if inactive {
             for i in 0..self.platforms.len() {
@@ -42283,62 +42292,125 @@ impl RolloutWorld {
             return;
         }
         self.platform_rows_epoch = self.platform_epoch;
-        debug_assert!(
-            self.platform_dynamics.len() == self.platforms.len() && self.platform_entities.len() == self.platforms.len()
-        );
-        let entities = &mut self.entities;
-        let inverse_extents = &mut self.entity_inverse_extents;
-        for ((platform, dynamics), &entity) in
-            self.platforms.iter().zip(&self.platform_dynamics).zip(&self.platform_entities)
-        {
-            let e = &mut entities[entity];
-            let observed_body = if dynamics.attached_children == 0 {
-                &dynamics.body
-            } else {
-                &dynamics.root_body
-            };
-            // The row's E_ACTIVE is derived here for the observation; sim
-            // code reads platforms[i].active, the one source.
-            if e.flags & E_DESTROYED == 0 {
-                e.flags = platform_row_flags(platform, dynamics);
+        let count = self.platforms.len();
+        debug_assert!(self.platform_dynamics.len() == count && self.platform_entities.len() == count);
+        // A platform settled when its row was written, skipped by every
+        // integration since and settled still has had nothing written that
+        // the row reads (any mutable access clears a settled bit, which only
+        // an integration sets again, and `settled_mut`'s callers write none
+        // of the row's fields without `unsettle`; debug builds check each
+        // kept row): it keeps that row. Past 64 platforms none settles.
+        let all = match count {
+            1..=64 => u64::MAX >> (64 - count),
+            _ => 0,
+        };
+        let settled = all & self.platforms.settled() & self.platform_dynamics.settled;
+        let kept = settled & self.platform_rows_settled;
+        #[cfg(debug_assertions)]
+        for i in 0..count {
+            if kept & (1u64 << i) != 0 {
+                let entity = self.platform_entities[i];
+                let (mut row, extents) = (self.entities[entity], self.entity_inverse_extents[entity]);
+                // Rewrites the table's extents: asserted unchanged below.
+                Self::write_platform_row(
+                    &mut row,
+                    &mut self.entity_inverse_extents,
+                    entity,
+                    &self.platforms[i],
+                    &self.platform_dynamics[i],
+                );
+                let bits = |v: Vec2| [v.x.to_f64().to_bits(), v.y.to_f64().to_bits()];
+                assert!(
+                    row == self.entities[entity] && bits(extents) == bits(self.entity_inverse_extents[entity]),
+                    "platform {i}'s entity row is kept but differs from its platform"
+                );
             }
-            // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
-            let right = platform.collider.inner.right;
-            let up = platform.collider.inner.up;
-            set_inverse_extents(inverse_extents, entity, platform.collider.inner.inverse_extents);
-            // RlObservation publishes PhysicsBody.orientation directly. The
-            // collider basis is derived output and must not be converted back
-            // into an angle (especially around the Q32 sine-table boundary).
-            [
-                e.x,
-                e.y,
-                e.vx,
-                e.vy,
-                e.right_x,
-                e.right_y,
-                e.up_x,
-                e.up_y,
-                e.radius,
-                e.rotation,
-                e.angular_velocity,
-                e.inverse_mass,
-            ] = Fix::raw_array([
-                // The DetPhysics box centre, not the FixTransform a held
-                // Boulder's LateUpdateSim moves on its own.
-                platform.collider.inner.center.x,
-                platform.collider.inner.center.y,
-                observed_body.velocity.x,
-                observed_body.velocity.y,
-                right.x,
-                right.y,
-                up.x,
-                up.y,
-                platform.collider.radius,
-                observed_body.orientation,
-                observed_body.angular_velocity,
-                observed_body.inverse_mass,
-            ]);
         }
+        if count <= 64 {
+            let mut dirty = all & !kept;
+            while dirty != 0 {
+                let i = dirty.trailing_zeros() as usize;
+                dirty &= dirty - 1;
+                let entity = self.platform_entities[i];
+                Self::write_platform_row(
+                    &mut self.entities[entity],
+                    &mut self.entity_inverse_extents,
+                    entity,
+                    &self.platforms[i],
+                    &self.platform_dynamics[i],
+                );
+            }
+        } else {
+            for i in 0..count {
+                let entity = self.platform_entities[i];
+                Self::write_platform_row(
+                    &mut self.entities[entity],
+                    &mut self.entity_inverse_extents,
+                    entity,
+                    &self.platforms[i],
+                    &self.platform_dynamics[i],
+                );
+            }
+        }
+        self.platform_rows_settled = settled;
+    }
+
+    /// Platform `platform`'s entity row `e` (index `entity`) and inverse
+    /// extents, from the platform and its dynamics alone.
+    #[inline(always)]
+    fn write_platform_row(
+        e: &mut CEntity,
+        inverse_extents: &mut [Vec2],
+        entity: usize,
+        platform: &Platform,
+        dynamics: &PlatformDynamics,
+    ) {
+        let observed_body = if dynamics.attached_children == 0 {
+            &dynamics.body
+        } else {
+            &dynamics.root_body
+        };
+        // The row's E_ACTIVE is derived here for the observation; sim
+        // code reads platforms[i].active, the one source.
+        if e.flags & E_DESTROYED == 0 {
+            e.flags = platform_row_flags(platform, dynamics);
+        }
+        // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
+        let right = platform.collider.inner.right;
+        let up = platform.collider.inner.up;
+        set_inverse_extents(inverse_extents, entity, platform.collider.inner.inverse_extents);
+        // RlObservation publishes PhysicsBody.orientation directly. The
+        // collider basis is derived output and must not be converted back
+        // into an angle (especially around the Q32 sine-table boundary).
+        [
+            e.x,
+            e.y,
+            e.vx,
+            e.vy,
+            e.right_x,
+            e.right_y,
+            e.up_x,
+            e.up_y,
+            e.radius,
+            e.rotation,
+            e.angular_velocity,
+            e.inverse_mass,
+        ] = Fix::raw_array([
+            // The DetPhysics box centre, not the FixTransform a held
+            // Boulder's LateUpdateSim moves on its own.
+            platform.collider.inner.center.x,
+            platform.collider.inner.center.y,
+            observed_body.velocity.x,
+            observed_body.velocity.y,
+            right.x,
+            right.y,
+            up.x,
+            up.y,
+            platform.collider.radius,
+            observed_body.orientation,
+            observed_body.angular_velocity,
+            observed_body.inverse_mass,
+        ]);
     }
 
     fn fill_slimes(&self, slimes: &mut Vec<CSlime>) {
