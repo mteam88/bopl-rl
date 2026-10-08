@@ -793,6 +793,7 @@ __global__ void cache_copy_rows(Gather g, const int* agent_pos, int B, const int
  * flattened, so a row's loads do not wait behind the previous row's stores
  * (scatter_rows copies row after row; it ran 1.1 ms for the entity set). */
 constexpr int PACK_WARPS = 8;
+constexpr int CACHE_PACK_BATCH = 8;
 /* Set S's valid rows of the observation row into sel (row indices in order); returns the count. */
 template<int S>
 __device__ __forceinline__ int cache_pack_select(const float* row, int lane, int* sel) {
@@ -817,18 +818,40 @@ __device__ __forceinline__ void cache_pack_rows(const float* row, long r, int n,
     const float* base = row + sp.offset;
     long dst = r * sp.rows;
     __nv_bfloat162* out = (__nv_bfloat162*)(slab + dst * sp.kpad);
-    #pragma unroll 4
-    for (int i = lane; i < n * KP2; i += 32) {
-        int j = i / KP2, k = (i - j * KP2) * 2;
-        const float* src = base + sel[j] * sp.width;
-        float v0, v1;
-        if (k + 1 < sp.features) { float2 t = *(const float2*)(src + k); v0 = t.x; v1 = t.y; }
-        else {
-            int id = sp.id_col >= 0 ? embedding_id(src[sp.id_col]) : -1;
-            v0 = k < sp.features ? src[k] : (sp.id_col >= 0 && k - sp.features == id) ? 1.0f : 0.0f;
-            v1 = (sp.id_col >= 0 && k + 1 - sp.features == id) ? 1.0f : 0.0f;
+    // CACHE_PACK_BATCH lane steps' loads are issued before their conversions and stores
+    // (the kernel is latency bound on them; the same values).
+    constexpr int U = CACHE_PACK_BATCH;
+    const int total = n * KP2;
+    for (int i0 = lane; i0 < total; i0 += 32 * U) {
+        float2 t[U]; float idv[U];
+        #pragma unroll
+        for (int u = 0; u < U; u++) {
+            const int i = i0 + 32 * u;
+            t[u] = make_float2(0.0f, 0.0f); idv[u] = 0.0f;
+            if (i < total) {
+                int j = i / KP2, k = (i - j * KP2) * 2;
+                const float* src = base + sel[j] * sp.width;
+                if (k + 1 < sp.features) t[u] = *(const float2*)(src + k);
+                else {
+                    if (sp.id_col >= 0) idv[u] = src[sp.id_col];
+                    if (k < sp.features) t[u].x = src[k];
+                }
+            }
         }
-        out[i] = __halves2bfloat162(tobf(v0), tobf(v1));
+        #pragma unroll
+        for (int u = 0; u < U; u++) {
+            const int i = i0 + 32 * u;
+            if (i >= total) break;
+            int j = i / KP2, k = (i - j * KP2) * 2;
+            float v0, v1;
+            if (k + 1 < sp.features) { v0 = t[u].x; v1 = t[u].y; }
+            else {
+                int id = sp.id_col >= 0 ? embedding_id(idv[u]) : -1;
+                v0 = k < sp.features ? t[u].x : (sp.id_col >= 0 && k - sp.features == id) ? 1.0f : 0.0f;
+                v1 = (sp.id_col >= 0 && k + 1 - sp.features == id) ? 1.0f : 0.0f;
+            }
+            out[i] = __halves2bfloat162(tobf(v0), tobf(v1));
+        }
     }
     for (int j = lane; j < n; j += 32) ids[dst + j] = sp.id_col >= 0 ? embedding_id(base[sel[j] * sp.width + sp.id_col]) : 0;
 }
