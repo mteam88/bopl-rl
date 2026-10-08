@@ -1751,16 +1751,41 @@ impl RolloutWorld {
         let space = data::get().maps[self.map].is_space();
         // DetPhysics.Simulate steps the ropes after integrating the rounded
         // bodies, before any contact corrects them.
-        self.rope_rectangles.clear();
-        if self.scratch.callback_tick == Some(self.tick)
-            && self.scratch.callback_colliders.len() == self.platforms.len()
+        let callback = self.scratch.callback_tick == Some(self.tick)
+            && self.scratch.callback_colliders.len() == self.platforms.len();
+        #[cfg(debug_assertions)]
         {
-            self.rope_rectangles.extend_from_slice(&self.scratch.callback_colliders);
-        } else {
-            self.rope_rectangles
-                .extend(self.platforms.iter().map(|platform| platform.collider));
+            self.rope_rectangles_reference.clear();
+            if callback {
+                self.rope_rectangles_reference.extend_from_slice(&self.scratch.callback_colliders);
+            } else {
+                self.rope_rectangles_reference.extend(self.platforms.iter().map(|platform| platform.collider));
+            }
         }
-        if !self.ropes.iter().any(|rope| rope.physics.enabled) {
+        let enabled = self.ropes.iter().any(|rope| rope.physics.enabled);
+        // With no rope to step, only a MachoThrow boulder's attach reads the
+        // rectangles before the next pass takes them, and the callback
+        // colliders stand until then (`platforms_tick` copies them out
+        // first otherwise): they need no copy.
+        self.rope_rectangles_callback = callback && !enabled;
+        if !self.rope_rectangles_callback {
+            self.rope_rectangles.clear();
+            if callback {
+                self.rope_rectangles.extend_from_slice(&self.scratch.callback_colliders);
+            } else {
+                self.rope_rectangles.extend(self.platforms.iter().map(|platform| platform.collider));
+            }
+        }
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            super::rounded_rect_bits(if self.rope_rectangles_callback {
+                &self.scratch.callback_colliders
+            } else {
+                &self.rope_rectangles
+            }),
+            super::rounded_rect_bits(&self.rope_rectangles_reference)
+        );
+        if !enabled {
             return;
         }
         // DetPhysics.Simulate lists the active rounded rectangles' boxes, then

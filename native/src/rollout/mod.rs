@@ -383,6 +383,19 @@ fn row_is_active(row: &CEntity) -> bool {
     row.flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
 }
 
+/// Each rounded rectangle's every field, bit for bit, for debug assertions.
+#[cfg(debug_assertions)]
+fn rounded_rect_bits(rects: &[RoundedRect]) -> Vec<[u64; 9]> {
+    rects
+        .iter()
+        .map(|r| {
+            let b = r.inner;
+            [b.center.x, b.center.y, b.right.x, b.right.y, b.up.x, b.up.y, b.inverse_extents.x, b.inverse_extents.y, r.radius]
+                .map(|v| v.to_f64().to_bits())
+        })
+        .collect()
+}
+
 /// Whether the object on the row is IsDestroyed (`E_FIX_DESTROYED`).
 fn fix_destroyed(entities: &[CEntity], entity: Option<usize>) -> bool {
     entity.and_then(|entity| entities.get(entity)).is_some_and(|row| row.flags & E_FIX_DESTROYED != 0)
@@ -5762,6 +5775,13 @@ pub struct RolloutWorld {
     pub(crate) ropes: Vec<rope_abilities::RolloutRope>,
     pub(crate) next_rope_number: u32,
     rope_rectangles: Vec<RoundedRect>,
+    /// Whether `rope_rectangles` is `scratch.callback_colliders` as they are,
+    /// not copied: the pass took them and no rope was enabled to step
+    /// against them. `rope_rectangles_view` reads it.
+    rope_rectangles_callback: bool,
+    /// `rope_rectangles` as an eager copy takes it, for debug assertions.
+    #[cfg(debug_assertions)]
+    rope_rectangles_reference: Vec<RoundedRect>,
     beam_graph: crate::beam::graph::Graph,
     beam_snapshot: crate::beam::graph::Snapshot,
     beam_inputs: Vec<crate::beam::graph::Beam>,
@@ -5982,6 +6002,9 @@ impl RolloutWorld {
             ropes: rope_abilities::rope_pool(),
             next_rope_number: 0,
             rope_rectangles: Vec::with_capacity(64),
+            rope_rectangles_callback: false,
+            #[cfg(debug_assertions)]
+            rope_rectangles_reference: Vec::new(),
             beam_graph: new_beam_graph(data::get(), false),
             beam_snapshot: crate::beam::graph::Snapshot::default(),
             beam_inputs: Vec::with_capacity(MAX_PLAYERS),
@@ -6115,6 +6138,9 @@ impl RolloutWorld {
         self.ropes.clone_from(&src.ropes);
         self.next_rope_number = src.next_rope_number;
         self.rope_rectangles.clear();
+        self.rope_rectangles_callback = false;
+        #[cfg(debug_assertions)]
+        self.rope_rectangles_reference.clear();
         self.beam_graph.clone_from(&src.beam_graph);
         self.beam_snapshot.clone_from(&src.beam_snapshot);
         self.beam_inputs.clone_from(&src.beam_inputs);
@@ -6236,6 +6262,9 @@ impl RolloutWorld {
             ropes: _,
             next_rope_number: _,
             rope_rectangles: _,
+            rope_rectangles_callback: _,
+            #[cfg(debug_assertions)]
+                rope_rectangles_reference: _,
             beam_graph: _,
             beam_snapshot: _,
             beam_inputs: _,
@@ -6390,6 +6419,9 @@ impl RolloutWorld {
         self.beam_pool.clear();
         self.next_rope_number = 0;
         self.rope_rectangles.clear();
+        self.rope_rectangles_callback = false;
+        #[cfg(debug_assertions)]
+        self.rope_rectangles_reference.clear();
         self.beam_graph = new_beam_graph(data, data.maps[self.map].is_space());
         self.beam_snapshot = crate::beam::graph::Snapshot::default();
         self.beam_inputs.clear();
@@ -9176,6 +9208,9 @@ impl RolloutWorld {
         self.refresh_actor_entities();
         self.actor_rows_fresh = true;
         if self.intro_phase == 3 {
+            // ropes_physics below takes the rope rectangles afresh before
+            // anything reads them: platforms_tick need not keep them.
+            self.rope_rectangles_callback = false;
             self.platforms_tick(data, physics_dt);
         } else {
             let mut sweep = self.scratch.sweep.take().unwrap_or_default();
@@ -20301,7 +20336,14 @@ impl RolloutWorld {
         for segment in 0..rope.physics.count {
             rope.physics.previous[segment] = rope.physics.segment[segment];
         }
-        rope.physics.step(config, &self.rope_rectangles);
+        let rectangles = if self.rope_rectangles_callback {
+            self.scratch.callback_colliders.as_slice()
+        } else {
+            self.rope_rectangles.as_slice()
+        };
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(rounded_rect_bits(rectangles), rounded_rect_bits(&self.rope_rectangles_reference));
+        rope.physics.step(config, rectangles);
     }
 
     fn spawn_macho_boulder(
@@ -38436,6 +38478,10 @@ impl RolloutWorld {
         // RR positional corrections below move either platform.
         let (sweep_x, rounded_sweep_x) = self.sweep_axes();
         let scratch = &mut self.scratch;
+        // Rope rectangles that are the callback colliders keep them.
+        if std::mem::take(&mut self.rope_rectangles_callback) {
+            self.rope_rectangles.clone_from(&scratch.callback_colliders);
+        }
         scratch.callback_colliders.clear();
         scratch.callback_tick = Some(self.tick);
         scratch.callback_sweep_x = sweep_x;
