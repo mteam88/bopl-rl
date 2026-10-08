@@ -467,9 +467,15 @@ static void br4_run(BrPlan& p, int buf, const Br4Groups& gr, const float* obs, c
         br_launch_pdl(br_gate, dim3(grid_size(rows * H)), dim3(BLOCK_SIZE), 0, stream, gate);
         x = A.gru[l & 1];
     }
-    // decoder: y = h + FFN(LN(h)); then LN([y, priv]) for the critic
+    // decoder: y = h + FFN(LN(h)); then LN([y, priv]) for the critic. Without
+    // the FFN y is h itself: the actor reads h and the critic's branch forks
+    // before the LN, which only the critic reads (the LN's y = h + 0.0f
+    // differs from h at most in the sign of a zero, which the GEMM's sum from
+    // +0 drops). 2026-10-08 (fwd_bench, 200 spec steps): actions ready
+    // 145 -> 142 us on 1 stream.
     const float* priv = obs + BOPL4_OBS_PRIVILEGED_OFFSET;
     ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
+    const float* y = x;
     if (q.F) {
         ra.mode = BR4_LN; ra.W = H; ra.x = x; ra.ldx = H; ra.out = A.ln; ra.ldout = q.LNW;
         br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
@@ -477,18 +483,20 @@ static void br4_run(BrPlan& p, int buf, const Br4Groups& gr, const float* obs, c
         br_gemm_launch(p, A.f, q.F, A.y, H, q.F, H, H, 0, w_fo, stream);
         ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
         ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = A.y; ra.ldx = H; ra.res = x; ra.ldres = H;
+        y = A.y;
     } else {
         ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = x; ra.ldx = H;
     }
     ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
-    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
+    if (q.F) br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
     if (q.C) {
         cudaEventRecord(A.fork, stream);
         cudaStreamWaitEvent(A.critic, A.fork, 0);
     }
-    br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
+    br_gemm_launch(p, y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
         cudaStream_t cs = A.critic;
+        if (!q.F) br_launch_pdl(br4_rows, dim3(p.g.end[1]), dim3(256), 0, cs, ra);   // A.ln = LN([h, priv]), the learner's rows
         // The critic runs over the learner's rows only (group 0, its own row
         // tiles): the frozen banks' values are never read (their advantages
         // are zeroed, the statistics take learner rows), and their value
