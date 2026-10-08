@@ -2476,7 +2476,7 @@ impl RolloutWorld {
                     // Projectile prefab does (SmokeGrenadeExplode2.cs:63-78;
                     // IgnitesExplosives 0 on Arrow, MeteorSmear, ...).
                     ABILITY_SMOKE if layer != LAYER_PROJECTILE => {
-                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, route, data);
+                        self.run_callback_hit(&CallbackHit::ItemDetonate { item, count: 1 }, route, data);
                     }
                     // Mine.OnCollide arms on its Igniters' layers unless the
                     // collider is the holding MagnetGun's hurtbox, and sees an
@@ -2486,12 +2486,12 @@ impl RolloutWorld {
                         if state.hold.holder.and_then(|gun| self.magnet_gun_hurtbox(gun)).is_some_and(|row| Some(row) == collider) {
                             return;
                         }
-                        self.run_callback_hit(CallbackHit::MineIgnite { item }, route, data);
+                        self.run_callback_hit(&CallbackHit::MineIgnite { item }, route, data);
                     }
                     // GrenadeExplode.OnCollide goes off on the Explosion layer
                     // (GrenadeExplode.cs:78-81).
                     ABILITY_GRENADE if layer == LAYER_EXPLOSION => {
-                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, route, data);
+                        self.run_callback_hit(&CallbackHit::ItemDetonate { item, count: 1 }, route, data);
                     }
                     // and on a Player-layer collider but its owner's, unless it
                     // detonates on its owner, and the holding MagnetGun's
@@ -2508,7 +2508,7 @@ impl RolloutWorld {
                             _ => self.entities[entity].owner,
                         };
                         if holder_id != player_id(&self.players, state.owner) || state.detonates_on_owner {
-                            self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, route, data);
+                            self.run_callback_hit(&CallbackHit::ItemDetonate { item, count: 1 }, route, data);
                         }
                     }
                     // PokeBall.OnCollide captures the SlimeController on a
@@ -2528,7 +2528,7 @@ impl RolloutWorld {
                             }
                             _ => return,
                         };
-                        self.run_callback_hit(hit, route, data);
+                        self.run_callback_hit(&hit, route, data);
                     }
                     _ => {}
                 }
@@ -2549,7 +2549,7 @@ impl RolloutWorld {
                     Part::Clone(clone) => PickupTaker::Clone(clone),
                     _ => return,
                 };
-                self.run_callback_hit(CallbackHit::Pickup { pickup, taker, body }, route, data);
+                self.run_callback_hit(&CallbackHit::Pickup { pickup, taker, body }, route, data);
             }
             // Arrow.OnCollide on a StickTo layer Drops the arrow out of a
             // Magnet's hold, then lands, but not on a Player-layer collider
@@ -2617,31 +2617,31 @@ impl RolloutWorld {
                     return;
                 }
                 let hit = CallbackHit::SpikeShove { spike, target: other, point: contact.point };
-                self.run_callback_hit(hit, route, data);
+                self.run_callback_hit(&hit, route, data);
             }
             // FlammableSmoke.OnCollide Ignites the cloud on an Explosion with
             // igniteFlammables, as the lightning's (FlammableSmoke.cs:91-98).
             Part::Cloud(cloud) => {
                 if let (true, Some(entity)) = (Self::ignites_flammables(other), self.smoke_clouds[cloud].entity) {
-                    self.run_callback_hit(CallbackHit::SmokeIgnite { cloud, entity }, route, data);
+                    self.run_callback_hit(&CallbackHit::SmokeIgnite { cloud, entity }, route, data);
                 }
             }
             // Missile.OnCollide ignores RigidBodyAffector and Rope (Missile.cs:183).
             Part::Missile(missile) if !matches!(self.part_layer(other, data), LAYER_RIGID_BODY_AFFECTOR | LAYER_ROPE) => {
-                self.run_callback_hit(CallbackHit::MissileBlast { missile }, route, data);
+                self.run_callback_hit(&CallbackHit::MissileBlast { missile }, route, data);
             }
             // PlayerCollision.OnCollide's KillPlayerOnCollision.
             Part::Body(player) => {
                 if let Some((killer, cause)) = self.collision_kill(Slime::Player(player), other, collider) {
                     let slime = self.players[player].active == ActiveAbility::None;
                     let arrow = matches!(other, Part::Arrow(_));
-                    self.run_callback_hit(CallbackHit::Kill { player, killer, cause, slime, arrow }, route, data);
+                    self.run_callback_hit(&CallbackHit::Kill { player, killer, cause, slime, arrow }, route, data);
                 }
             }
             Part::Clone(clone) => {
                 if let Some((killer, cause)) = self.collision_kill(Slime::Clone(clone), other, collider) {
                     let arrow = matches!(other, Part::Arrow(_));
-                    self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause, arrow }, route, data);
+                    self.run_callback_hit(&CallbackHit::CloneKill { clone, killer, cause, arrow }, route, data);
                 }
             }
             _ => {}

@@ -35695,7 +35695,10 @@ impl RolloutWorld {
     fn run_callback_hits(&mut self, data: &data::RolloutData) {
         let mut hits = std::mem::take(&mut self.scratch.callback_hits);
         hits.sort_by_key(|&(key, _)| key);
-        for &(_, hit) in &hits {
+        for (_, hit) in &hits {
+            // By reference: a copy of the hit is stored wide and its variant
+            // then loaded narrow, which waits on that store (a
+            // store-forwarding stall).
             self.run_callback_hit(hit, KillRoute::ON_COLLIDE, data);
         }
         hits.clear();
@@ -35704,8 +35707,8 @@ impl RolloutWorld {
 
     /// One entry of DetPhysics' callback queue (DetPhysics.cs:3202-3205), or
     /// one OnCollide a dash's or form's UpdateSim calls, by `route`.
-    fn run_callback_hit(&mut self, hit: CallbackHit, route: KillRoute, data: &data::RolloutData) {
-        match hit {
+    fn run_callback_hit(&mut self, hit: &CallbackHit, route: KillRoute, data: &data::RolloutData) {
+        match *hit {
             CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
             CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
             CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
@@ -40099,9 +40102,17 @@ impl RolloutWorld {
                 debug_assert!(place < out.len());
                 // SAFETY: as above, checked in debug builds.
                 let row = unsafe { out.get_unchecked_mut(place) };
-                *row = *entity;
-                Self::gate_source_ability(&gate, row);
-                let observed = observed_ids.get(row.id as usize).map_or(0, |&id| id);
+                // The gate reads the table's row, not the copy: a narrow load
+                // of the copy waits on the wide stores that just wrote it (a
+                // store-forwarding stall).
+                // A memcpy, not `*row = *entity`: as an aggregate copy LLVM
+                // splits it at the id and bounces the rest through the stack.
+                // SAFETY: `row` and `entity` are distinct, valid CEntitys.
+                unsafe { std::ptr::copy_nonoverlapping(entity, row as *mut CEntity, 1) };
+                let (owner, source) = Self::gate_source_ability(&gate, entity);
+                row.owner = owner;
+                row.reserved[0] = source;
+                let observed = observed_ids.get(entity.id as usize).map_or(0, |&id| id);
                 if observed != 0 {
                     row.id = observed;
                 } else {
@@ -40365,18 +40376,19 @@ impl RolloutWorld {
         }
     }
 
-    /// `gate_published_source_abilities` for one published row, which still
-    /// carries its internal id.
+    /// `gate_published_source_abilities` for one row of the table, which
+    /// carries its internal id: the owner and source ability it publishes.
     #[inline(always)]
-    fn gate_source_ability(gate: &SourceGate, row: &mut CEntity) {
+    fn gate_source_ability(gate: &SourceGate, row: &CEntity) -> (u32, u32) {
+        let mut owner = row.owner;
         // `Collider` reads the owner off the same FixTransform
         // (sim/Gameplay/RlObservation.cs:110), so a row whose GameObject
         // DestroyFix took this pass publishes no owner either.
         if row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0 {
-            row.owner = 0;
+            owner = 0;
         }
         if row.reserved[0] == ABILITY_NULL {
-            return;
+            return (owner, ABILITY_NULL);
         }
         // `RlObservation.Entity` (sim/Gameplay/RlObservation.cs:224-229)
         // wraps every metadata lookup -- source ability, timer, clock and
@@ -40389,11 +40401,10 @@ impl RolloutWorld {
         // was credited while it lived. The port's own table keeps the id:
         // an ability collider is reused when the ability is cast again.
         if row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0 {
-            row.reserved[0] = ABILITY_NULL;
-            return;
+            return (owner, ABILITY_NULL);
         }
         if row.flags & E_PICKUP != 0 {
-            return;
+            return (owner, row.reserved[0]);
         }
         if row.kind == 1 && row.layer == gate.drill_hitbox_layer && row.reserved[0] == ABILITY_DRILL
         {
@@ -40410,12 +40421,12 @@ impl RolloutWorld {
             // (:203-219). The reference always publishes 0 here. The
             // internal marker has to stay on `self.entities`: it is what
             // `refresh_entity_metadata` keys `E_HITBOX` off.
-            row.reserved[0] = ABILITY_NULL;
+            return (owner, ABILITY_NULL);
         } else if row.kind == 2 && row.reserved[0] == ABILITY_PLATFORM {
             // The only rounded rectangle credited to Platform is a
             // ResizablePlatform the ability spawned.
             if !gate.any_platform {
-                row.reserved[0] = ABILITY_NULL;
+                return (owner, ABILITY_NULL);
             }
         } else if row.layer == LAYER_PLAYER {
             // An ability prefab's box: `AbilityId` finds its component
@@ -40423,13 +40434,14 @@ impl RolloutWorld {
             // AddAdditionalAbility replaced publishes 0 even while the
             // slime holds the same ability in another slot.
             if !gate.live_forms.contains(&row.id) {
-                row.reserved[0] = ABILITY_NULL;
+                return (owner, ABILITY_NULL);
             }
         } else if row.owner != 0
             && !gate.held.holds(row.owner, row.reserved[0])
         {
-            row.reserved[0] = ABILITY_NULL;
+            return (owner, ABILITY_NULL);
         }
+        (owner, row.reserved[0])
     }
 
     fn refresh_entity_metadata(&mut self) {
