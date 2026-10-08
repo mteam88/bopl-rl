@@ -50,23 +50,26 @@ __constant__ Bopl4Dirs br4_dirs;
 
 struct Br4Walls {
     // Every wall as a rotated one (aligned: right (1, 0), up (0, 1); the same
-    // bits, see br4_wall_sdf), aligned walls first: index j is lethal_at's order.
-    float cx[BR4_WALLS], cy[BR4_WALLS], rx[BR4_WALLS], ry[BR4_WALLS], ux[BR4_WALLS], uy[BR4_WALLS],
-          ex[BR4_WALLS], ey[BR4_WALLS], radius[BR4_WALLS];
-    unsigned char list[BR4_GROUPS][BR4_WALLS];  // a group's culled walls
+    // bits, see br4_wall_sdf), in the order of their cull keys: a wall's SDF
+    // at the body, -inf for one every group keeps (a skewed wall; a NaN SDF,
+    // which bopl4f_cull keeps too). A group's culled walls (bopl4f_cull: the
+    // keys at or below its reach) are then the first n, and the march's
+    // walls are contiguous; past the walls the keys are +inf.
+    float4 c[BR4_WALLS], u[BR4_WALLS];          // (cx, cy, rx, ry), (ux, uy, ex, ey)
+    float radius[BR4_WALLS], key[BR4_WALLS];
+    unsigned char index[BR4_WALLS];             // the wall's index in lethal_at's order (aligned walls first)
 };
 struct Br4Shared {
-    // The slot from the scene on (modes 2, 3), one coalesced read.
+    // The slot from the scene on (modes 2, 3), one coalesced read; then the walls' keys unsorted.
     float raw[BOPL4_PACK_P - BOPL4_PACK_HEADER];
     Bopl4Scene s;
-    Bopl4Anchor a;
     Br4Walls w;
     unsigned reach[BR4_GROUPS];                 // a group's reach, as the bits of a non-negative float
-    int listn[BR4_GROUPS];
     float probes[2], sdf_at[5], lethal, aim_out[2][BOPL4_RAY_FEATURES];
     int hit[16], edge_drop[16], dash_landing;
 };
 static_assert(sizeof(Br4Shared) <= 48 * 1024, "static shared memory");
+static_assert(BR4_RAYS_THREADS >= BR4_WALLS && BR4_WALLS % 32 == 0, "a thread per wall; the keys in whole warps");
 static_assert(offsetof(Bopl4StateHead, words) == BOPL4_PACK_STATE_WORDS * 4, "the unpack reads a mode-4 slot's length there");
 
 __device__ __forceinline__ void br4_bar(int id, int threads) { asm volatile("bar.sync %0, %1;" ::"r"(id), "r"(threads) : "memory"); }
@@ -85,9 +88,10 @@ __device__ __forceinline__ unsigned br4_ray_mask() {
 // bopl4f_rot_sdf of unified wall j. For an aligned wall px*1 + py*0 is px
 // (+-0 added; fabsf drops the sign of a zero) and so equals bopl4f_axis_sdf.
 __device__ __forceinline__ float br4_wall_sdf(const Br4Shared& sh, int j, float x, float y) {
-    const float px = x - sh.w.cx[j], py = y - sh.w.cy[j];
-    const float lx = px * sh.w.rx[j] + py * sh.w.ry[j], ly = px * sh.w.ux[j] + py * sh.w.uy[j];
-    return bopl4f_box(fabsf(lx) - sh.w.ex[j], fabsf(ly) - sh.w.ey[j], sh.w.radius[j]);
+    const float4 c = sh.w.c[j], u = sh.w.u[j];
+    const float px = x - c.x, py = y - c.y;
+    const float lx = px * c.z + py * c.w, ly = px * u.x + py * u.y;
+    return bopl4f_box(fabsf(lx) - u.z, fabsf(ly) - u.w, sh.w.radius[j]);
 }
 
 // The scene from its packed form (bopl4f_scene_write), by the whole block:
@@ -117,22 +121,40 @@ __device__ static void br4_scene_load(const float* slot, int at, Br4Shared& sh) 
     for (int i = threadIdx.x; i < nc; i += blockDim.x) s->cclass[i] = ((const int32_t*)in)[i];
     __syncthreads();
 }
-// The walls unified for the marches and their SDFs at the body (the anchors).
+// The walls unified for the marches, sorted by their cull keys (their SDFs
+// at the body, the anchors): thread j wall j, its rank among the keys, ties
+// by index.
 __device__ static void br4_scene_prepare(Br4Shared& sh) {
     const Bopl4Scene* s = &sh.s;
-    const int na = s->axis_count, nr = s->rot_count;
-    if (threadIdx.x < BR4_GROUPS) sh.reach[threadIdx.x] = 0u;
-    for (int j = threadIdx.x; j < na + nr; j += blockDim.x) {
+    const int na = s->axis_count, n = na + s->rot_count, j = threadIdx.x;
+    const float inf = __int_as_float(0x7f800000);
+    if (j < BR4_GROUPS) sh.reach[j] = 0u;
+    float key = inf;
+    if (j < na) {
+        const float a = bopl4f_axis_sdf(s, j, s->x, s->y);
+        key = a != a ? -inf : a;
+    } else if (j < n) {
+        const int k = j - na;
+        const float a = bopl4f_rot_sdf(s, k, s->x, s->y);
+        key = ((s->rot_skew >> k) & 1ull) || a != a ? -inf : a;
+    }
+    if (j < n) sh.raw[j] = key;
+    else if (j < BR4_WALLS) sh.w.key[j] = inf;
+    __syncthreads();
+    if (j < n) {
+        int rank = 0;
+        for (int k = 0; k < n; k++) { const float o = sh.raw[k]; rank += o < key || (o == key && k < j); }
+        float4 c, u;
+        float radius;
         if (j < na) {
-            sh.w.cx[j] = s->axis_cx[j]; sh.w.cy[j] = s->axis_cy[j]; sh.w.rx[j] = 1.0f; sh.w.ry[j] = 0.0f; sh.w.ux[j] = 0.0f; sh.w.uy[j] = 1.0f;
-            sh.w.ex[j] = s->axis_ex[j]; sh.w.ey[j] = s->axis_ey[j]; sh.w.radius[j] = s->axis_radius[j];
-            sh.a.axis[j] = bopl4f_axis_sdf(s, j, s->x, s->y);
+            c = make_float4(s->axis_cx[j], s->axis_cy[j], 1.0f, 0.0f); u = make_float4(0.0f, 1.0f, s->axis_ex[j], s->axis_ey[j]);
+            radius = s->axis_radius[j];
         } else {
             const int k = j - na;
-            sh.w.cx[j] = s->rot_cx[k]; sh.w.cy[j] = s->rot_cy[k]; sh.w.rx[j] = s->rot_rx[k]; sh.w.ry[j] = s->rot_ry[k];
-            sh.w.ux[j] = s->rot_ux[k]; sh.w.uy[j] = s->rot_uy[k]; sh.w.ex[j] = s->rot_ex[k]; sh.w.ey[j] = s->rot_ey[k]; sh.w.radius[j] = s->rot_radius[k];
-            sh.a.rot[k] = bopl4f_rot_sdf(s, k, s->x, s->y);
+            c = make_float4(s->rot_cx[k], s->rot_cy[k], s->rot_rx[k], s->rot_ry[k]); u = make_float4(s->rot_ux[k], s->rot_uy[k], s->rot_ex[k], s->rot_ey[k]);
+            radius = s->rot_radius[k];
         }
+        sh.w.c[rank] = c; sh.w.u[rank] = u; sh.w.radius[rank] = radius; sh.w.key[rank] = key; sh.w.index[rank] = (unsigned char)j;
     }
     __syncthreads();
 }
@@ -664,12 +686,17 @@ __device__ static float br4_surfaces(const Br4Shared& sh, int lane, float dx, fl
     return best;
 }
 
-// bopl4f_lethal_at across the ray's lanes: the first strict minimum in wall order.
+// bopl4f_lethal_at across the ray's lanes: the first strict minimum in wall
+// order, the least (SDF, index) below 1e9 over the sorted walls.
 __device__ static int br4_lethal_at(const Br4Shared& sh, int lane, float x, float y) {
     const int na = sh.s.axis_count, n = na + sh.s.rot_count;
     float best = 1e9f;
     int at = -1;
-    for (int j = lane; j < n; j += BR4_LANES) { const float d = br4_wall_sdf(sh, j, x, y); if (d < best) { best = d; at = j; } }
+    for (int j = lane; j < n; j += BR4_LANES) {
+        const float d = br4_wall_sdf(sh, j, x, y);
+        const int k = sh.w.index[j];
+        if (d < best || (d == best && at >= 0 && k < at)) { best = d; at = k; }
+    }
     const unsigned m = br4_ray_mask();
     #pragma unroll
     for (int o = 1; o < BR4_LANES; o <<= 1) {
@@ -693,30 +720,40 @@ __device__ static void br4_finish(const Br4Shared& sh, int lane, float dx, float
     out[7] = cls >= 3 ? bopl4f_clip(bopl4f_div(closing, (float)BOPL4_VELOCITY_SCALE)) : 0.0f;
 }
 
-// bopl4f_march over group g's walls, each step's SDF split across the ray's L lanes.
-template <int L = BR4_LANES>
-__device__ static float br4_march(const Br4Shared& sh, int g, int lane, float ox, float oy, float dx, float dy, float max, float limit) {
-    const unsigned m = br4_ray_mask<L>();
-    const unsigned char* list = sh.w.list[g];
-    const int n = sh.listn[g];
-    float t = 0.0f;
+// bopl4f_march over the first n walls, each step's SDF split across the
+// ray's L lanes: K walls a lane unrolled, every load and SDF of a step in
+// flight at once (a lane past n computes on a wall it then drops), the rest
+// (n > 4 L) in a loop. The whole warp steps until its last live ray ends
+// (the lanes ran that long anyway), so the shuffles take the full mask: a
+// ray's own mask cost a convergence check per shuffle. The minima are
+// fminf, one instruction: w < d ? w : d is the same float, as d is never
+// NaN (fminf drops a NaN w as the select does) and neither is -0
+// (bopl4f_box).
+template <int L, int K>
+__device__ static float br4_march(const Br4Shared& sh, int n, int lane, bool live, float ox, float oy, float dx, float dy, float max, float limit) {
+    float t = 0.0f, out = 0.0f;
     for (int i = 0; i < 32; i++) {
-        if (!(t < max)) return max;
-        if (t >= limit) return limit;
+        if (live && !(t < max)) { out = max; live = false; }
+        if (live && t >= limit) { out = limit; live = false; }
+        if (!__any_sync(0xffffffffu, live)) return out;
         const float px = ox + dx * t, py = oy + dy * t;
         float d = 1e9f;
-        for (int j = lane; j < n; j += L) { const float w = br4_wall_sdf(sh, list[j], px, py); d = w < d ? w : d; }
         #pragma unroll
-        for (int o = 1; o < L; o <<= 1) { const float e = __shfl_xor_sync(m, d, o); d = e < d ? e : d; }
-        if (d < 0.05f) return t;
+        for (int k = 0; k < K; k++) { const int j = lane + k * L; const float w = br4_wall_sdf(sh, j, px, py); d = j < n ? fminf(w, d) : d; }
+        if (K == 4) for (int j = lane + K * L; j < n; j += L) d = fminf(br4_wall_sdf(sh, j, px, py), d);
+        #pragma unroll
+        for (int o = 1; o < L; o <<= 1) d = fminf(__shfl_xor_sync(0xffffffffu, d, o), d);
+        if (live && d < 0.05f) { out = t; live = false; }
         t += d;
     }
-    return max;
+    return live ? max : out;
 }
 
-// bopl4f_march_group: called by all `threads` threads of group g (barrier g),
-// gt the thread's index in it; the ray of an active thread is marched with
-// the walls culled at the group's reach, by its L lanes.
+// bopl4f_march_group: called by all `threads` threads of group g (barrier g,
+// whole warps), gt the thread's index in it; the ray of an active thread is
+// marched with the walls culled at the group's reach, by its L lanes. Each
+// warp counts the culled walls itself (the keys at or below the reach, a
+// ballot per 32): the same n in every warp, no second barrier.
 template <int L = BR4_LANES>
 __device__ static float br4_group(Br4Shared& sh, int g, int threads, int gt, bool active,
                                   float ox, float oy, float dx, float dy, float max, float limit) {
@@ -728,15 +765,16 @@ __device__ static float br4_group(Br4Shared& sh, int g, int threads, int gt, boo
         if (r > 0.0f) atomicMax(&sh.reach[g], __float_as_uint(r));   // reach=r>reach?r:reach from 0
     }
     br4_bar(g, threads);
-    if (gt == 0) {
-        const Bopl4Mask m = bopl4f_cull(s, &sh.a, __uint_as_float(sh.reach[g]) + 0.1f);
-        int n = 0;
-        for (uint64_t b = m.axis; b; b &= b - 1ull) sh.w.list[g][n++] = (unsigned char)bopl4f_ctz(b);
-        for (uint64_t b = m.rot; b; b &= b - 1ull) sh.w.list[g][n++] = (unsigned char)(s->axis_count + bopl4f_ctz(b));
-        sh.listn[g] = n;
+    const float reach = __uint_as_float(sh.reach[g]) + 0.1f;
+    int n = 0;
+    #pragma unroll
+    for (int c = 0; c < BR4_WALLS; c += 32) n += __popc(__ballot_sync(0xffffffffu, sh.w.key[c + (threadIdx.x & 31)] <= reach));
+    switch ((n + L - 1) / L) {   // the walls a lane: the same in the whole group
+    case 0: case 1: return br4_march<L, 1>(sh, n, lane, active, ox, oy, dx, dy, max, limit);
+    case 2: return br4_march<L, 2>(sh, n, lane, active, ox, oy, dx, dy, max, limit);
+    case 3: return br4_march<L, 3>(sh, n, lane, active, ox, oy, dx, dy, max, limit);
+    default: return br4_march<L, 4>(sh, n, lane, active, ox, oy, dx, dy, max, limit);
     }
-    br4_bar(g, threads);
-    return active ? br4_march<L>(sh, g, lane, ox, oy, dx, dy, max, limit) : 0.0f;
 }
 
 // The aim and line-of-sight casts (bopl4f_aim_rays) by warp 7, into out[2][8].
