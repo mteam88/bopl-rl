@@ -293,27 +293,31 @@ pub(super) enum Blast {
 const ARROW_STICK_TO: u32 = 2166016;
 
 /// Walls `walls_meeting` takes at a time.
-const WALL_GROUP: usize = 16;
+const WALL_GROUP: usize = 32;
 
-/// Bit 4k is set when wall k of `walls` (at most `WALL_GROUP`) meets `part`
+/// Bit k is set when wall k of `walls` (at most `WALL_GROUP`) meets `part`
 /// as `sweep::swept_meet` does: two walls per vector, each lane one strict
 /// ordered compare (false on NaN, like the scalar `<`), and a wall meets
 /// when its four lanes all hold. A high edge's `wall > low` is taken as
 /// `-wall < -low`: negation is exact and reverses the order, signed zeros
-/// and infinities included, and a NaN fails both.
+/// and infinities included, and a NaN fails both. Nearly every map's walls
+/// fit one call, so the part's edges stay in a register for them all; a
+/// second call, after the first's walls' narrow tests, reloaded them from a
+/// 512-bit spill whose store had not committed, which does not forward.
 #[inline]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "q32")))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "bmi2", not(feature = "q32")))]
 fn walls_meeting(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
     use std::arch::x86_64::*;
     const _: () = assert!(std::mem::size_of::<[Vec2; 2]>() == 4 * std::mem::size_of::<f64>());
     debug_assert!(walls.len() <= WALL_GROUP);
     let [low, high] = part.map(|v| [v.x.to_f64(), v.y.to_f64()]);
     let pairs = walls.len() / 2;
-    let mut nibbles = 0u64;
-    // SAFETY: avx512f is a compile-time target feature here; `[Vec2; 2]` is
-    // four f64 (Vec2 is repr(C) of two repr(transparent) f64), every full
-    // load is two walls within `walls` and the last one's mask keeps its
-    // lanes within the odd wall.
+    // A nibble per wall, sixteen walls a word.
+    let mut nibbles = [0u64; 2];
+    // SAFETY: avx512f and bmi2 are compile-time target features here;
+    // `[Vec2; 2]` is four f64 (Vec2 is repr(C) of two repr(transparent)
+    // f64), every full load is two walls within `walls` and the last one's
+    // mask keeps its lanes within the odd wall.
     unsafe {
         // A wall's lanes are low x, low y, high x, high y: its low edges
         // below the part's high ones, its negated high edges below the
@@ -323,21 +327,27 @@ fn walls_meeting(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
         let edges = _mm512_setr_pd(high[0], high[1], -low[0], -low[1], high[0], high[1], -low[0], -low[1]);
         let flipped = |wall: __m512d| _mm512_castsi512_pd(_mm512_xor_si512(_mm512_castpd_si512(wall), signs));
         let base = walls.as_ptr().cast::<f64>();
-        for pair in 0..pairs {
+        for pair in 0..pairs.min(8) {
             let wall = flipped(_mm512_loadu_pd(base.add(8 * pair)));
-            nibbles |= u64::from(_mm512_cmp_pd_mask::<_CMP_LT_OQ>(wall, edges)) << (8 * pair);
+            nibbles[0] |= u64::from(_mm512_cmp_pd_mask::<_CMP_LT_OQ>(wall, edges)) << (8 * pair);
+        }
+        for pair in 8..pairs {
+            let wall = flipped(_mm512_loadu_pd(base.add(8 * pair)));
+            nibbles[1] |= u64::from(_mm512_cmp_pd_mask::<_CMP_LT_OQ>(wall, edges)) << (8 * (pair - 8));
         }
         if walls.len() % 2 != 0 {
             let wall = flipped(_mm512_maskz_loadu_pd(0x0f, base.add(8 * pairs)));
-            nibbles |= u64::from(_mm512_mask_cmp_pd_mask::<_CMP_LT_OQ>(0x0f, wall, edges)) << (8 * pairs);
+            let odd = u64::from(_mm512_mask_cmp_pd_mask::<_CMP_LT_OQ>(0x0f, wall, edges)) << (8 * (pairs % 8));
+            nibbles[pairs / 8] |= odd;
         }
+        let meets = nibbles.map(|n| _pext_u64(n & (n >> 1) & (n >> 2) & (n >> 3), 0x1111_1111_1111_1111));
+        let meets = meets[0] | (meets[1] << 16);
+        debug_assert_eq!(meets, walls_meeting_scalar(walls, part));
+        meets
     }
-    let meets = nibbles & (nibbles >> 1) & (nibbles >> 2) & (nibbles >> 3) & 0x1111_1111_1111_1111;
-    debug_assert_eq!(meets, walls_meeting_scalar(walls, part));
-    meets
 }
 #[inline]
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", not(feature = "q32"))))]
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "bmi2", not(feature = "q32"))))]
 fn walls_meeting(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
     walls_meeting_scalar(walls, part)
 }
@@ -346,7 +356,7 @@ fn walls_meeting_scalar(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
     walls
         .iter()
         .enumerate()
-        .fold(0, |meets, (wall, &bounds)| meets | (u64::from(sweep::swept_meet(part, bounds)) << (4 * wall)))
+        .fold(0, |meets, (wall, &bounds)| meets | (u64::from(sweep::swept_meet(part, bounds)) << wall))
 }
 
 /// Whether a slime's or clone's collider meets a wall: whether its
@@ -1717,12 +1727,12 @@ impl RolloutWorld {
             let mut side: Option<(u32, Option<usize>, Option<usize>)> = None;
             let mut shape: Option<Collider> = None;
             let mut part_rank: Option<SweepRank> = None;
-            // The cheap box test first, sixteen walls at a time, then any wall
-            // past the swept boxes; in wall order.
+            // The cheap box test first, `WALL_GROUP` walls at a time, then
+            // any wall past the swept boxes; in wall order.
             let (mut next, mut first, mut meets, mut unboxed) = (0, 0, 0u64, boxed_walls);
             loop {
                 let wall = if meets != 0 {
-                    let wall = first + meets.trailing_zeros() as usize / 4;
+                    let wall = first + meets.trailing_zeros() as usize;
                     meets &= meets - 1;
                     wall
                 } else if next < boxed_walls {
