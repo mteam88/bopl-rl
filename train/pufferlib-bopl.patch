@@ -951,9 +951,8 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
          grad = a->grad_input_buf;
      }
      return grad;
-diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
---- pristine-src/muon.cu	2026-10-07 20:01:55.279986950 -0400
-+++ puffer-overlay/muon.cu	2026-10-07 20:07:23.362705661 -0400
+--- pristine-src/muon.cu	2026-10-08 08:01:29.452719940 -0400
++++ puffer-overlay/muon.cu	2026-10-08 08:02:25.871162682 -0400
 @@ -1,4 +1,5 @@
  #include <nccl.h>
 +#include <algorithm>
@@ -998,7 +997,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +}
 +#define MUON_TILE 64
 +#define MUON_BK 16
-+#define MUON_THREADS 256
++#define MUON_THREADS 64
 +#define MUON_SMEM_STRIDE 68  // 64 + 4: k-major staging without 16-way bank conflicts, float4-aligned rows
 +struct MuonGemm {
 +    const float* A; const float* B; const float* Cin; float* C;
@@ -1035,7 +1034,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  struct Muon {
      double momentum, weight_decay, eps;
      float lr_val_init;
-@@ -98,8 +167,224 @@
+@@ -98,8 +167,308 @@
      Allocator* param_alloc;  // params allocator — shapes used by muon_step
      ncclComm_t nccl_comm;
      int world_size;
@@ -1060,10 +1059,118 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +    int lane_of[MUON_MAX_REGS];   // 2-D parameter (by allocator entry) -> lane
  };
  
-+// One 64 x 64 output tile of one problem per block; 4 x 4 outputs per thread.
++// One 64 x 64 output tile of one problem per block of 64 threads, 8 x 8 outputs
++// per thread (rows ty 4 + [0, 4) and 32 + ty 4 + [0, 4), columns likewise with
++// tx), so each k is 4 LDS.128 for 64 FMAs. The next k step's tiles are fetched
++// into registers during this one's FMAs (two smem buffers, one barrier per
++// step). An operand's layout (which dimension is contiguous) and whether both
++// operands can be read as float4 are template parameters: a thread's loads
++// are then a base pointer plus a constant stride. Every output is the same
++// fmaf chain over the same zero-padded k steps as one thread per output.
++template <bool KFAST, bool VEC>  // X(m, k) = P[m sm + k sk], staged into S[k][m - m0]
++struct MuonStage {
++    static constexpr int LOADS = VEC ? MUON_BK / 4 : MUON_BK;
++    const float* p; int step, lim_m, sidx;
++    __device__ void init(const float* P, int sm, int sk, int m0, int M, int kb, int tid) {
++        int m, k;
++        if (VEC) { if (KFAST) { m = m0 + (tid >> 2); k = kb + 4 * (tid & 3); } else { m = m0 + 4 * (tid & 15); k = kb + (tid >> 4); } }
++        else     { if (KFAST) { m = m0 + (tid >> 4); k = kb + (tid & 15); }    else { m = m0 + tid; k = kb; } }
++        p = P + (long)m * sm + (long)k * sk;
++        // loads r < lim_m are inside the M rows
++        if (VEC) { step = KFAST ? 16 * sm : 4 * sk; lim_m = KFAST ? (M - m + 15) >> 4 : (m < M ? LOADS : 0); }
++        else     { step = KFAST ? 4 * sm : sk;      lim_m = KFAST ? (M - m + 3) >> 2 : (m < M ? LOADS : 0); }
++        if (VEC) sidx = KFAST ? 4 * (tid & 3) * MUON_SMEM_STRIDE + (tid >> 2) : (tid >> 4) * MUON_SMEM_STRIDE + 4 * (tid & 15);
++        else     sidx = KFAST ? (tid & 15) * MUON_SMEM_STRIDE + (tid >> 4) : tid;
++    }
++    // k0 is the step's first k, dk = k0 - kb, sk the k stride
++    __device__ void fetch(float* r, int k0, int K, long dk, int sk, int tid) const {
++        int lim_k;
++        if (VEC) lim_k = KFAST ? (k0 + 4 * (tid & 3) < K ? LOADS : 0) : (K - k0 - (tid >> 4) + 3) >> 2;
++        else     lim_k = KFAST ? (k0 + (tid & 15) < K ? LOADS : 0) : K - k0;
++        const int n = min(lim_m, lim_k);
++        const float* q = p + dk * sk;
++        #pragma unroll
++        for (int l = 0; l < LOADS; l++) {
++            if (VEC) {
++                float4 v = l < n ? *(const float4*)(q + l * step) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
++                r[4 * l] = v.x; r[4 * l + 1] = v.y; r[4 * l + 2] = v.z; r[4 * l + 3] = v.w;
++            } else {
++                r[l] = l < n ? q[l * step] : 0.0f;
++            }
++        }
++    }
++    __device__ void stash(float* S, const float* r) const {
++        #pragma unroll
++        for (int l = 0; l < LOADS; l++) {
++            if (VEC && KFAST) {
++                #pragma unroll
++                for (int c = 0; c < 4; c++) S[sidx + c * MUON_SMEM_STRIDE + 16 * l] = r[4 * l + c];
++            } else if (VEC) {
++                *(float4*)&S[sidx + 4 * l * MUON_SMEM_STRIDE] = make_float4(r[4 * l], r[4 * l + 1], r[4 * l + 2], r[4 * l + 3]);
++            } else {
++                S[sidx + l * (KFAST ? 4 : MUON_SMEM_STRIDE)] = r[l];
++            }
++        }
++    }
++};
++template <bool AK, bool BK, bool VEC>
++__device__ __forceinline__ void muon_gemm_tile(const MuonGemm& g, int slice, int row0, int col0, int k_begin, int k_end,
++                                               float (*As)[MUON_BK][MUON_SMEM_STRIDE], float (*Bs)[MUON_BK][MUON_SMEM_STRIDE]) {
++    const int tid = threadIdx.x, ty = tid >> 3, tx = tid & 7;
++    float acc[8][8];
++    #pragma unroll
++    for (int i = 0; i < 8; i++)
++        #pragma unroll
++        for (int j = 0; j < 8; j++) acc[i][j] = 0.0f;
++    MuonStage<AK, VEC> sa;   // A(i, k)
++    MuonStage<BK, VEC> sb;   // B(k, j) as X(j, k)
++    sa.init(g.A, g.sa_i, g.sa_k, row0, g.M, k_begin, tid);
++    sb.init(g.B, g.sb_j, g.sb_k, col0, g.N, k_begin, tid);
++    float ra[MUON_BK], rb[MUON_BK];
++    auto fetch = [&](int k0) {
++        sa.fetch(ra, k0, g.K, k0 - k_begin, g.sa_k, tid);
++        sb.fetch(rb, k0, g.K, k0 - k_begin, g.sb_k, tid);
++    };
++    if (k_begin < k_end) { fetch(k_begin); sa.stash(&As[0][0][0], ra); sb.stash(&Bs[0][0][0], rb); }
++    __syncthreads();
++    int buf = 0;
++    for (int k0 = k_begin; k0 < k_end; k0 += MUON_BK) {
++        const bool more = k0 + MUON_BK < k_end;
++        fetch(more ? k0 + MUON_BK : k0);  // unconditional: under `if (more)` the loads sank below the FMAs
++        #pragma unroll
++        for (int k = 0; k < MUON_BK; k++) {
++            const float4 a0 = *(const float4*)&As[buf][k][ty * 4], a1 = *(const float4*)&As[buf][k][32 + ty * 4];
++            const float4 b0 = *(const float4*)&Bs[buf][k][tx * 4], b1 = *(const float4*)&Bs[buf][k][32 + tx * 4];
++            const float av[8] = {a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w};
++            const float bv[8] = {b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w};
++            #pragma unroll
++            for (int i = 0; i < 8; i++)
++                #pragma unroll
++                for (int j = 0; j < 8; j++) acc[i][j] = fmaf(av[i], bv[j], acc[i][j]);
++        }
++        if (more) { sa.stash(&As[buf ^ 1][0][0], ra); sb.stash(&Bs[buf ^ 1][0][0], rb); }
++        __syncthreads();
++        buf ^= 1;
++    }
++    #pragma unroll
++    for (int i = 0; i < 8; i++) {
++        int gi = row0 + (i & 4) * 8 + ty * 4 + (i & 3);
++        if (gi >= g.M) continue;
++        #pragma unroll
++        for (int j = 0; j < 8; j++) {
++            int gj = col0 + (j & 4) * 8 + tx * 4 + (j & 3);
++            if (gj >= g.N) continue;
++            long o = (long)gi * g.N + gj;
++            if (g.ksplit > 1) { g.part[(long)slice * g.M * g.N + o] = acc[i][j]; continue; }
++            float v = __fmul_rn(g.alpha, acc[i][j]);
++            if (g.beta != 0.0f) v = __fmaf_rn(g.beta, g.Cin[o], v);
++            g.C[o] = v;
++        }
++    }
++}
 +__global__ void __launch_bounds__(MUON_THREADS) muon_grouped_gemm(MuonGroup grp) {
-+    __shared__ __align__(16) float As[MUON_BK][MUON_SMEM_STRIDE];
-+    __shared__ __align__(16) float Bs[MUON_BK][MUON_SMEM_STRIDE];
++    __shared__ __align__(16) float As[2][MUON_BK][MUON_SMEM_STRIDE];
++    __shared__ __align__(16) float Bs[2][MUON_BK][MUON_SMEM_STRIDE];
 +    int tile = blockIdx.x, p = 0;
 +    while (p + 1 < grp.count && tile >= grp.g[p + 1].tile_begin) p++;
 +    const MuonGemm& g = grp.g[p];
@@ -1077,55 +1184,19 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +        k_begin = slice * kc; k_end = min(g.K, k_begin + kc);
 +    }
 +    const int row0 = tm * MUON_TILE, col0 = tn * MUON_TILE;
-+    const int tid = threadIdx.x, ty = tid >> 4, tx = tid & 15;
-+    float acc[4][4];
-+    #pragma unroll
-+    for (int i = 0; i < 4; i++)
-+        #pragma unroll
-+        for (int j = 0; j < 4; j++) acc[i][j] = 0.0f;
-+    // Load mapping: the contiguous operand dimension goes to consecutive threads.
-+    const bool a_kfast = g.sa_k == 1, b_jfast = g.sb_j == 1;
-+    for (int k0 = k_begin; k0 < k_end; k0 += MUON_BK) {
-+        #pragma unroll
-+        for (int r = 0; r < (MUON_TILE * MUON_BK) / MUON_THREADS; r++) {
-+            int e = tid + r * MUON_THREADS;
-+            int i, k;
-+            if (a_kfast) { i = e / MUON_BK; k = e - i * MUON_BK; } else { k = e / MUON_TILE; i = e - k * MUON_TILE; }
-+            int gi = row0 + i, gk = k0 + k;
-+            As[k][i] = (gi < g.M && gk < g.K) ? g.A[(long)gi * g.sa_i + (long)gk * g.sa_k] : 0.0f;
-+            int j, kb;
-+            if (b_jfast) { kb = e / MUON_TILE; j = e - kb * MUON_TILE; } else { j = e / MUON_BK; kb = e - j * MUON_BK; }
-+            int gj = col0 + j, gkb = k0 + kb;
-+            Bs[kb][j] = (gj < g.N && gkb < g.K) ? g.B[(long)gkb * g.sb_k + (long)gj * g.sb_j] : 0.0f;
-+        }
-+        __syncthreads();
-+        #pragma unroll
-+        for (int k = 0; k < MUON_BK; k++) {
-+            float4 a = *(const float4*)&As[k][ty * 4];
-+            float4 b = *(const float4*)&Bs[k][tx * 4];
-+            const float av[4] = {a.x, a.y, a.z, a.w}, bv[4] = {b.x, b.y, b.z, b.w};
-+            #pragma unroll
-+            for (int i = 0; i < 4; i++)
-+                #pragma unroll
-+                for (int j = 0; j < 4; j++) acc[i][j] = fmaf(av[i], bv[j], acc[i][j]);
-+        }
-+        __syncthreads();
-+    }
-+    #pragma unroll
-+    for (int i = 0; i < 4; i++) {
-+        int gi = row0 + ty * 4 + i;
-+        if (gi >= g.M) continue;
-+        #pragma unroll
-+        for (int j = 0; j < 4; j++) {
-+            int gj = col0 + tx * 4 + j;
-+            if (gj >= g.N) continue;
-+            long o = (long)gi * g.N + gj;
-+            if (g.ksplit > 1) { g.part[(long)slice * g.M * g.N + o] = acc[i][j]; continue; }
-+            float v = g.alpha * acc[i][j];
-+            if (g.beta != 0.0f) v += g.beta * g.Cin[o];
-+            g.C[o] = v;
-+        }
-+    }
++    const bool ak = g.sa_k == 1, bk = g.sb_k == 1;
++    // float4 staging: 16-byte aligned base, the strided dimension's stride and
++    // the contiguous dimension's extent multiples of 4
++    auto vec_ok = [&](const float* P, int sm, int sk, int M, bool kfast) {
++        return ((unsigned long)P & 15) == 0 && ((kfast ? sm : sk) & 3) == 0 && ((kfast ? g.K : M) & 3) == 0;
++    };
++    const bool vec = vec_ok(g.A, g.sa_i, g.sa_k, g.M, ak) && vec_ok(g.B, g.sb_j, g.sb_k, g.N, bk);
++#define MUON_TILE_CALL(a, b, v) muon_gemm_tile<a, b, v>(g, slice, row0, col0, k_begin, k_end, As, Bs)
++    if (vec) { if (ak) { if (bk) MUON_TILE_CALL(true, true, true);  else MUON_TILE_CALL(true, false, true); }
++               else    { if (bk) MUON_TILE_CALL(false, true, true); else MUON_TILE_CALL(false, false, true); } }
++    else     { if (ak) { if (bk) MUON_TILE_CALL(true, true, false);  else MUON_TILE_CALL(true, false, false); }
++               else    { if (bk) MUON_TILE_CALL(false, true, false); else MUON_TILE_CALL(false, false, false); } }
++#undef MUON_TILE_CALL
 +}
 +// Split-K epilogue for a whole group: C = alpha sum_slices part + beta Cin.
 +__global__ void muon_grouped_reduce(MuonGroup grp, long total) {
@@ -1224,10 +1295,22 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +}
 +static void muon_group_launch(const MuonGroup& grp, cudaStream_t stream) {
 +    if (grp.total_tiles == 0) return;
-+    muon_grouped_gemm<<<grp.total_tiles, MUON_THREADS, 0, stream>>>(grp);
 +    bool split = false; long total = 0;
 +    for (int i = 0; i < grp.count; i++) { split |= grp.g[i].ksplit > 1; total += (long)grp.g[i].M * grp.g[i].N; }
-+    if (split) muon_grouped_reduce<<<grid_size(total), BLOCK_SIZE, 0, stream>>>(grp, total);
++    if (split) {
++        muon_grouped_gemm<<<grp.total_tiles, MUON_THREADS, 0, stream>>>(grp);
++        muon_grouped_reduce<<<grid_size(total), BLOCK_SIZE, 0, stream>>>(grp, total);
++        return;
++    }
++    // Unsplit groups (B and X'): the longest-K problems' tiles first, so the
++    // short ones fill the tail (16 SMs: 77 -> 73 and 128 -> 119 us). Where a
++    // tile runs doesn't change its result.
++    int idx[MUON_MAX_MATS];
++    for (int i = 0; i < grp.count; i++) idx[i] = i;
++    std::stable_sort(idx, idx + grp.count, [&](int a, int b) { return grp.g[a].K > grp.g[b].K; });
++    MuonGroup sorted = {};
++    for (int i = 0; i < grp.count; i++) muon_group_add(sorted, grp.g[idx[i]]);
++    muon_grouped_gemm<<<sorted.total_tiles, MUON_THREADS, 0, stream>>>(sorted);
 +}
 +
 +// The 5 NS iterations for every matrix, 3 launches each; result in x_buf.
@@ -1260,7 +1343,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  void muon_init(Muon* m, Allocator* param_alloc, double lr_val,
          double momentum, double eps, double weight_decay,
          Allocator* alloc) {
-@@ -144,6 +429,86 @@
+@@ -144,6 +513,86 @@
          alloc_register(alloc, &m->x_buf);
          alloc_register(alloc, &m->ns_norm_puf);
      }
@@ -1347,7 +1430,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
  
  void muon_post_create(Muon* m) {
-@@ -151,6 +516,9 @@
+@@ -151,6 +600,9 @@
      m->lr_derived_ptr = m->lr_derived_puf.data;
      m->grad_norm_ptr = m->grad_norm_puf.data;
      if (m->ns_norm_puf.data) m->norm_ptr = m->ns_norm_puf.data;
@@ -1357,7 +1440,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
      cudaMemcpy(m->lr_ptr, &m->lr_val_init, sizeof(float), cudaMemcpyHostToDevice);
      cudaMemset(m->lr_derived_ptr, 0, 2 * sizeof(float));
      cudaMemset(m->mb_puf.data, 0, numel(m->mb_puf.shape) * sizeof(float));
-@@ -168,6 +536,21 @@
+@@ -168,6 +620,21 @@
      muon_norm_partials<<<clip_blocks, 256, 0, stream>>>(
          m->norm_partials.data, grads.data, numel(grads.shape));
      muon_norm_reduce<<<1, 256, 0, stream>>>(m->grad_norm_ptr, m->norm_partials.data, clip_blocks);
@@ -1379,7 +1462,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
      muon_clip_norm<<<grid_size(numel(grads.shape)), BLOCK_SIZE, 0, stream>>>(
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
-@@ -175,6 +558,23 @@
+@@ -175,6 +642,23 @@
      muon_nesterov<<<grid_size(numel(m->mb_puf.shape)), BLOCK_SIZE, 0, stream>>>(
          m->mb_puf.data, grads.data, (float)m->momentum, numel(m->mb_puf.shape));
  
@@ -1403,7 +1486,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
      long offset = 0;
      for (int _i = 0; _i < m->param_alloc->num_regs; _i++) {
          AllocEntry& e = m->param_alloc->regs[_i];
-@@ -183,45 +583,61 @@
+@@ -183,45 +667,61 @@
          long ne = numel(e.shape);
          const precision_t* update_ptr = gc_ptr;
          float scale = 1.0f;
