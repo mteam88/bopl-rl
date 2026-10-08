@@ -63,14 +63,14 @@ __host__ __device__ constexpr int br4_samples_of(int s) {
 static_assert(br4_samples_of(0) <= 32 && br4_samples_of(1) <= 32 && br4_samples_of(2) <= 32 && br4_samples_of(3) <= 32, "samples per block");
 constexpr int br4_cmax(int x, int y) { return x > y ? x : y; }
 constexpr int br4_align16(int b) { return (b + 15) / 16 * 16; }
-__host__ __device__ constexpr int br4_stage_width(int s) { return (v4::SPEC[s].width + 3) / 4 * 4; }   // a staged row's stride: float4 aligned
-constexpr int br4_stage_floats() {   // the largest samples x staged obs block (floats)
+__host__ __device__ constexpr int br4_stage_width(int s) { return (v4::SPEC[s].width + 7) / 8 * 8; }   // a staged row's stride (bf16): 16-byte aligned
+constexpr int br4_stage_floats() {   // the largest samples x staged obs block (bf16 elements)
     return br4_cmax(br4_cmax(br4_samples_of(0) * v4::SPEC[0].rows * br4_stage_width(0), br4_samples_of(1) * v4::SPEC[1].rows * br4_stage_width(1)),
                     br4_cmax(br4_samples_of(2) * v4::SPEC[2].rows * br4_stage_width(2), br4_samples_of(3) * v4::SPEC[3].rows * br4_stage_width(3)));
 }
 // Dynamic shared, per block (the largest set's sizes):
-//   xs     the block's samples' obs blocks, fp32 bf16-rounded (the features rounded as the trainer
-//          rounds them), rows br4_stage_width apart (then the pooling's parts: (samples, parts, D) max and sum)
+//   xs     the block's samples' obs blocks as bf16 (the features rounded as the trainer rounds
+//          them), rows br4_stage_width apart (then the pooling's parts: (samples, parts, D) max and sum)
 //   h1     (valid rows of the block, I) bf16 (the values are bf16-rounded; h2 reads 8 a load)
 //   meta   per staged row: valid flag, embedding id; per valid row: its xs offset and id;
 //          per sample: valid rows and the first one's index
@@ -78,9 +78,9 @@ struct Br4SetSmem { int h1, meta, total; };
 constexpr int BR4_SET_META = 4 * BR4_BLOCK_SET_ROWS + 2 * 32;
 constexpr int br4_max_samples() { return br4_cmax(br4_cmax(br4_samples_of(0), br4_samples_of(1)), br4_cmax(br4_samples_of(2), br4_samples_of(3))); }
 constexpr Br4SetSmem br4_set_smem(int I) {
-    return Br4SetSmem{br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8),
-                      br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 2,
-                      br4_cmax(br4_align16(br4_stage_floats() * 4), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 2 + BR4_SET_META * 4};
+    return Br4SetSmem{br4_cmax(br4_align16(br4_stage_floats() * 2), br4_max_samples() * BR4_POOL_SPLIT * 8),
+                      br4_cmax(br4_align16(br4_stage_floats() * 2), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 2,
+                      br4_cmax(br4_align16(br4_stage_floats() * 2), br4_max_samples() * BR4_POOL_SPLIT * 8) + BR4_BLOCK_SET_ROWS * I * 2 + BR4_SET_META * 4};
 }
 static size_t br4_sets_smem(int I) { return (size_t)br4_set_smem(I).total; }
 // One group's set weights into the chain's layout: W1 transposed to (features, I)
@@ -102,13 +102,17 @@ __host__ __device__ inline int br4_set_blocks(const BrGroups& g, int s) {
 }
 __host__ __device__ constexpr int br4_set_order(int y) { return y == 0 ? 2 : y == 1 ? 1 : y == 2 ? 3 : 0; }   // entities (the most rows) first
 
-// h1 of the valid rows m0, m0 + js, ... (NR of them, all < M) for channel i: see br4_set_block
+// h1 of the valid rows m0, m0 + js, ... (NR of them, all < M) for channel i: see br4_set_block. The
+// row's features and W1's column stay bf16 (w: its pairs, f = 2j in the low half): a 16-byte load is 8
+// features, each pair a bf16 fma (br4_fma_bf2), the odd feature at the end one.
+__device__ __forceinline__ float br4_fma_bf2(unsigned w, unsigned x, float acc);
+__device__ __forceinline__ float br4_fma_bf1(unsigned w, unsigned x, float acc);
 template <int S, int I, int NR>
-__device__ __forceinline__ void br4_h1_rows(const float* xs, const int* vrow, const int* vid, const float* E,
-                                            const float (&w)[v4::SPEC[S].features], unsigned short* h1, int m0, int js, int i) {
+__device__ __forceinline__ void br4_h1_rows(const unsigned short* xs, const int* vrow, const int* vid, const float* E,
+                                            const unsigned (&w)[(v4::SPEC[S].features + 1) / 2], unsigned short* h1, int m0, int js, int i) {
     constexpr v4::Spec sp = v4::SPEC[S];
     constexpr int F = sp.features;
-    const float* xr[NR]; float acc[NR], ev[NR];
+    const unsigned short* xr[NR]; float acc[NR], ev[NR];
     #pragma unroll
     for (int r = 0; r < NR; r++) {
         const int m = m0 + r * js;
@@ -116,18 +120,17 @@ __device__ __forceinline__ void br4_h1_rows(const float* xs, const int* vrow, co
         ev[r] = sp.id_col >= 0 ? br4_bf(E[(long)vid[m] * I + i]) : 0.0f;
     }
     #pragma unroll
-    for (int f = 0; f < F / 4 * 4; f += 4) {
+    for (int f = 0; f < F; f += 8) {
         #pragma unroll
         for (int r = 0; r < NR; r++) {
-            const float4 x = *(const float4*)(xr[r] + f);
-            acc[r] = fmaf(w[f], x.x, acc[r]); acc[r] = fmaf(w[f + 1], x.y, acc[r]);
-            acc[r] = fmaf(w[f + 2], x.z, acc[r]); acc[r] = fmaf(w[f + 3], x.w, acc[r]);
+            const uint4 x = *(const uint4*)(xr[r] + f);
+            const unsigned xv[4] = {x.x, x.y, x.z, x.w};
+            #pragma unroll
+            for (int p = 0; p < 4; p++) {
+                if (f + 2 * p + 1 < F) acc[r] = br4_fma_bf2(w[f / 2 + p], xv[p], acc[r]);
+                else if (f + 2 * p < F) acc[r] = br4_fma_bf1(w[f / 2 + p], xv[p], acc[r]);
+            }
         }
-    }
-    #pragma unroll
-    for (int f = F / 4 * 4; f < F; f++) {
-        #pragma unroll
-        for (int r = 0; r < NR; r++) acc[r] = fmaf(w[f], xr[r][f], acc[r]);
     }
     #pragma unroll
     for (int r = 0; r < NR; r++) {
@@ -142,6 +145,11 @@ __device__ __forceinline__ void br4_h1_rows(const float* xs, const int* vrow, co
 __device__ __forceinline__ float br4_fma_bf2(unsigned w, unsigned x, float acc) {
     asm("{ .reg .b16 wl, wh, xl, xh; mov.b32 {wl, wh}, %1; mov.b32 {xl, xh}, %2;\n\t"
         "fma.rn.f32.bf16 %0, wl, xl, %0;\n\tfma.rn.f32.bf16 %0, wh, xh, %0; }" : "+f"(acc) : "r"(w), "r"(x));
+    return acc;
+}
+// acc + w.lo x.lo alone (the odd feature at a row's end).
+__device__ __forceinline__ float br4_fma_bf1(unsigned w, unsigned x, float acc) {
+    asm("{ .reg .b16 wl, wh, xl, xh; mov.b32 {wl, wh}, %1; mov.b32 {xl, xh}, %2;\n\tfma.rn.f32.bf16 %0, wl, xl, %0; }" : "+f"(acc) : "r"(w), "r"(x));
     return acc;
 }
 // h2 of the valid rows m0, m0 + parts, ... (NR of them, all < M) for this thread's channel, pooled
@@ -193,7 +201,7 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
     static_assert(T % I == 0 && I % 8 == 0, "set inner width");
     constexpr int W4 = br4_stage_width(S);
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, D = a.D, parts = BR4_POOL_SPLIT / D;
-    float* xs = (float*)smem;
+    unsigned short* xs = (unsigned short*)smem;
     unsigned short* h1 = (unsigned short*)(smem + a.sm_h1);
     int* flag = (int*)(smem + a.sm_meta);             // (K, rows)
     int* ids = flag + BR4_BLOCK_SET_ROWS;          // (K, rows)
@@ -202,11 +210,12 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
     int* nk = vid + BR4_BLOCK_SET_ROWS;            // sample k: valid rows
     int* bk = nk + 32;                             // sample k: its first valid row m
     // weights: this thread's W1 column (its h1 channel i) and W2 row into registers
-    float w1c[F];
+    unsigned w1c[(F + 1) / 2];   // its bf16 pairs (feature 2j low)
     {
-        const __nv_bfloat16* src = a.w.w1t[grp][S] + tid % I;
+        const unsigned short* src = (const unsigned short*)a.w.w1t[grp][S] + tid % I;
         #pragma unroll
-        for (int f = 0; f < F; f++) w1c[f] = __bfloat162float(__ldg(src + (long)f * I));
+        for (int j = 0; j < (F + 1) / 2; j++)
+            w1c[j] = (unsigned)__ldg(src + (long)(2 * j) * I) | (2 * j + 1 < F ? (unsigned)__ldg(src + (long)(2 * j + 1) * I) << 16 : 0u);
     }
     const int dw = tid % D;   // the h2 channel (and W2 row) of this thread
     uint4 wreg[I / 8];
@@ -244,7 +253,7 @@ __device__ __forceinline__ void br4_set_block(const Br4SetsArgs& a, int grp, int
         int e = t * T + tid, k = e / N, rem = e - k * N;
         if (e < K * N && k < cnt) {
             int r = rem / sp.width, c = rem - r * sp.width;
-            xs[k * sp.rows * W4 + r * W4 + c] = br4_bf(v[t]);
+            xs[k * sp.rows * W4 + r * W4 + c] = __bfloat16_as_ushort(__float2bfloat16(v[t]));   // br4_bf's value
             if (c == 0) flag[k * sp.rows + r] = v[t] != 0.0f;
             if (sp.id_col >= 0 && c == sp.id_col) ids[k * sp.rows + r] = v4::embedding_id(v[t]);
         }
