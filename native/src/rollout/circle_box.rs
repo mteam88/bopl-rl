@@ -1757,6 +1757,14 @@ impl RolloutWorld {
                 } else {
                     break;
                 };
+                // A settled slime's pair with its position outside the wall
+                // queues nothing (below), whatever the tests between: that
+                // test first, which nearly every such pair fails. Debug
+                // builds take the pair through them all.
+                #[cfg(not(debug_assertions))]
+                if slime && settled && !self.narrow_wall(walls, wall).overlaps(self.slime_base(wall_slime(part)).position) {
+                    continue;
+                }
                 // SameCompositeAs: a child never meets its own platform. A wall
                 // meets parts only while DetPhysics.IsActive, which a wall
                 // destroyed before this pass also fails, having left in
@@ -1788,14 +1796,12 @@ impl RolloutWorld {
                     // check that it acts on nothing. Nor is the group's
                     // `platforms_changed` lost: `settled` here is a manifold
                     // already queued, or rows already stale, which a further
-                    // bump leaves stale.
-                    let outside = !rounded.overlaps(self.slime_base(wall_slime(part)).position);
-                    #[cfg(not(debug_assertions))]
-                    if outside {
-                        continue;
-                    }
+                    // bump leaves stale. Release builds left it out above.
                     #[cfg(debug_assertions)]
-                    eager.push(((0, Default::default(), Default::default()), met, outside));
+                    {
+                        let outside = !rounded.overlaps(self.slime_base(wall_slime(part)).position);
+                        eager.push(((0, Default::default(), Default::default()), met, outside));
+                    }
                     None
                 } else {
                     let collider = *shape.get_or_insert_with(|| self.wall_part_collider_at(part, entity));
