@@ -6032,6 +6032,16 @@ pub struct RolloutWorld {
     pub game_in_progress: bool,
     pub sudden_death_tick: u32,
     pub ability_spawner_enabled: bool,
+    /// A Rewind can be cast this episode, decided at reset: a resolved kit
+    /// slot holds it, or an ability pickup can appear and be rerolled to it
+    /// (the map spawner is on, or a slime can die with the round going on:
+    /// more than two players, or stocks). The recorder ring is read by
+    /// `RewindState::begin` alone and `begin` reads up to 150 ticks back, so
+    /// the flag must hold from the first tick or not at all; while it is
+    /// false the ring is dead state and `rewind_recorders_tick` skips it.
+    /// Debug builds assert it at a Rewind cast, a Rewind grant and any
+    /// pickup's updater turn.
+    pub rewind_possible: bool,
     /// Per-authored-spawner `(time, spawn_count)` state, in updater order.
     pub ability_spawner_state: Vec<(Fix, u8)>,
     /// Abilities which can still own an updater in this episode. Bits are
@@ -6244,6 +6254,7 @@ impl RolloutWorld {
             game_in_progress: true,
             sudden_death_tick: 0,
             ability_spawner_enabled: false,
+            rewind_possible: false,
             ability_spawner_state: Vec::with_capacity(2),
             orbits: Vec::with_capacity(4),
             vector_fields: Vec::with_capacity(32),
@@ -6381,6 +6392,7 @@ impl RolloutWorld {
         self.game_in_progress = src.game_in_progress;
         self.sudden_death_tick = src.sudden_death_tick;
         self.ability_spawner_enabled = src.ability_spawner_enabled;
+        self.rewind_possible = src.rewind_possible;
         self.ability_spawner_state
             .clone_from(&src.ability_spawner_state);
         self.orbits.clone_from(&src.orbits);
@@ -6506,6 +6518,7 @@ impl RolloutWorld {
             game_in_progress: _,
             sudden_death_tick: _,
             ability_spawner_enabled: _,
+            rewind_possible: _,
             ability_spawner_state: _,
             orbits: _,
             vector_fields: _,
@@ -6712,6 +6725,13 @@ impl RolloutWorld {
                 *ability = resolved;
             }
         }
+        // In a two-player round without stocks the one drop, DropAbilities on
+        // a slime's last body, lands in the pass that ends the round
+        // (session_result_tick), and its pickup's updater begins next pass.
+        self.rewind_possible = self.ability_spawner_enabled
+            || players > 2
+            || config.stocks > 0
+            || resolved_abilities[..players].iter().any(|abilities| abilities[..slots].contains(&ABILITY_REWIND));
         // A round restart is a LoadSceneMode.Single load of the next level
         // (GameSessionHandler.LoadNextLevelScene, GameSessionHandler.cs:423),
         // and DetPhysics is an ordinary per-scene MonoBehaviour, so its Awake
@@ -7853,6 +7873,17 @@ impl RolloutWorld {
         if self.ability_pickups[index].appended > self.tick {
             return;
         }
+        // A pickup that takes a turn in a live round could be rerolled to
+        // Rewind and granted. With the recorder skipped, the only pickup is
+        // a drop, and the round ends at the start of its first pass
+        // (session_result_tick sees the death on the following tick); it is
+        // enabled 0.1 s after that and rerolled 7 s after, so that pass is
+        // its last, and it grants nothing.
+        debug_assert!(
+            self.rewind_possible || !self.game_in_progress,
+            "an ability pickup updates in a live round with the Rewind recorder skipped (tick {})",
+            self.tick
+        );
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         if stopped {
             self.ability_pickups[index].body.velocity = Vec2::ZERO;
@@ -8192,6 +8223,11 @@ impl RolloutWorld {
         slot.ability_count = slot.ability_count.max(ability_slot + 1);
         slot.abilityless = false;
         slot.abilities[ability_slot] = ability;
+        debug_assert!(
+            self.rewind_possible || ability != ABILITY_REWIND,
+            "Rewind granted with its recorder skipped"
+        );
+        self.rewind_possible |= ability == ABILITY_REWIND;
         slot.cooldowns[ability_slot] = data.abilities[ability as usize].cooldown;
         slot.timers[ability_slot] = timer;
         slot.roll_lethal[ability_slot] = false;
@@ -12453,6 +12489,7 @@ impl RolloutWorld {
                         break;
                     }
                     ABILITY_REWIND => {
+                        debug_assert!(self.rewind_possible, "Rewind cast with its recorder skipped");
                         let started = {
                             let slot = &mut self.players[index];
                             slot.rewind.begin(slot.base.position, slot.base.rotation(), s)
@@ -15437,6 +15474,12 @@ impl RolloutWorld {
     }
 
     fn rewind_recorders_tick(&mut self, players: &[usize]) {
+        // No Rewind can begin this episode, so nothing reads the ring
+        // (`begin` is its only reader) and nobody is rewinding.
+        if !self.rewind_possible {
+            debug_assert!(players.iter().all(|&index| !self.players[index].rewind.rewinding));
+            return;
+        }
         for &index in players {
             if !self.hittable(index) {
                 continue;
