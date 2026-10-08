@@ -412,9 +412,7 @@ impl RolloutWorld {
                 radius: self.tesla_nodes[i].radius,
             }),
             Part::Engine(i) => Collider::Box(self.engines[i].rocket_box(&self.entity_inverse_extents)),
-            Part::Spike(i) => {
-                Collider::Box(Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, self.spike_attacks[i]))
-            }
+            Part::Spike(i) => Collider::Box(self.spike_box(i)),
             Part::Missile(i) => Collider::Box(self.guided_missiles[i].collider(&self.entity_inverse_extents)),
             Part::Rock(i) => Collider::Circle(Circle {
                 center: self.players[i].base.position,

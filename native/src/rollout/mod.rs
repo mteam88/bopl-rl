@@ -5581,6 +5581,11 @@ struct PlatformScratch {
     /// manifold, before any of that group's corrections move them.
     circle_colliders: Vec<RoundedRect>,
     callback_tick: Option<u32>,
+    /// Whether `callback_colliders`, `callback_bounds`, `wall_order` and
+    /// `pairs` are this world's last narrow phase's, which took the stack
+    /// sweep: cleared by `fork_from` and `reset`, whose scratch is another
+    /// world's.
+    pairs_kept: bool,
     /// The sweep axis DetPhysics.Simulate chose with those colliders.
     callback_sweep_x: bool,
     /// sweepX_roundedRectanglesOnly, chosen with it.
@@ -6392,6 +6397,7 @@ impl RolloutWorld {
         self.scratch.cloud_keys_version = 0;
         self.scratch.walk_awake = WALK_ALL;
         self.scratch.authored_platforms_built = false;
+        self.scratch.pairs_kept = false;
         self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
@@ -6679,6 +6685,7 @@ impl RolloutWorld {
         self.scratch.cloud_keys_version = 0;
         self.scratch.walk_awake = WALK_ALL;
         self.scratch.authored_platforms_built = false;
+        self.scratch.pairs_kept = false;
         self.smoke_explosions.clear();
         self.time_stop_effects.clear();
         self.spike_attacks.clear();
@@ -17186,9 +17193,9 @@ impl RolloutWorld {
     /// last wrote: the collider's pose relative to its platform.
     fn place_spike_attack(&mut self, index: usize) {
         let attack = self.spike_attacks[index];
-        let platform = &self.platforms[attack.platform_index];
         let parent_rotation = self.platform_dynamics[attack.platform_index].body.orientation;
-        let spike_right = Vec2::angle(parent_rotation + attack.relative_rotation);
+        let spike_right = self.spike_basis_mut(index, parent_rotation + attack.relative_rotation);
+        let platform = &self.platforms[attack.platform_index];
         let root_position = platform.surface.position(attack.local, Fix::ZERO)
             + spike_right.perp() * attack.surface_offset;
         let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
@@ -17809,13 +17816,15 @@ impl RolloutWorld {
         row.rotation = node.line_transform.rotation().raw();
     }
 
-    fn spike_attack_box_in(
-        platform_dynamics: &[PlatformDynamics],
-        inverse_extents: &[Vec2],
-        spike: SpawnedSpike,
-    ) -> OrientedBox {
-        let parent = &platform_dynamics[spike.platform_index];
-        let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
+    /// A spike's rotation: its platform's and its own on it.
+    #[inline(always)]
+    fn spike_rotation(platform_dynamics: &[PlatformDynamics], spike: &SpawnedSpike) -> Fix {
+        platform_dynamics[spike.platform_index].body.orientation + spike.relative_rotation
+    }
+
+    /// The spike's box, `basis` being its rotation's `Vec2::angle`.
+    #[inline(always)]
+    fn spike_attack_box_at(inverse_extents: &[Vec2], spike: &SpawnedSpike, basis: Vec2) -> OrientedBox {
         let extents = spike.box_extents(inverse_extents);
         OrientedBox {
             center: spike.collider_center,
@@ -17828,11 +17837,8 @@ impl RolloutWorld {
     /// The SpikeAttack FixTransform: SyncGameObject places it at the box
     /// collider's own corrected centre less its scaled offset.
     fn spike_attack_root(&self, spike_index: usize) -> Vec2 {
-        let spike = self.spike_attacks[spike_index];
-        let spike_right = Vec2::angle(
-            self.platform_dynamics[spike.platform_index].body.orientation
-                + spike.relative_rotation,
-        );
+        let spike = &self.spike_attacks[spike_index];
+        let spike_right = self.spike_basis(spike_index, Self::spike_rotation(&self.platform_dynamics, spike));
         spike.collider_center
             - spike.collider_offset.complex_mul(spike_right)
     }
@@ -30661,11 +30667,12 @@ impl RolloutWorld {
             let live = !engine.macho_carried && self.attached_live(engine.platform_index, engine.entity);
             return live.then(|| DetCollider::Box(engine.rocket_box(&self.entity_inverse_extents)));
         }
-        if let Some(spike) =
-            self.spike_attacks.iter().find(|spike| spike.active && spike.entity == Some(entity))
+        if let Some(index) =
+            self.spike_attacks.iter().position(|spike| spike.active && spike.entity == Some(entity))
         {
+            let spike = &self.spike_attacks[index];
             let live = !spike.macho_carried && self.attached_live(spike.platform_index, spike.entity);
-            return live.then(|| DetCollider::Box(Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, *spike)));
+            return live.then(|| DetCollider::Box(self.spike_box(index)));
         }
         if let Some(clone) =
             self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
@@ -39052,17 +39059,55 @@ impl RolloutWorld {
         if std::mem::take(&mut self.rope_rectangles_callback) {
             self.rope_rectangles.clone_from(&scratch.callback_colliders);
         }
-        scratch.callback_colliders.clear();
         scratch.callback_tick = Some(self.tick);
         scratch.callback_sweep_x = sweep_x;
         scratch.callback_rounded_sweep_x = rounded_sweep_x;
-        scratch
-            .callback_colliders
-            .extend(self.platforms.iter().map(|p| p.collider));
-        scratch.callback_bounds.clear();
-        scratch
-            .callback_bounds
-            .extend(scratch.callback_colliders.iter().map(|&r| Collider::RoundedRect(r).bounds()));
+        // Every platform the integration skipped, as many as at the last
+        // narrow phase, which took the stack sweep on this axis: nothing
+        // has written a platform since that integration (any write clears
+        // its settled bit, and a removal or an addition all of them), so
+        // the colliders, their boxes and their order are the ones kept, and
+        // so are the stack sweep's pairs, a function of those boxes, the
+        // active flags and the axis.
+        let count = self.platforms.len();
+        let every = if count >= 64 { u64::MAX } else { (1u64 << count) - 1 };
+        let kept = scratch.pairs_kept
+            && skipped & every == every
+            && scratch.callback_colliders.len() == count
+            && self.platform_dynamics.pairs_axis == Some(sweep_x);
+        if !kept {
+            scratch.callback_colliders.clear();
+            scratch
+                .callback_colliders
+                .extend(self.platforms.iter().map(|p| p.collider));
+            scratch.callback_bounds.clear();
+            scratch
+                .callback_bounds
+                .extend(scratch.callback_colliders.iter().map(|&r| Collider::RoundedRect(r).bounds()));
+        }
+        #[cfg(debug_assertions)]
+        if kept {
+            // All f64s, no padding: the bytes are the bits.
+            const { assert!(std::mem::size_of::<RoundedRect>() % 8 == 0) };
+            let bits = |r: &RoundedRect| -> Vec<u8> {
+                // SAFETY: a plain-old-data value read as its bytes.
+                unsafe { std::slice::from_raw_parts((r as *const RoundedRect).cast::<u8>(), std::mem::size_of::<RoundedRect>()) }.to_vec()
+            };
+            debug_assert!(
+                self.platforms.iter().zip(&scratch.callback_colliders).all(|(p, kept)| bits(&p.collider) == bits(kept)),
+                "kept colliders moved"
+            );
+            let fresh: Vec<_> = scratch.callback_colliders.iter().map(|&r| Collider::RoundedRect(r).bounds()).collect();
+            debug_assert_eq!(
+                fresh.iter().flatten().map(|v| [v.x.bits(), v.y.bits()]).collect::<Vec<_>>(),
+                scratch.callback_bounds.iter().flatten().map(|v| [v.x.bits(), v.y.bits()]).collect::<Vec<_>>()
+            );
+            let kept_pairs = scratch.pairs.clone();
+            let kept_order = scratch.wall_order.clone();
+            debug_assert!(Self::platform_pairs(&self.platforms, scratch, sweep_x));
+            debug_assert_eq!(kept_pairs, scratch.pairs, "kept pairs differ");
+            debug_assert_eq!(kept_order, scratch.wall_order);
+        }
 
         // RR-only sweep/narrow-phase. Contacts are all captured before any
         // impulse or correction, just like DetPhysics' collision buffer.
@@ -39070,7 +39115,8 @@ impl RolloutWorld {
         if self.platforms.len() >= 2 && self.platforms.iter().any(|platform| platform.active) {
             debug_assert_eq!(sweep_x, Self::platform_sweep_x(&self.platforms, &self.entities));
         }
-        let stack_sweep = Self::platform_pairs(&self.platforms, scratch, sweep_x);
+        let stack_sweep = kept || Self::platform_pairs(&self.platforms, scratch, sweep_x);
+        scratch.pairs_kept = stack_sweep;
         // Two platforms the integration skipped meet no more than they did
         // at the last narrow phase, which followed the last integration:
         // nothing has written their colliders since (a write clears a
@@ -41510,9 +41556,8 @@ impl RolloutWorld {
             if !spike.active && !eaten {
                 continue;
             }
-            let parent = &self.platform_dynamics[spike.platform_index].body;
-            let rotation = parent.orientation + spike.relative_rotation;
-            let basis = Vec2::angle(rotation);
+            let rotation = Self::spike_rotation(&self.platform_dynamics, &spike);
+            let basis = self.spike_basis_mut(spike_index, rotation);
             // Box.SetRotation builds `up` as ComplexMul(up * extent, basis):
             // 0*x - e*y floors e*y before negating, where `perp() * e` would
             // floor the negative product (1 raw apart).

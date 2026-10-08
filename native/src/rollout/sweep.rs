@@ -38,6 +38,8 @@ pub(super) struct SweepBounds {
     duplicated_rocks: Vec<[Vec2; 2]>,
     pickups: Vec<[Vec2; 2]>,
     rows: Vec<[Vec2; 2]>,
+    /// `memo_angle`'s entries, by spike: kept from pass to pass.
+    spike_basis: Vec<(u64, Vec2)>,
     /// The spikes and Guided Missiles take_sweep bounded, the active ones;
     /// `spikes` and `missiles` hold NOWHERE for the rest, which nothing
     /// reads.
@@ -56,6 +58,43 @@ pub(super) struct SweepBounds {
 
 /// A box that overlaps nothing, for a collider out of the sweep.
 const NOWHERE: [Vec2; 2] = [Vec2::new(Fix::MAX, Fix::MAX), Vec2::new(Fix::MIN, Fix::MIN)];
+
+/// `Vec2::angle(angle)`, through `memo[i]`. Every entry is some angle's bits
+/// and that angle's `Vec2::angle` (a new one angle zero's), so an entry
+/// whose bits are `angle`'s holds its basis whatever wrote it: a spike's
+/// rotation, its platform's plus its own, is the same pass after pass while
+/// the platform keeps its orientation (seven boxes in ten over the test
+/// replays), and its sine and cosine are taken once.
+#[inline(always)]
+pub(super) fn memo_angle(memo: &mut Vec<(u64, Vec2)>, i: usize, angle: Fix) -> Vec2 {
+    if i >= memo.len() {
+        memo.resize(i + 1, (Fix::ZERO.bits(), Vec2::angle(Fix::ZERO)));
+    }
+    let entry = &mut memo[i];
+    if entry.0 == angle.bits() {
+        debug_assert_eq!(vec_bits(entry.1), vec_bits(Vec2::angle(angle)));
+        return entry.1;
+    }
+    let basis = Vec2::angle(angle);
+    *entry = (angle.bits(), basis);
+    basis
+}
+
+fn vec_bits(v: Vec2) -> [u64; 2] {
+    [v.x.bits(), v.y.bits()]
+}
+
+/// `memo_angle` without a write: the entry's basis if it is `angle`'s.
+#[inline(always)]
+fn memo_angle_read(memo: &[(u64, Vec2)], i: usize, angle: Fix) -> Vec2 {
+    match memo.get(i) {
+        Some(&(bits, basis)) if bits == angle.bits() => {
+            debug_assert_eq!(vec_bits(basis), vec_bits(Vec2::angle(angle)));
+            basis
+        }
+        _ => Vec2::angle(angle),
+    }
+}
 
 /// Whether two bounding boxes overlap strictly on both axes.
 pub(super) fn swept_meet(a: [Vec2; 2], b: [Vec2; 2]) -> bool {
@@ -92,7 +131,7 @@ impl RolloutWorld {
         // Each list from its pool's own arm of `current_bounds`, which the
         // fills call directly rather than through its match; debug builds
         // compare every box with `current_bounds`.
-        fn fill(list: &mut Vec<[Vec2; 2]>, count: usize, f: impl Fn(usize) -> [Vec2; 2]) {
+        fn fill(list: &mut Vec<[Vec2; 2]>, count: usize, f: impl FnMut(usize) -> [Vec2; 2]) {
             list.clear();
             list.extend((0..count).map(f));
         }
@@ -117,8 +156,9 @@ impl RolloutWorld {
         // an inactive one, about half the spike slots and four missile slots
         // in five over the test replays, is left unbounded and its sin and cos
         // untaken (debug builds check every one read was taken).
+        let memo = &mut sweep.spike_basis;
         fill(&mut sweep.spikes, self.spike_attacks.len(), |i| {
-            if self.spike_attacks[i].active { self.spike_bounds(i) } else { NOWHERE }
+            if self.spike_attacks[i].active { self.spike_bounds(i, |rotation| memo_angle(memo, i, rotation)) } else { NOWHERE }
         });
         fill(&mut sweep.missiles, self.guided_missiles.len(), |i| {
             let missile = &self.guided_missiles[i];
@@ -252,7 +292,9 @@ impl RolloutWorld {
     fn current_bounds(&self, collider: Swept, data: &data::RolloutData) -> [Vec2; 2] {
         let _ = data;
         match collider {
-            Swept::Part(Part::Spike(i)) => self.spike_bounds(i),
+            // Without the memo: debug builds check take_sweep's boxes, its
+            // bases among them, against these.
+            Swept::Part(Part::Spike(i)) => self.spike_bounds(i, Vec2::angle),
             Swept::Part(Part::Rock(i)) => self.player_bounds(i),
             Swept::Part(Part::Pickup(i)) => self.pickup_bounds(i),
             Swept::Part(Part::DuplicatedRock(i)) => self.duplicated_rock_bounds(i),
@@ -277,15 +319,44 @@ impl RolloutWorld {
         }
     }
 
-    /// A spike's box; one whose wall is gone a point at its collider centre.
+    /// A spike's box, `basis` taking its rotation's `Vec2::angle`; one whose
+    /// wall is gone a point at its collider centre.
     #[inline]
-    fn spike_bounds(&self, i: usize) -> [Vec2; 2] {
+    fn spike_bounds(&self, i: usize, basis: impl FnOnce(Fix) -> Vec2) -> [Vec2; 2] {
         let spike = &self.spike_attacks[i];
         if spike.platform_index >= self.platform_dynamics.len() {
             let center = spike.collider_center;
             return [center, center];
         }
-        box_bounds(Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, *spike))
+        let basis = basis(Self::spike_rotation(&self.platform_dynamics, spike));
+        box_bounds(Self::spike_attack_box_at(&self.entity_inverse_extents, spike, basis))
+    }
+
+    /// `Vec2::angle(rotation)`, from the sweep's `memo_angle` entry for
+    /// spike `i` where it holds the rotation's.
+    pub(super) fn spike_basis(&self, i: usize, rotation: Fix) -> Vec2 {
+        match self.scratch.sweep.as_deref() {
+            Some(sweep) => memo_angle_read(&sweep.spike_basis, i, rotation),
+            None => Vec2::angle(rotation),
+        }
+    }
+
+    /// Spike `i`'s box with `memo_angle`'s basis from this pass's sweep, the
+    /// entries it and the spike updaters kept, where it holds the rotation's.
+    pub(super) fn spike_box(&self, i: usize) -> OrientedBox {
+        let spike = &self.spike_attacks[i];
+        let basis = self.spike_basis(i, Self::spike_rotation(&self.platform_dynamics, spike));
+        Self::spike_attack_box_at(&self.entity_inverse_extents, spike, basis)
+    }
+
+    /// `Vec2::angle(rotation)` through the sweep's `memo_angle` entry for
+    /// spike `i`, for a writer holding `&mut self` (the sweep is kept in
+    /// `scratch` between passes, so the entry outlives them).
+    pub(super) fn spike_basis_mut(&mut self, i: usize, rotation: Fix) -> Vec2 {
+        match self.scratch.sweep.as_deref_mut() {
+            Some(sweep) => memo_angle(&mut sweep.spike_basis, i, rotation),
+            None => Vec2::angle(rotation),
+        }
     }
 
     /// The player's registered Player-layer shape.
