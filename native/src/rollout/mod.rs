@@ -5281,6 +5281,10 @@ enum CallbackHit {
         /// Whether the pair met, tested when it was queued.
         #[cfg(debug_assertions)]
         meets: bool,
+        /// Whether release builds leave it out (`wall_group`): it must act
+        /// on nothing.
+        #[cfg(debug_assertions)]
+        noop: bool,
     },
     /// A young SpikeAttack.OnCollide with a rounded rect, on the wall layer
     /// or not (SpikeAttack.cs:116-141).
@@ -35788,9 +35792,13 @@ impl RolloutWorld {
                 untested,
                 #[cfg(debug_assertions)]
                 meets,
+                #[cfg(debug_assertions)]
+                noop,
             } => {
                 #[cfg(debug_assertions)]
                 debug_assert!(untested.map_or(meets, |shape| circle_box::slime_wall_meets(shape, collider) == meets));
+                #[cfg(debug_assertions)]
+                debug_assert!(!noop || !self.squish_acts(slime, wall, collider, untested), "a squish left out acts");
                 self.squish(slime, wall, collider, untested)
             }
             CallbackHit::BlackHole { hole, target, inverse_mass } => {
@@ -38163,6 +38171,22 @@ impl RolloutWorld {
     /// resolved (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer
     /// detaches its rope only after this pass's rope step.
     fn squish(&mut self, slime: Slime, wall: usize, collider: RoundedRect, untested: Option<Collider>) {
+        if !self.squish_acts(slime, wall, collider, untested) {
+            return;
+        }
+        match slime {
+            Slime::Player(index) => {
+                self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
+            }
+            Slime::Clone(index) => {
+                self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED, KillRoute::ON_COLLIDE);
+            }
+        }
+    }
+
+    /// Whether `squish` kills.
+    #[inline(always)]
+    fn squish_acts(&self, slime: Slime, wall: usize, collider: RoundedRect, untested: Option<Collider>) -> bool {
         let (ignored, squishable, ground_destroyed) = match slime {
             Slime::Player(index) => {
                 let slot = &self.players[index];
@@ -38175,24 +38199,13 @@ impl RolloutWorld {
             Slime::Clone(index) => (false, true, self.abilityless_clones[index].ground_destroyed.is_some()),
         };
         let base = self.slime_base(slime);
-        if ignored
+        !(ignored
             || !squishable
             || !base.grounded
             || ground_destroyed
             || base.ground == Some(self.platforms[wall].id)
             || !collider.overlaps(base.position)
-            || untested.is_some_and(|shape| !circle_box::slime_wall_meets(shape, collider))
-        {
-            return;
-        }
-        match slime {
-            Slime::Player(index) => {
-                self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
-            }
-            Slime::Clone(index) => {
-                self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED, KillRoute::ON_COLLIDE);
-            }
-        }
+            || untested.is_some_and(|shape| !circle_box::slime_wall_meets(shape, collider)))
     }
 
     /// An abilityless clone's PlayerCollision.OnCollide kill:

@@ -359,6 +359,16 @@ fn walls_meeting_scalar(walls: &[[Vec2; 2]], part: [Vec2; 2]) -> u64 {
         .fold(0, |meets, (wall, &bounds)| meets | (u64::from(sweep::swept_meet(part, bounds)) << wall))
 }
 
+/// The slime a wall group's body or clone part is.
+#[inline(always)]
+fn wall_slime(part: Part) -> Slime {
+    match part {
+        Part::Body(index) => Slime::Player(index),
+        Part::Clone(index) => Slime::Clone(index),
+        _ => unreachable!("a slime part"),
+    }
+}
+
 /// Whether a slime's or clone's collider meets a wall: whether its
 /// Circle/RoundedRect or Box/RoundedRect manifold is Some.
 pub(super) fn slime_wall_meets(shape: Collider, wall: RoundedRect) -> bool {
@@ -1713,9 +1723,10 @@ impl RolloutWorld {
         // The pass's sweep axis, for the ranks.
         let sweep_x = self.sweep_x();
         // Debug builds test each untested pair here too, by its key, and
-        // whether the group meets anything.
+        // whether the group meets anything; and they queue the squishes
+        // release leaves out (below), to check each acts on nothing.
         #[cfg(debug_assertions)]
-        let (mut eager, mut found): (Vec<(CallbackKey, bool)>, bool) = (Vec::new(), false);
+        let (mut eager, mut found): (Vec<(CallbackKey, bool, bool)>, bool) = (Vec::new(), false);
         for &(part, bounds) in parts {
             #[cfg(debug_assertions)]
             {
@@ -1761,16 +1772,30 @@ impl RolloutWorld {
                 let rounded = self.narrow_wall(walls, wall);
                 let contact = if slime && settled {
                     #[cfg(debug_assertions)]
+                    let met = slime_wall_meets(self.wall_part_collider(part), rounded);
+                    #[cfg(debug_assertions)]
                     {
-                        let met = slime_wall_meets(self.wall_part_collider(part), rounded);
                         found |= met;
-                        if wall_layer == LAYER_WALL {
-                            eager.push(((0, Default::default(), Default::default()), met));
-                        }
                     }
                     if wall_layer != LAYER_WALL {
                         continue;
                     }
+                    // The squish acts only while the slime's position is
+                    // inside the collider the manifold copied (`squish`):
+                    // with it outside, nearly every pass's squish, the pair
+                    // queues nothing. Nothing moves the slime before its
+                    // squish would run; debug builds queue it anyway and
+                    // check that it acts on nothing. Nor is the group's
+                    // `platforms_changed` lost: `settled` here is a manifold
+                    // already queued, or rows already stale, which a further
+                    // bump leaves stale.
+                    let outside = !rounded.overlaps(self.slime_base(wall_slime(part)).position);
+                    #[cfg(not(debug_assertions))]
+                    if outside {
+                        continue;
+                    }
+                    #[cfg(debug_assertions)]
+                    eager.push(((0, Default::default(), Default::default()), met, outside));
                     None
                 } else {
                     let collider = *shape.get_or_insert_with(|| self.wall_part_collider_at(part, entity));
@@ -1851,7 +1876,13 @@ impl RolloutWorld {
                 };
                 let collider = self.narrow_wall(walls, wall);
                 #[cfg(debug_assertions)]
-                let meets = contact.is_some() || eager.iter().find(|&&(k, _)| k == *key).expect("an eager test").1;
+                let (meets, noop) = match contact {
+                    Some(_) => (true, false),
+                    None => {
+                        let &(_, meets, outside) = eager.iter().find(|&&(k, ..)| k == *key).expect("an eager test");
+                        (meets, outside)
+                    }
+                };
                 // Written in place, with the room made first and the key
                 // copied straight from the contact: `push` built the hit on
                 // the stack and copied the key in with loads that straddled
@@ -1871,6 +1902,8 @@ impl RolloutWorld {
                         untested: None,
                         #[cfg(debug_assertions)]
                         meets,
+                        #[cfg(debug_assertions)]
+                        noop,
                     });
                     hits.set_len(len + 1);
                 }
