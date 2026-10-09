@@ -25,7 +25,7 @@ concurrency = 1
 [trial]
 memory_max = "10G"
 nice = 0
-max_seconds = 61200                # 17 h: ~6.3 h at ~0.89M learner/s, with room for a loaded box
+max_seconds = 604800               # 7 d: the 20B step cap is the real stop. Was 17 h; raised 2026-10-09 at ~7B because CPU contention cut throughput to ~60-250k learner/s
 poll_seconds = 60
 
 [scoring]
