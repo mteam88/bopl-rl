@@ -5,8 +5,11 @@
 #  - opponents: the frozen parent and the first exploiter (exploit-g111-1-9253m, which
 #    only reached ~0.29 against it), plus the run's own snapshots. pool_size 8 with
 #    pfsp_p 2 keeps the two members a real share of games instead of 2 in 18.
-#  - kits: lineups-matthew now holds 16 (11,14,3 spike + platform + grenade added
-#    2026-10-09), which the parent never saw.
+#  - kits: lineups-matthew-focus.txt, the 16 kits of lineups-matthew (11,14,3 spike +
+#    platform + grenade added 2026-10-09, which the parent never saw) with Dash/Dash/Meteor
+#    and both Drill kits in ~2.5x the seats of the rest (Matthew: they "can be better with
+#    more training"). Restarted on it at 2.0B learner the same day; the uniform-kit start
+#    was discarded.
 #  - entropy starts at its 0.001 floor: the parent finished there, and re-annealing
 #    from 0.0153 would undo a trained policy.
 # Matthew's own 90 rounds against the parent (2026-10-10) went 51-39 to him, 23-12 on
@@ -62,7 +65,7 @@ v4_ablate = 0                      # THE VARIABLE: full writer (see generalist-1
 # A 3-id file lists kits, not games (resolve_loadouts expands it to all 225
 # ordered pairs); an earlier attempt at mirror_share 1 only ever played a kit
 # against itself. 2,2,20 holds Dash twice on purpose: no loadout_no_dup.
-loadout_set = "native/data/lineups-matthew.txt"
+loadout_set = "native/data/lineups-matthew-focus.txt"
 mirror_share = 0.0
 # overnight-9 024, stretched 4x in steps and every step-denominated schedule
 steps = 10000000000                # 10B learner on top of the parent's 19.52B
