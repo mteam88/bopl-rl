@@ -1720,6 +1720,115 @@
    },
    "path": "native/artifacts/rl/sweeps/v3-base-059/000/checkpoints/policy-1333362688.bin",
    "metadata_sha256": "35403f7dcb903df0ee4c2e88e607ef0d36653b03540438a90d7536b8e635874b"
+  },
+  {
+   "id": "4241e97f809275831659f2816693dff2463a6352613f9654812239cfa190258c",
+   "name": "g111-20b-26027m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/generalist-111-20b/000",
+    "step": 26026704896
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-09",
+    "rule": "promoted 2026-10-09: best of five 960-game band ratings (679 [653,707]) and 0.72 vs hard scripted bots; first exploiter target"
+   },
+   "path": "native/artifacts/rl/sweeps/generalist-111-20b/000/checkpoints/policy-26026704896.bin",
+   "metadata_sha256": "bde48fe5da0b761215d81449d0a4e35b3cf265d32be67698bd8aedbee8f0ac32"
   }
  ],
  "conditions": {
@@ -2753,5 +2862,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "b29c66998fb9f1114d9bb47fa462111379cb705d5e63eae0c3aa0747f64804df"
+ "league_sha256": "4b60d3080599744b3b282a71df3532482e3b863078ec1663d906273f30aff5ec"
 }
