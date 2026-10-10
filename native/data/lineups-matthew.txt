@@ -27,3 +27,4 @@
 8,3,24     # growth ray + grenade + mine
 24,30,18   # mine + magnet gun + black hole
 28,18,6    # laser + black hole + blink
+11,14,3    # spike + platform + grenade      added 2026-10-09 (Matthew, thread "bopl bots"); runs before then trained on the fifteen above
