@@ -136,7 +136,11 @@ def describe_learned(member, names):
     arch = meta.get('architecture', '')
     trained = []
     if steps:
-        trained.append(f'{steps / 1e9:.1f}B learner steps')
+        # origin.step counts physical decisions; the learner's share is the run's own ratio
+        if config.get('steps') and config.get('learner_steps'):
+            trained.append(f"{steps * config['learner_steps'] / config['steps'] / 1e9:.1f}B learner steps")
+        else:
+            trained.append(f'{steps / 1e9:.1f}B steps')
     if maps:
         trained.append(f'{len(maps)} maps')
     trained = (' Trained ' + ' on '.join(trained) + '.') if trained else ''
