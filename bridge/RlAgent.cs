@@ -30,7 +30,14 @@ using UnityEngine;
 // the training sims and the replay share (Updater.Update skips the call on
 // hitstop frames without simulating anything). Each round writes one JSON line
 // to BOPL_AGENT_RESULTS (seed, players, winner, replay file) for
-// Tools/play-vs-agent.sh. Unset BOPL_AGENT leaves the stock game untouched.
+// Tools/play-vs-agent.sh.
+// With BOPL_AGENT_CATALOG set (the launchers set it), the opponent and its kit
+// come from the in-game picker instead (RlAgentPicker on the character select,
+// RlAgentCatalog for the bots and the remembered choice; BOPL_AGENT then only
+// preselects): the agent plays the chosen kit, or a kit drawn from its set for
+// every round. The shim needs no loadout of its own for that: the observation
+// and mask read the abilities from the game state. With neither variable set
+// the stock game is untouched.
 public static class RlAgent
 {
     [StructLayout(LayoutKind.Sequential)]
@@ -48,13 +55,20 @@ public static class RlAgent
     [DllImport(Library)] private static extern int bopl_agent_decisions(IntPtr agent);
     [DllImport(Library)] private static extern IntPtr bopl_agent_id(IntPtr agent);
 
-    public static readonly string Spec = Environment.GetEnvironmentVariable("BOPL_AGENT");
-    public static bool Enabled => !string.IsNullOrEmpty(Spec);
+    private static readonly string envSpec = Environment.GetEnvironmentVariable("BOPL_AGENT");
+    public static string Spec { get; private set; } = envSpec;
+    public static bool Enabled => RlAgentCatalog.Present || !string.IsNullOrEmpty(envSpec);
     private static readonly string resultsPath = Environment.GetEnvironmentVariable("BOPL_AGENT_RESULTS");
 
     private static IntPtr handle;
     private static string id = "";
-    private static int[] abilities;
+    private static int[] abilities;          // the shim's loadout; the kit played is kit
+    private static int[] kit;
+    private static System.Random kitDraw;
+    private static RlAgentCatalog.Bot bot;
+    private static string kitChoice;
+    private static Player agentPlayer;
+    private static NamedSpriteList abilityCatalog;
     private static int warmupTicks, maxEpisodeTicks;
     private static string openError;
 
@@ -96,37 +110,97 @@ public static class RlAgent
         return true;
     }
 
+    // RlAgentPicker: can the shim open spec? Its loadout comes back in kit.
+    public static bool Probe(string spec, out int[] kit, out string error)
+    {
+        kit = null; error = null;
+        var buffer = new byte[1024];
+        try {
+            if (bopl_agent_abi_version() != 1) { error = "libbopl_agent.so ABI mismatch"; return false; }
+            IntPtr probe = bopl_agent_open(spec, 2, 1, buffer, (UIntPtr)buffer.Length);
+            if (probe == IntPtr.Zero) { error = Encoding.UTF8.GetString(buffer).TrimEnd('\0'); return false; }
+            kit = new[] { bopl_agent_ability(probe, 0), bopl_agent_ability(probe, 1), bopl_agent_ability(probe, 2) };
+            bopl_agent_close(probe);
+            return true;
+        } catch (DllNotFoundException exception) {
+            error = "libbopl_agent.so not found: " + exception.Message;
+            return false;
+        }
+    }
+
+    // The colour AddPlayers gives the agent: the first one no human took.
+    public static int ColorIndex(List<Material> taken, PlayerColors colors)
+    {
+        int color = 0;
+        while (color < colors.playerColors.Length - 1 && taken.Contains(colors[color].playerMaterial)) color++;
+        return color;
+    }
+
     // CharacterSelectHandler.TryStartGame_inner: append the AI player after the
     // human ones. Team and colour are ones no human took; the loadout is the
-    // agent's training loadout (sidecar ability1..3, or the training defaults).
+    // picker's kit (RlAgentCatalog.KitFor), else the agent's training loadout
+    // (sidecar ability1..3, or the training defaults).
     public static void AddPlayers(List<Player> list, ref int nextId, PlayerColors colors, NamedSpriteList catalog)
     {
         if (!Enabled) return;
+        bot = null; kitChoice = null;
+        if (RlAgentCatalog.Present) {
+            RlAgentCatalog.EnsureLoaded();
+            bot = RlAgentCatalog.Chosen;
+            if (bot == null) { Debug.LogError("BOPL_AGENT: no opponent chosen (" + (RlAgentCatalog.LoadError ?? "the catalog has no bot available here") + ")"); return; }
+            Spec = bot.Path;
+            kitChoice = RlAgentCatalog.KitChoiceText;
+        }
         if (!Open(list.Count + 1, list.Count)) {
             Debug.LogError("BOPL_AGENT=" + Spec + ": " + openError);
             return;
         }
-        int team = 0, color = 0;
+        int team = 0;
         while (list.Exists(p => p.Team == team)) team++;
-        while (color < colors.playerColors.Length - 1 && list.Exists(p => p.Color == colors[color].playerMaterial)) color++;
+        int color = ColorIndex(list.ConvertAll(p => p.Color), colors);
         var player = new Player(nextId, team) {
             Color = colors[color].playerMaterial, UsesKeyboardAndMouse = false, CanUseAbilities = true,
             IsLocalPlayer = false, IsAgent = true, inputDevice = null,
             Abilities = new List<GameObject>(3), AbilityIcons = new List<Sprite>(3)
         };
-        foreach (int ability in abilities) {
-            if (ability < 0 || ability >= catalog.sprites.Count || catalog.sprites[ability].associatedGameObject == null) {
-                Debug.LogError("BOPL_AGENT: unknown ability index " + ability); continue;
-            }
-            player.Abilities.Add(catalog.sprites[ability].associatedGameObject);
-            player.AbilityIcons.Add(catalog.sprites[ability].sprite);
+        // One seed sequence per launch: a later match (after the picker changed the
+        // bot) continues the round count, so no two rounds of a session share a seed.
+        if (kitDraw == null) {
+            string seed = Environment.GetEnvironmentVariable("BOPL_AGENT_SEED");
+            baseSeed = !string.IsNullOrEmpty(seed) && uint.TryParse(seed, out uint parsed) ? parsed : (uint)Environment.TickCount;
+            kitDraw = new System.Random(unchecked((int)baseSeed));
         }
+        agentPlayer = player; abilityCatalog = catalog;
+        SetKit(RlAgentCatalog.Present ? RlAgentCatalog.KitFor(kitDraw) ?? abilities : abilities);
         nextId++;
         list.Add(player);
-        round = -1; updater = null;
-        string seed = Environment.GetEnvironmentVariable("BOPL_AGENT_SEED");
-        baseSeed = !string.IsNullOrEmpty(seed) && uint.TryParse(seed, out uint parsed) ? parsed : (uint)Environment.TickCount;
-        Debug.Log("BOPL_AGENT: " + id + " joins as player " + player.Id + " (team " + team + ", abilities " + string.Join(",", abilities) + "), base seed " + baseSeed);
+        updater = null;
+        Debug.Log("BOPL_AGENT: " + id + (bot == null ? "" : " (" + bot.Id + ", kit " + kitChoice + ")") + " joins as player " + player.Id
+                  + " (team " + team + ", abilities " + string.Join(",", kit) + "), base seed " + baseSeed);
+    }
+
+    // Gives the agent's player this kit (ability catalog indices).
+    private static void SetKit(int[] next)
+    {
+        kit = next;
+        agentPlayer.Abilities.Clear(); agentPlayer.AbilityIcons.Clear();
+        foreach (int ability in kit) {
+            if (ability < 0 || ability >= abilityCatalog.sprites.Count || abilityCatalog.sprites[ability].associatedGameObject == null) {
+                Debug.LogError("BOPL_AGENT: unknown ability index " + ability); continue;
+            }
+            agentPlayer.Abilities.Add(abilityCatalog.sprites[ability].associatedGameObject);
+            agentPlayer.AbilityIcons.Add(abilityCatalog.sprites[ability].sprite);
+        }
+    }
+
+    // GameSessionHandler.LoadNextLevelScene: a random kit is drawn again for
+    // every round, as training drew one per episode.
+    public static void BeforeLevelLoad()
+    {
+        if (!Enabled || handle == IntPtr.Zero || agentPlayer == null || kitChoice != "random") return;
+        if (!PlayerHandler.Get().PlayerList().Contains(agentPlayer)) return;
+        SetKit(RlAgentCatalog.KitFor(kitDraw));
+        Debug.Log("BOPL_AGENT: next round's kit " + string.Join(",", kit));
     }
 
     private static bool Active(out List<Player> players)
@@ -242,7 +316,8 @@ public static class RlAgent
             }
             var line = new JObject {
                 ["kind"] = "round", ["round"] = round, ["level"] = roundLevel, ["seed"] = roundSeed,
-                ["agent"] = Spec, ["agent_id"] = id, ["agent_player"] = players[agentIndex].Id, ["agent_index"] = agentIndex,
+                ["agent"] = Spec, ["agent_id"] = id, ["bot"] = bot?.Id, ["bot_kind"] = bot?.Kind, ["kit_choice"] = kitChoice,
+                ["kit"] = new JArray(kit[0], kit[1], kit[2]), ["bot_rating"] = bot?.Rating, ["agent_player"] = players[agentIndex].Id, ["agent_index"] = agentIndex,
                 ["players"] = roster, ["winner"] = winner == null ? null : (JToken)winner.Id, ["draw"] = winner == null,
                 ["agent_won"] = winner != null && winner.IsAgent,
                 ["episode_ticks"] = episodeTicks, ["level_ticks"] = tick, ["warmup_ticks"] = warmupTicks,

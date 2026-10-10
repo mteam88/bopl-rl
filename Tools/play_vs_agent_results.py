@@ -19,7 +19,14 @@ tally()/Bradley-Terry can rate them like any other pairing:
   side         index of the human in the roster (0)
   ticks        episode ticks (after the 240-tick warmup)
   outcome      "a" (human won), "b" (agent won), "draw" (nobody / both)
-  agent        the BOPL_AGENT spec as given, agent_path, agent_sha256 (checkpoint)
+  agent        the spec the round was played with (the record's, as the in-game
+               picker can change it between matches; else --agent), agent_path,
+               agent_sha256 (checkpoint)
+  bot, bot_kind, bot_rating   the picker's catalog entry (Tools/bot_catalog.py:
+               league member / bot / roster name, its kind, its league Elo then);
+               null for a session started without the picker
+  kit_choice   "random" (a kit drawn from the bot's set each round) or the chosen
+               kit "a,b,c"; agent_kit is the kit the agent played this round
   roster       when the spec was a .roster: the roster path; agent/agent_path/
                agent_sha256/b then describe the member the shim drew for the
                round (joined on the round seed from --roster-log, the shim's
@@ -50,7 +57,7 @@ def sha256(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('results', type=Path, help='BOPL_AGENT_RESULTS file of the session')
-    parser.add_argument('--agent', required=True)
+    parser.add_argument('--agent', help='the session spec, for records without their own (older builds)')
     parser.add_argument('--game', type=Path, required=True)
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
@@ -70,13 +77,16 @@ def main():
     session = args.results.stem.replace('.session-', '')
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
-    roster_path = args.agent if args.agent.endswith('.roster') else None
+    def spec_of(record):
+        return record.get('agent') or args.agent or ''
+
+    rosters = sorted({spec_of(r) for r in rounds if spec_of(r).endswith('.roster')})
     draws = {}
-    if roster_path:
-        log = args.roster_log or Path(roster_path + '.log')
+    for roster in rosters:
+        log = args.roster_log or Path(roster + '.log')
         if not log.exists():
-            print(f'roster session without its draw log {log}; rounds cannot be attributed', file=sys.stderr)
-            return 1
+            print(f'roster session without its draw log {log}; its rounds cannot be attributed', file=sys.stderr)
+            continue
         for line in log.read_text().splitlines():
             if line.strip():
                 draw = json.loads(line)
@@ -85,8 +95,9 @@ def main():
 
     def member(record):
         """(spec, id) deciding this round: the roster's draw, else the agent itself."""
-        if not roster_path:
-            return args.agent, record.get('agent_id')
+        spec = spec_of(record)
+        if not spec.endswith('.roster'):
+            return spec, record.get('agent_id')
         draw = draws.get(int(record.get('seed', -1)))
         return (draw['spec'], draw['id']) if draw else (None, None)
 
@@ -134,7 +145,9 @@ def main():
                 'rl_map': rl_of.get(level), 'map_role': map_set.role_of_level(level, catalogue) if level is not None else None,
                 'side': human_index, 'ticks': record.get('episode_ticks'), 'outcome': outcome,
                 'agent': spec, 'agent_path': str(agent_path) if agent_path else None, 'agent_sha256': agent_sha,
-                'roster': roster_path,
+                'roster': spec_of(record) if spec_of(record).endswith('.roster') else None,
+                'bot': record.get('bot'), 'bot_kind': record.get('bot_kind'), 'bot_rating': record.get('bot_rating'),
+                'kit_choice': record.get('kit_choice'), 'agent_kit': record.get('kit'),
                 'agent_index': record.get('agent_index'), 'agent_player': record.get('agent_player'),
                 'human_abilities': [p.get('abilities') for p in humans], 'agent_abilities': agent.get('abilities'),
                 'human_keyboard': [p.get('keyboard') for p in humans], 'players': roster,
@@ -150,10 +163,11 @@ def main():
             games.write(json.dumps(row) + '\n')
             written += 1
             print(f"round {record.get('round')}: map {row['map']} seed {row['seed']} outcome {outcome} "
-                  f"({row['ticks']} ticks) vs {Path(spec).name if spec.endswith('.bin') else spec} replay {replay_copy}")
+                  f"({row['ticks']} ticks) vs {record.get('bot') or (Path(spec).name if spec.endswith('.bin') else spec)} "
+                  f"kit {agent.get('abilities')} ({record.get('kit_choice') or 'own'}) replay {replay_copy}")
     if args.player_log and args.player_log.exists():
         shutil.copy2(args.player_log, out / f'{session}-Player.log')
-    if roster_path and args.roster_log and args.roster_log.exists():
+    if rosters and args.roster_log and args.roster_log.exists():
         shutil.copy2(args.roster_log, out / f'{session}-roster.log')
         args.roster_log.unlink()
     args.results.unlink()
