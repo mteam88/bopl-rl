@@ -1829,6 +1829,115 @@
    },
    "path": "native/artifacts/rl/sweeps/generalist-111-20b/000/checkpoints/policy-26026704896.bin",
    "metadata_sha256": "bde48fe5da0b761215d81449d0a4e35b3cf265d32be67698bd8aedbee8f0ac32"
+  },
+  {
+   "id": "86ce6ca3cbf43dd529546158cd560e16f696c70f23544f321c711ed263afc6fb",
+   "name": "exploit-g111-1-9253m",
+   "kind": "exploiter",
+   "parent": null,
+   "target": "g111-20b-26027m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/exploit-g111-1/000",
+    "step": 9253158912
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-10",
+    "rule": "2026-10-10: first exploiter's final checkpoint (6.94B learner, random init); held only ~0.29 vs its target at the end, in-run band 467. Joins as an opponent for the next main"
+   },
+   "path": "native/artifacts/rl/sweeps/exploit-g111-1/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "8a63ad97de810b82b51a609738ebb58f3e2dcf2cc84a74045d3a6d79b43e4217"
   }
  ],
  "conditions": {
@@ -2862,5 +2971,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "4b60d3080599744b3b282a71df3532482e3b863078ec1663d906273f30aff5ec"
+ "league_sha256": "0ac1b82933824b5e3fb332ab5e31d6fb0133e66ba64b6fe06223a1915bd4a0c2"
 }

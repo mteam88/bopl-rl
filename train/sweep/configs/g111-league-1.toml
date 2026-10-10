@@ -1,0 +1,117 @@
+# The second main (2026-10-10): g111-20b-26027m, the league's first main, continued
+# against a population instead of only its own snapshots. Warm start (--init-weights)
+# from that main; same architecture and optimiser settings as generalist-111-20b.
+# What changes:
+#  - opponents: the frozen parent and the first exploiter (exploit-g111-1-9253m, which
+#    only reached ~0.29 against it), plus the run's own snapshots. pool_size 8 with
+#    pfsp_p 2 keeps the two members a real share of games instead of 2 in 18.
+#  - kits: lineups-matthew now holds 16 (11,14,3 spike + platform + grenade added
+#    2026-10-09), which the parent never saw.
+#  - entropy starts at its 0.001 floor: the parent finished there, and re-annealing
+#    from 0.0153 would undo a trained policy.
+# Matthew's own 90 rounds against the parent (2026-10-10) went 51-39 to him, 23-12 on
+# Dash/Dash/Meteor; the question is whether this run closes that and beats its parent.
+#
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"
+downsample = 3
+fixed_cost = true
+max_suggestion_cost = 1.0e10
+max_runs = 1
+num_random_samples = 1
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "10G"
+nice = 0
+max_seconds = 604800               # the step cap is the stop
+poll_seconds = 60
+
+[scoring]
+scorer = "league"
+last_k = 3
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+# policy v4, width 256, one MinGRU layer; shape flags below
+encoder = "v4"
+hidden = 256
+layers = 1
+v4_set_inner = 64
+v4_ffn_dim = 0
+v4_critic_dim = 384
+v4_ablate = 0                      # THE VARIABLE: full writer (see generalist-111-lite.toml)
+# the loadout draw (this run): each seat draws its own kit from Matthew's fifteen
+# (lineups-matthew, Revival held back), so 14 games in 15 are two different kits.
+# A 3-id file lists kits, not games (resolve_loadouts expands it to all 225
+# ordered pairs); an earlier attempt at mirror_share 1 only ever played a kit
+# against itself. 2,2,20 holds Dash twice on purpose: no loadout_no_dup.
+loadout_set = "native/data/lineups-matthew.txt"
+mirror_share = 0.0
+# overnight-9 024, stretched 4x in steps and every step-denominated schedule
+steps = 10000000000                # 10B learner on top of the parent's 19.52B
+workers = 256                      # b4 recipe: 128 rows per buffer chain
+buffers = 4
+banks = 4
+seed = 75                          # not the parent's 73
+horizon = 128
+learner_passes = 1
+minibatch_div = 2
+aim_fourier = 4
+learning_rate = 0.0004852184640654399
+entropy = 0.001                    # = entropy_floor: no re-anneal on a warm start
+entropy_floor = 0.001
+entropy_half_life = 2874446584     # 4 x 718611646
+entropy_head_scale = "0.028821467398601395,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.2883693237829292
+reward_timeout = -1
+# No scripted training banks. The bots address fixed ability slots, not abilities
+# (bopl_bots.h: "Scripted opponents for the Dash/Bow/Platform loadout"), so on seven of
+# this run's eight kits "archer" charges a bow that is not in slot 1. The first attempt
+# gave them three of the four banks and spent 3.0B of its steps on opponents that were
+# pressing arbitrary buttons; killed at 33% on 2026-09-24 rather than finish it. All four
+# banks now hold the run's own snapshots, which play whatever kit they are dealt.
+# Evaluation still reports the bots, on the kit they were written for (evaluate.py).
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+opponents = "g111-20b-26027m,exploit-g111-1-9253m"
+init_weights = "native/artifacts/rl/sweeps/generalist-111-20b/000/checkpoints/policy-26026704896.bin"
+pool_size = 8
+pfsp_p = 2.0
+training_maps = "training-111"
+evaluation_maps = [0, 1, 2]        # the in-run progress curve, kept on the specialists' maps
+heldout_maps = "heldout-13"        # 9 grass, 3 snow, 1 space: the transfer reading
+episode_ticks = 10800              # 3 min. The game starts sudden death at 2 min
+                                   # (GameSessionHandler TimeBeforeSuddenDeath = 120), so the old
+                                   # 7200 cut every close game off as a draw right where it is
+                                   # decided - 17.5% of strong games in tournament-20260917.
+checkpoint_every = 80000000        # 4 x 20M: the same ~87 checkpoints per run
+eval_every = 640000000          # ~21 league readings over the run
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+# sweep_config requires one swept parameter; at its default this is [fixed].learning_rate.
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+default = 0.0004852184640654399   # must equal [fixed].learning_rate

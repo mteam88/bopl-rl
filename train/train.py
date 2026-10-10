@@ -221,6 +221,10 @@ def arguments():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--resume', action='store_true',
                    help='Continue the run in --output from its last checkpoint (same hyperparameters; --steps may grow)')
+    p.add_argument('--init-weights', type=Path,
+                   help='Start a fresh run from this checkpoint instead of random init (a league main '
+                        'continued against a new population). Its architecture must match the run\'s '
+                        'exactly; step counters, schedules, the optimiser and the pool start fresh')
     p.add_argument('--game', type=Path)
     p.add_argument('--steps', type=int, default=100_000, help='Actual learner decisions (excludes frozen players)')
     p.add_argument('--workers', type=int, default=16, help='Number of simultaneous two-player games')
@@ -638,6 +642,7 @@ def main():
                               hold_lengths=layout.HOLD_LENGTHS),
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
                   selfplay=pool_config,
+                  init_weights=checkpoint_identity(a.init_weights) if a.init_weights else None,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
@@ -685,6 +690,17 @@ def main():
             policy=dict(architecture=architecture, obs_size=obs_size, hidden=a.hidden,
                         num_layers=a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
                         v4_shape=v4_shape))
+    if a.init_weights and not resume:
+        # The same flat-array hazard registry.opponents guards a bank against: a
+        # mismatched checkpoint loads without error and trains from garbage.
+        run_shape = dict(architecture=architecture, obs_size=obs_size, hidden=a.hidden,
+                         num_layers=a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
+                         v4_shape=v4_shape)
+        theirs = registry.policy_shape(a.init_weights)
+        differs = {key: (theirs.get(key), run_shape.get(key)) for key in registry.POLICY_SHAPE
+                   if theirs.get(key) != run_shape.get(key)}
+        if differs:
+            raise SystemExit(f'--init-weights {a.init_weights}: architecture differs from the run: {differs}')
     print(f'league opponents: {len(league_opponents)}'
           + (' (' + ', '.join(o['name'] for o in league_opponents) + ')' if league_opponents else ''),
           flush=True)
@@ -748,6 +764,8 @@ def main():
                     raise SystemExit('--resume: pool/roster.json is missing')
                 scripted_roster.restore_counts(roster_entries, json.loads(roster_path.read_text()))
         else:
+            if a.init_weights:
+                _C.load_weights(trainer, str(a.init_weights.resolve()))
             initial = save()
             # Every bank starts from the initial policy; PFSP retires and
             # redraws them independently as each matchup settles.
