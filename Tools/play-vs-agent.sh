@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do
     --no-picker) PICKER=0; shift ;;
     --headless) HEADLESS=":94"; if [ $# -gt 1 ] && [[ "$2" == :* ]]; then HEADLESS=$2; shift; fi; shift ;;
     --install-desktop) INSTALL=1; shift ;;
-    -h|--help) sed -n 2,27p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,24p "$0"; exit 0 ;;
     *) AGENT=$1; shift ;;
   esac
 done

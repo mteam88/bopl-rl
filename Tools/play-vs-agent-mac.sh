@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do
     --maps) MAPS=$2; shift 2 ;;
     --kit) KIT=$2; shift 2 ;;
     --no-picker) PICKER=0; shift ;;   # RL map indices the rotation may draw (0,1,2,3,4), or training | held-out | all (native/data/map-set.json)
-    -h|--help) sed -n 2,26p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,27p "$0"; exit 0 ;;
     *) AGENT=$1; shift ;;
   esac
 done
