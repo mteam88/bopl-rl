@@ -126,17 +126,18 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
 # the self-play pool (entries, per-bank opponents, PFSP draws, sampling RNG), the
 # frozen banks' weights, the native step counter (pool snapshot names and
 # intervals), and the cumulative environment counters, which the C vector
-# restarts at zero and this process offsets. Not restored: the optimizer's
-# Muon momentum buffers (no native API; they rebuild within a few updates)
-# and the recurrent state, which starts as at an episode boundary.
+# restarts at zero and this process offsets, and the Muon momentum buffer.
+# Not restored: the recurrent state, which starts as at an episode boundary.
 RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'layers', 'horizon',
-                 'learner_passes', 'learning_rate', 'anneal_lr', 'entropy', 'entropy_floor',
-                 'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
+                 'learner_passes', 'learning_rate', 'anneal_lr', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'pool_size', 'pfsp_p', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts',
                  'historical_every')
+# The entropy schedule is a pure function of these and the learner step,
+# recomputed every update, so a resume may change it; the change is recorded.
+RESUME_SCHEDULE = ('entropy', 'entropy_floor', 'entropy_half_life')
 # Policy v4 (train/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
@@ -467,7 +468,10 @@ def main():
         recorded = recorded_hypers(previous_config)
         for name in RESUME_HYPERS:
             if recorded[name] != getattr(a, name):
-                raise SystemExit(f'--resume: {name} was {recorded[name]!r}, now {getattr(a, name)!r}; only --steps may change')
+                raise SystemExit(f'--resume: {name} was {recorded[name]!r}, now {getattr(a, name)!r}; only --steps '
+                                 f'and the entropy schedule may change')
+        schedule_changes = {name: [recorded[name], getattr(a, name)] for name in RESUME_SCHEDULE
+                            if recorded[name] != getattr(a, name)}
         if a.steps < resume['counts']['learner_steps']:
             raise SystemExit(f"--resume: --steps {a.steps} is below the {resume['counts']['learner_steps']} already trained")
         if not Path(resume['checkpoint']).exists():
@@ -674,6 +678,13 @@ def main():
         config.update(steps=target_physical, learner_steps=a.steps)
         config.setdefault('resumed', []).append(dict(at_learner_steps=resume['counts']['learner_steps'],
                                                      checkpoint=resume['checkpoint'], steps=a.steps))
+        if schedule_changes:
+            # config.json keeps describing the run as it now trains; the
+            # resume record keeps what it trained with before.
+            config['resumed'][-1]['changed'] = schedule_changes
+            config.update({name: new for name, (_, new) in schedule_changes.items()})
+            config['native']['train'].update(ent_coef=a.entropy, min_ent_coef_ratio=a.entropy_floor/a.entropy)
+            print(f'--resume: entropy schedule changed {schedule_changes}', flush=True)
     atomic_json(output/'config.json', config)
     started = time.monotonic()
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
