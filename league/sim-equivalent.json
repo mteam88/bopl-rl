@@ -6,6 +6,12 @@
       "build": "416ab6ac stage65, native/tools/pgo_build.sh",
       "base": "9a774e6f (the league replay's tree), cargo build --release --lib",
       "evidence": "2026-10-08: eval/perf/exact_gate.sh base vs stage65 debug-assertions build: EXACT_GATE_OK games=12400, 0 panics; env_bench env-corpus/test 100 games: sim-only 593dd08cbc0b1a9b and full d016211b274fcafe on base, stage65 debug and stage65 PGO release"
+    },
+    "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802": {
+      "as": "32b8446a67d4d7a8438eb97a1d14eed5574096fc96f56597bfb43882d90d23f2",
+      "build": "0cd9a24b (game events: bopl_rl_events, 26347d92), native/tools/pgo_build.sh, 2026-10-11 02:30",
+      "base": "9a774e6f (the league replay's tree), cargo build --release --lib in a worktree",
+      "evidence": "2026-10-11: eval/perf/exact_gate.sh base vs this PGO build: EXACT_GATE_OK games=12400; env_bench env-corpus/test 100 games: sim-only 593dd08cbc0b1a9b and full d016211b274fcafe on both (all 100 per-game hashes identical), the 2026-10-08 values. Events are an accessor only; game-events (26347d92) also passed f64+q32 exact gates against its parent."
     }
   }
 }
