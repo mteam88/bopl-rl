@@ -919,7 +919,7 @@ __global__ void add_into(float* dst, const float* src, int n) {
  * pass produced before). The backward writes dx's first `cols` columns with
  * leading dimension ldx (the critic input LN's gradient to y is its first H
  * columns, accumulated into g_y directly) and optionally a bf16 copy. */
-constexpr int LN_ROWS = 8, LN_MAXW = 512;
+constexpr int LN_ROWS = 8, LN_MAXW = 1024;
 __device__ __forceinline__ float warp_sum(float v) {
     for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
     return v;
