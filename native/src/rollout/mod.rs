@@ -23,10 +23,13 @@ pub mod data;
 pub mod replay;
 mod circle_box;
 mod dotnet_sort;
+mod events;
 mod rope_abilities;
 mod sweep;
 use circle_box::{Blast, Part};
 use sweep::Swept;
+pub use events::CEvent;
+use events::{BodyRef, KillSource};
 use rope_abilities::{HookTarget, RopeAttachment};
 
 pub const ABI_VERSION: u32 = 3;
@@ -1024,6 +1027,9 @@ pub struct MissileExplosion {
     pub owner: usize,
     pub credited_owner: bool,
     pub age: u32,
+    /// The ability whose item or projectile made the explosion (Mine,
+    /// Missile or a space-floor Smoke cloud). Game events only.
+    pub ability: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -6117,6 +6123,9 @@ pub struct RolloutWorld {
     /// last one handed out. See `number_observed`.
     pub observed_ids: Vec<u32>,
     pub last_observed_id: u32,
+    /// The last command's game events and the history they read
+    /// (`events.rs`); nothing in the simulation reads it.
+    pub events: events::EventLog,
     /// Base hierarchy for the next prefab instantiated after player spawn:
     /// Updater.prefabsAdded. Only `register_prefab` advances it.
     pub next_spawn_hierarchy: u32,
@@ -6319,6 +6328,7 @@ impl RolloutWorld {
             next_entity_id: 0,
             observed_ids: Vec::with_capacity(256),
             last_observed_id: 0,
+            events: events::EventLog::default(),
             next_spawn_hierarchy: 0,
             updater_batch: Vec::with_capacity(64),
             updater_list: Vec::with_capacity(1024),
@@ -6461,6 +6471,7 @@ impl RolloutWorld {
         self.next_entity_id = src.next_entity_id;
         self.observed_ids.clone_from(&src.observed_ids);
         self.last_observed_id = src.last_observed_id;
+        self.events.fork_from(&src.events);
         self.next_spawn_hierarchy = src.next_spawn_hierarchy;
         self.updater_batch.clone_from(&src.updater_batch);
         self.updater_list.clone_from(&src.updater_list);
@@ -6586,6 +6597,7 @@ impl RolloutWorld {
             next_entity_id: _,
             observed_ids: _,
             last_observed_id: _,
+            events: _,
             next_spawn_hierarchy: _,
             updater_batch: _,
             updater_list: _,
@@ -6622,6 +6634,7 @@ impl RolloutWorld {
     }
 
     pub fn reset(&mut self, config: &CConfig) -> Result<(), String> {
+        self.events.reset();
         let data = data::get();
         let map = config.map as usize;
         if map >= data.maps.len() {
@@ -7764,6 +7777,7 @@ impl RolloutWorld {
         self.started = true;
         self.actor_rows_fresh = false;
         self.observe_main();
+        self.publish_events();
         // Each slime's OldUpdate was its Player's setter on the last warmup
         // pass that ran it, which UpdatePlayer carries into the first game
         // pass (Player.cs:311-322, 359-366).
@@ -9028,8 +9042,10 @@ impl RolloutWorld {
     }
 
     pub fn step(&mut self, actions: &[CAction], repeat: u32) -> Result<(), String> {
+        self.events.out.clear();
         self.step_unobserved(actions, repeat)?;
         self.observe_main();
+        self.publish_events();
         Ok(())
     }
 
@@ -9074,6 +9090,7 @@ impl RolloutWorld {
         if first < 1 || second < 1 || first > 16 || second > 16 || first > 16 - second {
             return Err("Sampled step phases too long".into());
         }
+        self.events.out.clear();
         // The main observation is published once, at the end: the sample
         // numbers the same rows in the same order the first-phase one would.
         self.step_unobserved(actions, first)?;
@@ -9093,6 +9110,7 @@ impl RolloutWorld {
             }
             self.observe_main();
         }
+        self.publish_events();
         Ok(())
     }
 
@@ -9739,6 +9757,7 @@ impl RolloutWorld {
             }
         }
         self.arbitrate_player_positions();
+        self.track_event_history();
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -11876,7 +11895,7 @@ impl RolloutWorld {
 
     /// Chew kills the bitten body through its active PlayerCollision, without
     /// a death effect.
-    fn chew(&mut self, killer: u32, eating: EatingState) {
+    fn chew(&mut self, killer: u32, eating: EatingState, eater: BodyRef) {
         let Some((victim, instance)) = eating.victim else {
             return;
         };
@@ -11889,11 +11908,13 @@ impl RolloutWorld {
                 // answers an invulnerable one itself (SlimeController.cs:1172-1177).
                 let clone_state = &self.abilityless_clones[clone];
                 if clone_state.active && !fix_destroyed(&self.entities, clone_state.entity) {
+                    self.events.source = self.eater_source(eater);
                     self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false, false);
                 }
             }
             Slime::Player(player) => {
                 if self.hittable(player) {
+                    self.events.source = self.eater_source(eater);
                     self.kill(player, killer, CAUSE_EATEN, false, false);
                 }
             }
@@ -11950,7 +11971,7 @@ impl RolloutWorld {
         match slot.eating.animation_step() {
             Some(EatingPhase::Bite) => {
                 let (killer, eating) = (slot.base.id, slot.eating);
-                self.chew(killer, eating);
+                self.chew(killer, eating, BodyRef::Body(index));
             }
             Some(EatingPhase::Swallow) => {
                 // FinishEating is the SpriteAnimator's callback, after an
@@ -12867,6 +12888,7 @@ impl RolloutWorld {
                         // casting Push on a platform sunk below the water drowns.
                         if self.players[index].base.outside_bounds() {
                             self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
+                            self.events.source = KillSource::ring_out();
                             self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                             return;
                         }
@@ -13868,6 +13890,7 @@ impl RolloutWorld {
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
                 self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 self.players[index].reported_position = self.players[index].base.position;
+                self.events.source = KillSource::ring_out();
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
             } else {
                 self.players[index].rock_body_update();
@@ -13889,6 +13912,7 @@ impl RolloutWorld {
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
                 self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 self.players[index].reported_position = self.players[index].base.position;
+                self.events.source = KillSource::ring_out();
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                 return;
             }
@@ -13907,6 +13931,7 @@ impl RolloutWorld {
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
                 self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 self.players[index].reported_position = self.players[index].base.position;
+                self.events.source = KillSource::ring_out();
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                 return;
             }
@@ -14018,6 +14043,7 @@ impl RolloutWorld {
                 self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 let slot = &mut self.players[index];
                 slot.reported_position = slot.base.position;
+                self.events.source = KillSource::ring_out();
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
             } else if self.players[index].active == ActiveAbility::Platform {
                 // The form's PlayerBody (hierarchy 6) then drifts it by the
@@ -14654,7 +14680,7 @@ impl RolloutWorld {
                     if target.is_none_or(|target| self.hittable(target))
                         && let Some((killer, cause)) =
                             part.and_then(|part| self.collision_kill(Slime::Player(index), part, Some(entity)))
-                        && self.kill_with(index, killer, cause, route, true, true, false)
+                        && self.kill_with_from(self.parts_kill_source(part, Some(entity)), index, killer, cause, route, true, true, false)
                         && matches!(part, Some(Part::Arrow(_)))
                     {
                         self.count_arrow_hit(killer, self.players[index].base.id);
@@ -15677,6 +15703,7 @@ impl RolloutWorld {
         }
         self.register_prefab(data.prefab("WaterDeathEffect 1"));
         self.players[index].reported_position = self.players[index].base.position;
+        self.events.source = KillSource::ring_out();
         self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
         true
     }
@@ -18681,6 +18708,7 @@ impl RolloutWorld {
                 // wasKilledThisFrame, so a slime an earlier callback destroyed
                 // this pass dies again (BlackHole.cs:497).
                 if self.player_collision_active(index, slime) {
+                    self.events.source = Self::hole_source(&hole);
                     self.kill_with(index, killer, CAUSE_OTHER, kill_route, false, false, true);
                 }
             }
@@ -18688,6 +18716,7 @@ impl RolloutWorld {
                 grow(self, Fix::ZERO);
                 let clone = &self.abilityless_clones[index];
                 let (entity, alive) = (clone.entity, clone.active);
+                self.events.source = Self::hole_source(&hole);
                 self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, kill_route, false, true);
                 // A callback casualty stays visible as destroyed until the
                 // next pass's DetPhysics.Simulate drops it.
@@ -21805,7 +21834,7 @@ impl RolloutWorld {
                 self.register_prefab(data.prefab("WaterDeathEffect 1"));
             }
             BoundsEffect::MineExplosion { position, owner } => {
-                self.spawn_missile_explosion(position, owner, false, Fix::ONE, data);
+                self.spawn_missile_explosion(position, owner, false, Fix::ONE, ABILITY_SMOKE, data);
             }
         }
     }
@@ -24562,7 +24591,8 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.base.position = near;
                 slot.reported_position = near;
-                if self.kill_with(index, killer, cause, KillRoute::UPDATER_KILL_ON_COLLISION, true, true, false) {
+                let source = self.parts_kill_source(part, Some(hit.index));
+                if self.kill_with_from(source, index, killer, cause, KillRoute::UPDATER_KILL_ON_COLLISION, true, true, false) {
                     if matches!(part, Some(Part::Arrow(_))) {
                         self.count_arrow_hit(killer, caster_id);
                     }
@@ -25162,6 +25192,7 @@ impl RolloutWorld {
         self.players[index].reported_position = self.players[index].base.position;
         // A default AbilityExitInfo's causeOfDeath is Other.
         let cause = if self.players[index].active == ActiveAbility::None { CAUSE_ACCIDENT } else { CAUSE_OTHER };
+        self.events.source = KillSource::ring_out();
         self.kill_with(index, ENVIRONMENT, cause, KillRoute::UPDATER, false, true, cause == CAUSE_ACCIDENT);
         true
     }
@@ -30268,6 +30299,8 @@ impl RolloutWorld {
         // Player-layer body to BlinkObject after drawing the reflected ray.
         if !already_hit_water && origin.y <= data.maps[self.map].scene_water_height() {
             self.begin_blink_tunnel(caster, caster, data);
+            let entity = Self::hurtbox_entity(&self.players[caster]);
+            self.record_blink(caster, BodyRef::Body(caster), entity, events::BLINK_PLAYER | events::BLINK_SELF);
             return;
         }
         let Some(hit) = hit else {
@@ -30302,6 +30335,8 @@ impl RolloutWorld {
             .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
         {
             self.begin_blink_tunnel(caster, victim, data);
+            let flags = events::BLINK_PLAYER | if victim == caster { events::BLINK_SELF } else { 0 };
+            self.record_blink(caster, BodyRef::Body(victim), entity, flags);
             return;
         }
         if let Some(clone) = self
@@ -30310,6 +30345,7 @@ impl RolloutWorld {
             .position(|clone| clone.active && clone.entity == Some(entity))
         {
             self.begin_blink_clone_tunnel(caster, clone, data);
+            self.record_blink(caster, BodyRef::Clone(clone), entity, events::BLINK_PLAYER | events::BLINK_CLONE);
             return;
         }
         if let Some(platform_index) = self
@@ -30340,6 +30376,7 @@ impl RolloutWorld {
             dynamics.blink_tunnel_delay = Fix::ZERO;
             dynamics.blink_tunnel_age = Fix::ZERO;
             self.platforms_changed();
+            self.record_blink(caster, BodyRef::None, entity, events::BLINK_PLATFORM);
             return;
         }
         // The first hit converts a non-Blink Orb; a subsequent hit tunnels it.
@@ -30354,6 +30391,9 @@ impl RolloutWorld {
             return;
         }
         self.begin_blink_object_tunnel(entity, data.blink.wall_duration, data);
+        if self.blink_object_hidden(Some(entity)) {
+            self.record_blink(caster, BodyRef::None, entity, 0);
+        }
     }
 
     /// DetPhysics.IsActive (DetPhysics.cs:1658-1665): the GameObject is
@@ -33177,6 +33217,7 @@ impl RolloutWorld {
         }
         let entity = self.platform_entities[platform_index];
         if self.entities[entity].flags & (E_REMOVED | E_DESTROYED) != 0 {
+            self.events.source = KillSource::entity(Some(entity), events::DEATH_OTHER);
             self.kill_with(owner, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, true, true, true);
             return false;
         }
@@ -33964,6 +34005,7 @@ impl RolloutWorld {
         owner: usize,
         credited_owner: bool,
         scale: Fix,
+        ability: u32,
         data: &data::RolloutData,
     ) {
         let hierarchy_base = self.register_prefab(data.prefab("MineExplosion"));
@@ -33975,6 +34017,7 @@ impl RolloutWorld {
             scale,
             owner,
             credited_owner,
+            ability,
             ..MissileExplosion::default()
         };
         if let Some(free) = self
@@ -34084,7 +34127,7 @@ impl RolloutWorld {
             return false;
         };
         let owner = self.guided_missiles[index].owner;
-        self.spawn_missile_explosion(explosion_position, owner, false, Fix::ONE, data);
+        self.spawn_missile_explosion(explosion_position, owner, false, Fix::ONE, ABILITY_MISSILE, data);
         self.destroy_guided_missile(index, false);
         true
     }
@@ -34553,7 +34596,7 @@ impl RolloutWorld {
         // Mine and Missile both reference the same MineExplosion prefab. Mine
         // supplies Explosion.PlayerOwnerId for lethal attribution; the
         // co-located Shockwave/IPlayerIdHolder remains owner zero.
-        self.spawn_missile_explosion(item.position, item.owner, true, item.scale, data);
+        self.spawn_missile_explosion(item.position, item.owner, true, item.scale, ABILITY_MINE, data);
         // Detonation runs in LateUpdateSim, after DetPhysics has already
         // built this observation's collider arrays. DestroyFix therefore
         // leaves one destroyed row until the next Simulate pass removes it,
@@ -35017,6 +35060,7 @@ impl RolloutWorld {
             // included: it creates the normal death effect, while
             // DetPhysics removes all killed colliders before contacts.
             self.register_prefab(data::get().prefab("deathEffect"));
+            self.events.source = KillSource::entity(self.thrown_items[item_index].entity, events::DEATH_CONTACT);
             match victim {
                 Slime::Clone(index) => {
                     self.kill_abilityless_clone(index, killer, CAUSE_OTHER, KillRoute::UPDATER, false, false);
@@ -35267,10 +35311,12 @@ impl RolloutWorld {
                     // DropAbilities reads the body before the later ice pins it.
                     self.players[body].base.position =
                         self.mjolnir_view(body, item.hierarchy_base);
+                    self.events.source = KillSource::entity(self.thrown_items[item_index].entity, events::DEATH_PROJECTILE);
                     self.kill(body, player_id(&self.players, owner), CAUSE_OTHER, false, false);
                 }
                 MjolnirVictim::Clone(clone_index) => {
                     let killer = player_id(&self.players, owner);
+                    self.events.source = KillSource::entity(self.thrown_items[item_index].entity, events::DEATH_PROJECTILE);
                     self.kill_abilityless_clone(clone_index, killer, CAUSE_OTHER, KillRoute::UPDATER, false, false);
                 }
             }
@@ -35452,7 +35498,7 @@ impl RolloutWorld {
                 self.spawn_grenade_explosion(position, item.owner, false, Fix::ONE, data);
             } else if ability == ABILITY_MINE && map.is_space() {
                 let position = Vec2::new(item.position.x, map.lower_boundary());
-                self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, data);
+                self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, ABILITY_MINE, data);
             } else if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
                 self.register_prefab(data.prefab("WaterDeathEffect 1"));
             }
@@ -35473,7 +35519,7 @@ impl RolloutWorld {
             if let Some(position) = boundary_position {
                 // DestroyIfOutsideSceneBounds instantiates MineExplosion
                 // without assigning Explosion.PlayerOwnerId.
-                self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, data);
+                self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, ABILITY_MINE, data);
                 self.remove_thrown_item(item_index, false);
                 return;
             }
@@ -36177,6 +36223,7 @@ impl RolloutWorld {
                         missile_state.owner,
                         false,
                         missile_state.scale,
+                        ABILITY_MISSILE,
                         data,
                     );
                     self.destroy_guided_missile(missile, true);
@@ -36934,6 +36981,7 @@ impl RolloutWorld {
                     self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                     self.players[index].reported_position = self.players[index].base.position;
                     self.players[index].reported_tick = self.tick;
+                    self.events.source = KillSource::ring_out();
                     self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                 }
                 return;
@@ -37074,6 +37122,7 @@ impl RolloutWorld {
             // kill ignores invulnerability; a form's ExitAbility kills through
             // the slime's killPlayer, which does not.
             let ignore_invulnerability = cause == CAUSE_ACCIDENT;
+            self.events.source = KillSource::ring_out();
             self.kill_with(index, ENVIRONMENT, cause, KillRoute::UPDATER, false, true, ignore_invulnerability);
         }
     }
@@ -38058,6 +38107,7 @@ impl RolloutWorld {
             // water/bounds effect too.
             self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
             self.abilityless_clones[clone_index].drowned_tick = self.tick;
+            self.events.source = KillSource::ring_out();
             self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, false, true);
             return;
         }
@@ -38098,7 +38148,7 @@ impl RolloutWorld {
         match clone.eating.animation_step() {
             Some(EatingPhase::Bite) => {
                 let (killer, eating) = (clone.base.id, clone.eating);
-                self.chew(killer, eating);
+                self.chew(killer, eating, BodyRef::Clone(clone_index));
             }
             Some(EatingPhase::Swallow) => {
                 clone.obs_state = STATE_IDLE;
@@ -38160,6 +38210,7 @@ impl RolloutWorld {
         spawn_effect: bool,
         ignore_invulnerability: bool,
     ) -> bool {
+        let (death, source) = self.begin_death(BodyRef::Clone(clone_index), killer, cause);
         let tick = self.tick;
         let owner = self.abilityless_clones[clone_index].owner;
         // activeSelf: a live clone, or one a callback's killPlayer destroyed
@@ -38209,6 +38260,7 @@ impl RolloutWorld {
                 .any(|body| body.owner == owner && body.revival_markers.iter().any(Option::is_some))
                 && let Some(body) = self.promote_abilityless_clone(clone_index)
             {
+                self.events.source = source;
                 self.kill_with(body, killer, cause, KillRoute::UPDATER, false, true, ignore_invulnerability);
                 // A callback's killPlayer DestroyFixes the clone, which is
                 // the extra body's GameObject.
@@ -38254,14 +38306,15 @@ impl RolloutWorld {
             slot.base.position = self.abilityless_clones[clone_index].base.position;
             self.begin_stock_respawn(owner);
         }
-        self.player_kill(owner, killer, cause);
+        self.player_kill(owner, killer, cause, death);
         true
     }
 
     /// Player.Kill (Player.cs:440-481): nothing once the player won, else a
     /// death, the counter down and the killer's kill; with the last body
     /// the player is out with its cause of death.
-    fn player_kill(&mut self, owner: usize, killer: u32, cause: u32) {
+    /// `death` is the event `begin_death` drafted as the kill began.
+    fn player_kill(&mut self, owner: usize, killer: u32, cause: u32, mut death: CEvent) {
         let tick = self.tick;
         let players = self.player_count as u32;
         self.result_contested = false;
@@ -38273,7 +38326,10 @@ impl RolloutWorld {
             player.out = true;
             player.death_tick = tick;
             player.cause_of_death = cause;
+            death.flags |= events::DEATH_LAST_BODY;
         }
+        self.events.out.push(death);
+        let player = &mut self.players[owner];
         player.deaths += 1;
         player.bodies_alive -= 1;
         // Telemetry mirrors RlTelemetry.Death.
@@ -38588,7 +38644,8 @@ impl RolloutWorld {
                 // (Roll.cs:337-357, PlayerCollision.cs:121-131).
                 let position = self.players[roller].base.position;
                 self.players[roller].base.position = center;
-                if self.kill_with(roller, killer, cause, KillRoute::UPDATER_ON_COLLIDE, true, true, false) {
+                let source = self.parts_kill_source(part, Some(entity));
+                if self.kill_with_from(source, roller, killer, cause, KillRoute::UPDATER_ON_COLLIDE, true, true, false) {
                     if matches!(part, Some(Part::Arrow(_))) {
                         self.count_arrow_hit(killer, roller_id);
                     }
@@ -38619,9 +38676,11 @@ impl RolloutWorld {
         }
         match slime {
             Slime::Player(index) => {
+                self.events.source = KillSource::entity(Some(self.platform_entities[wall]), events::DEATH_SQUISHED);
                 self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
             }
             Slime::Clone(index) => {
+                self.events.source = KillSource::entity(Some(self.platform_entities[wall]), events::DEATH_SQUISHED);
                 self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED, KillRoute::ON_COLLIDE);
             }
         }
@@ -39308,10 +39367,28 @@ impl RolloutWorld {
         // Rock.prefab has no PlayerCollision: only its BounceBall hears the
         // contact. Rock dies through Ability.ExitAbility or scene bounds.
         if by_callback && self.players[index].active == ActiveAbility::Rock {
+            self.events.source = KillSource::default();
             return false;
         }
         let route = if by_callback { KillRoute::ON_COLLIDE } else { KillRoute::UPDATER };
         self.kill_with(index, killer, cause, route, spawn_effect, true, false)
+    }
+
+    /// `kill_with` for a kill whose call site knows its `source`.
+    #[allow(clippy::too_many_arguments)]
+    fn kill_with_from(
+        &mut self,
+        source: KillSource,
+        index: usize,
+        killer: u32,
+        cause: u32,
+        route: KillRoute,
+        spawn_effect: bool,
+        form_exit: bool,
+        ignore_invulnerability: bool,
+    ) -> bool {
+        self.events.source = source;
+        self.kill_with(index, killer, cause, route, spawn_effect, form_exit, ignore_invulnerability)
     }
 
     /// Player.SetPosition from an extra body's SlimeController: with the
@@ -39601,6 +39678,7 @@ impl RolloutWorld {
         form_exit: bool,
         ignore_invulnerability: bool,
     ) -> bool {
+        let (death, _) = self.begin_death(BodyRef::Body(index), killer, cause);
         // Poke Ball sets the slime's PlayerCollision mask 16 while a victim
         // is inside; a form's own PlayerCollision has no such mask.
         let in_form = self.players[index].ability_entered;
@@ -39994,7 +40072,7 @@ impl RolloutWorld {
                 revived[revived_count] = body;
                 revived_count += 1;
             }
-            self.player_kill(owner, killer, cause);
+            self.player_kill(owner, killer, cause, death);
             let effect = self.register_prefab(data::get().prefab("ReviveEffect"));
             for &body in &revived[..revived_count] {
                 self.players[body].revival_effect_appended = self.tick + 1;
@@ -40064,7 +40142,7 @@ impl RolloutWorld {
                 slot.abilityless = true;
             }
             self.begin_stock_respawn(index);
-            self.player_kill(owner, killer, cause);
+            self.player_kill(owner, killer, cause, death);
         } else {
             if !already_won && !last && !destroyed {
                 slot.slime_gone = true;
@@ -40113,7 +40191,7 @@ impl RolloutWorld {
                 // (AbilityReadyIndicator.cs:71-79, 155-162).
                 self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
             }
-            self.player_kill(owner, killer, cause);
+            self.player_kill(owner, killer, cause, death);
         }
         true
     }

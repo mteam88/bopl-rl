@@ -10,6 +10,13 @@ Tables are long-form with a `tick` column; see FIELDS below and the ABI
 rect, 3 rope segment, 4 beam. Entity `source_ability` is the ABI's reserved[0]
 (the ability that spawned or granted it), `timer` its reserved[1] (ticks to the
 next event when flags & 64). Ability names: native/data/ability-coverage.json.
+
+`events` holds the game events (deaths, Blink hits; docs/STYLES.md) each step
+produced, when the backend records them (the Rust sim: --game its .so with
+--any-identity, since it reports placeholder source hashes). Its `tick` is the
+dump's step index, as in the other tables; `event_tick` is the event's own
+header tick. With a backend without events the table is empty and
+meta.events is false.
 """
 import argparse
 import json
@@ -21,7 +28,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from replay_data import ReplayWorld, decode
+from replay_data import EVENT_FIELDS, ReplayWorld, decode
 
 Q = 1.0 / (1 << 32)
 PLAYER = [('tick', 'u4'), ('player', 'u1'), ('id', 'u4'), ('team', 'u4'), ('flags', 'u4'), ('alive_bodies', 'u4'),
@@ -35,20 +42,28 @@ ENTITY = [('tick', 'u4'), ('id', 'u4'), ('kind', 'u1'), ('layer', 'u4'), ('owner
           ('x', 'f4'), ('y', 'f4'), ('vx', 'f4'), ('vy', 'f4'), ('right_x', 'f4'), ('right_y', 'f4'),
           ('up_x', 'f4'), ('up_y', 'f4'), ('radius', 'f4'), ('rotation', 'f4'), ('angular_velocity', 'f4'),
           ('inverse_mass', 'f4'), ('clock_rate', 'f4')]
+EVENT = [('tick', 'u4'), ('event_tick', 'u4')] + [(f, 'u4') for f in EVENT_FIELDS if f not in ('tick', 'reserved')] + \
+        [(f, 'f4') for f in ('x', 'y', 'vx', 'vy', 'ax', 'ay', 'avx', 'avy')]
 TELEMETRY = ['ability_activations0', 'ability_activations1', 'ability_activations2', 'arrows_fired', 'arrow_hits',
              'deaths_environment', 'deaths_opponent', 'deaths_self', 'deaths_other']
 
 
-def dump(path, out):
+def dump(path, out, game=None, check_identity=True):
     meta, inputs = decode(path)
     target = Path(out) / (Path(path).stem + '.npz')
     if target.exists():
         return str(target), 'cached'
-    players, slimes, entities, telemetry, header = [], [], [], [], []
+    players, slimes, entities, telemetry, header, events = [], [], [], [], [], []
     count = len(meta['players'])
-    with ReplayWorld(meta, Path(out) / 'logs' / (Path(path).stem + '.log')) as world:
+    with ReplayWorld(meta, Path(out) / 'logs' / (Path(path).stem + '.log'), game=game,
+                     check_identity=check_identity) as world:
+        has_events = world.event_support
+        for event in world.events():  # the reset's
+            events.append(event_row(0, event))
         for t in range(meta['ticks']):
             world.step(list(zip(inputs[t]['angle'], inputs[t]['buttons'])))
+            if has_events:
+                events.extend(event_row(t, event) for event in world.events())
             s = world.state
             h = s.header
             header.append((h.tick, h.episode_ticks, h.flags, h.entity_count, h.slime_count, h.sudden_death))
@@ -74,15 +89,22 @@ def dump(path, out):
                 break
     np.savez_compressed(
         target,
-        meta=np.array(json.dumps({k: v for k, v in meta.items()})),
+        meta=np.array(json.dumps({**meta, 'events': has_events})),
         header=np.array(header, dtype=[('tick', 'u4'), ('episode_ticks', 'u4'), ('flags', 'u4'),
                                        ('entity_count', 'u4'), ('slime_count', 'u4'), ('sudden_death', 'u4')]),
         players=np.array(players, dtype=PLAYER),
         slimes=np.array(slimes, dtype=SLIME),
         entities=np.array(entities, dtype=ENTITY),
         telemetry=np.array(telemetry, dtype=[('tick', 'u4'), ('player', 'u1')] + [(f, 'u4') for f in TELEMETRY]),
+        events=np.array(events, dtype=EVENT),
         inputs=np.ascontiguousarray(inputs[:len(header)]))
     return str(target), len(header)
+
+
+def event_row(t, e):
+    return (t, e.tick, e.kind, e.subject, e.actor, e.entity, e.source_ability, e.cause, e.flags, e.related,
+            e.related_actor, e.related_tick, e.x * Q, e.y * Q, e.vx * Q, e.vy * Q, e.ax * Q, e.ay * Q, e.avx * Q,
+            e.avy * Q)
 
 
 def job(args):
@@ -97,6 +119,9 @@ def main():
     parser.add_argument('replays', type=Path)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--jobs', type=int, default=4)
+    parser.add_argument('--game', help='backend library (default: BOPL_RL_GAME)')
+    parser.add_argument('--any-identity', action='store_true',
+                        help="accept a game whose source/catalog hashes differ from the replay's (the Rust sim)")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     files = sorted(args.replays.glob('*.rep'))
@@ -109,7 +134,8 @@ def main():
             pass
     print(f'{len(lossless)} of {len(files)} replays are lossless BOPLREP2', flush=True)
     with Pool(args.jobs) as pool:
-        for n, (path, result) in enumerate(pool.imap_unordered(job, [(str(f), str(args.out)) for f in lossless]), 1):
+        for n, (path, result) in enumerate(pool.imap_unordered(job, [(str(f), str(args.out), args.game, not args.any_identity)
+                                                                    for f in lossless]), 1):
             print(f'{n}/{len(lossless)} {os.path.basename(path)} {result}', flush=True)
 
 

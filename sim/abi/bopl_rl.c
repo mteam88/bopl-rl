@@ -92,6 +92,9 @@ typedef struct InprocLib {
     void (*close)(BoplRl *);
     /* Optional (NULL when the library has no lookahead forks). */
     BoplRl *(*fork)(const BoplRl *, BoplRl *);
+    /* Optional (NULL when the library records no game events). */
+    const BoplRlEvent *(*events)(const BoplRl *, uint32_t *);
+    int (*event_support)(const BoplRl *);
 } InprocLib;
 typedef struct {
     InprocLib *lib;
@@ -360,6 +363,8 @@ static InprocLib *load_inproc_lib(BoplRl *w, const char *library, bool first,
     /* Optional: builds before many-worlds host one world per runtime. */
     lib->world_capacity=(uint32_t (*)(void))dlsym(handle, "bopl_rl_world_capacity");
     lib->fork=(BoplRl *(*)(const BoplRl *, BoplRl *))dlsym(handle, "bopl_rl_fork");
+    lib->events=(const BoplRlEvent *(*)(const BoplRl *, uint32_t *))dlsym(handle, "bopl_rl_events");
+    lib->event_support=(int (*)(const BoplRl *))dlsym(handle, "bopl_rl_event_support");
     lib->capacity=lib->world_capacity?lib->world_capacity():1;
     if (lib->capacity<1) lib->capacity=1;
     const char *limit=getenv("BOPL_RL_WORLDS_PER_RUNTIME");
@@ -613,6 +618,21 @@ BoplRl *bopl_rl_fork(const BoplRl *w, BoplRl *reuse) {
     if (!inner) { if (!reuse) { free(f->inproc); free(f); } return NULL; }
     f->inproc->inner=inner;
     return f;
+}
+/* Game events: only an in-process library exporting them has any; the
+ * socket/.NET game reports none and no support. */
+const BoplRlEvent *bopl_rl_events(const BoplRl *w, uint32_t *count) {
+    if (count) *count=0;
+    if (!w || !w->inproc || !w->inproc->lib->events || w->inproc->reset_pending_flag) return NULL;
+    uint32_t n=0;
+    const BoplRlEvent *events=w->inproc->lib->events(w->inproc->inner, &n);
+    if (!events || !n) return NULL;
+    if (count) *count=n;
+    return events;
+}
+int bopl_rl_event_support(const BoplRl *w) {
+    if (!w || !w->inproc || !w->inproc->lib->events || !w->inproc->lib->event_support) return 0;
+    return w->inproc->lib->event_support(w->inproc->inner) ? 1 : 0;
 }
 const char *bopl_rl_error(const BoplRl *w) {
     if (!w) return "NULL RL handle";

@@ -117,6 +117,46 @@ const char *bopl_rl_source_hash(const BoplRl *world);
 const char *bopl_rl_catalog_hash(const BoplRl *world);
 uint32_t bopl_rl_map_count(const BoplRl *world);
 uint32_t bopl_rl_ability_count(const BoplRl *world);
+
+/* Game events (docs/STYLES.md): what the last step/step_sampled/reset
+ * produced, in the order the game produced them (step_sampled: both phases).
+ * Valid until the next command; NULL with count 0 when there were none. A
+ * backend without events (the socket .NET game) returns NULL and
+ * bopl_rl_event_support() == 0. The state layout does not change.
+ *
+ * tick is the header.tick of the first state that shows the event. Entity ids
+ * are published ids (0 when no observation ever listed the entity). */
+typedef struct {
+    uint32_t kind;            /* BOPL_EVENT_* */
+    uint32_t tick;            /* header.tick at the event */
+    uint32_t subject;         /* player id the event happened to (victim, blinked owner...) */
+    uint32_t actor;           /* player id that caused it; 0 environment/none */
+    uint32_t entity;          /* entity id involved (the killing entity, the blinked object), 0 none */
+    uint32_t source_ability;  /* ability id behind `entity` or the actor's form, 0 unknown */
+    uint32_t cause;           /* kind-specific: deaths use BOPL_DEATH_* */
+    uint32_t flags;           /* kind-specific bits */
+    uint32_t related;         /* kind-specific entity id (deaths: victim's last contact entity) */
+    uint32_t related_actor;   /* kind-specific player id (deaths: who blinked `related`, 0 none) */
+    uint32_t related_tick;    /* kind-specific tick (deaths: tick of last contact) */
+    uint32_t reserved;
+    int64_t x, y, vx, vy;     /* Q32.32: subject's body at the event */
+    int64_t ax, ay, avx, avy; /* Q32.32: actor's body (or the entity) at the event */
+} BoplRlEvent;
+enum BoplRlEventKind { BOPL_EVENT_DEATH=1, BOPL_EVENT_BLINK=2 };
+enum BoplRlDeathCause {   /* finer than CauseOfDeath; derived from the kill route */
+    BOPL_DEATH_UNKNOWN=0, BOPL_DEATH_CONTACT=1, BOPL_DEATH_PROJECTILE=2, BOPL_DEATH_EXPLOSION=3,
+    BOPL_DEATH_BEAM=4, BOPL_DEATH_SQUISHED=5, BOPL_DEATH_EATEN=6, BOPL_DEATH_RING_OUT=7,
+    BOPL_DEATH_SELF=8, BOPL_DEATH_OTHER=9
+};
+/* LAST_BODY: the death eliminated the player (Player.Kill saw its last body
+ * and set `out`; a stock or revival respawn does not). RELATED_BLINKED:
+ * `related` is in a Blink tunnel, or was within the last 60 ticks. */
+enum BoplRlDeathFlags { BOPL_DEATH_ACTOR_IN_FORM=1, BOPL_DEATH_LAST_BODY=2, BOPL_DEATH_RELATED_BLINKED=4 };
+/* BLINK flags: bit 0 a player body (the contract's flag); the others refine it. */
+enum BoplRlBlinkFlags { BOPL_BLINK_PLAYER=1, BOPL_BLINK_PLATFORM=2, BOPL_BLINK_CLONE=4, BOPL_BLINK_SELF=8 };
+const BoplRlEvent *bopl_rl_events(const BoplRl *world, uint32_t *count);
+int bopl_rl_event_support(const BoplRl *world);
+
 /* NULL is allowed. Closes and reaps only this handle's worker process group. */
 void bopl_rl_close(BoplRl *world);
 
