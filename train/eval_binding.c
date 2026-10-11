@@ -349,8 +349,8 @@ BoplSearch *research_search_open(BoplPuffer *env, const float *weights, long cou
     return bopl_search_open(env, weights, (size_t)count, hidden, layers, aim_fourier, aim_ar, shape, rollouts, seed);
 }
 int research_search_configure(BoplSearch *s, int k, int n, int depth, int halving, int search_latched,
-                              float gamma, float kill, float timeout) {
-    return bopl_search_configure(s, k, n, depth, halving, search_latched, gamma, kill, timeout);
+                              float gamma, float kill, float timeout, float prior_mix, float value_scale) {
+    return bopl_search_configure(s, k, n, depth, halving, search_latched, gamma, kill, timeout, prior_mix, value_scale);
 }
 void research_search_reset(BoplSearch *s, uint64_t seed) { bopl_search_reset(s, seed); }
 /* out[3] = aim, buttons, hold of player `me` on the environment's current rows. */

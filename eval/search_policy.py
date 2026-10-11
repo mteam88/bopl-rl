@@ -36,7 +36,8 @@ from native_policy import V4_SHAPE_KEYS, writer_ablation  # noqa: E402
 LIB.research_search_open.argtypes = [C.c_void_p, C.POINTER(C.c_float), C.c_long, C.c_int, C.c_int, C.c_int, C.c_int,
                                      C.POINTER(C.c_int), C.c_int, C.c_uint64]
 LIB.research_search_open.restype = C.c_void_p
-LIB.research_search_configure.argtypes = [C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_float, C.c_float]
+LIB.research_search_configure.argtypes = [C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_float, C.c_float,
+                                          C.c_float, C.c_float]
 LIB.research_search_configure.restype = C.c_int
 LIB.research_search_reset.argtypes = [C.c_void_p, C.c_uint64]
 LIB.research_search_act.argtypes = [C.c_void_p, C.c_int, C.POINTER(C.c_int), C.POINTER(C.c_int)]
@@ -56,6 +57,24 @@ COUNTERS = ('decisions', 'searched', 'rollouts', 'steps', 'forward_rows', 'secon
 TRAINING_KILL = 0.2883693237829292
 
 
+def parse_budget(text):
+    """'k,n,depth[,h][,mix=M][,vs=V][,latched=0]' -> Search keyword arguments."""
+    parts = text.split(',')
+    out = dict(k=int(parts[0]), n=int(parts[1]), depth=int(parts[2]))
+    for part in parts[3:]:
+        if part == 'h':
+            out['halving'] = True
+        elif part.startswith('mix='):
+            out['prior_mix'] = float(part[4:])
+        elif part.startswith('vs='):
+            out['value_scale'] = float(part[3:])
+        elif part.startswith('latched='):
+            out['search_latched'] = bool(int(part[8:]))
+        else:
+            raise ValueError(f'unknown search budget part {part!r}')
+    return out
+
+
 class Handle:
     """A C search handle over one environment and one checkpoint."""
     def __init__(self, env, policy, rollouts, seed=1):
@@ -73,8 +92,12 @@ class Handle:
         self.searched = C.c_int()
         self._counters = (C.c_double * len(COUNTERS))()
 
-    def configure(self, k, n, depth, halving=False, search_latched=True, gamma=0.995, kill=TRAINING_KILL, timeout=-1.0):
-        if LIB.research_search_configure(self.ptr, k, n, depth, int(halving), int(search_latched), gamma, kill, timeout):
+    def configure(self, k, n, depth, halving=False, search_latched=True, gamma=0.995, kill=TRAINING_KILL, timeout=-1.0,
+                  prior_mix=0.0, value_scale=1.0):
+        """The chosen candidate maximises value_scale*mean return + prior_mix*(prior logp + Gumbel):
+        prior_mix 0 is the best mean, prior_mix 1 Gumbel-top-k's improved policy."""
+        if LIB.research_search_configure(self.ptr, k, n, depth, int(halving), int(search_latched), gamma, kill, timeout,
+                                         prior_mix, value_scale):
             raise ValueError('Bad search budget (k*n must fit the rollouts the handle was opened with)')
 
     def reset(self, seed):
@@ -109,10 +132,11 @@ class Search(elo_ladder.Model):
     self.totals (decisions, searched, rollouts, steps, forward rows, seconds); call
     finish() after the last game to harvest the open handles, then summary()."""
     def __init__(self, name, path, kind, k=8, n=2, depth=8, halving=False, search_latched=True,
-                 gamma=0.995, kill=TRAINING_KILL, timeout=-1.0, step=None, library=None):
+                 gamma=0.995, kill=TRAINING_KILL, timeout=-1.0, prior_mix=0.0, value_scale=1.0, step=None, library=None):
         super().__init__(name, path, kind, step=step, library=library)
         self.budget = dict(k=int(k), n=int(n), depth=int(depth), halving=bool(halving), search_latched=bool(search_latched),
-                           gamma=float(gamma), kill=float(kill), timeout=float(timeout))
+                           gamma=float(gamma), kill=float(kill), timeout=float(timeout),
+                           prior_mix=float(prior_mix), value_scale=float(value_scale))
         self.local = threading.local()
         self.lock = threading.Lock()
         self.totals = {key: 0.0 for key in COUNTERS[:6]}
@@ -214,5 +238,5 @@ if __name__ == '__main__':
     p.add_argument('--iterations', type=int, default=200)
     a = p.parse_args()
     if a.bench:
-        budgets = [(4, 1, 4, False), (8, 1, 8, False), (8, 2, 8, False), (16, 2, 8, True), (16, 4, 16, True)]
+        budgets = [(4, 1, 4, False), (8, 1, 8, False), (8, 2, 8, False), (16, 1, 8, True), (16, 2, 8, True)]
         print(json.dumps(bench(a.bench, budgets, a.iterations), indent=1))

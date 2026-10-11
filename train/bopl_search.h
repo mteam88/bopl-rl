@@ -58,12 +58,17 @@ typedef struct {
     float *rows, *logits;           /* 2 x (width+1), 2 x BOPL_DECODER scratch */
     float *root_state, *root_next;  /* the real recurrent states of both players */
     float *root_logits;             /* 2 x BOPL_DECODER at the root */
+    uint64_t *roll_rng;             /* one stream per rollout: rollout i of every candidate draws the
+                                     * same opponent and policy samples (common random numbers) */
     /* Budget knobs. k candidates, n rollouts per candidate and round, depth
      * decisions per rollout, halving rounds, gamma, reward scale (kill/timeout
      * as trained, so returns match the value head), search_latched: run the
      * search while the buttons are latched (only aim is free) or sample. */
     int k, n, depth, halving, search_latched;
     float gamma, kill, timeout;
+    /* Selection: argmax of value_scale*mean + prior_mix*(prior logp + Gumbel);
+     * prior_mix 0 picks the best mean, 1 is Gumbel-top-k's improved policy. */
+    float prior_mix, value_scale;
     uint64_t rng;
     BoplSearchCand cand[BOPL_SEARCH_MAX_K]; int cands, chosen;
     float root_value[2];
@@ -179,7 +184,7 @@ static void bopl_search_close(BoplSearch *s) {
     if (!s) return;
     if (s->shadow) for (int r=0; r<s->rollouts; r++) bopl_search_shadow_free(&s->shadow[r]);
     free(s->shadow); free(s->roll_state); free(s->roll_next); free(s->rows); free(s->logits);
-    free(s->root_state); free(s->root_next); free(s->root_logits); free(s->weights);
+    free(s->root_state); free(s->root_next); free(s->root_logits); free(s->roll_rng); free(s->weights);
     if (s->policy) bopl_policy_eval_close(s->policy);
     free(s);
 }
@@ -201,10 +206,11 @@ static BoplSearch *bopl_search_open(BoplPuffer *env, const float *weights, size_
     s->rows=calloc((size_t)2*(s->width+1), sizeof(float)); s->logits=calloc(2*BOPL_DECODER, sizeof(float));
     s->root_state=calloc((size_t)s->state_floats, sizeof(float)); s->root_next=calloc((size_t)s->state_floats, sizeof(float));
     s->root_logits=calloc(2*BOPL_DECODER, sizeof(float));
-    if (!s->shadow || !s->roll_state || !s->roll_next || !s->rows || !s->logits || !s->root_state || !s->root_next || !s->root_logits) { bopl_search_close(s); return NULL; }
+    s->roll_rng=calloc((size_t)rollouts, sizeof(uint64_t));
+    if (!s->roll_rng || !s->shadow || !s->roll_state || !s->roll_next || !s->rows || !s->logits || !s->root_state || !s->root_next || !s->root_logits) { bopl_search_close(s); return NULL; }
     for (int r=0; r<rollouts; r++) if (bopl_search_shadow_alloc(&s->shadow[r])) { bopl_search_close(s); return NULL; }
     s->k=8; s->n=2; s->depth=8; s->halving=0; s->search_latched=1;
-    s->gamma=0.995f; s->kill=0.2883693f; s->timeout=-1.0f;
+    s->gamma=0.995f; s->kill=0.2883693f; s->timeout=-1.0f; s->prior_mix=0; s->value_scale=1;
     s->rng=seed?seed:0x5EEDull;
     return s;
 }
@@ -216,16 +222,17 @@ static void bopl_search_reset(BoplSearch *s, uint64_t seed) {
     if (seed) s->rng=seed;
 }
 static int bopl_search_configure(BoplSearch *s, int k, int n, int depth, int halving, int search_latched,
-                                 float gamma, float kill, float timeout) {
-    if (k<1 || k>BOPL_SEARCH_MAX_K || n<1 || depth<1 || k*n>s->rollouts || !(gamma>0) || gamma>1 || !isfinite(kill) || !isfinite(timeout)) return -1;
+                                 float gamma, float kill, float timeout, float prior_mix, float value_scale) {
+    if (k<1 || k>BOPL_SEARCH_MAX_K || n<1 || depth<1 || k*n>s->rollouts || !(gamma>0) || gamma>1 || !isfinite(kill) || !isfinite(timeout)
+        || !isfinite(prior_mix) || !isfinite(value_scale)) return -1;
     s->k=k; s->n=n; s->depth=depth; s->halving=halving!=0; s->search_latched=search_latched!=0;
-    s->gamma=gamma; s->kill=kill; s->timeout=timeout;
+    s->gamma=gamma; s->kill=kill; s->timeout=timeout; s->prior_mix=prior_mix; s->value_scale=value_scale;
     return 0;
 }
 
 /* Policy forward of a shadow's two rows; the sampled next actions of both
  * players go to its action buffer, `value` gets player `me`'s critic value. */
-static void bopl_search_forward_shadow(BoplSearch *s, BoplPuffer *sh, float *state, float *next, int me, float *value) {
+static void bopl_search_forward_shadow(BoplSearch *s, BoplPuffer *sh, float *state, float *next, int me, float *value, uint64_t *rng) {
     bopl_policy_eval_step_raw(s->policy, sh->observations, state, s->rows, next);
     bopl_policy_eval_game_logits(s->policy, s->rows, NULL, s->logits);
     for (int p=0; p<2; p++) {
@@ -234,12 +241,12 @@ static void bopl_search_forward_shadow(BoplSearch *s, BoplPuffer *sh, float *sta
             /* Buttons first, then the aim head of that combo (bopl_aim.h). */
             int combos[2]={0, 0};
             float *a=sh->actions+BOPL_NUM_ATNS*p;
-            a[1]=(float)bopl_search_sample_head(row+BOPL_ACT_AIM, sh->action_mask+(size_t)p*BOPL_LOGITS+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &s->rng);
+            a[1]=(float)bopl_search_sample_head(row+BOPL_ACT_AIM, sh->action_mask+(size_t)p*BOPL_LOGITS+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, rng);
             combos[p]=(int)a[1];
             bopl_policy_eval_game_logits(s->policy, s->rows, combos, s->logits);
-            a[0]=(float)bopl_search_sample_head(row, sh->action_mask+(size_t)p*BOPL_LOGITS, BOPL_ACT_AIM, &s->rng);
-            a[2]=(float)bopl_search_sample_head(row+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, sh->action_mask+(size_t)p*BOPL_LOGITS+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, &s->rng);
-        } else bopl_search_sample_action(row, sh->action_mask+(size_t)p*BOPL_LOGITS, &s->rng, sh->actions+BOPL_NUM_ATNS*p);
+            a[0]=(float)bopl_search_sample_head(row, sh->action_mask+(size_t)p*BOPL_LOGITS, BOPL_ACT_AIM, rng);
+            a[2]=(float)bopl_search_sample_head(row+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, sh->action_mask+(size_t)p*BOPL_LOGITS+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, rng);
+        } else bopl_search_sample_action(row, sh->action_mask+(size_t)p*BOPL_LOGITS, rng, sh->actions+BOPL_NUM_ATNS*p);
     }
     *value=s->logits[(size_t)me*BOPL_DECODER+BOPL_LOGITS];
     s->forwards_run+=2;
@@ -284,23 +291,25 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
     if (s->rollouts>4096) return -1;
     const unsigned char *opp_mask=s->env->action_mask+(size_t)(1-me)*BOPL_LOGITS;
     const float *opp_row=s->root_logits+(size_t)(1-me)*BOPL_DECODER;
+    uint64_t round_seed=bopl_search_mix(&s->rng);
     for (int c=0; c<s->cands; c++) {
         if (!s->cand[c].alive) continue;
         for (int i=0; i<n && used<s->rollouts; i++) {
             BoplPuffer *sh=&s->shadow[used];
+            uint64_t *rng=&s->roll_rng[used]; *rng=round_seed^((uint64_t)(i+1)*0xD1B54A32D192ED03ull);
             if (bopl_search_shadow_reset(s, sh)) { snprintf(s->error, sizeof(s->error), "the world cannot fork"); return -1; }
             memcpy(s->roll_state+(size_t)used*s->state_floats, s->root_next, (size_t)s->state_floats*sizeof(float));
             float *mine=sh->actions+BOPL_NUM_ATNS*me, *theirs=sh->actions+BOPL_NUM_ATNS*(1-me);
             mine[0]=(float)s->cand[c].aim; mine[1]=(float)s->cand[c].buttons; mine[2]=(float)s->cand[c].hold;
             if (s->aim_ar) {
                 int combos[2]={0, 0};
-                theirs[1]=(float)bopl_search_sample_head(opp_row+BOPL_ACT_AIM, opp_mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &s->rng);
+                theirs[1]=(float)bopl_search_sample_head(opp_row+BOPL_ACT_AIM, opp_mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, rng);
                 combos[1-me]=(int)theirs[1];
                 bopl_policy_eval_game_logits(s->policy, s->rows, combos, s->logits);   /* s->rows still holds the root rows */
                 const float *r=s->logits+(size_t)(1-me)*BOPL_DECODER;
-                theirs[0]=(float)bopl_search_sample_head(r, opp_mask, BOPL_ACT_AIM, &s->rng);
-                theirs[2]=(float)bopl_search_sample_head(r+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, opp_mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, &s->rng);
-            } else bopl_search_sample_action(opp_row, opp_mask, &s->rng, theirs);
+                theirs[0]=(float)bopl_search_sample_head(r, opp_mask, BOPL_ACT_AIM, rng);
+                theirs[2]=(float)bopl_search_sample_head(r+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, opp_mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, rng);
+            } else bopl_search_sample_action(opp_row, opp_mask, rng, theirs);
             owner[used]=c; ret[used]=0; disc[used]=1; done[used]=0; value[used]=0;
             used++;
         }
@@ -315,7 +324,7 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
             if (terminal) { done[r]=1; value[r]=0; continue; }
             /* Next decision's actions and, at the horizon, the leaf value. */
             float *state=s->roll_state+(size_t)r*s->state_floats, *next=s->roll_next+(size_t)r*s->state_floats;
-            bopl_search_forward_shadow(s, sh, state, next, me, &value[r]);
+            bopl_search_forward_shadow(s, sh, state, next, me, &value[r], &s->roll_rng[r]);
             memcpy(state, next, (size_t)s->state_floats*sizeof(float));
         }
     }
@@ -382,9 +391,12 @@ static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
             alive=keep;
             if (alive<=1) break;
         }
-        int best=-1;
-        for (int c=0; c<s->cands; c++) if (s->cand[c].alive && s->cand[c].visits
-            && (best<0 || s->cand[c].sum/s->cand[c].visits>s->cand[best].sum/s->cand[best].visits)) best=c;
+        int best=-1; double top=0;
+        for (int c=0; c<s->cands; c++) {
+            if (!s->cand[c].alive || !s->cand[c].visits) continue;
+            double score=s->value_scale*s->cand[c].sum/s->cand[c].visits+s->prior_mix*s->cand[c].gumbel;
+            if (best<0 || score>top) { best=c; top=score; }
+        }
         if (best<0) best=0;
         s->chosen=best;
         out[0]=s->cand[best].aim; out[1]=s->cand[best].buttons; out[2]=s->cand[best].hold;
@@ -449,7 +461,7 @@ static double bopl_search_bench(BoplSearch *s, int what, int iterations, int bat
         for (int i=0; i<iterations; i++) {
             if (bopl_search_shadow_reset(s, sh)) return -1;
             bopl_search_shadow_step(sh);
-            bopl_search_forward_shadow(s, sh, s->roll_state, s->roll_next, 0, &value);
+            bopl_search_forward_shadow(s, sh, s->roll_state, s->roll_next, 0, &value, &s->rng);
         }
         return (bopl_search_now()-t0)/iterations;
     }

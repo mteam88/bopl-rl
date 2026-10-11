@@ -54,14 +54,12 @@ def main(argv=None):
     p.add_argument('--label', help='name for the output row (default: the two paths)')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--search', help='play A through the decision-time search (eval/search_policy.py) with this '
-                   'budget: k,n,depth[,h] = candidates, rollouts per candidate, rollout decisions, sequential halving')
+                   'budget: k,n,depth[,h][,mix=M][,vs=V] (search_policy.parse_budget)')
     a = p.parse_args(argv)
 
     if a.search:
         import search_policy
-        parts = a.search.split(',')
-        built = {'A': search_policy.Search('A', a.a.resolve(), 'candidate', k=int(parts[0]), n=int(parts[1]),
-                                           depth=int(parts[2]), halving='h' in parts[3:])}
+        built = {'A': search_policy.Search('A', a.a.resolve(), 'candidate', **search_policy.parse_budget(a.search))}
     else:
         built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate')}
     built['B'] = elo_ladder.Model('B', a.b.resolve(), 'candidate')
