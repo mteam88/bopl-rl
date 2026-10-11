@@ -27,7 +27,7 @@ main_steps = 100000000000               # stop when the main has trained 100B le
 memory_max = "10G"
 rating_games = 480
 rating_workers = 4
-beat_rating = 716.1                     # g111-l1-12800m, the init (2026-10-10)
+beat_rating = 686.2                     # g111-l1-12800m, the init, re-rated fresh 2026-10-11 (its stored 716.1 was a lucky 960-game run)
 
 # Every agent: g111-league-1's [fixed] (policy v4/256, one MinGRU layer, its optimiser).
 [train]
