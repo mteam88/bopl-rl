@@ -126,6 +126,7 @@ uint32_t bopl_rl_ability_count(const BoplRl *world);
  *
  * tick is the header.tick of the first state that shows the event. Entity ids
  * are published ids (0 when no observation ever listed the entity). */
+#define BOPL_RL_EVENTS 1  /* train/bopl_style.h: this header declares the events ABI */
 typedef struct {
     uint32_t kind;            /* BOPL_EVENT_* */
     uint32_t tick;            /* header.tick at the event */
