@@ -455,7 +455,9 @@ class Loop:
         main['learner_steps'] = status['learner_steps']
         checkpoint = Path(status['checkpoint'])
         step = int(checkpoint.stem.split('-')[1])
-        name = f'{self.config.name}-main-{step // 1_000_000}m'
+        # A restarted main (state main.restart, set by hand: a new run from the
+        # init) tags its snapshots so they cannot collide with the earlier run's.
+        name = f"{self.config.name}-main{main.get('restart') or ''}-{step // 1_000_000}m"
         add_member(name, 'main', checkpoint, current['run'], step, parent=self.config.init_member, target=None,
                    rule=f'league loop {self.config.name}: main snapshot every {self.config.main_turn / 1e9:g}B learner '
                         f'(AlphaStar adds main players every 2e9 steps)')

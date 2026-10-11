@@ -66,9 +66,13 @@ cudagraphs = 1
 no_eval = true                     # the loop rates each main snapshot itself (league candidate, 480 games)
 
 [main]
-# Three banks PFSP over everything (own snapshots + league), one over the exploiters:
-# with the vector's half of self-play games that is 50 / 37.5 / 12.5 (AlphaStar 35 / 50 / 15).
-bank_groups = "all,all,all,exploiters"
+# Restart 1 (turns 0-7) used three banks PFSP over everything and one over the exploiters
+# (50 / 37.5 / 12.5 of games with the vector's self-play half; AlphaStar 35 / 50 / 15).
+# Restart 2 (2026-10-11, turn 8): back to g111-league-1's banks. With "all,all,all,exploiters"
+# the exploiter bank held only exploit-g111-1, main's most-loaded opponent (176 loads), and
+# main fell 716 -> 633/639/615/600 (the last two at entropy 0.0005). Exploiters stay in
+# "all" under PFSP.
+bank_groups = "all,all,all,all"
 pool_size = 8
 pfsp_p = 2.0                       # AlphaStar's main agent: f_hard squared
 
