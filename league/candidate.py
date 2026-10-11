@@ -40,14 +40,16 @@ CANDIDATE = 'candidate'
 OUTCOME = {'a': 0, 'b': 1, 'draw': 2}
 
 
-def reference(league=None):
-    """(condition key, {member id: Elo}) fitted on the league's current games."""
-    key, _ = registry.rating_condition()
+def reference(league=None, key=None):
+    """(condition key, {member id: Elo}) fitted on the league's current games under
+    condition `key` (the tree's rating condition when omitted)."""
+    key = key or registry.rating_condition()[0]
     counts = registry.read_payoff(condition=key)
     known = registry.by_id(league or registry.load())
     ids = sorted({i for pair in counts for i in pair if i in known})
     if registry.ANCHOR not in ids:
-        raise SystemExit(f'the league has no games under {key}; run `league play` first')
+        raise SystemExit(f'the league has no games under {key}; run `league play` first '
+                         f'(conditions with games: {", ".join(registry.conditions_present())})')
     return key, rating.ratings(ids, {pair: value for pair, value in counts.items()
                                      if pair[0] in known and pair[1] in known})['ratings']
 
@@ -205,6 +207,54 @@ def curve(run_dir, reference_ratings=None, bootstrap=1000):
 
 # ---- playing -------------------------------------------------------------------
 
+def opponents(me, exclude, seed_base, league=None, key=None):
+    """The members a checkpoint is rated against: every rated member it can meet
+    (games.matchup), except `exclude` (the checkpoint's own sha256: a member that is
+    this very checkpoint would only pull it toward its own rating).
+    Ratings are under condition `key` (reference). Returns (condition key, {member id:
+    Elo} of the league, member rows by id, maps, used)."""
+    league = league or registry.load()
+    key, ratings = reference(league, key)
+    rows = registry.by_id(league)
+    maps = map_catalogue.parse_map_ids(registry.MAPS)
+    used = {member: value for member, value in ratings.items()
+            if member != exclude and league_games.matchup(me, rows[member], maps, 1, seed_base)}
+    return key, ratings, rows, maps, used
+
+
+def play_band(player, me, rows, maps, used, workspace, games=240, first_pass_games=6, band=(.15, .85),
+              round_games=48, workers=4, seed_base=70001, style=None, log=print, label=CANDIDATE):
+    """The candidate's games: a first pass of `first_pass_games` against every member of
+    `used`, then rounds against the members it has a `band` chance against, until
+    `games`. `player` is its elo_ladder participant, `me` its member-like row (id
+    CANDIDATE, loadouts). `style` (games.play) adds each game's style tallies.
+    Returns (played rows, rounds)."""
+    built = {member: league_games.participant(rows[member]) for member in used}
+    built[CANDIDATE] = player
+    league_games.configure(workspace)
+    played, pairs, rounds = [], {member: 0 for member in used}, []
+
+    def play(plan):
+        tasks = []
+        for member, count in plan.items():
+            tasks += league_games.matchup(me, rows[member], maps, count, seed_base, pairs[member])
+            pairs[member] += count
+        for game in league_games.play(built, tasks, workers, seed_base, style=style):
+            played.append(dict(b=game['b'], map=game['map'], seed=game['seed'], side=game['side'],
+                               kits=game['kits'], outcome=game['outcome'], ticks=game['ticks'],
+                               **({'draw_kind': game['draw_kind']} if 'draw_kind' in game else {}),
+                               **{k: game[k] for k in ('style', 'style_decisions', 'event_support') if k in game}))
+        value = elo_ladder.bradley_terry_fixed(records(played), used)
+        rounds.append(dict(rating=value, games=len(played), allocated={m: 2 * c for m, c in plan.items()}))
+        log(f'{label}: round {len(rounds)}, {len(played)} games, rating {value:.0f}')
+        return value
+
+    value = play({member: max(1, first_pass_games // 2) for member in used})
+    while plan := plan_round(value, used, games - len(played), band, round_games):
+        value = play(plan)
+    return played, rounds
+
+
 def rate(checkpoint, games=240, first_pass_games=6, band=(.15, .85), round_games=48, workers=4,
          seed_base=70001, source='band', bootstrap=1000, log=print):
     """Rate one checkpoint against the league, reusing a stored rating of at least `games` games.
@@ -223,34 +273,11 @@ def rate(checkpoint, games=240, first_pass_games=6, band=(.15, .85), round_games
         return previous
     config = json.loads(Path(str(checkpoint) + '.json').read_text()).get('config') or {}
     me = dict(id=CANDIDATE, name=CANDIDATE, kind='candidate', loadouts=registry.trained_loadouts(config))
-    rows = registry.by_id(league)
-    maps = map_catalogue.parse_map_ids(registry.MAPS)
-    # Every rated member the candidate can meet, except a member that is this very
-    # checkpoint: its games would only pull the candidate toward its own rating.
-    used = {member: value for member, value in ratings.items()
-            if member != identity['sha256'] and league_games.matchup(me, rows[member], maps, 1, seed_base)}
-    built = {member: league_games.participant(rows[member]) for member in used}
-    built[CANDIDATE] = elo_ladder.Model(CANDIDATE, checkpoint, 'candidate')
-    league_games.configure(path.parent / 'workers')
-    started, played, pairs, rounds = time.monotonic(), [], {member: 0 for member in used}, []
-
-    def play(plan):
-        tasks = []
-        for member, count in plan.items():
-            tasks += league_games.matchup(me, rows[member], maps, count, seed_base, pairs[member])
-            pairs[member] += count
-        for game in league_games.play(built, tasks, workers, seed_base):
-            played.append(dict(b=game['b'], map=game['map'], seed=game['seed'], side=game['side'],
-                               kits=game['kits'], outcome=game['outcome'], ticks=game['ticks'],
-                               **({'draw_kind': game['draw_kind']} if 'draw_kind' in game else {})))
-        value = elo_ladder.bradley_terry_fixed(records(played), used)
-        rounds.append(dict(rating=value, games=len(played), allocated={m: 2 * c for m, c in plan.items()}))
-        log(f'{checkpoint.name}: round {len(rounds)}, {len(played)} games, rating {value:.0f}')
-        return value
-
-    value = play({member: max(1, first_pass_games // 2) for member in used})
-    while plan := plan_round(value, used, games - len(played), band, round_games):
-        value = play(plan)
+    key, ratings, rows, maps, used = opponents(me, identity['sha256'], seed_base, league)
+    started = time.monotonic()
+    played, rounds = play_band(elo_ladder.Model(CANDIDATE, checkpoint, 'candidate'), me, rows, maps, used,
+                               path.parent / 'workers', games, first_pass_games, band, round_games, workers,
+                               seed_base, log=log, label=checkpoint.name)
     result = dict(schema=SCHEMA, condition=key, checkpoint=str(checkpoint), checkpoint_identity=identity,
                   source=source, budget=games, seed_base=seed_base, band=list(band),
                   first_pass_games=first_pass_games, round_games=round_games,

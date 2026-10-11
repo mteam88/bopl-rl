@@ -76,6 +76,12 @@ LIB.research_forks.argtypes = [C.c_void_p]; LIB.research_forks.restype = C.c_int
 LIB.research_mask.argtypes = [C.c_void_p]; LIB.research_mask.restype = C.POINTER(C.c_ubyte)
 LIB.research_mask_size.restype = C.c_int
 if LIB.research_mask_size()!=layout.LOGITS: raise RuntimeError('Research library action mask width differs from layout.LOGITS')
+# Measured style programs (research_style_install); absent from libraries built before them.
+if hasattr(LIB, 'research_style_install'):
+    LIB.research_style_install.argtypes = [C.c_void_p,C.c_char_p,C.c_long,C.c_char_p,C.c_int]
+    LIB.research_style_install.restype = C.c_int
+    LIB.research_style_tallies.argtypes = [C.c_void_p,C.POINTER(C.c_double),C.c_int]
+    LIB.research_style_tallies.restype = C.c_int
 OBS_SIZE = LIB.research_obs_size()      # the layout-v3 row width (the default layout)
 OBS_STRIDE = LIB.research_obs_stride()  # row memory: fits layout v4 too
 
@@ -206,6 +212,30 @@ class Environment:
         count=LIB.research_loadouts(self.handle,values,len(values))
         if count!=6: raise RuntimeError('Unexpected native loadout width')
         return [list(values[:3]),list(values[3:6])]
+    def install_style(self,data):
+        """Measure a compiled style (train/style_compile.py style.bin bytes; None removes it):
+        after every step() the C VM (train/bopl_style.h) runs it for both players on the
+        decision's state and events, as the trainer does for a learner, and only tallies
+        it -- the payout reaches no reward, observation, mask or bot, so play is unchanged.
+        Tallies and history restart at each reset. step_ticks() is refused while installed.
+        Returns the number of terms."""
+        if not hasattr(LIB,'research_style_install'): raise RuntimeError('Rebuild the research library (make research) for style measurement')
+        error=C.create_string_buffer(512)
+        data=bytes(data) if data else b''
+        terms=LIB.research_style_install(self.handle,data or None,len(data),error,len(error))
+        if terms<0: raise ValueError(f'style program rejected: {error.value.decode(errors="replace")}')
+        self.style_terms=terms
+        return terms
+    def style_tallies(self):
+        """Since the last reset, per player: decisions, event_support (of the last decision),
+        pay[T] and fires[T] (decisions the term paid non-zero on); None without a style."""
+        if not getattr(self,'style_terms',0): return None
+        terms=self.style_terms; width=2+2*terms
+        out=(C.c_double*(2*width))()
+        if LIB.research_style_tallies(self.handle,out,len(out))!=width: raise RuntimeError('Unexpected style tally width')
+        rows=np.frombuffer(out,dtype=np.float64).reshape(2,width)
+        return [dict(decisions=int(r[0]),event_support=int(r[1]),pay=r[2:2+terms].tolist(),
+                     fires=[int(v) for v in r[2+terms:]]) for r in rows]
     def ability_telemetry(self):
         activations=(C.c_double*39)(); rows=(C.c_double*39)(); overflow=(C.c_double*39)()
         if LIB.research_ability_telemetry(self.handle,activations,rows,overflow,39)!=39:
@@ -240,6 +270,7 @@ class Environment:
         tick (read self.state / frame() there) and completes the decision when
         exhausted. Same decision, same observations, masks, telemetry and replay
         as step(); play.py uses it to show all 60 ticks/s. Must be run to the end."""
+        if getattr(self,'style_terms',0): raise RuntimeError('step_ticks drops events while a style is measured; use step()')
         actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,NUM_ATNS)
         if LIB.research_step_begin(self.handle,actions.ctypes.data_as(C.POINTER(C.c_float))): raise RuntimeError('A decision is already in progress')
         try:

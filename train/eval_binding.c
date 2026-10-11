@@ -108,11 +108,32 @@ unsigned long research_overflow(BoplPuffer *env) { return env->log.observation_o
 /* The research environment carries the state of a decision split into ticks
  * (research_step_begin/tick/finish). BoplPuffer is the first member, so every
  * BoplPuffer* handed out by research_open is also a ResearchEnv*. */
+/* A style program (bopl_style.h) measured, not paid: it runs after every
+ * research_step for each player, on the same terminal-or-ongoing state and
+ * event stream the trainer's bopl_style_reward sees, and only tallies. Nothing
+ * reaches the reward, observations, masks or bots, so games are unchanged. */
+typedef struct {
+    BoplStyleProgram program;
+    float *slots;                                   /* players x program.hist_floats, zeroed per episode */
+    double pay[2][BS_MAX_TERMS], fires[2][BS_MAX_TERMS], decisions[2];
+    int loaded, support;                            /* support: bopl_rl_event_support of the last decision */
+} ResearchStyle;
 typedef struct {
     BoplPuffer env;
     BoplStepPhase phase;
     int open, tick, sampled;
+    ResearchStyle style;
 } ResearchEnv;
+static void research_style_clear(ResearchStyle *style) {
+    if (!style->loaded) return;
+    memset(style->slots, 0, 2*(size_t)style->program.hist_floats*sizeof(float));
+    memset(style->pay, 0, sizeof(style->pay)); memset(style->fires, 0, sizeof(style->fires));
+    memset(style->decisions, 0, sizeof(style->decisions)); style->support=0;
+}
+static void research_style_free(ResearchStyle *style) {
+    if (style->loaded) bopl_style_free(&style->program);
+    free(style->slots); style->slots=NULL; style->loaded=0;
+}
 BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay) {
     ResearchEnv *research=calloc(1, sizeof(*research));
     if (!research) return NULL;
@@ -170,6 +191,7 @@ int research_rewards(BoplPuffer *env, float kill, float timeout) {
 }
 void research_reset(BoplPuffer *env, uint32_t seed, uint32_t map) {
     env->rng=seed; env->config.map=map; c_reset(env);
+    research_style_clear(&((ResearchEnv*)env)->style);
     memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
     ((ResearchEnv*)env)->open=0;  /* a reset discards an unfinished tick-split decision */
 }
@@ -206,6 +228,58 @@ int research_forks(BoplPuffer *env) {
 void research_step(BoplPuffer *env, const float *actions) {
     if (((ResearchEnv*)env)->open) { fprintf(stderr, "research_step during a tick-split decision\n"); abort(); }
     memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float)); c_step(env);
+    ResearchStyle *style=&((ResearchEnv*)env)->style;
+    if (style->loaded) {
+        /* no_autoreset: the world still holds this decision's state and events. */
+        const BoplRlState *state=bopl_rl_state(env->world);
+        uint32_t count=0; int support=0;
+        const BoplRlEvent *events=bopl_style_events(env->world, &count, &support);
+        float terms[BS_MAX_TERMS];
+        style->support=support;
+        for (int i=0; i<env->players && i<2; i++) {
+            bopl_style_step(&style->program, state, events, count, support, i,
+                            style->slots+(size_t)i*style->program.hist_floats, terms);
+            for (uint32_t t=0; t<style->program.n_terms; t++) {
+                style->pay[i][t]+=terms[t]; style->fires[i][t]+=terms[t]!=0.0f;
+            }
+            style->decisions[i]++;
+        }
+    }
+}
+/* The game events of the last research_step (bopl_rl_events: valid until the
+ * next command), and in *support whether the backend emits any. */
+const BoplRlEvent *research_events(BoplPuffer *env, uint32_t *count, int *support) {
+    return bopl_style_events(env->world, count, support);
+}
+/* Install a compiled style (train/style_compile.py style.bin) for measurement;
+ * NULL/0 removes it. Tallies and history restart at the next research_reset
+ * (and now). Returns the term count, or -1 with `error` filled. Tick-split
+ * decisions (research_step_begin) are refused while one is installed: their
+ * per-tick commands would drop all but the last tick's events. */
+int research_style_install(BoplPuffer *env, const void *bytes, long length, char *error, int capacity) {
+    ResearchStyle *style=&((ResearchEnv*)env)->style;
+    research_style_free(style);
+    if (!bytes || length<=0) return 0;
+    if (bopl_style_load(&style->program, bytes, (size_t)length, error, (size_t)(capacity>0?capacity:0))) return -1;
+    style->slots=calloc(2*(size_t)style->program.hist_floats, sizeof(float));
+    if (!style->slots) { bopl_style_free(&style->program); return -1; }
+    style->loaded=1; research_style_clear(style);
+    return (int)style->program.n_terms;
+}
+/* Per player since the last reset: out[p*(2+2T)] = decisions, then event
+ * support, then T payouts, then T fire counts. Returns the row width 2+2T
+ * (0 with no style), or minus the size needed. */
+int research_style_tallies(BoplPuffer *env, double *out, int capacity) {
+    ResearchStyle *style=&((ResearchEnv*)env)->style;
+    if (!style->loaded) return 0;
+    int terms=(int)style->program.n_terms, width=2+2*terms;
+    if (!out || capacity<2*width) return -2*width;
+    for (int p=0; p<2; p++) {
+        double *row=out+p*width;
+        row[0]=style->decisions[p]; row[1]=style->support;
+        for (int t=0; t<terms; t++) { row[2+t]=style->pay[p][t]; row[2+terms+t]=style->fires[p][t]; }
+    }
+    return width;
 }
 /* One decision split into its ticks, for real-time play that shows every
  * tick: begin fixes the decision (scripted bots, latch) exactly as
@@ -216,10 +290,11 @@ void research_step(BoplPuffer *env, const float *actions) {
  * within the first three ticks), as bopl_rl_step_sampled(3, 1) returns it, so
  * observations, masks, telemetry, rewards and the replay are identical to
  * research_step's; check_tick_step.py proves it on fixed seeds. Returns -1 on
- * misuse (ticks left, no decision open, or a decision already open). */
+ * misuse (ticks left, no decision open, a decision already open, or a style
+ * installed: research_style_install). */
 int research_step_begin(BoplPuffer *env, const float *actions) {
     ResearchEnv *research=(ResearchEnv*)env;
-    if (research->open) return -1;
+    if (research->open || research->style.loaded) return -1;
     memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float));
     bopl_step_begin(env, &research->phase);
     research->open=1; research->tick=0; research->sampled=0;
@@ -261,5 +336,6 @@ int research_replay(BoplPuffer *env, const char *path) {
 }
 void research_close(BoplPuffer *env) {
     if (!env) return;
+    research_style_free(&((ResearchEnv*)env)->style);
     c_close(env); free(env->observations); free(env->actions); free(env->rewards); free(env->terminals); free(env->action_mask); free(env);
 }

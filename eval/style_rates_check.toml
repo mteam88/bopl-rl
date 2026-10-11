@@ -1,0 +1,23 @@
+# Not a style: terms with a known answer, for eval/style_rates_check.py. A
+# decision counter must fire on every decision, and the death-event terms must
+# count what the game's own counters say (one life per round: kills, deaths).
+name = "rates_check"
+fade = { start = 0.0, end = 1.0 }
+
+[[term]]
+name = "decision"
+value = "1"
+
+[[term]]
+name = "kill_event"
+# The credited killer, as players[].kills counts it: a self-kill (cause SELF)
+# credits the victim, so there is no `ev.subject != self` here.
+on = "death"
+when = "ev.actor == self"
+value = "1"
+
+[[term]]
+name = "death_event"
+on = "death"
+when = "ev.subject == self"
+value = "1"

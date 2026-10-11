@@ -304,7 +304,7 @@ $(OUT)/fwd_bench: train/fwd_bench.cu train/bopl_rollout.cu train/bopl_rollout_v4
 	g++-15 $(OUT)/fwd_bench.o $(OUT)/fwd_bench_rays.o $(abspath $(CUDA_HOME))/lib/libcudart.so.13 $(abspath $(CUDA_HOME))/lib/libcublas.so.13 \
 	  $(abspath $(CUDA_HOME))/lib/libcublasLt.so.13 $(abspath $(CUDA_HOME))/lib/libcurand.so.10 -lcuda -Wl,-rpath,$(abspath $(CUDA_HOME))/lib -lm -lpthread -ldl -o $@
 
-$(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_style.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared $(INCLUDES) train/eval_binding.c $(ABI)/bopl_rl.c -lm -o $@
 
@@ -359,7 +359,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac check-reward check-routing style-check style-score
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac check-reward check-routing style-check style-score style-rates style-rates-check
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
@@ -383,6 +383,24 @@ style-check: $(OUT)/libstyle_check.so
 style-score:
 	for style in $(STYLE_FILES); do native/artifacts/rl/venv/bin/python eval/style_score.py $$style \
 	  --json $(abspath $(OUT))/style-score-$$(basename $$style .toml).json || exit 1; done
+
+# A league member's (or checkpoint's) style rates in its own candidate games
+# (league/style_rates.py, docs/STYLES.md section 4), and the proof that measuring
+# changes no game and agrees with eval/style_score.py on every decision
+# (eval/style_rates_check.py). STYLE_RATES_CONDITION picks the ratings that choose
+# the band when the tree's sim has no games of its own yet.
+STYLE_RATES_TARGET ?= l1-main-8000m
+STYLE_RATES_GAMES ?= 480
+STYLE_RATES_CONDITION ?=
+style-rates: $(OUT)/libbopl_research.so
+	native/artifacts/rl/venv/bin/python league style-rates $(STYLE_RATES_TARGET) --styles $(STYLE_FILES) \
+	  --games $(STYLE_RATES_GAMES) $(if $(STYLE_RATES_CONDITION),--condition $(STYLE_RATES_CONDITION)) \
+	  --json $(abspath $(OUT))/style-rates/$(notdir $(STYLE_RATES_TARGET)).json
+
+style-rates-check: $(OUT)/libbopl_research.so
+	native/artifacts/rl/venv/bin/python eval/style_rates_check.py --target $(STYLE_RATES_TARGET) --members 24 \
+	  $(if $(STYLE_RATES_CONDITION),--condition $(STYLE_RATES_CONDITION)) --styles $(STYLE_FILES) \
+	  --json $(abspath $(OUT))/style-rates/check-$(notdir $(STYLE_RATES_TARGET)).json
 
 check-reward: $(OUT)/check_reward
 	$(OUT)/check_reward

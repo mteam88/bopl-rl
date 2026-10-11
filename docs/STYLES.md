@@ -152,5 +152,48 @@ value = "8e-5"
     plays and the terms gate themselves.
   - Member name: `<loop>-se<n>-<style>-<step>m`, kind `exploiter`, so main's
     `exploiters` bank group picks it up.
-- To do: ratings add `style_rates` per member by running `eval/style_score.py`
-  over its rating games.
+- **Style rates per member** (built 2026-10-11): how often a member or checkpoint
+  plays each style in the league's own games, and how often its opponents play it
+  against it.
+
+  ```
+  python league style-rates l1-main-8000m --styles styles/a.toml styles/b.toml [--games 480] \
+      [--workers 4] [--condition KEY] [--json out.json]
+  make style-rates STYLE_RATES_TARGET=<member|checkpoint> [STYLE_RATES_CONDITION=KEY]   # every style
+  ```
+
+  - The target plays exactly the games `league candidate` gives its checkpoint
+    (`candidate.play_band`): the same kits, maps, seeds, first pass, and band
+    rounds. The styles are compiled into one program and measured in every game.
+  - The research library runs the C VM for both players after each
+    `research_step` (`eval/environment.py` `install_style`, `style_tallies`), on the
+    same terminal-or-ongoing state and events the trainer pays a learner on. It
+    only tallies: nothing reaches the reward, observations, masks or bots.
+    `step_ticks` is refused while a style is installed.
+  - `play_games(style=...)` adds `style` (per seat `{term: [pay, fires]}`),
+    `style_decisions` and `event_support` to each game.
+  - The table has `eval/style_score.py`'s columns: fire fraction, fires/min,
+    pay/min, games with a fire. Each is a mean over player-games, so rows line up
+    with the human table.
+  - A last column, pooled fires/min, is all fires over all minutes. League games
+    are often short: one kill in a 20 s game counts as 3/min, so the per-game mean
+    leans on short games.
+  - Groups:
+    - `member`: the target.
+    - `opponents`: the members in the same games, i.e. what is done to it.
+    - `member_won` / `member_lost`: JSON only. Like `human_winner` / `human_loser`.
+  - The games are the tree's sim. The band is picked from ratings under
+    `--condition` (default: the tree's rating condition), for a sim with no
+    payoff games of its own yet.
+  - The header line warns if any game ran without events. The Rust sim has
+    events.
+  - Proof: `make style-rates-check` (`eval/style_rates_check.py`, 48 games of
+    l1-main-8000m against 24 members of the band). It shows three things:
+    - Every decision's observation rows, mask, state header and players, and every
+      exported replay, hash the same with and without the style.
+    - Known answers hold (`eval/style_rates_check.toml`). A per-decision `value = "1"`
+      counts the decisions. Death-event terms equal the game's own `kills` and
+      `deaths`. A self-kill credits the victim's `kills`, as `ev.actor` does.
+    - Each decision's state and events, captured in the dump format and scored by
+      `eval/style_score.py`, give the same per-term pay and fires as the in-game C
+      tallies, bit for bit.

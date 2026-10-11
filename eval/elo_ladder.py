@@ -301,7 +301,7 @@ def side_pinned_tasks(a,b,maps,games_per_map,seed_base,lineup_by_side):
     return tasks
 
 
-def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,loadouts=None):
+def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,loadouts=None,style=None):
     """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
 
     Each participant provides start(task, side, rng) -> act(observation, mask)
@@ -315,12 +315,20 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
     for its game, and every game then carries the six ability ids it played as
     `lineup_ids`. Without loadouts nothing changes: the C sampler stays in fixed
     mode, draws no extra randomness, and the games are the ones played before.
+
+    style (dict data=<style.bin bytes>, terms=[names]) measures a compiled style in
+    every game (Environment.install_style: tallied, never paid, so the games are the
+    same ones): each result gets `style`, per seat {term: [pay, fires]},
+    `style_decisions` per seat, and `event_support` (1 when the game backend emitted
+    events, which event terms need).
     """
     from environment import Environment
     rows=(loadouts or {}).get('lineups') or []
     def play(bucket):
         results=[]
         with Environment(seed=seed_base+len(tasks),limit=limit,delay=delay,loadouts=loadouts) as env:
+            if style is not None and env.install_style(style['data'])!=len(style['terms']):
+                raise ValueError('style term names do not match the program')
             pinned=False
             for task in bucket:
                 # bopl_draw_config picks a set row uniformly at random, so the only way
@@ -357,6 +365,12 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
                 # about a policy, so say which without changing how a draw is scored.
                 if result['outcome']=='draw':
                     result['draw_kind']='timeout' if timeout else ('both-dead' if a_won else 'neither-won')
+                if style is not None:
+                    seats=env.style_tallies()
+                    result['style']=[{name:[seat['pay'][t],seat['fires'][t]] for t,name in enumerate(style['terms'])}
+                                     for seat in seats]
+                    result['style_decisions']=[seat['decisions'] for seat in seats]
+                    result['event_support']=seats[0]['event_support']
                 if loadouts is not None:
                     played=env.loadouts
                     result['lineup_ids']=played[0]+played[1]

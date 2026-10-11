@@ -6,6 +6,7 @@
     python league status
     python league add --name X --kind exploiter --weights policy.bin --run DIR --step N
     python league candidate <run>/checkpoints/policy-N.bin
+    python league style-rates <member | checkpoint> --styles styles/a.toml ...
     python league check
 
 `play` and `candidate` are the verbs that cost CPU; everything else reads the two
@@ -215,6 +216,19 @@ def command_candidate(args):
                               source=result['source'], condition=result['condition'],
                               kits={kit: round(row['rating'], 1) for kit, row in (result.get('kits') or {}).items()})),
               flush=True)
+
+
+def command_style_rates(args):
+    """Per-style rates of a member or checkpoint in its candidate games (style_rates.py)."""
+    import style_rates
+    result = style_rates.run(args.target, args.styles, games=args.games, first_pass_games=args.first_pass_games,
+                             band=(args.band_low, args.band_high), round_games=args.round_games,
+                             workers=args.workers, seed_base=args.seed_base, workspace=args.workspace,
+                             condition=args.condition)
+    if args.json:
+        Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json).write_text(json.dumps(result, allow_nan=False) + '\n')
+    print(style_rates.report(result), flush=True)
 
 
 # ---- rate --------------------------------------------------------------------
@@ -428,6 +442,22 @@ def main(argv=None):
     rate_one.add_argument('--seed-base', type=int, default=70001)
     rate_one.add_argument('--source', default='band', choices=('band', 'in-run'))
     rate_one.set_defaults(run=command_candidate)
+
+    styled = sub.add_parser('style-rates', help="a member's or checkpoint's style rates in its candidate games")
+    styled.add_argument('target', help='member name or checkpoint .bin')
+    styled.add_argument('--styles', nargs='+', required=True, help='style TOMLs, compiled into one program')
+    styled.add_argument('--games', type=int, default=240)
+    styled.add_argument('--first-pass-games', type=int, default=6)
+    styled.add_argument('--round-games', type=int, default=48)
+    styled.add_argument('--band-low', type=float, default=.15)
+    styled.add_argument('--band-high', type=float, default=.85)
+    styled.add_argument('--workers', type=int, default=4)
+    styled.add_argument('--seed-base', type=int, default=70001)
+    styled.add_argument('--workspace', default='/tmp/league-style-rates')
+    styled.add_argument('--condition', help="rate against the members' ratings under this condition key "
+                        "(default: the tree's rating condition); it picks the band, the games are the tree's")
+    styled.add_argument('--json', help='write the table, every game and its tallies here')
+    styled.set_defaults(run=command_style_rates)
 
     sub.add_parser('check', help='prove the estimators on constructed matrices').set_defaults(run=command_check)
 
