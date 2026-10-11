@@ -135,7 +135,8 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'reward_timeout', 'pool_size', 'pfsp_p', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
-                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts')
+                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts',
+                 'historical_every')
 # Policy v4 (train/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
@@ -183,7 +184,8 @@ def recorded_hypers(config):
                 scripted_share_max=config.get('scripted_share_max', 1.0),
                 n_scripted=config.get('scripted_banks', len(config.get('scripted_bots', [])) or (1 if config.get('scripted_roster') else 0)),
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0),
-                v4_shape=config.get('v4_shape'), loadouts=config.get('loadouts',resolve_loadouts()))
+                v4_shape=config.get('v4_shape'), loadouts=config.get('loadouts',resolve_loadouts()),
+                historical_every=env.get('historical_every', 2))
 
 
 def offset_counters(counts, base):
@@ -232,6 +234,10 @@ def arguments():
                    help='Rollout buffers (independent buffer threads + CUDA streams over one env pool). 4 measured +11%% learner/s over 2 '
                         'at 128 workers on the f64 sim (2026-09-10): GPU sync of one buffer overlaps env stepping of the others')
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
+    p.add_argument('--historical-every', type=int, choices=(1, 2), default=2,
+                   help='every k-th game is learner vs a frozen bank, the rest learner vs learner. 2: half the games, '
+                        '2/3 of the learner rows self-play (a main agent). 1: every game against the banks, no '
+                        'self-play rows (an exploiter training only against its frozen target(s))')
     p.add_argument('--seed', type=int, default=73)
     p.add_argument('--encoder', choices=('linear', 'set', 'v4'), default='linear',
                    help='v4: observation layout 4 and the policy v4 encoder/decoder (train/bopl_v4.cu)')
@@ -356,10 +362,10 @@ def arguments():
         p.error('Expected a finite, non-negative pfsp-p')
     a.pool_seed = a.seed if a.pool_seed is None else a.pool_seed
     a.buffers = a.buffers or (2 if a.workers % 4 == 0 else 1)
-    if a.workers % (2 * a.buffers):
-        p.error('workers must be divisible by twice the buffer count')
-    if (a.workers // 2) % a.banks:
-        p.error('half the workers must divide evenly among the banks')
+    if a.workers % (a.historical_every * a.buffers):
+        p.error('workers must be divisible by historical-every times the buffer count')
+    if (a.workers // a.historical_every) % a.banks:
+        p.error('the historical games (workers / historical-every) must divide evenly among the banks')
     a.scripted_bots = list(a.scripted_bots or [])
     a.scripted_roster = a.scripted_roster or []
     if a.scripted_banks < 0:
@@ -557,7 +563,7 @@ def main():
     # PufferLib parses sys.argv itself; the wrapper owns this command's arguments.
     sys.argv = [sys.argv[0]]
     args = pufferl.load_config('bopl')
-    vector = NativeVector(_C, a.workers, a.buffers, a.banks)
+    vector = NativeVector(_C, a.workers, a.buffers, a.banks, a.historical_every)
     learner_batch = vector.learner_rows * a.horizon
     if a.minibatch_div < 1 or vector.learner_rows % a.minibatch_div:
         raise SystemExit(f'--minibatch-div {a.minibatch_div} must divide the {vector.learner_rows} learner rows')
@@ -599,7 +605,7 @@ def main():
         scripted_kinds |= SCRIPTED_KINDS[kind_name] << 4 * (scripted_first_bank + i)
     map_chunks=map_mask_chunks(a.training_maps)
     pool_mask=sum(1 << ability for ability in a.loadouts['pool'])
-    args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
+    args['env'].update(players=2, banks=a.banks, historical_every=a.historical_every, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        # Four 31-bit chunks: binding options travel as doubles.
                        training_map_mask=map_chunks[0], training_map_mask_hi=map_chunks[1],
@@ -611,7 +617,9 @@ def main():
                        scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level],
                        obs_layout=layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3)
     pufferl.validate_config(args)
-    target_physical = math.ceil(a.steps * 4 / 3)
+    # Physical decisions per learner decision: both players of every game per
+    # step over the learner rows, 4/3 at historical_every 2 and 2 at 1.
+    target_physical = math.ceil(a.steps * (2 * a.historical_every) / (2 * a.historical_every - 1))
     # The pool counts native agent steps (padded rows included);
     # the knobs above count learner decisions.
     native_per_learner = native_batch / learner_batch
@@ -625,7 +633,8 @@ def main():
     architecture = {'set': layout.ARCHITECTURE, 'v4': layout.V4_ARCHITECTURE}.get(a.encoder, 'puffernet-mingru')
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native', map_catalogue='identity-124',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
-                  seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
+                  seed=a.seed, workers=a.workers, banks=a.banks, historical_every=a.historical_every,
+                  encoder=a.encoder, hidden=a.hidden, layers=a.layers,
                   scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,
                   scripted_share_min=a.scripted_share_min, scripted_share_max=a.scripted_share_max,
                   scripted_banks=a.n_scripted,
