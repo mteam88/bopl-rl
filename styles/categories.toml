@@ -1,0 +1,6 @@
+# Ability categories for style terms: ready(p, "mobility"), ready_count(p, "offense").
+# Draft 2026-10-11; Matthew corrects. An ability may be in several categories.
+mobility = ["Dash", "Teleport", "Grappling hook", "Web swing", "Roll", "Engine", "Portal gun", "Rewind", "Platform", "Invisibility"]
+offense  = ["Grenade", "Bow", "Missile", "Spike", "Rock", "Meteor", "Drill", "Beam", "Mine", "Tesla coil", "Black hole",
+            "Mjolnir", "Tack", "Throw", "Push", "Gust", "Freeze ray", "Poke ball", "Magnet gun", "Engine"]
+utility  = ["Blink gun", "Time stop", "Smoke", "Shrink ray", "Growth ray", "Duplicator", "Revival", "Gold mushroom"]
