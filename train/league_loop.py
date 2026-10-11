@@ -78,9 +78,10 @@ def log(message):
     print(f'[league-loop {time.strftime("%m-%d %H:%M:%S")}] {message}', flush=True)
 
 
-def notify(message):
+def notify(message, priority='default'):
     try:
-        subprocess.run(['curl', '-s', '-m', '10', '-H', 'Title: bopl league', '-d', message, NTFY],
+        subprocess.run(['curl', '-s', '-m', '10', '-H', 'Title: bopl league', '-H', f'Priority: {priority}',
+                        '-d', message, NTFY],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     except OSError:
         pass
@@ -130,6 +131,8 @@ class Config:
         self.memory_max = loop.get('memory_max', '10G')
         self.rating_games = int(loop.get('rating_games', 480))
         self.rating_workers = int(loop.get('rating_workers', 4))
+        # A rating to beat (the init checkpoint's): a main snapshot above it notifies at high priority.
+        self.beat_rating = loop.get('beat_rating')
         self.style_exploiter_timeout = int(loop.get('style_exploiter_timeout', 2_000_000_000))
         self.train = dict(raw.get('train', {}))
         self.agent = {agent: dict(raw.get(agent, {})) for agent in AGENTS}
@@ -554,8 +557,10 @@ class Loop:
                                             interval=result.get('interval'), games=result.get('games'),
                                             kits=result.get('kits')))
                 trail = ', '.join(f"{row['rating']:.0f}" for row in ratings['done'][-6:])
+                beat = self.config.beat_rating is not None and result['rating'] > self.config.beat_rating
                 notify(f"{self.config.name}: {running['name']} rated {result['rating']:.0f} "
-                       f"{[round(x) for x in result.get('interval') or []]} (recent mains: {trail})")
+                       f"{[round(x) for x in result.get('interval') or []]} (recent mains: {trail})"
+                       + (f"; beats {self.config.beat_rating:g}" if beat else ''), 'high' if beat else 'default')
             self.save()
         if ratings['running'] is None and ratings['queue'] and not self.stopping:
             job = ratings['queue'].pop(0)
