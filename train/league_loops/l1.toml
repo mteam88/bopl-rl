@@ -45,8 +45,11 @@ learner_passes = 1
 minibatch_div = 2
 aim_fourier = 4
 learning_rate = 0.0004852184640654399
-entropy = 0.001                    # = floor: every agent starts from a trained main
-entropy_floor = 0.001
+# The coefficient g111-league-1 trained at from ~4B on (its 0.001 -> 0.0005 decay). l1
+# started at 0.001 and main's policy entropy climbed 3.07 -> 3.43 over 6B learner while
+# its rating fell 716 -> 634/639; lowered for every agent at turn 6 (2026-10-11).
+entropy = 0.0005
+entropy_floor = 0.0005
 entropy_half_life = 2874446584
 entropy_head_scale = "0.028821467398601395,1.5,1"
 entropy_free_rows = 1
