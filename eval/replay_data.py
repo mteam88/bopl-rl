@@ -64,6 +64,12 @@ class Config(C.Structure):
     _fields_ = [(name, C.c_uint32) for name in ('seed','map','players','slots','stocks','mode','warmup_ticks','max_episode_ticks')] + [('player', PlayerConfig*6)]
 class Action(C.Structure):
     _fields_ = [('angle',C.c_uint8),('reserved',C.c_uint8),('buttons',C.c_uint16)]
+EVENT_FIELDS = ('kind','tick','subject','actor','entity','source_ability','cause','flags',
+                'related','related_actor','related_tick','reserved')
+class Event(C.Structure):
+    """BoplRlEvent (sim/abi/bopl_rl.h, docs/STYLES.md): one game event."""
+    _fields_ = [(name,C.c_uint32) for name in EVENT_FIELDS] + [(name,C.c_int64) for name in ('x','y','vx','vy','ax','ay','avx','avy')]
+assert C.sizeof(Event) == 112
 
 LIB.bopl_rl_open.argtypes = [C.c_char_p,C.c_char_p,C.c_char_p,C.c_uint32,C.c_char_p,C.c_size_t]
 LIB.bopl_rl_open.restype = C.c_void_p
@@ -75,6 +81,11 @@ LIB.bopl_rl_replay.argtypes = [C.c_void_p,C.POINTER(C.c_void_p),C.POINTER(C.c_si
 for name in ('error','source_hash','catalog_hash'):
     function = getattr(LIB, 'bopl_rl_'+name)
     function.argtypes = [C.c_void_p]; function.restype = C.c_char_p
+# Game events: absent from research libraries built before the events ABI.
+HAS_EVENTS = hasattr(LIB, 'bopl_rl_events')
+if HAS_EVENTS:
+    LIB.bopl_rl_events.argtypes = [C.c_void_p,C.POINTER(C.c_uint32)]; LIB.bopl_rl_events.restype = C.POINTER(Event)
+    LIB.bopl_rl_event_support.argtypes = [C.c_void_p]; LIB.bopl_rl_event_support.restype = C.c_int
 LIB.research_pack.argtypes = [C.POINTER(State),C.POINTER(Config),C.POINTER(C.c_float)]
 LIB.research_previous.argtypes = [C.POINTER(C.c_float),C.POINTER(Action),C.POINTER(C.c_int),C.c_int]
 
@@ -98,9 +109,12 @@ def previous(observations, actions, hold_run=None):
                           None if runs is None else runs.ctypes.data_as(C.POINTER(C.c_int)), len(actions))
 
 class ReplayWorld:
-    def __init__(self, meta, log, limit=None, game=None, warmup_ticks=0):
+    def __init__(self, meta, log, limit=None, game=None, warmup_ticks=0, check_identity=True):
         """warmup_ticks: neutral ticks the reset runs before episode tick 0 (the
-        RL training warmup, 240); 0 replays a human recording from level tick 0."""
+        RL training warmup, 240); 0 replays a human recording from level tick 0.
+        check_identity=False accepts a game whose source/catalog hashes differ
+        from the recording's: the Rust sim reports placeholder hashes, and it is
+        the backend with game events."""
         self.game = resolve_game(game)
         self.meta = meta
         self.config = config = Config()
@@ -123,7 +137,7 @@ class ReplayWorld:
         if not self.handle:
             raise RuntimeError(error.value.decode())
         try:
-            for key in ('source','catalog'):
+            for key in ('source','catalog') if check_identity else ():
                 if getattr(LIB,'bopl_rl_'+key+'_hash')(self.handle).decode() != meta[key]:
                     raise ValueError(f'Replay {key} identity differs from game')
             self.check(LIB.bopl_rl_reset(self.handle, C.byref(config)))
@@ -150,6 +164,16 @@ class ReplayWorld:
         return obs
     def step(self, actions, repeat=1):
         self.check(LIB.bopl_rl_step(self.handle, action_array(actions), self.config.players, repeat))
+    @property
+    def event_support(self):
+        return HAS_EVENTS and LIB.bopl_rl_event_support(self.handle) == 1
+    def events(self):
+        """The last command's game events, copied out (Event structures)."""
+        if not HAS_EVENTS:
+            return []
+        count = C.c_uint32()
+        pointer = LIB.bopl_rl_events(self.handle, C.byref(count))
+        return [Event.from_buffer_copy(pointer[k]) for k in range(count.value)] if pointer else []
     def replay(self, path):
         data, length = C.c_void_p(), C.c_size_t()
         self.check(LIB.bopl_rl_replay(self.handle,C.byref(data),C.byref(length)))

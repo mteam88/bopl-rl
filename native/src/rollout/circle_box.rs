@@ -644,6 +644,50 @@ impl RolloutWorld {
         Some((killer, cause))
     }
 
+    /// Game events: what the part a `collision_kill` names, met through
+    /// `collider`, tells about the death (docs/STYLES.md).
+    pub(super) fn part_kill_source(&self, other: Part, collider: Option<usize>) -> KillSource {
+        use super::events::*;
+        let (cause, actor) = match other {
+            Part::Arrow(_) => (DEATH_PROJECTILE, BodyRef::None),
+            Part::Rock(p) | Part::Body(p) | Part::Explosion(Blast::Drill(p, _)) => (DEATH_CONTACT, BodyRef::Body(p)),
+            Part::Explosion(Blast::Beam(_) | Blast::Orb(_)) => (DEATH_BEAM, BodyRef::None),
+            Part::Explosion(_) => (DEATH_EXPLOSION, BodyRef::None),
+            Part::Spike(_) | Part::Node(_) | Part::DuplicatedRock(_) | Part::Line(_) | Part::Item(_) => {
+                (DEATH_CONTACT, BodyRef::None)
+            }
+            _ => (DEATH_UNKNOWN, BodyRef::None),
+        };
+        // The ability behind the part, for rows that publish none (the
+        // Explosion-layer boxes); a row's own source ability wins.
+        let ability = match other {
+            Part::Arrow(_) => ABILITY_BOW,
+            Part::Explosion(Blast::Grenade(_)) => ABILITY_GRENADE,
+            Part::Explosion(Blast::Mine(i)) => self.missile_explosions[i].ability,
+            Part::Explosion(Blast::Smoke(_)) => ABILITY_SMOKE,
+            Part::Explosion(Blast::Smear(_)) => ABILITY_METEOR,
+            Part::Explosion(Blast::Drill(..)) => ABILITY_DRILL,
+            Part::Explosion(Blast::Beam(_) | Blast::Orb(_)) => ABILITY_BEAM,
+            Part::Spike(_) => ABILITY_SPIKE,
+            Part::Node(_) | Part::Line(_) => ABILITY_TESLA,
+            Part::Item(i) => self.thrown_items[i].ability,
+            _ => ABILITY_NULL,
+        };
+        KillSource {
+            entity: collider.or_else(|| self.part_entity(other)),
+            actor,
+            cause,
+            in_form: actor != BodyRef::None,
+            ability,
+            ..KillSource::default()
+        }
+    }
+
+    /// `part_kill_source` for a hit that may have no part.
+    pub(super) fn parts_kill_source(&self, other: Option<Part>, collider: Option<usize>) -> KillSource {
+        other.map_or_else(KillSource::default, |other| self.part_kill_source(other, collider))
+    }
+
     /// The collider DetPhysics holds for a slime's, form's or clone's row,
     /// where it last synced it.
     pub(super) fn body_row_collider(&self, entity: usize) -> Collider {
@@ -2867,13 +2911,17 @@ impl RolloutWorld {
                 if let Some((killer, cause)) = self.collision_kill(Slime::Player(player), other, collider) {
                     let slime = self.players[player].active == ActiveAbility::None;
                     let arrow = matches!(other, Part::Arrow(_));
+                    self.events.source = self.part_kill_source(other, collider);
                     self.run_callback_hit(&CallbackHit::Kill { player, killer, cause, slime, arrow }, route, data);
+                    self.events.source = KillSource::default();
                 }
             }
             Part::Clone(clone) => {
                 if let Some((killer, cause)) = self.collision_kill(Slime::Clone(clone), other, collider) {
                     let arrow = matches!(other, Part::Arrow(_));
+                    self.events.source = self.part_kill_source(other, collider);
                     self.run_callback_hit(&CallbackHit::CloneKill { clone, killer, cause, arrow }, route, data);
+                    self.events.source = KillSource::default();
                 }
             }
             _ => {}

@@ -2,7 +2,7 @@
 //! BoplSimNative.so exports), so sim/abi/bopl_rl.c can dlopen this cdylib
 //! as a game backend. Calls for one handle are serialized by the client;
 //! separate handles may run on different threads concurrently.
-use super::{CAction, CConfig, CState, RolloutWorld};
+use super::{CAction, CConfig, CEvent, CState, RolloutWorld};
 use std::ffi::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -132,6 +132,7 @@ pub unsafe extern "C" fn bopl_rl_reset_begin(world: *mut Handle, config: *const 
     let Some(handle) = (unsafe { world.as_mut() }) else {
         return ARGUMENT;
     };
+    handle.world.events.out.clear();
     if config.is_null() {
         handle.world.set_error("Null RL configuration");
         return ARGUMENT;
@@ -233,6 +234,7 @@ pub unsafe extern "C" fn bopl_rl_step(
     let Some(handle) = (unsafe { world.as_mut() }) else {
         return ARGUMENT;
     };
+    handle.world.events.out.clear();
     if actions.is_null() || !handle.world.valid || count != handle.world.player_count {
         return ARGUMENT;
     }
@@ -269,6 +271,7 @@ pub unsafe extern "C" fn bopl_rl_step_sampled(
     let Some(handle) = (unsafe { world.as_mut() }) else {
         return ARGUMENT;
     };
+    handle.world.events.out.clear();
     if actions.is_null() || !handle.world.valid || count != handle.world.player_count {
         return ARGUMENT;
     }
@@ -306,6 +309,28 @@ pub unsafe extern "C" fn bopl_rl_sample(world: *const Handle) -> *const CState {
         Some(handle) if handle.world.valid && handle.world.sample_valid => &*handle.world.sample,
         _ => core::ptr::null(),
     }
+}
+
+/// The game events of the handle's last step, step_sampled or reset, in the
+/// order the game produced them (bopl_rl.h `bopl_rl_events`); null with
+/// `*count` 0 when there were none. Valid until the next command.
+///
+/// # Safety
+/// `world` must be a live handle from `bopl_rl_open` or null; `count` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bopl_rl_events(world: *const Handle, count: *mut u32) -> *const CEvent {
+    let events = unsafe { world.as_ref() }.map_or(&[][..], |handle| &handle.world.events.out[..]);
+    if let Some(count) = unsafe { count.as_mut() } {
+        *count = events.len() as u32;
+    }
+    if events.is_empty() { core::ptr::null() } else { events.as_ptr() }
+}
+
+/// This backend records game events.
+#[unsafe(no_mangle)]
+pub extern "C" fn bopl_rl_event_support(_world: *const Handle) -> i32 {
+    1
 }
 
 /// Lossless replay export is a .NET-backend feature (BOPLREP2); this backend
