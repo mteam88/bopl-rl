@@ -13,9 +13,12 @@ init_member = "g111-l1-12800m"
 seed_members = ["g111-20b-26027m", "exploit-g111-1-9253m"]
 main_turn = 2000000000
 exploiter_turn = 1000000000
-rotation = ["main", "main-exploiter", "main", "league-exploiter"]
+# From turn 6 (2026-10-11) a style exploiter takes a third of the exploiter turns; main
+# keeps 2/3 of learner steps. Ordered so turn 7 stays the league exploiter.
+rotation = ["main", "league-exploiter", "main", "style-exploiter", "main", "main-exploiter"]
 main_exploiter_timeout = 4000000000     # AlphaStar: 4e9
 league_exploiter_timeout = 2000000000   # AlphaStar: 2e9
+style_exploiter_timeout = 2000000000    # like a league exploiter; also the style fade horizon
 win = 0.70                              # AlphaStar: added at >70%
 hopeless = 0.20                         # AlphaStar: main exploiter widens to the main's past checkpoints below 20%
 min_games = 2000
@@ -81,3 +84,21 @@ bank_groups = "league,league,league,league"
 pool_size = 2
 pfsp_p = 1.0                       # AlphaStar's league exploiter: linear (capped)
 seed = 2076
+
+# Style exploiters (docs/STYLES.md): each new one takes the next entry. Matthew's ideas
+# (2026-10-11) and the human-replay styles; a list is one combined program.
+[style-exploiter]
+historical_every = 1               # like the main exploiter: aimed at the newest main
+bank_groups = "league,league,league,league"
+pool_size = 2
+pfsp_p = 1.0
+seed = 3076
+styles = [
+    "styles/drill_snipe.toml",
+    "styles/punish_spent_mobility.toml",
+    "styles/blink_ringout.toml",
+    "styles/shrink_safe_area.toml",
+    "styles/punish_low_offense.toml",
+    ["styles/arrow_hit.toml", "styles/undodged_arrow.toml"],
+    "styles/keep_one_ready.toml",
+]

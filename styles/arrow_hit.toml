@@ -1,6 +1,6 @@
 # Arrow hits (style-discovery/kills bow_arrow_impact): each arrow that lands.
 name = "arrow_hit"
-kits = [[4, 2, 14], [4, 25, 3]]
+kits = [[3, 2, 4]]  # in l1's lineups (league_loop.py keeps only kits main trains on)
 fade = { start = 0.0, end = 0.7 }
 
 [[term]]

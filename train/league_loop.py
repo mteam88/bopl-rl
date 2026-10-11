@@ -18,6 +18,11 @@ turns on one GPU instead of agents on their own accelerators:
   league exploiter  PFSP over every league member, never its own snapshots.
                     Joins at >70% against the league, or at its 2e9 timeout;
                     then resets with probability 0.25 and otherwise continues.
+  style exploiter   not in AlphaStar (docs/STYLES.md): a main exploiter that
+                    also gets a small fading bonus for playing one human style
+                    (train.py --style). Each one cycles to the next entry of
+                    [style-exploiter] styles; it joins like a main exploiter
+                    (>70% against the newest main, or its timeout) and resets.
 
 Where this departs from the paper, on purpose:
   - Resets start from the newest main snapshot, not a supervised policy: there
@@ -61,7 +66,9 @@ VENV_PYTHON = ROOT / 'native/artifacts/rl/venv/bin/python'
 TRAIN = ROOT / 'train/train.py'
 LEAGUE = ROOT / 'league'
 NTFY = 'http://127.0.0.1:2586/bopl'
-AGENTS = ('main', 'main-exploiter', 'league-exploiter')
+AGENTS = ('main', 'main-exploiter', 'league-exploiter', 'style-exploiter')
+# Exploiter slot -> run-directory and member-name tag.
+TAGS = {'main-exploiter': 'me', 'league-exploiter': 'le', 'style-exploiter': 'se'}
 # Flags the loop owns: where a turn writes, how long it runs, what it starts
 # from and whom it plays.
 OWNED = ('output', 'resume', 'steps', 'init_weights', 'opponents')
@@ -123,8 +130,19 @@ class Config:
         self.memory_max = loop.get('memory_max', '10G')
         self.rating_games = int(loop.get('rating_games', 480))
         self.rating_workers = int(loop.get('rating_workers', 4))
+        self.style_exploiter_timeout = int(loop.get('style_exploiter_timeout', 2_000_000_000))
         self.train = dict(raw.get('train', {}))
         self.agent = {agent: dict(raw.get(agent, {})) for agent in AGENTS}
+        # [style-exploiter] styles: one entry per style exploiter, cycled. An
+        # entry is a style TOML or a list of them (one program, docs/STYLES.md).
+        self.styles = [[entry] if isinstance(entry, str) else list(entry)
+                       for entry in self.agent['style-exploiter'].pop('styles', [])]
+        if 'style-exploiter' in self.rotation and not self.styles:
+            raise SystemExit('style-exploiter is in the rotation but [style-exploiter] styles is empty')
+        for entry in self.styles:
+            for spec in entry:
+                if not (ROOT / spec).is_file():
+                    raise SystemExit(f'style {spec} is missing')
         if any(agent not in AGENTS for agent in self.rotation) or 'main' not in self.rotation:
             raise SystemExit(f'rotation must name agents from {AGENTS} and include main')
         for table in [self.train, *self.agent.values()]:
@@ -195,6 +213,8 @@ class Loop:
         (self.dir / 'ratings').mkdir(exist_ok=True)
         self.state_path = self.dir / 'state.json'
         self.state = read_json(self.state_path) or self.fresh_state()
+        # Loops started before the style exploiter existed.
+        self.state.setdefault('style_exploiter', self.fresh_state()['style_exploiter'])
         self.stopping = False
         self.rng = random.Random()
         if self.state.get('rng'):
@@ -211,6 +231,7 @@ class Loop:
                     main=dict(run=str(self.dir / 'main'), learner_steps=0, snapshots=[]),
                     main_exploiter=dict(index=0, run=None, trained=0, target=None, last_score=None),
                     league_exploiter=dict(index=0, run=None, trained=0, since_add=0),
+                    style_exploiter=dict(index=0, run=None, trained=0, target=None, last_score=None, style=None),
                     members=[], ratings=dict(queue=[], running=None, done=[]), current=None, rng=None)
 
     def save(self):
@@ -250,15 +271,17 @@ class Loop:
         fresh = slot['run'] is None
         if fresh:
             slot['index'] += 1
-            slot['run'] = str(self.dir / f"{'me' if agent == 'main-exploiter' else 'le'}-{slot['index']}")
+            slot['run'] = str(self.dir / f"{TAGS[agent]}-{slot['index']}")
             slot['trained'] = 0
             slot['init'] = newest
             if agent == 'league-exploiter':
                 slot['since_add'] = 0
             else:
                 slot['last_score'] = None
+            if agent == 'style-exploiter':
+                slot['style'] = self.config.styles[(slot['index'] - 1) % len(self.config.styles)]
         run = Path(slot['run'])
-        if agent == 'main-exploiter':
+        if agent in ('main-exploiter', 'style-exploiter'):
             slot['target'] = newest
             opponents = [newest]
             if slot.get('last_score') is not None and slot['last_score'] < self.config.hopeless:
@@ -293,6 +316,8 @@ class Loop:
         if agent != 'main':
             seed = int(seed) + 100 * self.state[agent.replace('-', '_')]['index']
         flags = [f for f in self.config.flags(agent)]
+        if agent == 'style-exploiter':
+            flags = self.style_flags(flags)
         if '--seed' in flags:
             flags[flags.index('--seed') + 1] = str(seed)
         else:
@@ -301,6 +326,41 @@ class Loop:
                 '--unit', unit, '--', 'nice', '-n', '0', str(VENV_PYTHON), str(TRAIN),
                 '--output', str(plan['run']), '--steps', str(plan['target']),
                 '--opponents', ','.join(plan['opponents']), *plan['extra'], *flags]
+
+    def style_flags(self, flags):
+        """The style exploiter's --style, its fade horizon (the timeout, so the fade
+        stays monotonic across --resume turns) and, when its specs name kits, a
+        lineup table that seats one of them in every game.
+
+        Kits are kept only if main trains on them (the config's --loadout-set):
+        main meets a frozen exploiter in its own lineups, so a specialty in any
+        other kit would never be tested. Each kept kit plays every kit of that
+        set. The learner's side is drawn per match, so it holds the style kit in
+        about half its games (all of them in the mirror row); the style's terms
+        gate on the abilities they need."""
+        slot = self.state['style_exploiter']
+        flags = flags + ['--style', ','.join(slot['style']),
+                         '--style-fade-steps', str(self.config.style_exploiter_timeout)]
+        wanted = [tuple(kit) for spec in slot['style'] for kit in tomllib.loads((ROOT / spec).read_text()).get('kits', [])]
+        if not wanted or '--loadout-set' not in flags:
+            return flags
+        base = []
+        for line in (ROOT / flags[flags.index('--loadout-set') + 1]).read_text().splitlines():
+            ids = [int(x) for x in line.split('#')[0].replace(',', ' ').split()]
+            for kit in (tuple(ids[:3]), tuple(ids[3:6])) if len(ids) == 6 else (tuple(ids),) if len(ids) == 3 else ():
+                if kit not in base:
+                    base.append(kit)
+        kits = [kit for kit in base if any(sorted(kit) == sorted(w) for w in wanted)]
+        if not kits:
+            log(f"style {slot['style']}: none of its kits {wanted} is in main's lineups; every kit plays")
+            return flags
+        table = self.dir / 'lineups' / f"{Path(slot['run']).name}.txt"
+        table.parent.mkdir(exist_ok=True)
+        rows = [','.join(map(str, kit + other)) for kit in kits for other in base]
+        table.write_text(f"# {Path(slot['run']).name}: style {','.join(slot['style'])}; kits {kits} vs main's\n"
+                         + '\n'.join(rows) + '\n')
+        flags[flags.index('--loadout-set') + 1] = str(table)
+        return flags
 
     def environment(self):
         env = dict(os.environ)
@@ -413,13 +473,34 @@ class Loop:
         timed_out = slot['trained'] >= self.config.main_exploiter_timeout
         added = None
         if won or timed_out:
-            added = self.add_exploiter(slot, status, current, target=slot['target'],
+            added = self.add_exploiter(slot, status, current, target=slot['target'], agent='main-exploiter',
                                        why=f"{'beat' if won else 'timed out against'} {slot['target']} "
                                            f"({score:.2f} over {games} games)" if score is not None else 'timed out')
             slot['run'] = None   # reset: the next main exploiter starts from the newest main
         self.record(turn=self.state['turn'], agent='main-exploiter', run=current['run'], learner_steps=slot['trained'],
                     target=slot['target'], games=games, score=score, won=won, timed_out=timed_out, added=added)
         log(f"main exploiter {Path(current['run']).name}: {score if score is None else round(score, 3)} vs "
+            f"{slot['target']} over {games} games{'; added ' + added if added else ''}")
+
+    def finish_style_exploiter(self, current, status):
+        slot = self.state['style_exploiter']
+        slot['trained'] = status['learner_steps']
+        games, score = window(current['run'], current['measured'], current['before'])
+        slot['last_score'] = score
+        won = score is not None and games >= self.config.min_games and score > self.config.win
+        timed_out = slot['trained'] >= self.config.style_exploiter_timeout
+        style = Path(slot['style'][0]).stem
+        added = None
+        if won or timed_out:
+            added = self.add_exploiter(slot, status, current, target=slot['target'], agent='style-exploiter',
+                                       why=f"style {','.join(slot['style'])}; "
+                                           + (f"{'beat' if won else 'timed out against'} {slot['target']} "
+                                              f"({score:.2f} over {games} games)" if score is not None else 'timed out'))
+            slot['run'] = None
+        self.record(turn=self.state['turn'], agent='style-exploiter', run=current['run'], style=slot['style'],
+                    learner_steps=slot['trained'], target=slot['target'], games=games, score=score, won=won,
+                    timed_out=timed_out, added=added)
+        log(f"style exploiter {Path(current['run']).name} ({style}): {score if score is None else round(score, 3)} vs "
             f"{slot['target']} over {games} games{'; added ' + added if added else ''}")
 
     def finish_league_exploiter(self, current, status):
@@ -432,7 +513,7 @@ class Loop:
         timed_out = slot['since_add'] >= self.config.league_exploiter_timeout
         added, reset = None, False
         if won or timed_out:
-            added = self.add_exploiter(slot, status, current, target=None,
+            added = self.add_exploiter(slot, status, current, target=None, agent='league-exploiter',
                                        why=f"{'beat' if won else 'timed out against'} the league "
                                            f"({score:.2f} over {games} games)" if score is not None else 'timed out')
             slot['since_add'] = 0
@@ -445,13 +526,13 @@ class Loop:
         log(f"league exploiter {Path(current['run']).name}: {score if score is None else round(score, 3)} vs the "
             f"league over {games} games{'; added ' + added if added else ''}{'; reset' if reset else ''}")
 
-    def add_exploiter(self, slot, status, current, target, why):
+    def add_exploiter(self, slot, status, current, target, agent, why):
         checkpoint = Path(status['checkpoint'])
         step = int(checkpoint.stem.split('-')[1])
-        tag = 'me' if target else 'le'
-        name = f"{self.config.name}-{tag}{slot['index']}-{step // 1_000_000}m"
+        style = f"-{Path(slot['style'][0]).stem.replace('_', '-')}" if agent == 'style-exploiter' else ''
+        name = f"{self.config.name}-{TAGS[agent]}{slot['index']}{style}-{step // 1_000_000}m"
         add_member(name, 'exploiter', checkpoint, current['run'], step, parent=slot['init'], target=target,
-                   rule=f"league loop {self.config.name}: {'main' if target else 'league'} exploiter, {why}")
+                   rule=f"league loop {self.config.name}: {agent.replace('-', ' ')}, {why}")
         self.state['members'].append(name)
         notify(f'{self.config.name}: added {name}, {why}')
         return name
@@ -522,8 +603,11 @@ def main():
         agent = loop.config.rotation[loop.state['turn'] % len(loop.config.rotation)]
         state = json.loads(json.dumps(loop.state))
         plan = loop.plan(agent)
-        loop.state = state   # plan() may open an exploiter slot; a dry run changes nothing
+        # command() reads the slot plan() may have opened (its index, its style);
+        # then the state is put back, so a dry run saves nothing but a style
+        # exploiter's lineup table.
         print(' '.join(loop.command(agent, plan, f'bopl-{loop.config.name}-dry')))
+        loop.state = state
         return
     loop.run()
 

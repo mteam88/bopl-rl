@@ -1,6 +1,6 @@
 # Style exploiters: events, the style spec, and the evaluator
 
-Approved 2026-10-11 (Matthew). A **style exploiter** is a league exploiter that
+Approved 2026-10-11 (Matthew). A **style exploiter** is a main exploiter that
 gets a small, fading training bonus for playing a human style. It joins the league
 by beating main (>70%) like any exploiter, or times out. The win/loss reward is
 unchanged. Styles come from human replays (`style-discovery/`) and from Matthew.
@@ -136,9 +136,21 @@ value = "8e-5"
 
 ## 4. League loop
 
-- New agent `style-exploiter` in `league_loop.py`: its own slot list, cycling
-  through `[style-exploiter] styles = [...]`. It trains with `--style` and
-  `--historical-every 1` against the league (PFSP). It is added like a league
-  exploiter, and its name carries the style.
-- Ratings add `style_rates` per member by running `eval/style_score.py` over its
-  rating games.
+- Agent `style-exploiter` in `league_loop.py` (built 2026-10-11). Each new one
+  takes the next entry of `[style-exploiter] styles = [...]`; an entry is a style
+  path or a list of paths compiled into one program.
+  - It is a main exploiter with a style: it warm-starts from the newest main, plays
+    only that main (its last three if hopeless), joins at >70% over `min_games` or
+    at `style_exploiter_timeout` (default 2e9), then resets. Main exploiters were
+    chosen over league exploiters because a style only matters if it beats main.
+  - It trains with `--style <paths> --style-fade-steps <timeout>`, so the fade runs
+    over the whole slot, not over each `--resume` turn.
+  - Kits: the style's `kits` that main also trains on (the loop's `loadout_set`,
+    matched as unordered sets) each play every kit of that set, written to
+    `<loop>/lineups/se-<n>.txt`. Kits main never plays are dropped, because main only
+    meets the frozen exploiter in main's own lineups. With no match, every kit
+    plays and the terms gate themselves.
+  - Member name: `<loop>-se<n>-<style>-<step>m`, kind `exploiter`, so main's
+    `exploiters` bank group picks it up.
+- To do: ratings add `style_rates` per member by running `eval/style_score.py`
+  over its rating games.

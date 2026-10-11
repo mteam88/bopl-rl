@@ -1,6 +1,6 @@
 # Drill snipe (style-discovery/kills): a kill by a fast drill launched from range.
 name = "drill_snipe"
-kits = [[26, 3, 2], [2, 26, 3]]
+kits = [[2, 26, 3], [26, 14, 7]]  # in l1's lineups (league_loop.py keeps only kits main trains on)
 fade = { start = 0.0, end = 0.7 }
 
 [let]

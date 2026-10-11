@@ -1,7 +1,7 @@
 # Blink ring-out: the opponent falls out after this player blinked away the
 # ground it stood on (needs the event stream; scores 0 without it).
 name = "blink_ringout"
-kits = [[6, 2, 14], [6, 25, 3]]
+kits = [[6, 3, 2]]  # in l1's lineups (league_loop.py keeps only kits main trains on)
 fade = { start = 0.0, end = 0.7 }
 
 [[term]]
