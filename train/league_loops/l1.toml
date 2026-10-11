@@ -91,7 +91,9 @@ pfsp_p = 1.0                       # AlphaStar's league exploiter: linear (cappe
 seed = 2076
 
 # Style exploiters (docs/STYLES.md): each new one takes the next entry. Matthew's ideas
-# (2026-10-11) and the human-replay styles; a list is one combined program.
+# (2026-10-11) and the human-replay styles; a list is one combined program. Arrows first:
+# league style-rates (2026-10-11) has l1-main-8000m and the init landing ~0.02 arrow hits/min
+# (human winners 0.93) while opponents land mostly undodged arrows on them at 0.3-0.7/min.
 [style-exploiter]
 historical_every = 1               # like the main exploiter: aimed at the newest main
 bank_groups = "league,league,league,league"
@@ -99,11 +101,11 @@ pool_size = 2
 pfsp_p = 1.0
 seed = 3076
 styles = [
+    ["styles/arrow_hit.toml", "styles/undodged_arrow.toml"],
     "styles/drill_snipe.toml",
     "styles/punish_spent_mobility.toml",
     "styles/blink_ringout.toml",
     "styles/shrink_safe_area.toml",
     "styles/punish_low_offense.toml",
-    ["styles/arrow_hit.toml", "styles/undodged_arrow.toml"],
     "styles/keep_one_ready.toml",
 ]
