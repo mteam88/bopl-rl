@@ -109,7 +109,7 @@ class Handle:
         return np.asarray(self.out[:], dtype=np.int64)
 
     def stats(self):
-        """Per-candidate rows: aim, buttons, hold, visits, mean return, prior logp, chosen."""
+        """Per-candidate rows: aim, buttons, hold, visits, mean return, prior logp, chosen, return variance."""
         out = (C.c_float * (64 * STAT_WIDTH))()
         count = LIB.research_search_stats(self.ptr, out, 64 * STAT_WIDTH)
         return np.asarray(out[:count * STAT_WIDTH], dtype=np.float32).reshape(count, STAT_WIDTH)

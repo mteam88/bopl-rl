@@ -37,11 +37,11 @@ void bopl_policy_eval_game_logits(void *handle, const float *rows, const int *bu
 void bopl_policy_eval_close(void *handle);
 int bopl_policy_eval_width(void *handle);
 
-enum { BOPL_SEARCH_MAX_K=64, BOPL_SEARCH_STAT_WIDTH=7 };
+enum { BOPL_SEARCH_MAX_K=64, BOPL_SEARCH_STAT_WIDTH=8 };
 
 typedef struct {
     int aim, buttons, hold;
-    int visits; double sum;
+    int visits; double sum, sumsq;
     float prior;        /* log-probability under the masked root prior */
     float gumbel;       /* the Gumbel-top-k score the candidate was drawn with */
     int alive;
@@ -58,6 +58,7 @@ typedef struct {
     float *rows, *logits;           /* 2 x (width+1), 2 x BOPL_DECODER scratch */
     float *root_state, *root_next;  /* the real recurrent states of both players */
     float *root_logits;             /* 2 x BOPL_DECODER at the root */
+    uint32_t root_tick; int root_valid;  /* the live tick the root forward ran at: both players' act() calls on one decision share it */
     uint64_t *roll_rng;             /* one stream per rollout: rollout i of every candidate draws the
                                      * same opponent and policy samples (common random numbers) */
     /* Budget knobs. k candidates, n rollouts per candidate and round, depth
@@ -218,7 +219,7 @@ static BoplSearch *bopl_search_open(BoplPuffer *env, const float *weights, size_
 static void bopl_search_reset(BoplSearch *s, uint64_t seed) {
     memset(s->root_state, 0, (size_t)s->state_floats*sizeof(float));
     s->seconds=0; s->decisions=s->searched=s->rollouts_run=s->steps_run=s->forwards_run=0;
-    s->cands=0; s->chosen=-1;
+    s->cands=0; s->chosen=-1; s->root_valid=0;
     if (seed) s->rng=seed;
 }
 static int bopl_search_configure(BoplSearch *s, int k, int n, int depth, int halving, int search_latched,
@@ -274,7 +275,7 @@ static int bopl_search_candidates(BoplSearch *s, int me, int k) {
                 int at=count<k?count++:lowest;
                 s->cand[at].aim=a; s->cand[at].buttons=b; s->cand[at].hold=h;
                 s->cand[at].prior=prior; s->cand[at].gumbel=score;
-                s->cand[at].visits=0; s->cand[at].sum=0; s->cand[at].alive=1;
+                s->cand[at].visits=0; s->cand[at].sum=0; s->cand[at].sumsq=0; s->cand[at].alive=1;
                 if (count==k) { lowest=0; for (int i=1; i<k; i++) if (s->cand[i].gumbel<s->cand[lowest].gumbel) lowest=i; }
             }
         }
@@ -298,7 +299,7 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
             BoplPuffer *sh=&s->shadow[used];
             uint64_t *rng=&s->roll_rng[used]; *rng=round_seed^((uint64_t)(i+1)*0xD1B54A32D192ED03ull);
             if (bopl_search_shadow_reset(s, sh)) { snprintf(s->error, sizeof(s->error), "the world cannot fork"); return -1; }
-            memcpy(s->roll_state+(size_t)used*s->state_floats, s->root_next, (size_t)s->state_floats*sizeof(float));
+            memcpy(s->roll_state+(size_t)used*s->state_floats, s->root_state, (size_t)s->state_floats*sizeof(float));
             float *mine=sh->actions+BOPL_NUM_ATNS*me, *theirs=sh->actions+BOPL_NUM_ATNS*(1-me);
             mine[0]=(float)s->cand[c].aim; mine[1]=(float)s->cand[c].buttons; mine[2]=(float)s->cand[c].hold;
             if (s->aim_ar) {
@@ -330,7 +331,7 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
     }
     for (int r=0; r<used; r++) {
         double g=ret[r]+(done[r]?0.0:(double)disc[r]*value[r]);
-        s->cand[owner[r]].sum+=g; s->cand[owner[r]].visits++;
+        s->cand[owner[r]].sum+=g; s->cand[owner[r]].sumsq+=g*g; s->cand[owner[r]].visits++;
     }
     s->rollouts_run+=used;
     return used;
@@ -349,10 +350,17 @@ static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
         snprintf(s->error, sizeof(s->error), "player %d's row is layout %d; the search models both players with a v4 checkpoint", p, bopl_layout_of(env, p));
         return -1;
     }
-    bopl_policy_eval_step_raw(s->policy, env->observations, s->root_state, s->rows, s->root_next);
-    bopl_policy_eval_game_logits(s->policy, s->rows, NULL, s->root_logits);
-    s->forwards_run+=2;
-    for (int p=0; p<2; p++) s->root_value[p]=s->root_logits[(size_t)p*BOPL_DECODER+BOPL_LOGITS];
+    uint32_t tick=bopl_rl_state(env->world)->header.tick;
+    if (!s->root_valid || tick!=s->root_tick) {
+        /* The real recurrent states advance here, once per live decision (a
+         * second act() on the same tick, the other player's, reuses the root). */
+        bopl_policy_eval_step_raw(s->policy, env->observations, s->root_state, s->rows, s->root_next);
+        bopl_policy_eval_game_logits(s->policy, s->rows, NULL, s->root_logits);
+        s->forwards_run+=2;
+        for (int p=0; p<2; p++) s->root_value[p]=s->root_logits[(size_t)p*BOPL_DECODER+BOPL_LOGITS];
+        float *swap=s->root_state; s->root_state=s->root_next; s->root_next=swap;
+        s->root_tick=tick; s->root_valid=1;
+    }
     const unsigned char *mask=env->action_mask+(size_t)me*BOPL_LOGITS;
     int latched=env->hold_left[me]>0;
     int run=s->k>1 && (s->search_latched || !latched);
@@ -402,8 +410,6 @@ static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
         out[0]=s->cand[best].aim; out[1]=s->cand[best].buttons; out[2]=s->cand[best].hold;
         s->searched++;
     }
-    /* The real recurrent states advance. */
-    float *swap=s->root_state; s->root_state=s->root_next; s->root_next=swap;
     s->decisions++;
     s->seconds+=bopl_search_now()-t0;
     if (searched) *searched=run;
@@ -411,7 +417,8 @@ static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
 }
 
 /* Per-candidate rows of BOPL_SEARCH_STAT_WIDTH floats: aim, buttons, hold,
- * visits, mean return, prior log-probability, chosen. Returns the row count. */
+ * visits, mean return, prior log-probability, chosen, sample variance of the
+ * candidate's rollout returns (0 under one visit). Returns the row count. */
 static int bopl_search_stats(const BoplSearch *s, float *out, int capacity) {
     if (capacity<s->cands*BOPL_SEARCH_STAT_WIDTH) return -s->cands*BOPL_SEARCH_STAT_WIDTH;
     for (int c=0; c<s->cands; c++) {
@@ -419,6 +426,8 @@ static int bopl_search_stats(const BoplSearch *s, float *out, int capacity) {
         row[0]=(float)s->cand[c].aim; row[1]=(float)s->cand[c].buttons; row[2]=(float)s->cand[c].hold;
         row[3]=(float)s->cand[c].visits; row[4]=s->cand[c].visits?(float)(s->cand[c].sum/s->cand[c].visits):0.0f;
         row[5]=s->cand[c].prior; row[6]=c==s->chosen;
+        int v=s->cand[c].visits; double m=v?s->cand[c].sum/v:0.0;
+        row[7]=v>1?(float)((s->cand[c].sumsq-v*m*m)/(v-1)):0.0f;
     }
     return s->cands;
 }
