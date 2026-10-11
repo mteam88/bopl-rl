@@ -1,5 +1,6 @@
 /* The evaluator uses exactly the training observation, delay and reward code. */
 #include "bopl_puffer.h"
+#include "bopl_search.h"
 /* The layout-v3 row width (the default layout) and the row stride of the
  * observation buffer, which holds either layout (bopl_layout_v4.h). */
 int research_obs_size(void) { return BOPL_OBS_SIZE; }
@@ -339,3 +340,28 @@ void research_close(BoplPuffer *env) {
     research_style_free(&((ResearchEnv*)env)->style);
     c_close(env); free(env->observations); free(env->actions); free(env->rewards); free(env->terminals); free(env->action_mask); free(env);
 }
+
+/* Decision-time search (train/bopl_search.h). One handle per environment;
+ * `weights` is the flat v4 checkpoint, `rollouts` the most rollouts one
+ * round may run (k*n). */
+BoplSearch *research_search_open(BoplPuffer *env, const float *weights, long count, int hidden, int layers,
+                                 int aim_fourier, int aim_ar, const int *shape, int rollouts, uint64_t seed) {
+    return bopl_search_open(env, weights, (size_t)count, hidden, layers, aim_fourier, aim_ar, shape, rollouts, seed);
+}
+int research_search_configure(BoplSearch *s, int k, int n, int depth, int halving, int search_latched,
+                              float gamma, float kill, float timeout) {
+    return bopl_search_configure(s, k, n, depth, halving, search_latched, gamma, kill, timeout);
+}
+void research_search_reset(BoplSearch *s, uint64_t seed) { bopl_search_reset(s, seed); }
+/* out[3] = aim, buttons, hold of player `me` on the environment's current rows. */
+int research_search_act(BoplSearch *s, int me, int *out, int *searched) { return bopl_search_act(s, me, out, searched); }
+int research_search_stats(const BoplSearch *s, float *out, int capacity) { return bopl_search_stats(s, out, capacity); }
+int research_search_stat_width(void) { return BOPL_SEARCH_STAT_WIDTH; }
+/* decisions, searched, rollouts, steps, forward rows, seconds; root values. */
+void research_search_counters(const BoplSearch *s, double *out) {
+    out[0]=(double)s->decisions; out[1]=(double)s->searched; out[2]=(double)s->rollouts_run; out[3]=(double)s->steps_run;
+    out[4]=(double)s->forwards_run; out[5]=s->seconds; out[6]=s->root_value[0]; out[7]=s->root_value[1];
+}
+const char *research_search_error(const BoplSearch *s) { return s->error; }
+double research_search_bench(BoplSearch *s, int what, int iterations, int batch) { return bopl_search_bench(s, what, iterations, batch); }
+void research_search_close(BoplSearch *s) { bopl_search_close(s); }

@@ -53,14 +53,28 @@ def main(argv=None):
     p.add_argument('--seed-base', type=int, default=131001)
     p.add_argument('--label', help='name for the output row (default: the two paths)')
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--search', help='play A through the decision-time search (eval/search_policy.py) with this '
+                   'budget: k,n,depth[,h] = candidates, rollouts per candidate, rollout decisions, sequential halving')
     a = p.parse_args(argv)
 
-    built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate'),
-             'B': elo_ladder.Model('B', a.b.resolve(), 'candidate')}
+    if a.search:
+        import search_policy
+        parts = a.search.split(',')
+        built = {'A': search_policy.Search('A', a.a.resolve(), 'candidate', k=int(parts[0]), n=int(parts[1]),
+                                           depth=int(parts[2]), halving='h' in parts[3:])}
+    else:
+        built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate')}
+    built['B'] = elo_ladder.Model('B', a.b.resolve(), 'candidate')
     league_games.configure(a.out.parent / 'all-combos-workers')
     todo = tasks(a.pairs, a.seed_base, map_catalogue.parse_map_ids(registry.MAPS))
     kit_of = {(t['seed'], t['side']): t['a_kit'] for t in todo}
     played = league_games.play(built, todo, a.workers, a.seed_base)
+    search = None
+    if a.search:
+        built['A'].finish()
+        search = built['A'].summary()
+        print(f"search {a.search}: {search['ms_per_decision']:.1f} ms per decision, "
+              f"{search['rollouts_per_searched']:.1f} rollouts per searched decision, {search['games']} games")
 
     points = lambda g: 1.0 if g['outcome'] == 'a' else 0.5 if g['outcome'] == 'draw' else 0.0
     per_pair = {}
@@ -74,7 +88,7 @@ def main(argv=None):
     rng = np.random.default_rng(0)
     boot = [rng.choice(pairs, pairs.size).mean() for _ in range(2000)]
     names = ability_names()
-    row = dict(label=a.label or f'{a.a} vs {a.b}', a=str(a.a), b=str(a.b), seed_base=a.seed_base,
+    row = dict(label=a.label or f'{a.a} vs {a.b}', a=str(a.a), b=str(a.b), seed_base=a.seed_base, search=search,
                games=len(played), score=float(pairs.mean()),
                ci=[float(np.quantile(boot, .025)), float(np.quantile(boot, .975))],
                draws=sum(g['outcome'] == 'draw' for g in played),

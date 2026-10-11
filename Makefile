@@ -304,9 +304,18 @@ $(OUT)/fwd_bench: train/fwd_bench.cu train/bopl_rollout.cu train/bopl_rollout_v4
 	g++-15 $(OUT)/fwd_bench.o $(OUT)/fwd_bench_rays.o $(abspath $(CUDA_HOME))/lib/libcudart.so.13 $(abspath $(CUDA_HOME))/lib/libcublas.so.13 \
 	  $(abspath $(CUDA_HOME))/lib/libcublasLt.so.13 $(abspath $(CUDA_HOME))/lib/libcurand.so.10 -lcuda -Wl,-rpath,$(abspath $(CUDA_HOME))/lib -lm -lpthread -ldl -o $@
 
-$(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_style.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+# The research library also carries the CPU policy evaluator (train/policy_eval.c,
+# as in the agent shim below) for decision-time search (train/bopl_search.h).
+# -march=native -ffast-math vectorises its scalar loops (9x: 800 -> 90 us per
+# row at hidden 256; logits and values agree to 5 decimals), so the library is
+# built for the machine that runs it.
+$(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_search.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_puffer.h train/bopl_style.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared $(INCLUDES) train/eval_binding.c $(ABI)/bopl_rl.c -lm -o $@
+	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -c $(INCLUDES) train/eval_binding.c -o $(OUT)/bopl_research.o
+	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_research_rl.o
+	$(CC) -O3 -std=gnu11 -march=native -ffast-math -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_research_policy.o
+	$(CC) -shared $(OUT)/bopl_research.o $(OUT)/bopl_research_rl.o $(OUT)/bopl_research_policy.o -lm -lpthread -o $@
+	rm -f $(OUT)/bopl_research.o $(OUT)/bopl_research_rl.o $(OUT)/bopl_research_policy.o
 
 # In-game agent shim (train/bopl_agent.h): the training decision loop fed by
 # a running game, plus the CPU policy evaluator. Loaded by the Unity build
