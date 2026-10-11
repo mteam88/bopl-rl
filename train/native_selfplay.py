@@ -59,7 +59,7 @@ def _thin(entries, max_size):
 
 
 def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_size,
-          min_games, snapshot_interval, opp_timeout_steps, pfsp_p, seed, league=()):
+          min_games, snapshot_interval, opp_timeout_steps, pfsp_p, seed, league=(), bank_groups=None):
     """`league` is the committed members this run plays besides its own history.
 
     Each is dict(name, path). They are PERMANENT candidates: eviction thins the
@@ -67,18 +67,20 @@ def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_s
     history to forget -- they are the standing population the run is measured
     against, and dropping one would silently narrow the curriculum. max_size
     therefore bounds the snapshots, not the candidate set.
+
+    `bank_groups` names each bank's candidate group (groups()); None is 'all' everywhere.
     """
     if banks < 1 or historical_per_bank < 1 or max_size < 1 or min_games < 1:
         raise ValueError('The pool needs at least one bank, historical game, entry and game per swap')
     if not pfsp_p >= 0:
         raise ValueError('pfsp_p must be non-negative (0 is uniform over candidates)')
-    league = [dict(path=str(m['path']), name=str(m['name']), permanent=True) for m in league]
+    league = [_league_entry(m) for m in league]
     if len({m['name'] for m in league}) != len(league):
         raise ValueError('League candidates must have distinct names')
     bank = dict(cur_opp_path=bootstrap, hist_n=0, hist_wins=0, hist_draws=0,
                 pending_opp_path=None, epoch_armed=0, opp_started_step=global_step,
                 num_hist_envs=historical_per_bank, last_score_at_swap=0.0, last_epochs_to_align=0)
-    return dict(pool_dir=str(pool_dir),
+    pool = dict(pool_dir=str(pool_dir),
                 pool=[dict(path=bootstrap, name=SELF % 0, permanent=False)] + league,
                 rng=np.random.default_rng(seed), max_size=max_size, min_games=min_games,
                 snapshot_interval=snapshot_interval, opp_timeout_steps=opp_timeout_steps,
@@ -87,6 +89,82 @@ def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_s
                 # this is the only honest answer to "what curriculum did the
                 # learner get"; the intended weights are a wish, not a record.
                 picks=[], last_snapshot_step=global_step)
+    groups(pool, bank_groups)
+    return pool
+
+
+def _league_entry(m):
+    return dict(path=str(m['path']), name=str(m['name']), permanent=True, kind=m.get('kind'))
+
+
+# A bank's GROUP says which candidates it draws from:
+#   all         the whole pool: the run's own snapshots and its league members
+#   league      league members only (an exploiter: AlphaStar's exploiters train
+#               against the league, never against their own past selves)
+#   exploiters  league members of kind exploiter
+# AlphaStar's main agent splits its games 35% self-play, 50% PFSP over every past
+# player and 15% PFSP over the main exploiters (and the forgotten main players it
+# can no longer beat). Here the self-play share is the vector's own learner-vs-
+# learner environments and the frozen banks are the rest, so a main with banks
+# all,all,all,exploiters gives the exploiters a fixed share of its games instead
+# of whatever f_hard leaves them in a pool of dozens of past mains. A group with
+# no member in the pool draws from the next wider one (exploiters -> league ->
+# all), the way AlphaStar falls back to self-play when a branch is empty.
+GROUPS = ('all', 'league', 'exploiters')
+
+
+def groups(pool, spec=None):
+    """Set each bank's group from `spec`, one name per bank (None: all 'all')."""
+    spec = ['all'] * pool['num_banks'] if spec is None else list(spec)
+    if len(spec) != pool['num_banks'] or any(g not in GROUPS for g in spec):
+        raise ValueError(f"bank groups must be {pool['num_banks']} of {GROUPS}, got {spec}")
+    for bank, group in zip(pool['banks'], spec):
+        bank['group'] = group
+
+
+def candidates(pool, group):
+    """The pool entries a bank of `group` draws from."""
+    if group == 'exploiters':
+        chosen = [entry for entry in pool['pool'] if entry.get('kind') == 'exploiter']
+        if chosen:
+            return chosen
+        group = 'league'
+    if group == 'league':
+        chosen = [entry for entry in pool['pool'] if entry.get('permanent')]
+        if chosen:
+            return chosen
+    return pool['pool']
+
+
+def reconcile(pool, ledger, league):
+    """Make the pool's league members exactly `league`, keeping everything else.
+
+    A resumed run is given the league as it is NOW: members added since the run
+    started join as permanent candidates with an empty record, and members no
+    longer named stop being drawn (a bank already playing one finishes that
+    matchup; its record stays in the ledger). The run's own snapshots are
+    untouched. Returns (added names, dropped names).
+    """
+    wanted = [_league_entry(m) for m in league]
+    if len({m['name'] for m in wanted}) != len(wanted):
+        raise ValueError('League candidates must have distinct names')
+    by_path = {m['path']: m for m in wanted}
+    kept, dropped = [], []
+    for entry in pool['pool']:
+        if not entry.get('permanent'):
+            kept.append(entry)
+        elif entry['path'] in by_path:
+            entry['kind'] = by_path[entry['path']]['kind']
+            kept.append(entry)
+        else:
+            dropped.append(entry['name'])
+    held = {entry['path'] for entry in kept}
+    added = [m for m in wanted if m['path'] not in held]
+    pool['pool'] = kept + added
+    for m in added:
+        ledger.setdefault(m['path'], dict(step=None, learner_steps=None, games=0, wins=0, draws=0,
+                                          name=m['name']))
+    return [m['name'] for m in added], dropped
 
 
 def members(bootstrap, league=()):
@@ -194,7 +272,12 @@ def step(trainer, backend, pool, ledger, epoch):
         settled = bank['hist_n'] >= pool['min_games'] and not pfsp.informative(wins, losses, draws)
         timed_out = (pool['opp_timeout_steps'] > 0
                      and global_step - bank['opp_started_step'] >= pool['opp_timeout_steps'])
-        if not (settled or timed_out):
+        # Not (or no longer) one of the bank's candidates: the bootstrap in a
+        # bank of league members at the start of an exploiter, or a member a
+        # resume dropped. Replaced now rather than played out to the timeout.
+        drawable = {entry['path']: table[entry['path']] for entry in candidates(pool, bank.get('group', 'all'))}
+        stale = bank['cur_opp_path'] not in drawable
+        if not (settled or timed_out or stale):
             continue
         # The pool grows when the learner OUTGREW a matchup -- the whole
         # interval is above the band -- because that is a new curriculum rung.
@@ -202,8 +285,9 @@ def step(trainer, backend, pool, ledger, epoch):
         if settled and pfsp.score_interval(wins, losses, draws)[0] > pfsp.BAND[1]:
             _snapshot(trainer, backend, pool)
             table = scores(pool, ledger)
-        _, f, _ = intent(pool, table)
-        path, = pfsp.sample(pool['rng'], table, f, 1)
+            drawable = {entry['path']: table[entry['path']] for entry in candidates(pool, bank.get('group', 'all'))}
+        _, f, _ = intent(pool, drawable)
+        path, = pfsp.sample(pool['rng'], drawable, f, 1)
         pool['picks'].append(path)
         bank['pending_opp_path'] = path
         bank['epoch_armed'] = epoch
@@ -265,7 +349,7 @@ def summary(pool, ledger, saturation=True):
     for bank in pool['banks']:
         games = bank['hist_n']
         wins, losses, draws = _wld(games, bank['hist_wins'], bank['hist_draws'])
-        banks.append(dict(opponent=ledger[bank['cur_opp_path']]['name'], games=games,
+        banks.append(dict(opponent=ledger[bank['cur_opp_path']]['name'], group=bank.get('group', 'all'), games=games,
                           winrate=bank['hist_wins'] / games if games else None,
                           score=pfsp.score(wins, losses, draws) if games else None,
                           draws=draws,

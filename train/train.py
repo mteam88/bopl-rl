@@ -309,7 +309,15 @@ def arguments():
                    help="League members this run plays besides its own snapshots: 'league' for "
                         "every member with weights, 'self' for none, or a comma list of member "
                         "names (how an exploiter aims at one member). PFSP draws over all of them "
-                        "together on the same statistic, so there is no separate share to set.")
+                        "together on the same statistic, so there is no separate share to set. "
+                        "On --resume the pool's league members become exactly this set: new "
+                        "members join, unnamed ones stop being drawn (how a league loop feeds a "
+                        "continuing run).")
+    p.add_argument('--bank-groups', default='',
+                   help="Comma list, one per policy bank, of the candidates each bank draws from: "
+                        "all (own snapshots and league members), league (league members only: an "
+                        "exploiter), exploiters (league exploiters only: AlphaStar's main-agent "
+                        "branch). Empty is all everywhere. See native_selfplay.groups. May change on --resume")
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
                    help='Comma-separated bot kinds that take over the last banks. Without '
                         '--scripted-roster each kind is a one-entry roster at --scripted-level; '
@@ -589,6 +597,9 @@ def main():
     # because the pool state is defined over at least one.
     policy_banks = a.banks if (a.n_scripted and a.scripted_share_min < 1.0) else a.banks - a.n_scripted
     policy_banks = max(1, policy_banks)
+    bank_groups = [g for g in a.bank_groups.split(',') if g] or ['all'] * policy_banks
+    if len(bank_groups) != policy_banks or any(g not in native_selfplay.GROUPS for g in bank_groups):
+        raise SystemExit(f'--bank-groups needs {policy_banks} of {native_selfplay.GROUPS}, got {a.bank_groups!r}')
     scripted_first_bank = a.banks - a.n_scripted
     scripted_kinds = 0
     for i in range(a.n_scripted):
@@ -618,7 +629,7 @@ def main():
     pool_config = dict(backend='league.pfsp', banks=policy_banks, historical_games_per_bank=vector.historical_per_bank,
                     max_size=a.pool_size, pfsp_p=a.pfsp_p, min_games=a.min_games,
                     snapshot_interval=a.snapshot_interval, opponent_timeout=a.opponent_timeout,
-                    seed=a.pool_seed, step_unit='learner_decisions',
+                    seed=a.pool_seed, step_unit='learner_decisions', bank_groups=bank_groups,
                     native_steps_per_learner_decision=native_per_learner, mid_match_swaps='counted in neither bank statistic')
     obs_layout_version = layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3
     obs_size = layout.obs_size_of(obs_layout_version)
@@ -752,6 +763,11 @@ def main():
                                  f'--banks/--scripted-bots now leave {policy_banks} policy banks')
             for bank, state in enumerate(pool['banks']):
                 _C.load_frozen_bank(trainer, bank, state['cur_opp_path'])
+            native_selfplay.groups(pool, bank_groups)
+            joined, left = native_selfplay.reconcile(pool, ledger, league_opponents)
+            config['resumed'][-1].update(opponents=[o['name'] for o in league_opponents],
+                                         joined=joined, left=left, bank_groups=bank_groups)
+            print(f'--resume: league members joined {joined or "none"}, left {left or "none"}', flush=True)
             # Scripted banks never swap: their GPU rows run the initial policy
             # (actions unread; the C environment drives those players).
             for bank in range(policy_banks, a.banks):
@@ -776,7 +792,8 @@ def main():
                                          max_size=a.pool_size, min_games=a.min_games,
                                          snapshot_interval=round(a.snapshot_interval*native_per_learner),
                                          opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
-                                         pfsp_p=a.pfsp_p, seed=a.pool_seed, league=league_opponents)
+                                         pfsp_p=a.pfsp_p, seed=a.pool_seed, league=league_opponents,
+                                         bank_groups=bank_groups)
             ledger = native_selfplay.members(str(initial), league_opponents)
         if roster_entries:
             sync_scripted()

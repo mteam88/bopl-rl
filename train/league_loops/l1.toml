@@ -1,0 +1,78 @@
+# League loop l1 (2026-10-10): the first AlphaStar-style league (train/league_loop.py).
+# One main, never reset, warm-started from g111-league-1; main exploiters aimed at its
+# newest snapshot; league exploiters aimed at the whole league. Turns on one GPU:
+# main 2B, main exploiter 1B, main 2B, league exploiter 1B learner steps, repeating, so
+# the main gets half the compute and joins the league as a snapshot every 2B learner.
+# Kits: lineups-matthew-focus (16 kits; Dash/Dash/Meteor and both Drill kits ~2.5x seats).
+
+[loop]
+name = "l1"
+dir = "native/artifacts/rl/league-loops/l1"
+init = "native/artifacts/rl/sweeps/g111-league-1/000/checkpoints/policy-12800032768.bin"
+init_member = "g111-l1-12800m"
+seed_members = ["g111-20b-26027m", "exploit-g111-1-9253m"]
+main_turn = 2000000000
+exploiter_turn = 1000000000
+rotation = ["main", "main-exploiter", "main", "league-exploiter"]
+main_exploiter_timeout = 4000000000     # AlphaStar: 4e9
+league_exploiter_timeout = 2000000000   # AlphaStar: 2e9
+win = 0.70                              # AlphaStar: added at >70%
+hopeless = 0.20                         # AlphaStar: main exploiter widens to the main's past checkpoints below 20%
+min_games = 2000
+league_exploiter_reset = 0.25           # AlphaStar
+main_steps = 100000000000               # stop when the main has trained 100B learner
+memory_max = "10G"
+rating_games = 480
+rating_workers = 4
+
+# Every agent: g111-league-1's [fixed] (policy v4/256, one MinGRU layer, its optimiser).
+[train]
+encoder = "v4"
+hidden = 256
+layers = 1
+v4_set_inner = 64
+v4_ffn_dim = 0
+v4_critic_dim = 384
+v4_ablate = 0
+loadout_set = "native/data/lineups-matthew-focus.txt"
+mirror_share = 0.0
+workers = 256
+buffers = 4
+banks = 4
+seed = 76
+horizon = 128
+learner_passes = 1
+minibatch_div = 2
+aim_fourier = 4
+learning_rate = 0.0004852184640654399
+entropy = 0.001                    # = floor: every agent starts from a trained main
+entropy_floor = 0.001
+entropy_half_life = 2874446584
+entropy_head_scale = "0.028821467398601395,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.2883693237829292
+reward_timeout = -1
+training_maps = "training-111"
+episode_ticks = 10800
+checkpoint_every = 80000000
+cudagraphs = 1
+no_eval = true                     # the loop rates each main snapshot itself (league candidate, 480 games)
+
+[main]
+# Three banks PFSP over everything (own snapshots + league), one over the exploiters:
+# with the vector's half of self-play games that is 50 / 37.5 / 12.5 (AlphaStar 35 / 50 / 15).
+bank_groups = "all,all,all,exploiters"
+pool_size = 8
+pfsp_p = 2.0                       # AlphaStar's main agent: f_hard squared
+
+[main-exploiter]
+bank_groups = "league,league,league,league"
+pool_size = 2
+pfsp_p = 1.0
+seed = 1076                        # + 100 per reset (league_loop.command)
+
+[league-exploiter]
+bank_groups = "league,league,league,league"
+pool_size = 2
+pfsp_p = 1.0                       # AlphaStar's league exploiter: linear (capped)
+seed = 2076

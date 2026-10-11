@@ -82,11 +82,11 @@ class PoolHarness(unittest.TestCase):
     def summary(self):
         return native_selfplay.summary(self.pool, self.ledger)
 
-    def add_member(self, name, games=0, wins=0, draws=0, permanent=False):
+    def add_member(self, name, games=0, wins=0, draws=0, permanent=False, kind=None):
         """A pool member with a fixed lifetime record, bypassing play."""
         path = str(self.pool_dir / name)
         Path(path).write_bytes(b'w')
-        self.pool['pool'].append(dict(path=path, name=name, permanent=permanent))
+        self.pool['pool'].append(dict(path=path, name=name, permanent=permanent, kind=kind))
         self.ledger[path] = dict(step=None if permanent else len(self.ledger),
                                  learner_steps=None if permanent else 0,
                                  games=games, wins=wins, draws=draws, name=name)
@@ -331,6 +331,98 @@ class LeagueCandidates(PoolHarness):
         row = next(e for e in report['entries'] if e['name'] == 'search-hard')
         self.assertIsNone(row['step'], 'a league member is not a snapshot of this run')
         self.assertAlmostEqual(row['score'], 0.2)
+
+
+
+class BankGroups(PoolHarness):
+    banks = 4
+
+    def settle_bank(self, bank, epoch):
+        self.trainer.global_step += 100
+        self.step(logs(4, **{str(bank): (200, 200, 0)}), epoch)
+        return self.pool['banks'][bank]['pending_opp_path']
+
+    def test_an_exploiter_bank_draws_only_exploiters(self):
+        native_selfplay.groups(self.pool, ['all', 'all', 'all', 'exploiters'])
+        exploiter = self.add_member('exploiter.bin', games=10, wins=9, permanent=True, kind='exploiter')
+        self.add_member('main.bin', games=10, wins=1, permanent=True, kind='main')
+        for epoch in range(20):
+            pending = self.settle_bank(3, epoch)
+            self.assertEqual(pending, exploiter, 'the exploiter bank never draws a non-exploiter')
+            self.pool['banks'][3]['pending_opp_path'] = None
+
+    def test_an_exploiter_bank_without_exploiters_draws_the_league(self):
+        native_selfplay.groups(self.pool, ['all', 'all', 'all', 'exploiters'])
+        main = self.add_member('main.bin', games=10, wins=1, permanent=True, kind='main')
+        self.assertEqual(self.settle_bank(3, 0), main)
+
+    def test_a_league_bank_never_draws_the_runs_own_snapshots(self):
+        native_selfplay.groups(self.pool, ['league'] * 4)
+        target = self.add_member('target.bin', games=10, wins=9, permanent=True, kind='main')
+        for epoch in range(20):
+            self.assertEqual(self.settle_bank(0, epoch), target)
+            self.pool['banks'][0]['pending_opp_path'] = None
+
+    def test_a_bank_off_its_group_swaps_at_once(self):
+        # An exploiter's banks start on its own initial weights; they must not
+        # play that copy until the opponent timeout before reaching the target.
+        native_selfplay.groups(self.pool, ['league'] * 4)
+        target = self.add_member('target.bin', permanent=True, kind='main')
+        self.trainer.global_step = 1
+        self.step(logs(4), 0)
+        self.assertEqual([b['pending_opp_path'] for b in self.pool['banks']], [target] * 4)
+
+    def test_a_dropped_member_is_replaced_at_once(self):
+        old = self.add_member('old.bin', permanent=True, kind='main')
+        self.pool['banks'][0]['cur_opp_path'] = old
+        native_selfplay.reconcile(self.pool, self.ledger, [])
+        self.trainer.global_step = 1
+        self.step(logs(4), 0)
+        self.assertNotIn(self.pool['banks'][0]['pending_opp_path'], (None, old))
+        self.assertIsNone(self.pool['banks'][1]['pending_opp_path'], 'a bank on a live candidate keeps it')
+
+    def test_a_league_bank_with_no_league_falls_back_to_the_pool(self):
+        native_selfplay.groups(self.pool, ['league'] * 4)
+        pending = self.settle_bank(0, 0)
+        self.assertIn(pending, [e['path'] for e in self.pool['pool'] if not e['permanent']])
+
+    def test_the_whole_pool_bank_still_sees_exploiters(self):
+        exploiter = self.add_member('exploiter.bin', permanent=True, kind='exploiter')
+        self.assertIn(exploiter, [e['path'] for e in native_selfplay.candidates(self.pool, 'all')])
+
+    def test_a_malformed_spec_is_refused(self):
+        for spec in (['all'] * 3, ['all', 'all', 'all', 'mains']):
+            with self.assertRaises(ValueError):
+                native_selfplay.groups(self.pool, spec)
+
+
+class Reconcile(PoolHarness):
+    def member(self, name, kind='main'):
+        path = self.pool_dir / name
+        path.write_bytes(b'w')
+        return dict(name=name, path=str(path), kind=kind)
+
+    def test_new_members_join_and_unnamed_ones_leave(self):
+        old, kept = self.member('old.bin'), self.member('kept.bin')
+        added, dropped = native_selfplay.reconcile(self.pool, self.ledger, [old, kept])
+        self.assertEqual((sorted(added), dropped), (['kept.bin', 'old.bin'], []))
+        self.ledger[kept['path']]['games'] = 7
+        new = self.member('new.bin', kind='exploiter')
+        added, dropped = native_selfplay.reconcile(self.pool, self.ledger, [kept, new])
+        self.assertEqual((added, dropped), (['new.bin'], ['old.bin']))
+        paths = [e['path'] for e in self.pool['pool']]
+        self.assertIn(self.bootstrap, paths, "the run's own snapshots stay")
+        self.assertNotIn(old['path'], paths)
+        self.assertEqual(self.ledger[kept['path']]['games'], 7, 'a kept member keeps its record')
+        self.assertIn(old['path'], self.ledger, 'a dropped member keeps its record in the ledger')
+        self.assertEqual(next(e for e in self.pool['pool'] if e['path'] == new['path'])['kind'], 'exploiter')
+
+    def test_reconciling_the_same_league_is_a_no_op(self):
+        league = [self.member('a.bin'), self.member('b.bin')]
+        native_selfplay.reconcile(self.pool, self.ledger, league)
+        before = [dict(e) for e in self.pool['pool']]
+        self.assertEqual(native_selfplay.reconcile(self.pool, self.ledger, league), ([], []))
+        self.assertEqual(self.pool['pool'], before)
 
 
 if __name__ == '__main__':

@@ -1938,6 +1938,120 @@
    },
    "path": "native/artifacts/rl/sweeps/exploit-g111-1/000/checkpoints/policy-9253158912.bin",
    "metadata_sha256": "8a63ad97de810b82b51a609738ebb58f3e2dcf2cc84a74045d3a6d79b43e4217"
+  },
+  {
+   "id": "92ae2a5c81d1237521643f7685062fe7a39045280e0910559b666efbfe7b6c6a",
+   "name": "g111-l1-12800m",
+   "kind": "main",
+   "parent": "g111-20b-26027m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/g111-league-1/000",
+    "step": 12800032768
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-10",
+    "rule": "2026-10-10: best g111-league-1 checkpoint (9.6B learner), 716.1 [688,748] over 960 band games vs parent 679.0; init of league loop l1"
+   },
+   "path": "native/artifacts/rl/sweeps/g111-league-1/000/checkpoints/policy-12800032768.bin",
+   "metadata_sha256": "01e9c21aad51fd52982ff00e0b6d2628a09c012da37dd7fbaf291143ffcacf38"
   }
  ],
  "conditions": {
@@ -2971,5 +3085,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "0ac1b82933824b5e3fb332ab5e31d6fb0133e66ba64b6fe06223a1915bd4a0c2"
+ "league_sha256": "4c7c38c78712d413f1b9e416bbabb9f1e0f386a29deb23f12f9e2ab34e2a5da7"
 }

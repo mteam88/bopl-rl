@@ -19,6 +19,7 @@ and belongs under native/artifacts/.
 import functools
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -32,7 +33,9 @@ import map_set   # noqa: E402
 # Map sets up to this size are spelled out in a condition key; larger ones hash.
 MAP_TAG_SPELLED = 8
 
-LEAGUE = HERE / 'league.json'
+# BOPL_LEAGUE_JSON points every reader and writer at another league file (a
+# smoke test of train/league_loop.py must not add members to the real one).
+LEAGUE = Path(os.environ.get('BOPL_LEAGUE_JSON') or HERE / 'league.json')
 PAYOFF = HERE / 'payoff.jsonl'
 SIM = ROOT / 'native/target/release/libbopl_sim.so'
 SIM_EQUIVALENT = HERE / 'sim-equivalent.json'
