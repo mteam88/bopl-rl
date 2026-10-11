@@ -208,6 +208,8 @@ class Game:
         self.set_events(events)
         self.body = self._bodies()
         self.meta = str(d['meta']) if 'meta' in d.files else ''
+        # event_support as the backend that dumped it reported it (replay_dump.py meta.events).
+        self.event_support = bool(json.loads(self.meta).get('events', False)) if self.meta else False
 
     def _rows(self, table, ticks, dec_of_row):
         dec = dec_of_row[table['tick'].astype(np.int64)]
@@ -681,7 +683,7 @@ def main():
             continue
         games += 1
         minutes = float(game.header['episode_ticks'][-1]) / 3600.0
-        results = score_game(prog, game)
+        results = score_game(prog, game, support=game.event_support)
         for p, group in groups_of(row, game):
             if group not in per:
                 continue

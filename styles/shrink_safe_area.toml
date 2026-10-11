@@ -1,15 +1,28 @@
-# Shrink the safe area: own live offensive hazards from at least two distinct
-# abilities near the opponent, on both its left and its right. Paid per tick,
-# scaled by the fraction of 8 sectors around the opponent the hazards cover.
+# Shrink the safe area (Matthew, 2026-10-11: grenade + laser on opposite sides,
+# sword + grenade): own offensive threats on both the opponent's left and right.
+# A threat is a live own offensive hazard within 10, or this player's own body
+# within 6 with an offensive ability ready or in an offensive form. On the
+# human dumps (dump-events, 2026-10-11) this fires 0.86/min for winners, 0.38
+# for losers, 0.14 for the bot; the original two-source, entities-only form
+# fired 0.05/min and never for the bot.
 name = "shrink_safe_area"
 fade = { start = 0.0, end = 0.7 }
 
 [let]
-hazard = "owner == self and flags & ACTIVE and not flags & PICKUP and in_category(source_ability, \"offense\") and dist(opp) < 8"
-left = "count(entities where hazard and x < opp.x)"
-right = "count(entities where hazard and x > opp.x)"
+hazard = "owner == self and flags & ACTIVE and not flags & PICKUP and in_category(source_ability, \"offense\") and dist(opp) < 10"
+armed = "self.alive and dist(self, opp) < 6 and (ready(self, \"offense\") or (in_form(self) and in_category(form_ability(self), \"offense\")))"
+left = "count(entities where hazard and x < opp.x) + (armed and self.x < opp.x)"
+right = "count(entities where hazard and x > opp.x) + (armed and self.x > opp.x)"
+pinched = "self.alive and alive(opp) and left > 0 and right > 0"
 
 [[term]]
 name = "pinch"
-when = "self.alive and alive(opp) and left > 0 and right > 0 and sources(entities where hazard) >= 2"
-value = "4e-4 * dt * coverage(opp, 8, 8, entities where hazard)"
+when = "pinched"
+value = "2.5e-3 * dt"
+
+[[term]]
+name = "kill"
+# The payoff: an opponent this player killed while pinched in the last second.
+on = "death"
+when = "ev.actor == self and ev.subject != self and max_over(60, pinched) > 0"
+value = "0.05"
