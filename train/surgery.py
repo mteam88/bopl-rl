@@ -216,6 +216,63 @@ def surgery(weights, source_arch, target_arch, seed=0):
     return target, report
 
 
+def widen(weights, source_arch, factor, noise=0.01, seed=0):
+    """(flat target weights, report rows): hidden grown `factor`-fold by duplicating units.
+
+    Net2WiderNet for the v4 trunk. Target unit j is a copy of source unit j % hidden:
+    rows that write a hidden unit (fusion, every mingru gate, ffn_out) are tiled, and
+    columns that read the trunk (mingru, ffn_in, actor, critic_in's trunk segment) are
+    tiled and divided by `factor`, so a consumer sums the copies back to the original.
+    A tiled vector has the original's mean and variance, so the layer norm after the
+    fusion and the one before the FFN pass it through unchanged: the policy computes
+    exactly what the source did. The critic does not: its layer norm spans the trunk
+    and the privileged observation together, and tiling changes their proportions.
+
+    Exact copies receive identical gradients forever (Muon's orthogonalised update
+    keeps duplicated rows duplicated too), so the copies' incoming rows get Gaussian
+    noise of `noise` times the tensor's std; that is the only departure from the
+    source's policy.
+    """
+    if factor < 2:
+        raise ValueError('widen needs a factor of at least 2')
+    rng = np.random.default_rng(seed)
+    hidden = source_arch['hidden']
+    target_arch = dict(source_arch, hidden=hidden * factor)
+    source_tensors, target_tensors = tensors(source_arch), tensors(target_arch)
+    target = np.zeros(layout.policy_v4_weights(target_arch['hidden'], target_arch['num_layers'],
+                                               **{k: v for k, v in target_arch.items() if k not in ('hidden', 'num_layers')}),
+                      dtype='<f4')
+
+    def tile_rows(w, blocks):
+        """Duplicate each of `blocks` stacked hidden-sized row blocks; noise on the copies."""
+        parts = []
+        for block in np.split(w, blocks):
+            copies = np.tile(block, (factor, 1))
+            copies[hidden:] += rng.normal(0.0, noise * float(w.std()), copies[hidden:].shape).astype(w.dtype)
+            parts.append(copies)
+        return np.concatenate(parts)
+
+    def tile_cols(w, span):
+        return np.concatenate([np.tile(w[:, :span], (1, factor)) / np.float32(factor), w[:, span:]], 1)
+
+    report = []
+    for name, (offset, shape) in target_tensors.items():
+        source_offset, source_shape = source_tensors[name]
+        w = weights[source_offset:source_offset + source_shape[0] * source_shape[1]].reshape(source_shape)
+        if name == 'fusion' or name == 'ffn_out':
+            out = tile_rows(w, 1)
+        elif name.startswith('mingru'):
+            out = tile_rows(tile_cols(w, hidden), 3)
+        elif name in ('ffn_in', 'actor', 'critic_in'):
+            out = tile_cols(w, hidden)
+        else:
+            out = w
+        assert out.shape == shape, (name, out.shape, shape)
+        target[offset:offset + out.size] = out.ravel()
+        report.append((name, source_shape, shape, 'copied' if out is w else 'duplicated', w.size, out.size))
+    return target, target_arch, report
+
+
 def read_checkpoint(path):
     """(architecture, metadata, flat weights) of a published v4 checkpoint."""
     path = Path(path)
@@ -260,11 +317,19 @@ def main(argv=None):
     for key in ARCH_KEYS:
         parser.add_argument('--' + key.replace('_', '-'), type=int, help=f'target {key} (default: the source\'s)')
     parser.add_argument('--seed', type=int, default=0, help='seed for the weights that have to be initialised')
+    parser.add_argument('--widen', type=int, help='instead: grow hidden this many times by duplicating units, '
+                                                  'keeping the policy (see widen); no other change allowed')
+    parser.add_argument('--widen-noise', type=float, default=0.01, help='symmetry-breaking noise on the copies, x tensor std')
     args = parser.parse_args(argv)
 
     source_arch, metadata, weights = read_checkpoint(args.source)
-    target_arch = dict(source_arch, **{k: v for k, v in vars(args).items() if k in source_arch and v is not None})
-    target, report = surgery(weights, source_arch, target_arch, args.seed)
+    if args.widen:
+        if any(getattr(args, k) is not None for k in ARCH_KEYS):
+            parser.error('--widen sets hidden itself and changes nothing else')
+        target, target_arch, report = widen(weights, source_arch, args.widen, args.widen_noise, args.seed)
+    else:
+        target_arch = dict(source_arch, **{k: v for k, v in vars(args).items() if k in source_arch and v is not None})
+        target, report = surgery(weights, source_arch, target_arch, args.seed)
     print(format_report(report, source_arch, target_arch, args.source))
 
     kept = sum(row[4] for row in report)
@@ -276,6 +341,8 @@ def main(argv=None):
                              changed={k: [source_arch[k], target_arch[k]] for k in ARCH_KEYS
                                       if source_arch[k] != target_arch[k]},
                              kept_floats=kept, total_floats=int(target.size), seed=args.seed)
+    if args.widen:
+        config['surgery'].update(widen=args.widen, widen_noise=args.widen_noise)
     written = write_checkpoint(args.target, target.tofile, obs_size=layout.V4_OBS_SIZE,
                                hidden=target_arch['hidden'], num_layers=target_arch['num_layers'],
                                architecture=layout.V4_ARCHITECTURE, game_steps=metadata['step'],

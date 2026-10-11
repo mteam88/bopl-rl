@@ -173,6 +173,25 @@ class ArchitectureChangeTests(unittest.TestCase):
                 64, 1, aim_fourier=4, aim_ar=0, **dict(surgery.v4_shape(arch), set_inner=64)))
             self.assertTrue(np.isfinite(weights).all())
 
+    def test_widening_by_duplication_keeps_the_policy_over_recurrent_steps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for changes in ({}, dict(ffn_dim=48), dict(critic_dim=0)):
+                source, arch = synthetic(directory, f'source-{len(changes)}-{list(changes.values())}.bin', **changes)
+                _, _, weights = surgery.read_checkpoint(source)
+                grown, grown_arch, _ = surgery.widen(weights, arch, 3, noise=0.0)
+                self.assertEqual(grown_arch, dict(arch, hidden=3 * arch['hidden']))
+                before = policy_v4.PolicyV4(weights, **arch)
+                after = policy_v4.PolicyV4(grown, **grown_arch)
+                observations = torch.from_numpy(np.random.default_rng(9).normal(
+                    size=(5, 3, layout.V4_OBS_SIZE)).astype(np.float32))
+                old_state, new_state = before.initial(3), after.initial(3)
+                for step in observations:
+                    old_rows, old_state = before.step_raw(step, old_state)
+                    new_rows, new_state = after.step_raw(step, new_state)
+                    width = before.width     # the critic's layer norm is the one documented departure
+                    torch.testing.assert_close(new_rows[:, :width], old_rows[:, :width], atol=1e-4, rtol=1e-4)
+                    torch.testing.assert_close(new_state[:, :, :arch['hidden']], old_state, atol=1e-5, rtol=1e-5)
+
     def test_a_v3_checkpoint_is_refused_rather_than_guessed(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'v3.bin'
