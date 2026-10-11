@@ -204,10 +204,11 @@ def offset_counters(counts, base):
     return out
 
 
-def pool_state_json(pool, ledger, *, counts, elapsed, global_step, update_index, checkpoint):
+def pool_state_json(pool, ledger, *, counts, elapsed, global_step, update_index, checkpoint, momentum):
     return dict(schema=1, pool={k: v for k, v in pool.items() if k != 'rng'},
                 rng=pool['rng'].bit_generator.state, ledger=ledger, counts=counts, elapsed=elapsed,
-                global_step=int(global_step), update_index=update_index, checkpoint=str(checkpoint))
+                global_step=int(global_step), update_index=update_index, checkpoint=str(checkpoint),
+                momentum=str(momentum))
 
 
 def load_pool_state(record):
@@ -754,10 +755,17 @@ def main():
                 saved[step] = path
             if pool is not None:
                 # Everything --resume needs besides the weights, written with
-                # every checkpoint so the last one is always consistent.
+                # every checkpoint so the last one is always consistent. Only
+                # the newest Muon momentum is kept: resume is its one reader.
+                momentum = output/'pool'/f'momentum-{step:09d}.bin'
+                _C.save_momentum(trainer, str(momentum))
                 atomic_json(output/'pool/state.json', pool_state_json(
                     pool, ledger, counts=counts, elapsed=elapsed_before + time.monotonic() - training_started,
-                    global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step]))
+                    global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step],
+                    momentum=momentum))
+                for old in (output/'pool').glob('momentum-*.bin'):
+                    if old != momentum:
+                        old.unlink()
                 persist_roster()
             return saved[step]
         training_started = time.monotonic()
@@ -765,6 +773,13 @@ def main():
             saved = {int(path.stem.split('-')[1]): path for path in sorted((output/'checkpoints').glob('policy-*.bin'))}
             initial = saved[min(saved)]
             _C.load_weights(trainer, resume['checkpoint'])
+            # Runs saved before momentum was persisted resume with it cold.
+            momentum = resume.get('momentum')
+            if momentum and Path(momentum).is_file():
+                _C.load_momentum(trainer, momentum)
+            else:
+                print('--resume: no saved Muon momentum; the optimiser restarts cold', flush=True)
+            config['resumed'][-1]['momentum'] = bool(momentum and Path(momentum).is_file())
             trainer.global_step = resume['global_step']
             pool, ledger = load_pool_state(resume)
             if len(pool['banks']) != policy_banks:
