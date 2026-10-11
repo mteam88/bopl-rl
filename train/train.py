@@ -64,6 +64,67 @@ def install_loadout_set(module, rows):
             storage[row_index*6+column]=value
 
 
+class StyleBinding:
+    """The compiled style program in the C environment (docs/STYLES.md part 3).
+
+    scale() sets the fade before a rollout starts: 1 until fade.start of the
+    run's learner steps, linear to 0 at fade.end, 0 after. read() turns the
+    vector's cumulative counters (bopl_vec_style) into the rollout's per-term
+    record: the unscaled payout, the reward actually paid (scale x payout),
+    the decisions it fired on, per learner decision. Without --style both are
+    no-ops and nothing is installed (the reward is bit-identical).
+    """
+    def __init__(self, module, program):
+        import ctypes
+        self.program, self.current, self.last = program, 0.0, None
+        if program is None:
+            return   # nothing installed: the binding's style pointer stays NULL
+        lib = ctypes.CDLL(module.__file__)
+        lib.bopl_style_install.argtypes = [ctypes.c_char_p, ctypes.c_long, ctypes.c_char_p, ctypes.c_int]
+        lib.bopl_style_install.restype = ctypes.c_int
+        lib.bopl_style_set_scale.argtypes = [ctypes.c_float]
+        lib.bopl_vec_style.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double), ctypes.c_int]
+        lib.bopl_vec_style.restype = ctypes.c_int
+        self.lib, self.ctypes = lib, ctypes
+        error = ctypes.create_string_buffer(512)
+        if lib.bopl_style_install(program.data, len(program.data), error, len(error)):
+            raise SystemExit(f'--style: the C loader refused the program: {error.value.decode()}')
+        lib.bopl_style_set_scale(0.0)
+
+    def scale(self, learner_steps, total):
+        if self.program is None:
+            return
+        start, end = self.program.fade
+        progress = learner_steps / max(1, total)
+        value = 1.0 if progress <= start else 0.0 if progress >= end else (end - progress) / (end - start)
+        self.current = value
+        self.lib.bopl_style_set_scale(value)
+
+    def read(self, vector):
+        if self.program is None:
+            return None
+        terms = self.program.term_names
+        buffer = (self.ctypes.c_double * (1 + 2 * len(terms)))()
+        if self.lib.bopl_vec_style(self.ctypes.c_void_p(vector.gpu_obs_ptr), buffer, len(buffer)) != len(buffer):
+            raise RuntimeError('bopl_vec_style: the vector or the installed program changed')
+        now = list(buffer)
+        last = self.last or [0.0] * len(now)
+        self.last = now
+        decisions = now[0] - last[0]
+        per = lambda x: x / decisions if decisions else 0.0
+        out = dict(scale=self.current, decisions=decisions, terms={})
+        for i, name in enumerate(terms):
+            pay, fires = now[1 + i] - last[1 + i], now[1 + len(terms) + i] - last[1 + len(terms) + i]
+            out['terms'][name] = dict(pay=pay, paid=self.current * pay, fires=fires,
+                                      pay_per_decision=per(pay), fire_rate=per(fires))
+        out['paid_per_decision'] = per(sum(t['paid'] for t in out['terms'].values()))
+        return out
+
+
+def install_style(module, program):
+    return StyleBinding(module, program)
+
+
 def scripted_bots(value):
     """Comma-separated bot kinds (bopl_bots.h) that take over the last banks."""
     names = [x for x in value.split(',') if x]
@@ -136,7 +197,7 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts',
-                 'historical_every')
+                 'historical_every', 'style_sha256')
 # Policy v4 (train/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
@@ -185,7 +246,8 @@ def recorded_hypers(config):
                 n_scripted=config.get('scripted_banks', len(config.get('scripted_bots', [])) or (1 if config.get('scripted_roster') else 0)),
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0),
                 v4_shape=config.get('v4_shape'), loadouts=config.get('loadouts',resolve_loadouts()),
-                historical_every=env.get('historical_every', 2))
+                historical_every=env.get('historical_every', 2),
+                style_sha256=(config.get('style') or {}).get('sha256'))
 
 
 def offset_counters(counts, base):
@@ -360,7 +422,21 @@ def arguments():
                    help='do not rate every evaluation checkpoint against the league in-run (league candidate, '
                         'nice 19, 2 workers, CPU only, non-blocking; skipped while the previous one runs)')
     p.add_argument('--in-run-games', type=int, default=160, help='games of each in-run league rating')
+    p.add_argument('--style', nargs='+', default=[], metavar='TOML',
+                   help='style specs (docs/STYLES.md, styles/*.toml; several or comma-separated) compiled into '
+                        'one program whose bonus every env adds to the learner reward, faded by the first '
+                        "spec's fade over the run's learner steps")
     a = p.parse_args()
+    a.style = [Path(x) for part in a.style for x in part.split(',') if x]
+    a.style_program = a.style_sha256 = None
+    if a.style:
+        sys.path.insert(0, str(ROOT/'train'))
+        import style_compile
+        try:
+            a.style_program = style_compile.compile_files(a.style)
+        except (style_compile.CompileError, OSError) as error:
+            p.error(f'--style: {error}')
+        a.style_sha256 = a.style_program.sha256
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
                  'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life',
                  'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout'):
@@ -552,6 +628,10 @@ def main():
     if not _C.gpu:
         raise RuntimeError('Native training requires the CUDA build')
     install_loadout_set(_C,a.loadouts['lineups'])
+    style = install_style(_C, a.style_program)
+    if a.style_program is not None:
+        (output/'style.bin').write_bytes(a.style_program.data)
+        (output/'style.bin.txt').write_text(a.style_program.dump())
     print('Effective loadouts: '+json.dumps(a.loadouts,separators=(',',':')),flush=True)
     # A binding compiled from another checkout (a rift's copied venv finder) or before
     # the current env/kernel sources trains silently on stale code; fail instead.
@@ -559,7 +639,7 @@ def main():
     if not binding.is_relative_to(ROOT):
         raise RuntimeError(f'pufferlib._C resolves to {binding}, outside {ROOT}: fix the venv editable finder and rebuild')
     puffer_dir = ROOT/'train'
-    sources = [puffer_dir/name for name in ('bopl_puffer.h', 'binding.c', 'bopl_rollout.cu', 'bopl_set_encoder.cu',
+    sources = [puffer_dir/name for name in ('bopl_puffer.h', 'bopl_style.h', 'binding.c', 'bopl_rollout.cu', 'bopl_set_encoder.cu',
                                            'bopl_aim.h', 'bopl_layout.h', 'bopl_v4.cu', 'bopl_obs_v4.h', 'bopl_layout_v4.h',
                                            'pufferlib-bopl.patch')] + [ROOT/'sim/abi/bopl_rl.c']
     stale = [path.name for path in sources if path.exists() and path.stat().st_mtime > binding.stat().st_mtime]
@@ -664,6 +744,9 @@ def main():
                   selfplay=pool_config,
                   init_weights=checkpoint_identity(a.init_weights) if a.init_weights else None,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
+                  style=(dict(paths=[str(path.resolve()) for path in a.style], sha256=a.style_sha256,
+                              terms=a.style_program.term_names, fade=list(a.style_program.fade),
+                              program='style.bin') if a.style_program is not None else None),
                   game=str(game), runtime=runtime, native=args,
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
     if resume:
@@ -806,6 +889,7 @@ def main():
             ledger = native_selfplay.members(str(initial), league_opponents)
         if roster_entries:
             sync_scripted()
+        style.scale(counts['learner_steps'], a.steps)
         vector.reset()
         _C.log(trainer)  # Warmup losses are not measured training updates.
         if vector.snapshot()['learner_steps'] or vector.snapshot()['game_steps']:
@@ -962,6 +1046,14 @@ def main():
                 record['scripted'] = p['scripted']
                 record['scripted_share'] = p['share']
             record['free_fraction'] = p['free']
+            if p['style'] is not None:
+                # Per term in full, plus flat keys the board charts: the fade scale,
+                # the reward paid per learner decision, and each term's share of it.
+                record['style'] = p['style']
+                record['style_scale'] = p['style']['scale']
+                record['style_paid'] = p['style']['paid_per_decision']
+                for name, term in p['style']['terms'].items():
+                    record['style/' + name] = p['style']['scale'] * term['pay_per_decision']
             record['entropy_head_scale_applied'] = p['applied_scale']
             # The native trainer's own per-update timers (seconds, averaged
             # over buffers): eval_gpu = inference graph + action copy-back,
@@ -1033,8 +1125,10 @@ def main():
                         # Matches starting during the next rollout draw against this roster.
                         sync_scripted()
                     if more:
+                        style.scale(ready['learner_steps'], a.steps)
                         _C.rollouts_start(trainer)
                 else:
+                    style.scale(counts['learner_steps'], a.steps)
                     rollout_seconds = _C.rollouts(trainer)
                     dump_rows()
                 flush_deferred()   # the previous update's bookkeeping, while this rollout runs
@@ -1060,6 +1154,7 @@ def main():
                 if overlap and more:
                     rollout_seconds = _C.rollouts_finish(trainer)
                 native = _C.log(trainer)
+                style_record = style.read(vector)   # no rollout in flight here
                 free = free_fraction(native['env']) if a.entropy_free_rows else None
                 if overlap:
                     counts = ready
@@ -1115,7 +1210,8 @@ def main():
                                 previous_elapsed=previous_elapsed, rollout_seconds=rollout_seconds,
                                 train_seconds=trained-rolled, before_pool=before_pool, scripted=scripted,
                                 share=share, free=free, applied_scale=applied_scale,
-                                packing=list(_C.bopl_v4_overflow()) if a.encoder == 'v4' else None)
+                                packing=list(_C.bopl_v4_overflow()) if a.encoder == 'v4' else None,
+                                style=style_record)
                 previous, previous_elapsed = counts, elapsed
                 if defer_ab and (update_index // defer_ab) & 1:
                     flush_deferred()   # BOPL_TRAIN_AB_DEFER's arm 1: the serial order

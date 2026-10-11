@@ -1,0 +1,18 @@
+# Punish low offense: close in while the opponent has no offensive ability
+# ready (it cannot threaten the approach), and kill inside that window.
+name = "punish_low_offense"
+fade = { start = 0.0, end = 0.7 }
+
+[let]
+window = "alive(opp) and has_ability(opp, \"offense\") >= 1 and ready_count(opp, \"offense\") == 0"
+kills = "self.opponent_kills - prev(self.opponent_kills)"
+
+[[term]]
+name = "close_in"
+when = "self.alive and window and dist(self, opp) < 8"
+value = "1e-4 * dt"
+
+[[term]]
+name = "kill"
+when = "kills > 0 and count_over(30, window) > 0"
+value = "0.05 * kills"

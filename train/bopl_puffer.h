@@ -6,6 +6,7 @@
 #include "bopl_obs_pack.h"
 #include "bopl_rows_v4.h"
 #include "bopl_bots.h"
+#include "bopl_style.h"
 #include <math.h>
 #include <stdint.h>
 #include <pthread.h>
@@ -110,6 +111,12 @@ float bopl_roster_weight[BOPL_ROSTER_MAX];
 enum { BOPL_LOADOUT_SET_MAX=256, BOPL_LOADOUT_FIXED=0, BOPL_LOADOUT_POOL=1, BOPL_LOADOUT_SET=2 };
 int bopl_loadout_set_count=0;
 uint8_t bopl_loadout_sets[BOPL_LOADOUT_SET_MAX*6];
+/* The style program (bopl_style.h) every environment created after
+ * bopl_style_install runs, and the fade scale its payouts are paid at (set
+ * each update). Without a program nothing below touches the reward. */
+BoplStyleProgram bopl_style_program;
+int bopl_style_loaded=0;
+float bopl_style_scale=1.0f;
 /* A world state that outlives the game's own state buffer: header, players and
  * telemetry by value, entity and slime rows in owned buffers. Without a rope
  * (no kind-3 entity, dead or alive) the copy keeps the live entities alone
@@ -324,6 +331,13 @@ typedef struct {
      * never count as learner work. Read at the rollout barrier by
      * bopl_vec_counters. */
     BoplCounters counters;
+    /* Style bonus (NULL without a program): history slots per player
+     * (style->hist_floats each, zeroed at every episode start) and learner-only
+     * cumulative per-term payouts (unscaled), decisions where a term paid, and
+     * the decisions evaluated. Read at the rollout barrier by bopl_vec_style. */
+    const BoplStyleProgram *style;
+    float *style_slots;
+    double style_pay[BS_MAX_TERMS], style_fires[BS_MAX_TERMS], style_decisions;
     char error[512];
 } BoplPuffer;
 
@@ -1193,6 +1207,11 @@ static void init(BoplPuffer *env) {
         env->spare_opening=1;
     }
     env->rng=env->rng*747796405u+2891336453u;
+    if (bopl_style_loaded) {
+        env->style=&bopl_style_program;
+        env->style_slots=calloc((size_t)env->players*env->style->hist_floats, sizeof(float));
+        if (!env->style_slots) abort();
+    }
 }
 static void bopl_spare_ready(BoplPuffer *env) {
     if (!env->spare_opening) return;
@@ -1395,6 +1414,7 @@ static void c_reset(BoplPuffer *env) {
     }
     const BoplRlState *state=bopl_rl_state(env->world);
     memset(env->returns, 0, sizeof(env->returns)); env->steps=0;
+    if (env->style_slots) memset(env->style_slots, 0, (size_t)env->players*env->style->hist_floats*sizeof(float));
     memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
     for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=(uint32_t)bopl_opponent_kills(state, i); }
     /* The scripted-bot stream (the share draw below) restarts from this
@@ -1537,6 +1557,17 @@ static void bopl_step_advance(BoplPuffer *env, const BoplStepPhase *phase) {
 /* world: `state` is bopl_rl_state(env->world) (bopl_step_finish), so the
  * masks take the controlling slimes the critic block finds in it; the agent
  * shim's states are not its world's (it has none) and its masks are its own. */
+/* The style terms of player i's decision on the terminal or ongoing `state`
+ * (before any autoreset), summed into the learner's payout counters. */
+static float bopl_style_reward(BoplPuffer *env, const BoplRlState *state, const BoplRlEvent *events,
+                               uint32_t count, int support, int i) {
+    float terms[BS_MAX_TERMS];
+    const BoplStyleProgram *p=env->style;
+    float total=bopl_style_step(p, state, events, count, support, i, env->style_slots+(size_t)i*p->hist_floats, terms);
+    for (uint32_t t=0; t<p->n_terms; t++) { env->style_pay[t]+=terms[t]; env->style_fires[t]+=terms[t]!=0.0f; }
+    env->style_decisions++;
+    return total;
+}
 static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, const BoplRlState *state, int world) {
     float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
     const BoplRlAction *actions=phase->actions;
@@ -1546,6 +1577,8 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
     int decided=bopl_decided(state, env->players);
+    const BoplRlEvent *style_events=NULL; uint32_t style_event_count=0; int style_support=0;
+    if (env->style && world) style_events=bopl_style_events(env->world, &style_event_count, &style_support);
     for (int i=0; i<env->players; i++) {
         const BoplRlPlayer *player=&state->players[i];
         int slot=bopl_slot(env, i), learner=!env->banks || i==env->side;
@@ -1585,6 +1618,8 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
         env->previous_telemetry[i]=state->telemetry[i];
         /* Retain the original arithmetic/order for the actual PPO reward. */
         float reward=o.shaping+o.outcome;
+        if (env->style && learner)
+            reward+=bopl_style_scale*bopl_style_reward(env, state, style_events, style_event_count, style_support, i);
         *env->reward_ptr[slot]=reward; env->returns[i]+=reward;
         c->game_steps++;
         if (learner) {
@@ -1686,5 +1721,6 @@ static void c_close(BoplPuffer *env) {
     for (int i=0; i<BOPL_MAX_PLAYERS; i++) { bopl_rl_close(env->bots[i].fork); env->bots[i].fork=NULL; }
     for (int i=0; i<2; i++) bopl_state_copy_free(&env->delayed[i]);
     bopl_state_copy_free(&env->sample_copy);
+    free(env->style_slots); env->style_slots=NULL; env->style=NULL;
 }
 #endif

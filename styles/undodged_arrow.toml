@@ -1,0 +1,25 @@
+# Undodged arrow (style-discovery/kills): a kill by an arrow the victim did not
+# dodge - an own arrow within 4 of the victim while the victim's velocity away
+# from it was under 1 unit/s.
+name = "undodged_arrow"
+kits = [[4, 2, 14], [4, 25, 3]]
+fade = { start = 0.0, end = 0.7 }
+
+[let]
+arrow = "owner == self and source_ability == ability.Bow and flags & PROJECTILE and flags & ACTIVE"
+# away speed * distance < distance  <=>  away speed < 1
+undodged = "count(entities where arrow and dist(opp) < 4 and (body(opp).x - x) * body(opp).vx + (body(opp).y - y) * body(opp).vy < dist(opp))"
+kills = "self.opponent_kills - prev(self.opponent_kills)"
+
+[[term]]
+name = "kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self and ev.source_ability == ability.Bow and ev.cause == death.PROJECTILE and max_over(8, undodged) > 0"
+value = "0.06"
+
+[[term]]
+name = "kill_approx"
+# Without events: a credited kill with an undodged own arrow near the victim in
+# the last 8 ticks. Off whenever the backend emits events.
+when = "not event_support and kills > 0 and max_over(8, undodged) > 0"
+value = "0.06 * kills"

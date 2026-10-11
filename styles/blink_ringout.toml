@@ -1,0 +1,11 @@
+# Blink ring-out: the opponent falls out after this player blinked away the
+# ground it stood on (needs the event stream; scores 0 without it).
+name = "blink_ringout"
+kits = [[6, 2, 14], [6, 25, 3]]
+fade = { start = 0.0, end = 0.7 }
+
+[[term]]
+name = "ringout"
+on = "death"
+when = "ev.related_actor == self and ev.subject != self and ev.flags & death_flag.RELATED_BLINKED and ev.cause == death.RING_OUT"
+value = "0.1"

@@ -33,6 +33,13 @@
  * Each phase's user-space instructions per decision (<phase>_inst, from
  * perf_event_open; -1 when unavailable) go in the summary: deterministic,
  * the evidence for a writer change when wall time is noisy.
+ * BOPL_ENV_BENCH_STYLE=<style.bin> (train/style_compile.py -o) adds the
+ * style phase: bopl_step_finish's style call (bopl_style_events +
+ * bopl_style_reward) for both players on every decision's final state,
+ * history slots zeroed per game; style_pct is its share of env_train_us
+ * (reset + sim + sample + train: the trainer's c_step), style_inst_pct of
+ * the same phases' instructions (docs/STYLES.md: < 2%
+ * with three styles). The payouts fold into style_hash, outside the timer.
  *
  *   env_bench <libbopl_sim.so> <corpus_dir> [max_games=0 (all)] [warmup=240] [limit=10800]
  *
@@ -134,9 +141,9 @@ static uint64_t state_hash(uint64_t h, const BoplRlState *s) {
 }
 static int cmp_name(const void *a, const void *b) { return strcmp(*(char *const*)a, *(char *const*)b); }
 
-enum { PLAYERS=2, PHASES=9 };
-enum { P_RESET, P_SIM, P_SAMPLE, P_LITE, P_FULL, P_TAIL, P_PRIV, P_PACK, P_TRAIN };
-static const char *PHASE_NAMES[PHASES]={"reset", "sim", "sample", "lite", "full", "tail", "priv", "pack", "train"};
+enum { PLAYERS=2, PHASES=10 };
+enum { P_RESET, P_SIM, P_SAMPLE, P_LITE, P_FULL, P_TAIL, P_PRIV, P_PACK, P_TRAIN, P_STYLE };
+static const char *PHASE_NAMES[PHASES]={"reset", "sim", "sample", "lite", "full", "tail", "priv", "pack", "train", "style"};
 
 static void env_init(BoplPuffer *env, BoplRl *world, float *scratch, float *pack_out, unsigned char (*masks)[BOPL_LOGITS], int ablate) {
     memset(env, 0, sizeof(*env));
@@ -192,6 +199,32 @@ int main(int argc, char **argv) {
     const char *evict_env=getenv("BOPL_ENV_BENCH_EVICT_KB");
     size_t evict_bytes=evict_env?(size_t)atol(evict_env)*1024:0;
     unsigned char *evict=evict_bytes?calloc(1, evict_bytes):NULL;
+    const char *style_path=getenv("BOPL_ENV_BENCH_STYLE");
+    static BoplStyleProgram style_program;
+    BoplPuffer *styled=NULL;
+    if (style_path && *style_path) {
+        FILE *f=fopen(style_path, "rb");
+        if (!f) { fprintf(stderr, "%s: cannot open\n", style_path); return 1; }
+        fseek(f, 0, SEEK_END); long len=ftell(f); fseek(f, 0, SEEK_SET);
+        void *bytes=malloc((size_t)len);
+        if (fread(bytes, 1, (size_t)len, f)!=(size_t)len) { fprintf(stderr, "%s: short read\n", style_path); return 1; }
+        fclose(f);
+        if (bopl_style_load(&style_program, bytes, (size_t)len, error, sizeof(error))) { fprintf(stderr, "%s: %s\n", style_path, error); return 1; }
+        free(bytes);
+        styled=train;   /* the trainer's env: its style pointer, slots and payout counters */
+        styled->style=&style_program;
+        styled->style_slots=calloc((size_t)PLAYERS*style_program.hist_floats+1, sizeof(float));
+    }
+    uint64_t style_hash=0x243F6A8885A308D3ull, style_entities=0;
+    /* What one timed block costs with nothing in it (two clock reads and two
+     * counter reads): every phase carries it once per decision; the style
+     * phase is small enough for it to matter, so it is reported net too. */
+    double timer_s=0.0; uint64_t timer_inst=0;
+    for (int k=0; k<4096; k++) {
+        double a=seconds(); uint64_t ia=instructions();
+        timer_s+=seconds()-a; timer_inst+=instructions()-ia;
+    }
+    timer_s/=4096.0; timer_inst/=4096;
     double total[PHASES]={0}; uint64_t total_inst[PHASES]={0}, total_fallback=0, total_decisions=0, total_ticks=0, total_split=0, corpus_hash=0, corpus_train=0, corpus_telemetry=0;
     double wall=seconds();
     for (int g=0; g<n; g++) {
@@ -204,6 +237,7 @@ int main(int argc, char **argv) {
         t[P_RESET]=seconds()-t0; ic[P_RESET]=instructions()-i0;
         lite->config=full->config=train->config=replay.config;
         bopl_written_forget(lite); bopl_written_forget(full); bopl_written_forget(train);
+        if (styled) memset(styled->style_slots, 0, (size_t)PLAYERS*style_program.hist_floats*sizeof(float));
         memset(lite->action_history, 0, sizeof(lite->action_history)); memset(full->action_history, 0, sizeof(full->action_history));
         memset(train->action_history, 0, sizeof(train->action_history));
         const BoplRlState *state=bopl_rl_state(world);
@@ -227,6 +261,15 @@ int main(int argc, char **argv) {
             hash=state_hash(state_hash(hash, bopl_rl_sample(world)), state);
             tick+=state->header.episode_ticks-before;
             decisions++;
+            if (styled) {
+                float paid[PLAYERS];
+                double a=seconds(); uint64_t ia=instructions();
+                const BoplRlEvent *events=NULL; uint32_t event_count=0; int support=0;
+                events=bopl_style_events(world, &event_count, &support);
+                for (int i=0; i<PLAYERS; i++) paid[i]=bopl_style_reward(styled, state, events, event_count, support, i);
+                t[P_STYLE]+=seconds()-a; ic[P_STYLE]+=instructions()-ia;
+                style_hash=mix_words(style_hash, paid, sizeof(paid)); style_entities+=state->header.entity_count;
+            }
             if (state->header.flags&BOPL_RL_TERMINAL) break;
             if (sim_only) continue;
             const BoplRlState *old=bopl_state_copy_get(&delayed[cursor]);
@@ -287,9 +330,25 @@ int main(int argc, char **argv) {
     for (int p=0; p<PHASES; p++) printf(", \"%s_us\": %.3f", PHASE_NAMES[p], total[p]*1e6/(double)total_decisions);
     for (int p=0; p<PHASES; p++) printf(", \"%s_inst\": %.1f", PHASE_NAMES[p], inst_fd<0?-1.0:(double)total_inst[p]/(double)total_decisions);
     printf(", \"train_fallback\": %.5f", (double)total_fallback/(double)(PLAYERS*total_decisions));
+    double env_full=total[P_RESET]+total[P_SIM]+total[P_SAMPLE]+total[P_FULL]+total[P_TAIL]+total[P_PRIV]+total[P_PACK];
+    /* The trainer's own c_step: reset, sim, sample and the train-writer finish. */
+    double env_train=total[P_RESET]+total[P_SIM]+total[P_SAMPLE]+total[P_TRAIN];
+    uint64_t env_train_inst=total_inst[P_RESET]+total_inst[P_SIM]+total_inst[P_SAMPLE]+total_inst[P_TRAIN];
+    if (styled) {
+        double net_s=total[P_STYLE]-timer_s*(double)total_decisions, net_inst=(double)total_inst[P_STYLE]-(double)timer_inst*(double)total_decisions;
+        printf(", \"style_terms\": %u, \"style_hash\": \"%016"PRIx64"\", \"style_entities\": %.1f, \"style_pct\": %.3f, \"style_inst_pct\": %.3f"
+               ", \"timer_us\": %.3f, \"timer_inst\": %"PRIu64", \"style_net_us\": %.3f, \"style_net_inst\": %.1f, \"style_net_pct\": %.3f, \"style_net_inst_pct\": %.3f, \"style_pay\": [",
+               style_program.n_terms, style_hash, (double)style_entities/(double)total_decisions, 100.0*total[P_STYLE]/env_train,
+               inst_fd<0?-1.0:100.0*(double)total_inst[P_STYLE]/(double)env_train_inst,
+               timer_s*1e6, timer_inst, net_s*1e6/(double)total_decisions, net_inst/(double)total_decisions,
+               100.0*net_s/env_train, inst_fd<0?-1.0:100.0*net_inst/(double)env_train_inst);
+        for (uint32_t k=0; k<style_program.n_terms; k++) printf("%s%.6g", k?", ":"", styled->style_pay[k]);
+        printf("]");
+    }
+    printf(", \"env_train_us\": %.3f", env_train*1e6/(double)total_decisions);
     printf(", \"env_lite_us\": %.3f, \"env_full_us\": %.3f, \"load1\": %.2f}\n",
            (total[P_RESET]+total[P_SIM]+total[P_SAMPLE]+total[P_LITE]+total[P_TAIL]+total[P_PRIV]+total[P_PACK])*1e6/(double)total_decisions,
-           (total[P_RESET]+total[P_SIM]+total[P_SAMPLE]+total[P_FULL]+total[P_TAIL]+total[P_PRIV]+total[P_PACK])*1e6/(double)total_decisions, load1());
+           env_full*1e6/(double)total_decisions, load1());
     bopl_rl_close(world);
     return 0;
 }

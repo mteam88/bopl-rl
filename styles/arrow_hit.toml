@@ -1,0 +1,9 @@
+# Arrow hits (style-discovery/kills bow_arrow_impact): each arrow that lands.
+name = "arrow_hit"
+kits = [[4, 2, 14], [4, 25, 3]]
+fade = { start = 0.0, end = 0.7 }
+
+[[term]]
+name = "hit"
+when = "self.arrow_hits > prev(self.arrow_hits)"
+value = "0.05 * (self.arrow_hits - prev(self.arrow_hits))"

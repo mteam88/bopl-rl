@@ -1,0 +1,19 @@
+# Punish spent mobility: press an opponent whose escape abilities are all on
+# cooldown - be within reach with offense ready, and land the kill while the
+# window is open.
+name = "punish_spent_mobility"
+fade = { start = 0.0, end = 0.7 }
+
+[let]
+window = "alive(opp) and has_ability(opp, \"mobility\") >= 1 and ready_count(opp, \"mobility\") == 0"
+kills = "self.opponent_kills - prev(self.opponent_kills)"
+
+[[term]]
+name = "press"
+when = "self.alive and window and ready_count(self, \"offense\") >= 1 and dist(self, opp) < 10"
+value = "1e-4 * dt"
+
+[[term]]
+name = "kill"
+when = "kills > 0 and count_over(30, window) > 0"
+value = "0.05 * kills"

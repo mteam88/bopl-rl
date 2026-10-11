@@ -1,0 +1,64 @@
+# Not a style: every opcode, aggregate, loop mode and history window at once,
+# for the C/Python agreement check (eval/style_check.py).
+name = "opcodes"
+fade = { start = 0.1, end = 0.9 }
+
+[let]
+mine = "owner == self and flags & ACTIVE and not flags & PICKUP"
+near_opp = "dist(self, opp)"
+
+[[term]]
+name = "arith"
+value = "min(near_opp, 50) / max(dt, 1) + abs(self.x - opp.x) * 0.5 - sqrt(abs(body(self).vy)) + hypot(self.x, self.y) / 100 - clamp(body(opp).speed, 2, 9)"
+
+[[term]]
+name = "bits"
+when = "(self.flags | 4) & 5 or header.flags & 1 or -self.kills > 3"
+value = "(body(self).ability_flags[0] & 10) + (body(self).ability_flags[1] | 1) + body(self).abilities[2] / 7 + body(opp).cooldowns[1] - body(self).timers[0] + body(self).exists + body(self).flags + body(self).state + body(self).rotation"
+
+[[term]]
+name = "abilities"
+value = "ready_count(self) + ready_count(opp, \"mobility\") * 2 + has_ability(self, \"offense\") + has_ability(opp, ability.Bow) + ready(self, \"utility\") + in_form(self) + form_ability(opp) / 38 + in_category(body(self).abilities[0], \"mobility\") + player(2).team + alive(opp)"
+
+[[term]]
+name = "entities"
+value = "count(entities where mine and dist(opp) < 10) + min_dist(entities where mine, opp) / 100 + sources(entities where dist(self) < 12) + coverage(opp, 9, 8, entities where mine) + coverage(self, 15, 5, entities where flags & PROJECTILE or flags & EXPLOSIVE) + coverage(opp, 30, 1, entities where kind == 1) + any(entities where speed > 30 and owner != self)"
+
+[[term]]
+name = "prefilter"
+# The C VM's native entity prefilters (bopl_style.h bs_pre_analyse): fully
+# native chains, mirrored operands, NE, loop-variable owners, and chains the
+# prefilter must stop at (or, a non-field conjunct first, BAND without NOT).
+value = "count(entities where owner != self and kind == 0) + 2 * count(entities where self == owner) + 3 * count(entities where 2 & flags) + sum(for o in opponents: count(entities where owner == o and flags & ACTIVE and not flags & PICKUP)) + 5 * count(entities where owner == self or flags & ACTIVE) + 7 * count(entities where owner == self and (flags & 1 or kind == 2)) + 11 * count(entities where dist(self) < 9 and owner == opp) + min_dist(entities where owner == opp and layer != 0, self) / 100 + 13 * sources(entities where source_ability != 0 and owner == opp) + coverage(self, 7, 6, entities where owner == opp and flags & ACTIVE)"
+
+[[term]]
+name = "slimes"
+value = "count(slimes where owner == opp and speed > 5) + min_dist(slimes where owner != self, self) / 50 + count(slimes where abilities[0] == ability.Dash and ability_flags[0] & 2 and dist(opp) < 20 and x > 0 and scale > 0.5)"
+
+[[term]]
+name = "loops"
+value = "sum(for o in opponents: dist(self, o)) / 10 + any(for o in opponents: alive(o)) + all(for o in opponents: o.kills < 3) + max(for o in opponents: o.y) - min(for o in opponents: o.x) + count(for o in opponents: ready(o, \"offense\") and sum(for q in opponents: q.id) > 0)"
+
+[[term]]
+name = "history"
+value = "prev(self.x) - self.x + since(self.kills > prev(self.kills)) / 1000 + count_over(40, near_opp < 8) + max_over(20, body(self).speed) + ema(30, near_opp) / 10 + since_form_entry(self) / 100 + ema(7, count(entities where mine)) + max_over(13, prev(body(opp).vx))"
+
+[[term]]
+name = "telemetry"
+value = "self.arrows_fired - self.arrow_hits + opp.deaths_environment + self.ability_activations[1] + self.opponent_kills + self.won + header.sudden_death + header.player_count + header.entity_count / 100 + header.slime_count + now / 3600 + event_support + self.deaths_opponent + opp.deaths_self + self.deaths_other + self.stocks + self.alive_bodies + self.cause_of_death + self.invisible_time + self.ability_time + self.scale"
+
+[[term]]
+name = "event_counts"
+value = "count(deaths where ev.actor == self) + count(events where ev.kind == event.BLINK and ev.subject != self) + count(blinks) + since(count(deaths where ev.subject == opp) > 0) / 1000"
+
+[[term]]
+name = "death_event"
+on = "death"
+when = "ev.actor == self or ev.subject == self and ev.flags & death_flag.RELATED_BLINKED"
+value = "1 + ev.cause / 10 + ev.aspeed / 100 + ev.speed + ev.source_ability + ev.x - ev.ay + ev.vx * ev.avy + (ev.related_actor == self) + (now - ev.related_tick) / 10 + count(entities where mine and dist(ev.subject) < 6) + ev.tick - ev.entity + ev.related + ev.vy + ev.ax + ev.avx + ev.y + ev.kind"
+
+[[term]]
+name = "blink_event"
+on = "blink"
+when = "true"
+value = "ev.actor.id + ev.subject.team * 2 + dist(ev.actor, opp)"

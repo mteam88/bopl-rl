@@ -562,7 +562,9 @@
 
   function renderMetric() {
     const rows = metrics?.metrics || [];
-    const present = METRIC_KEYS.filter((k) => rows.some((r) => r[k] != null));
+    // A --style run adds style_scale, style_paid and style/<term> (reward paid per decision).
+    const styleKeys = [...new Set(rows.flatMap((r) => Object.keys(r).filter((k) => k.startsWith("style_") || k.startsWith("style/"))))].sort();
+    const present = METRIC_KEYS.filter((k) => rows.some((r) => r[k] != null)).concat(styleKeys);
     const pick = $("metricPick");
     if (pick.dataset.run !== run.name) {
       pick.innerHTML = present.map((k) => `<option value="${k}">${k}</option>`).join("");

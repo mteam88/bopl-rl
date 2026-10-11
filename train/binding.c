@@ -312,3 +312,31 @@ int bopl_vec_count_aligned(const void *gpu_observations, int tag, int reset_flag
     if (!vec) return -1;
     return static_vec_count_aligned(vec, tag, reset_flags);
 }
+/* Style programs (bopl_style.h). Install before creating the vector: every
+ * environment created afterwards runs it on its learner decisions. Returns 0,
+ * or -1 with the reason in `error`. */
+int bopl_style_install(const void *bytes, long length, char *error, int capacity) {
+    if (bopl_style_loaded) { bopl_style_free(&bopl_style_program); bopl_style_loaded=0; }
+    if (!bytes || length<=0) return 0;   /* uninstall */
+    if (bopl_style_load(&bopl_style_program, bytes, (size_t)length, error, (size_t)(capacity>0?capacity:0))) return -1;
+    bopl_style_loaded=1;
+    return 0;
+}
+/* The fade: the multiplier on every style payout from the next step on. */
+void bopl_style_set_scale(float scale) { bopl_style_scale=scale; }
+int bopl_style_terms(void) { return bopl_style_loaded?(int)bopl_style_program.n_terms:0; }
+/* Cumulative learner style counters summed over the vector's environments:
+ * decisions evaluated, then per term the unscaled payout sum and the number
+ * of decisions it paid on (1+2*n_terms doubles). Between rollouts only. */
+int bopl_vec_style(const void *gpu_observations, double *out, int capacity) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    int terms=bopl_style_terms(), size=1+2*terms;
+    if (!vec || capacity<size) return -1;
+    Env *envs=(Env*)vec->envs;
+    memset(out, 0, (size_t)size*sizeof(double));
+    for (int i=0; i<vec->size; i++) {
+        out[0]+=envs[i].style_decisions;
+        for (int t=0; t<terms; t++) { out[1+t]+=envs[i].style_pay[t]; out[1+terms+t]+=envs[i].style_fires[t]; }
+    }
+    return size;
+}

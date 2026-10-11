@@ -1,0 +1,22 @@
+# Drill snipe (style-discovery/kills): a kill by a fast drill launched from range.
+name = "drill_snipe"
+kits = [[26, 3, 2], [2, 26, 3]]
+fade = { start = 0.0, end = 0.7 }
+
+[let]
+# The killer's drill-form slime speed over the last two decisions (0 out of form).
+drill_speed = "max_over(8, (form_ability(self) == ability.Drill) * body(self).speed)"
+
+[[term]]
+name = "kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self and ev.source_ability == ability.Drill and ev.aspeed >= 20 and since_form_entry(self) >= 0.5 * 60"
+value = "0.08"
+
+[[term]]
+name = "kill_approx"
+# TODO(events): without the event stream there is no speed at the kill and no
+# launch distance; approximate with a credited kill while the killer's drill
+# was fast within the last 8 ticks. Off whenever the backend emits events.
+when = "not event_support and self.opponent_kills > prev(self.opponent_kills) and drill_speed >= 20 and since_form_entry(self) >= 0.5 * 60"
+value = "0.08 * (self.opponent_kills - prev(self.opponent_kills))"

@@ -246,9 +246,11 @@ $(OUT)/writer_bench: eval/writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h
 
 # The trainer's c_step phases timed over a replay corpus (eval/env_bench.c),
 # with the writer built as train/build.py builds the trainer's.
+# BOPL_ENV_BENCH_STYLE=<style.bin> (train/style_compile.py -o) adds the style
+# phase: style_net_inst / style_net_pct against env_train (the trainer's c_step).
 env-bench: $(OUT)/env_bench
 
-$(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/env_bench: eval/env_bench.c train/bopl_puffer.h train/bopl_style.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function $(INCLUDES) eval/env_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
@@ -357,12 +359,31 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac check-reward check-routing
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac check-reward check-routing style-check style-score
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
 # No game process and no oracle - both backends already agree on the counters
 # this reads, so what is under test is only what the reward makes of them.
+# Style programs (docs/STYLES.md): the C VM (train/bopl_style.h, built as the
+# trainer builds it) and eval/style_score.py's numpy interpreter must agree bit
+# for bit on every decision of the human replay dumps, with and without
+# (synthetic) events. STYLE_CHECK_GAMES=0 runs every dump.
+STYLE_FILES := $(filter-out styles/categories.toml,$(wildcard styles/*.toml))
+STYLE_CHECK_GAMES ?= 0
+$(OUT)/libstyle_check.so: eval/style_check.c train/bopl_style.h $(ABI)/bopl_rl.h
+	mkdir -p $(OUT)
+	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function -fPIC -shared $(INCLUDES) eval/style_check.c -lm -o $@
+
+style-check: $(OUT)/libstyle_check.so
+	native/artifacts/rl/venv/bin/python eval/style_check.py --lib $(abspath $<) --games $(STYLE_CHECK_GAMES) \
+	  --json $(abspath $(OUT))/style-check.json $(STYLE_FILES) eval/style_check.toml
+
+# Human/bot rates of every style over the replay dumps (the report's table).
+style-score:
+	for style in $(STYLE_FILES); do native/artifacts/rl/venv/bin/python eval/style_score.py $$style \
+	  --json $(abspath $(OUT))/style-score-$$(basename $$style .toml).json || exit 1; done
+
 check-reward: $(OUT)/check_reward
 	$(OUT)/check_reward
 
@@ -385,6 +406,6 @@ check-routing: $(RUST_ROLLOUT)
 	native/artifacts/rl/venv/bin/python train/check_routing.py \
 	  --game $(abspath $(RUST_ROLLOUT)) --output $(abspath $(OUT))/check-routing-port
 
-$(OUT)/check_reward: eval/check_reward.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/check_reward: eval/check_reward.c train/bopl_puffer.h train/bopl_style.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/check_reward.c $(ABI)/bopl_rl.c -ldl -lm -lpthread -o $@

@@ -411,7 +411,9 @@ def thin_metrics(snapshot):
         if picked[-1] is not rows[-1]:
             picked.append(rows[-1])
         rows = picked
-    return [{key: row[key] for key in CHART_KEYS if key in row} for row in rows]
+    # style_* / style/<term>: a --style run's fade scale and per-decision payouts (train.py).
+    return [{key: value for key, value in row.items() if key in CHART_KEYS or
+             (key.startswith(('style_', 'style/')) and isinstance(value, (int, float)))} for row in rows]
 
 
 # The panel that did not exist. An earlier run's opponent pool quietly

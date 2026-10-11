@@ -1,0 +1,15 @@
+# Shrink the safe area: own live offensive hazards from at least two distinct
+# abilities near the opponent, on both its left and its right. Paid per tick,
+# scaled by the fraction of 8 sectors around the opponent the hazards cover.
+name = "shrink_safe_area"
+fade = { start = 0.0, end = 0.7 }
+
+[let]
+hazard = "owner == self and flags & ACTIVE and not flags & PICKUP and in_category(source_ability, \"offense\") and dist(opp) < 8"
+left = "count(entities where hazard and x < opp.x)"
+right = "count(entities where hazard and x > opp.x)"
+
+[[term]]
+name = "pinch"
+when = "self.alive and alive(opp) and left > 0 and right > 0 and sources(entities where hazard) >= 2"
+value = "4e-4 * dt * coverage(opp, 8, 8, entities where hazard)"

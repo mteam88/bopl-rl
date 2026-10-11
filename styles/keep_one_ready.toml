@@ -1,0 +1,9 @@
+# Keep one ready (style-discovery/macro): alive outside sudden death with at
+# least one ability off cooldown. Paid per tick.
+name = "keep_one_ready"
+fade = { start = 0.0, end = 0.7 }
+
+[[term]]
+name = "ready"
+when = "self.alive and header.sudden_death == 0 and ready_count(self) >= 1"
+value = "8e-5 * dt"
