@@ -66,12 +66,14 @@ pool_size = 8
 pfsp_p = 2.0                       # AlphaStar's main agent: f_hard squared
 
 [main-exploiter]
+historical_every = 1               # every game vs the banks: ~1.9x the target data per second (600k vs 950k learner/s)
 bank_groups = "league,league,league,league"
 pool_size = 2
 pfsp_p = 1.0
 seed = 1076                        # + 100 per reset (league_loop.command)
 
 [league-exploiter]
+historical_every = 1
 bank_groups = "league,league,league,league"
 pool_size = 2
 pfsp_p = 1.0                       # AlphaStar's league exploiter: linear (capped)
