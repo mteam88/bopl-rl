@@ -187,17 +187,18 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
 # the self-play pool (entries, per-bank opponents, PFSP draws, sampling RNG), the
 # frozen banks' weights, the native step counter (pool snapshot names and
 # intervals), and the cumulative environment counters, which the C vector
-# restarts at zero and this process offsets. Not restored: the optimizer's
-# Muon momentum buffers (no native API; they rebuild within a few updates)
-# and the recurrent state, which starts as at an episode boundary.
+# restarts at zero and this process offsets, and the Muon momentum buffer.
+# Not restored: the recurrent state, which starts as at an episode boundary.
 RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'layers', 'horizon',
-                 'learner_passes', 'learning_rate', 'anneal_lr', 'entropy', 'entropy_floor',
-                 'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
+                 'learner_passes', 'learning_rate', 'anneal_lr', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'pool_size', 'pfsp_p', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts',
                  'historical_every', 'style_sha256')
+# The entropy schedule is a pure function of these and the learner step,
+# recomputed every update, so a resume may change it; the change is recorded.
+RESUME_SCHEDULE = ('entropy', 'entropy_floor', 'entropy_half_life')
 # Policy v4 (train/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
@@ -266,10 +267,11 @@ def offset_counters(counts, base):
     return out
 
 
-def pool_state_json(pool, ledger, *, counts, elapsed, global_step, update_index, checkpoint):
+def pool_state_json(pool, ledger, *, counts, elapsed, global_step, update_index, checkpoint, momentum):
     return dict(schema=1, pool={k: v for k, v in pool.items() if k != 'rng'},
                 rng=pool['rng'].bit_generator.state, ledger=ledger, counts=counts, elapsed=elapsed,
-                global_step=int(global_step), update_index=update_index, checkpoint=str(checkpoint))
+                global_step=int(global_step), update_index=update_index, checkpoint=str(checkpoint),
+                momentum=str(momentum))
 
 
 def load_pool_state(record):
@@ -426,6 +428,9 @@ def arguments():
                    help='style specs (docs/STYLES.md, styles/*.toml; several or comma-separated) compiled into '
                         'one program whose bonus every env adds to the learner reward, faded by the first '
                         "spec's fade over the run's learner steps")
+    p.add_argument('--style-fade-steps', type=int,
+                   help="learner steps the style fade is measured over (default --steps); the league loop sets "
+                        "the exploiter's timeout so the fade stays monotonic as --resume grows --steps")
     a = p.parse_args()
     a.style = [Path(x) for part in a.style for x in part.split(',') if x]
     a.style_program = a.style_sha256 = None
@@ -542,7 +547,10 @@ def main():
         recorded = recorded_hypers(previous_config)
         for name in RESUME_HYPERS:
             if recorded[name] != getattr(a, name):
-                raise SystemExit(f'--resume: {name} was {recorded[name]!r}, now {getattr(a, name)!r}; only --steps may change')
+                raise SystemExit(f'--resume: {name} was {recorded[name]!r}, now {getattr(a, name)!r}; only --steps '
+                                 f'and the entropy schedule may change')
+        schedule_changes = {name: [recorded[name], getattr(a, name)] for name in RESUME_SCHEDULE
+                            if recorded[name] != getattr(a, name)}
         if a.steps < resume['counts']['learner_steps']:
             raise SystemExit(f"--resume: --steps {a.steps} is below the {resume['counts']['learner_steps']} already trained")
         if not Path(resume['checkpoint']).exists():
@@ -746,7 +754,7 @@ def main():
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   style=(dict(paths=[str(path.resolve()) for path in a.style], sha256=a.style_sha256,
                               terms=a.style_program.term_names, fade=list(a.style_program.fade),
-                              program='style.bin') if a.style_program is not None else None),
+                              fade_steps=a.style_fade_steps or a.steps, program='style.bin') if a.style_program is not None else None),
                   game=str(game), runtime=runtime, native=args,
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
     if resume:
@@ -756,6 +764,13 @@ def main():
         config.update(steps=target_physical, learner_steps=a.steps)
         config.setdefault('resumed', []).append(dict(at_learner_steps=resume['counts']['learner_steps'],
                                                      checkpoint=resume['checkpoint'], steps=a.steps))
+        if schedule_changes:
+            # config.json keeps describing the run as it now trains; the
+            # resume record keeps what it trained with before.
+            config['resumed'][-1]['changed'] = schedule_changes
+            config.update({name: new for name, (_, new) in schedule_changes.items()})
+            config['native']['train'].update(ent_coef=a.entropy, min_ent_coef_ratio=a.entropy_floor/a.entropy)
+            print(f'--resume: entropy schedule changed {schedule_changes}', flush=True)
     atomic_json(output/'config.json', config)
     started = time.monotonic()
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
@@ -837,10 +852,17 @@ def main():
                 saved[step] = path
             if pool is not None:
                 # Everything --resume needs besides the weights, written with
-                # every checkpoint so the last one is always consistent.
+                # every checkpoint so the last one is always consistent. Only
+                # the newest Muon momentum is kept: resume is its one reader.
+                momentum = output/'pool'/f'momentum-{step:09d}.bin'
+                _C.save_momentum(trainer, str(momentum))
                 atomic_json(output/'pool/state.json', pool_state_json(
                     pool, ledger, counts=counts, elapsed=elapsed_before + time.monotonic() - training_started,
-                    global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step]))
+                    global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step],
+                    momentum=momentum))
+                for old in (output/'pool').glob('momentum-*.bin'):
+                    if old != momentum:
+                        old.unlink()
                 persist_roster()
             return saved[step]
         training_started = time.monotonic()
@@ -848,6 +870,13 @@ def main():
             saved = {int(path.stem.split('-')[1]): path for path in sorted((output/'checkpoints').glob('policy-*.bin'))}
             initial = saved[min(saved)]
             _C.load_weights(trainer, resume['checkpoint'])
+            # Runs saved before momentum was persisted resume with it cold.
+            momentum = resume.get('momentum')
+            if momentum and Path(momentum).is_file():
+                _C.load_momentum(trainer, momentum)
+            else:
+                print('--resume: no saved Muon momentum; the optimiser restarts cold', flush=True)
+            config['resumed'][-1]['momentum'] = bool(momentum and Path(momentum).is_file())
             trainer.global_step = resume['global_step']
             pool, ledger = load_pool_state(resume)
             if len(pool['banks']) != policy_banks:
@@ -889,7 +918,7 @@ def main():
             ledger = native_selfplay.members(str(initial), league_opponents)
         if roster_entries:
             sync_scripted()
-        style.scale(counts['learner_steps'], a.steps)
+        style.scale(counts['learner_steps'], a.style_fade_steps or a.steps)
         vector.reset()
         _C.log(trainer)  # Warmup losses are not measured training updates.
         if vector.snapshot()['learner_steps'] or vector.snapshot()['game_steps']:
@@ -1125,10 +1154,10 @@ def main():
                         # Matches starting during the next rollout draw against this roster.
                         sync_scripted()
                     if more:
-                        style.scale(ready['learner_steps'], a.steps)
+                        style.scale(ready['learner_steps'], a.style_fade_steps or a.steps)
                         _C.rollouts_start(trainer)
                 else:
-                    style.scale(counts['learner_steps'], a.steps)
+                    style.scale(counts['learner_steps'], a.style_fade_steps or a.steps)
                     rollout_seconds = _C.rollouts(trainer)
                     dump_rows()
                 flush_deferred()   # the previous update's bookkeeping, while this rollout runs
