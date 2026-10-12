@@ -126,8 +126,15 @@ else:
     link(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cpu.o"),
           str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), str(cuda_runtime),
           "-Wl,-rpath," + str(cuda_runtime.parent), "-lm", "-lpthread"], target)
-link(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(ABI),
-      str(HERE / "eval_binding.c"), str(ABI / "bopl_rl.c"), "-lm"], out / "libbopl_research.so")
+# The research library carries the CPU policy evaluator for decision-time search
+# (bopl_search.h), as the Makefile's research target builds it; without
+# policy_eval.c every eval/environment.py load fails on bopl_policy_eval_close.
+# Only the evaluator gets -ffast-math: the observation code must round as the trainer's does.
+subprocess.run(["cc", "-O3", "-std=gnu11", "-march=native", "-ffast-math", "-fPIC", "-c", "-I" + str(source / "src"),
+                "-I" + str(HERE), str(HERE / "policy_eval.c"), "-o", str(out / "bopl_research_policy.o")], check=True)
+link(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(ABI), str(HERE / "eval_binding.c"),
+      str(ABI / "bopl_rl.c"), str(out / "bopl_research_policy.o"), "-lm", "-lpthread"], out / "libbopl_research.so")
+(out / "bopl_research_policy.o").unlink()
 # policy_eval.c is the CPU forward pass evaluate.py / the pool rater load through
 # native_policy.py; it shares the head layout with the trainer, so rebuild it in
 # lockstep (overnight-7 lost 4 trials to a stale copy missing _create_aim).

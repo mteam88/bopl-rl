@@ -98,7 +98,8 @@ def dashboard(a, model, played, games_dir):
     probe as its one evaluation, so the saved games open in the dashboard's arena."""
     (a.out / 'checkpoints').mkdir(exist_ok=True)
     config = dict(model.meta.get('config') or {}, schema=1, algorithm='recurrent PPO',
-                  probe=dict(a=str(a.a), b=str(a.b), pairs=a.pairs, seed_base=a.seed_base))
+                  probe=dict(a=str(a.a), b=str(a.b), pairs=a.pairs, seed_base=a.seed_base,
+                                                                  temperature=a.temperature))
     atomic_json(a.out / 'config.json', config)
     atomic_json(a.out / 'status.json', dict(status='complete', pid=None, step=0, learner_steps=0, elapsed=0,
                                             matches=len(played), target_steps=0, target_learner_steps=0))
@@ -118,10 +119,13 @@ def main(argv=None):
     p.add_argument('--seed-base', type=int, default=131001)
     p.add_argument('--save', choices=('losses', 'all', 'none'), default='losses')
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--temperature', type=float, help="divide A's logits (all three heads) by this before sampling")
     a = p.parse_args(argv)
 
     built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate'),
              'B': elo_ladder.Random() if a.b == 'random' else elo_ladder.Model('B', Path(a.b).resolve(), 'candidate')}
+    if a.temperature:
+        built['A'].temperature = (a.temperature,) * 3
     games_dir = a.out / 'evaluations' / '000000000'
     games_dir.mkdir(parents=True, exist_ok=True)
     league_games.configure(a.out / 'workers')
