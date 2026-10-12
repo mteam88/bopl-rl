@@ -113,6 +113,7 @@ Training cost: 1,700 rows/s on the RTX 5070 shared with `bopl-allkit-1c`
 | `ei1@14667445776` (run 0a) | 146 | iter0 | onehot, kl 0.3, 2 epochs | 0.507 [0.473, 0.539] | (not run) |
 | `ei1@14668744656` (run 0c) | 386 | iter0 | onehot, kl 0.3, 3 epochs | 0.521 [0.488, 0.556] | (not run) |
 | `ei1@14670992528` (run 0d) | 536 | iter0 | onehot gated by candidate spread (`--weight-spread 0.02`), kl 0.3, 3 epochs | 0.486 [0.451, 0.520] | (not run) |
+| `ei1@14668192424` (run 2b) | 570 | iter1 (screened `8,4,8,h` relabels) | listwise, beta 100, kl 0.3, `--labeled-only`, 1 epoch | 0.518 [0.482, 0.553] | 0.677 [0.645, 0.710] |
 
 ## 5. What the student learned (run 0c, 20 held-out games, 50 k decisions)
 
@@ -351,3 +352,41 @@ training labels, 6.9 k held-out labels), listwise, beta 100, kl 0.3,
 13 min on the shared GPU. Held out after the epoch: policy 0.0207 -> 0.0227,
 pref 0.2315 -> 0.2326, **q_gain -0.08e-3** against the search's 10.6e-3.
 Checkpoint `runs/2b/policy-14668192424.bin`, evaluated as `ei1@14668192424`.
+
+Iteration 1 result (all_combos, 500 pairs, seed-base 131001): `ei1@14668192424`
+scores **0.518 [0.482, 0.553]** against its base and **0.677 [0.645, 0.710]**
+against g111-l1-12800m, where the base scores 0.696 [0.661, 0.728]. Neutral
+on both legs, as the held-out q_gain predicted.
+
+## 11. Conclusion and next step
+
+Five students (0a, 0c, 0d, 2b, plus 1a/1b stopped on held-out q_gain) on two
+label designs and three targets all land within noise of the base: 0.486 to
+0.521 head to head. The diagnosis is consistent across every measure:
+
+- The search's selection is real: ~4.3e-3 of return per screened decision on
+  independent returns (section 8), 0.66 head to head.
+- Label noise is not the limit: n=1 labels are already ~60% signal on the
+  decisions that matter, and 85%-signal relabels change nothing (2a, 2b).
+- The net's own features can't predict which candidate the search will
+  prefer: a free MLP on the trunk output y, with or without the privileged
+  block, recovers at most ~0.3e-3 of the ~4e-3 as a playable policy (section
+  9), and fine-tuning every weight does no better on held-out games.
+
+The search wins by simulating the exact state 8 decisions forward; the
+consequences it finds (which aim or hold survives the next exchange) aren't
+encoded in this net's representation at a resolution the policy can use.
+Expert iteration by distillation is done at this scale: more games, cleaner
+labels or other targets won't move it.
+
+Next, in order of expected gain per hour:
+
+1. Use the search at play time where a 19 ms decision is affordable (`8,1,8`,
+   0.66, or `8,1,1`, the critic one decision ahead, 0.60 at a fraction of the
+   cost; docs/SEARCH.md).
+2. If a raw-net gain is required, it has to come from representation, not
+   labels: search in the training loop (search-improved targets inside PPO,
+   so the trunk is trained to predict them from the start) or a larger net,
+   both GPU runs measured in days. Gate either on `q_probe.py`: a new
+   trunk is worth distilling into only if the probe's held-out soft gain on
+   it is a real fraction of the ~4e-3.
