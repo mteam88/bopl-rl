@@ -26,12 +26,9 @@ Yes, the same as on g111. `8,1,8` around allkit-1@14667m vs raw allkit-1@14667m,
 decision on the loaded box, 8 rollouts, 130 policy rows per decision;
 `sweeps/ei-1/all_combos.jsonl`). Phase 1 had 0.672 [0.621, 0.723] on g111.
 
-Where the gain is not: on g111's own 16 trained lineups (`h2h.py`, the league's
-rating condition) the same search scores 0.29 [0.17, 0.44] over 48 games, i.e.
-it *loses* (a 96-pair repeat is in `sweeps/search-v1/h2h.jsonl`). The search
-helps where the net is unsure (random kits) and hurts where it is sharp. See
-"what the search actually does" below; it is also why the distillation target
-needs care.
+On g111's own 16 trained lineups the gain is smaller and not resolved (0.29
+over 48 games, 0.57 over 192; docs/SEARCH.md): the search helps where the net
+is unsure, which is the all-kit condition.
 
 ## 2. Data
 
@@ -105,7 +102,9 @@ Training cost: 1,700 rows/s on the RTX 5070 shared with `bopl-allkit-1c`
 | label | games | data | target | vs allkit-1@14667m | vs g111-l1-12800m |
 | --- | --- | --- | --- | --- | --- |
 | allkit-1@13.3B (reference) | | | | | 0.661 [0.629, 0.696] |
-| `ei1@14667445776` (run 0a) | 146 | iter0 | onehot, kl 0.3, 2 epochs | pending | pending |
+| `ei1@14667445776` (run 0a) | 146 | iter0 | onehot, kl 0.3, 2 epochs | 0.507 [0.473, 0.539] | (not run) |
+| `ei1@14668744656` (run 0c) | 386 | iter0 | onehot, kl 0.3, 3 epochs | pending | |
+| run 0d | 565 | iter0 | onehot gated by candidate spread (`--weight-spread 0.02`), kl 0.3, 3 epochs | pending | |
 
 ## 5. Next
 
