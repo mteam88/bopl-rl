@@ -304,5 +304,6 @@ best soft policy gains 0.33e-3 per decision, under a tenth of the ~4e-3 the
 search really delivers (section 8). The privileged block adds nothing. So the
 search's gain is in states the trunk does not separate: it reads the exact
 simulator state forward 8 decisions, which y does not encode at this
-resolution. A policy-head fine-tune (what distill.py trains, plus a KL
-anchor) is bounded by this probe, and runs 0a-1b sit at or under it.
+resolution. This bounds any head on the current y. distill.py fine-tunes
+every weight, so a student could in principle reshape y, but runs 0a-1b,
+which do exactly that, land at or under the probe (held-out q_gain <= 0).
