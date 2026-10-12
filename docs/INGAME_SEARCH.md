@@ -146,7 +146,8 @@ episodes each, all IDENTICAL), shim tick at a decision, mean / p95 / max ms:
 | budget | 2p | 3p |
 | --- | --- | --- |
 | `8,1,8` | 16.9 / 17.5 / 24.9 | 25.1 / 25.9 / 43.1 |
-| `4,1,8` | | 12.8 / 13.9 / 15.8 |
+| `4,1,8` | 8.9 / 9.3 / 29.1 | 12.8 / 13.9 / 15.8 |
+| `4,1,6` | | 10.0 / 10.6 / 29.6 |
 | `8,1,4` | | 13.3 / 13.9 / 47.5 |
 | `4,1,4` | | 6.9 / 7.4 / 7.9 |
 
@@ -180,8 +181,8 @@ Cheaper budgets for the Mac (same benchmark, allkit-1@14667m searched vs raw,
 | `8,1,8` | 0.660 | [0.582, 0.733] | 10.5 (SEARCH.md) |
 
 On the M4 Pro, `8,1,8` does not fit a 16.7 ms frame even 2p (16.9 ms), and 3p
-is 25 ms. `4,1,6` keeps most of the gain at about 40% of the cost (3p about
-10 ms on the Mac, between `4,1,4` and `4,1,8`), so it is the Mac budget:
+is 25 ms. `4,1,6` keeps most of the gain at about 40% of the cost (3p 10.0 ms
+mean on the Mac), so it is the Mac budget:
 `BOPL_AGENT_SEARCH=4,1,6`.
 
 ## Found on the way
