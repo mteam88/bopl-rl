@@ -360,7 +360,7 @@ on both legs, as the held-out q_gain predicted.
 
 ## 11. Conclusion and next step
 
-Five students (0a, 0c, 0d, 2b, plus 1a/1b stopped on held-out q_gain) on two
+Four evaluated students (0a, 0c, 0d, 2b; 1a, 1b and 2a stopped on held-out q_gain) on two
 label designs and three targets all land within noise of the base: 0.486 to
 0.521 head to head. The diagnosis is consistent across every measure:
 
