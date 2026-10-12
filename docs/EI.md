@@ -254,3 +254,21 @@ Temperature result: T=0.75 on all three heads scores **0.492 [0.438, 0.544]**
 against T=1 (200 pairs, `sweeps/ei-1/all_combos.jsonl`). Sharpening buys
 nothing, so T=0.5 was stopped unplayed to give the CPU to iter1 generation. The
 trained entropy is about right for this net.
+
+## 8. Iteration 1: data (`data/iter1`, `bopl-ei1-gen1-a/-b`, seeds 10000+, 20000+)
+
+Screened relabelling from allkit-1@14667m, 2 units x 3 workers, nice 10:
+58-83 s per game, 10.6% of seat-decisions relabelled at `8,4,8,h` (about 200
+labels per game), ~3.7 games/min on the shared box.
+
+Label noise, measured on the first 60 games (`train/label_noise.py`, 16 k
+relabelled decisions, 64 k shared-candidate pairs): the n=1 screen and the
+`8,4,8,h` relabel agree at **r = 0.73** on within-decision return deviations
+(spread medians 0.033 and 0.023). Reading the two as signal + noise/n
+(halving ignored), noise/signal variance is about 0.6 at n=1, so an n=1 label
+on a screened decision is ~60% signal and an `8,4,8,h` label ~85%. The
+one-game estimate above (0.51) was low. So iter0's ~100 k high-spread
+decisions were already mostly signal, and iter1's labels are cleaner by a
+factor of ~1.4 in reliability, not 4. My prior before training is that iter1
+fails too: the limit is what the net can predict from its observation, not
+the noise.
