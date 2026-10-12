@@ -91,6 +91,19 @@ if [ $PICKER = 1 ]; then
   # Keep a rated catalog over a fresh unrated one (no numpy/scipy here).
   if "$PYTHON" "$ROOT/Tools/bot_catalog.py" --out "$CATALOG.new" 2>/dev/null \
      && { [ ! -f "$CATALOG" ] || "$PYTHON" -c 'import json,sys; sys.exit(0 if any(b["rating"] is not None for b in json.load(open(sys.argv[1]))["bots"]) else 1)' "$CATALOG.new"; }; then
+    # Bots added to the catalog by hand (not league members, e.g. allkit-1-14667m)
+    # stay in front, and stay the default if they were.
+    [ -f "$CATALOG" ] && "$PYTHON" - "$CATALOG" "$CATALOG.new" <<'EOF'
+import json, sys
+old, new = (json.load(open(p)) for p in sys.argv[1:3])
+ids = {b['id'] for b in new['bots']}
+kept = [b for b in old['bots'] if b['id'] not in ids]
+if kept:
+    new['bots'] = kept + new['bots']
+    if old.get('default', {}).get('bot') in {b['id'] for b in kept}:
+        new['default'] = old['default']
+    json.dump(new, open(sys.argv[2], 'w'), indent=1)
+EOF
     mv -f "$CATALOG.new" "$CATALOG"
   else
     rm -f "$CATALOG.new"

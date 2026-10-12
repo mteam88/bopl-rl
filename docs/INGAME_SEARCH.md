@@ -122,6 +122,8 @@ is expected: it now holds the humans' real latched inputs.
 | 3p `8,1,1`, 2 random humans | 0-5 searched throughout, in sync | mean 3.3-3.7, p95 4.6-5.2, max 11.0 | p50 16.9-17.7, p95 17.9-19.4, max 32.8, 0 over 33 |
 | 2p `8,1,1`, jump-edge repro after the fix | 0-3 in sync | mean 2.4-2.5, p95 3.3-3.5, max 4.6 | p50 17.0-17.5, p95 18.1-19.2, 1 frame over 33 of 8000 |
 | 2p `8,1,8`, random human | 0-4 searched throughout, in sync | mean 10.3-10.7, p95 11.0-11.9, max 42.7 (one stall) | p50 15.8-16.7, p95 16.4-17.4, max 77 (one), 2 over 33 of 8000 |
+| 2p `8,1,8`, after the kills rebase (fef970e6), one match | 1-7 searched throughout, in sync | mean 10.3-11.7, p95 11.1-12.5, max 14.6 | p50 15.8-17.0, p95 16.6-17.8, max 29.4, 0 over 33 |
+| 3p `8,1,8`, 2 random humans, same build | 0-2 searched throughout, in sync | mean 15.6-17.8, p95 16.8-19.1, max 23.8 | p50 15.9-16.9, p95 17.6-19.7, max 25.4, 0 over 33 |
 
 Fallback was exercised live twice: run 1 round 3 and run 2 round 6, both by
 the desync below. Each logged its reason and played the round out raw.
@@ -137,6 +139,16 @@ Offline per-decision cost (shim tick at a decision, `8,1,1`):
 | --- | --- | --- | --- |
 | PowerSpec 7600X3D | 1.9 / 2.3 / 3.9 | 2.7 / 3.4 / 5.0 | 10.5 / 14.8 |
 | M4 Pro (battery) | 2.8-3.1 / 3.5 / 21 (one spike) | 4.2 / 4.6 / 7.2 | 17.0 / 20.7 |
+
+M4 Pro, 2026-10-12 (battery, `eval/shim_search_check.c`, maps 0,3,36, 3 full
+episodes each, all IDENTICAL), shim tick at a decision, mean / p95 / max ms:
+
+| budget | 2p | 3p |
+| --- | --- | --- |
+| `8,1,8` | 16.9 / 17.5 / 24.9 | 25.1 / 25.9 / 43.1 |
+| `4,1,8` | | 12.8 / 13.9 / 15.8 |
+| `8,1,4` | | 13.3 / 13.9 / 47.5 |
+| `4,1,4` | | 6.9 / 7.4 / 7.9 |
 
 ### Strength (`league/all_combos.py --search 8,1,1`, 200 pairs)
 
@@ -154,6 +166,23 @@ frame. One way is a worker thread on a fork of the shadow taken at e. It
 would either delay the decision by a tick or two (training never saw that
 delay) or search from e-4 with the opponents' packets predicted. That is the
 next step.
+
+Cheaper budgets for the Mac (same benchmark, allkit-1@14667m searched vs raw,
+200 pairs, 400 games each, 2026-10-12):
+
+| budget | score | 95% CI | ms / decision (PowerSpec, 2p) |
+| --- | --- | --- | --- |
+| `8,1,1` | 0.486 | [0.433, 0.539] | 1.8 |
+| `4,1,4` | 0.564 | [0.515, 0.615] | 4.4 |
+| `4,1,6` | 0.609 | [0.554, 0.665] | 5.8 |
+| `4,1,8` | 0.584 | [0.529, 0.636] | 8.2 |
+| `8,1,4` | 0.588 | [0.530, 0.644] | 8.2 |
+| `8,1,8` | 0.660 | [0.582, 0.733] | 10.5 (SEARCH.md) |
+
+On the M4 Pro, `8,1,8` does not fit a 16.7 ms frame even 2p (16.9 ms), and 3p
+is 25 ms. `4,1,6` keeps most of the gain at about 40% of the cost (3p about
+10 ms on the Mac, between `4,1,4` and `4,1,8`), so it is the Mac budget:
+`BOPL_AGENT_SEARCH=4,1,6`.
 
 ## Found on the way
 
@@ -176,9 +205,15 @@ next step.
   were encoded as grass in the v4 rows of raw play too. RlAgent now calls
   `bopl_agent_set_map(level)` each round.
 - **Kills and deaths are match-cumulative in the game.** The v4 row encodes
-  them (clip /10, `bopl_rows_v4.h`). Rounds after the first are out of
-  distribution for raw and search alike. Not changed here. Rebasing per round
-  in RlObservation would fix it.
+  them (clip /10, `bopl_rows_v4.h`), and every training episode is one round
+  from zero, so rounds after the first were out of distribution for the raw
+  forward (the search's own rows come from the shadow, which starts at zero).
+  Fixed in fef970e6: `RlAgent.BeginRound` calls `RlObservation.RebaseRound`,
+  and `Write` subtracts each player's round-start counts. Player.log shows
+  `BOPL_AGENT: round N first row kills/deaths p1 0/0 (match 2/15), ...` and
+  the same for the terminal row. Live check (Linux, `8,1,8`, allkit-1@14667m):
+  a 2p match of 7 rounds (match totals up to 3/21) and a 3p match of 3 rounds
+  started every round at 0/0, stayed in sync and searched every decision.
 - **macOS secondary threads get 512 KB of stack.** The in-process Rust
   world's constructor overflows that. The research env's world-open threads
   (`bopl_puffer.h`) and the in-process reset thread (`sim/abi/bopl_rl.c`) now
