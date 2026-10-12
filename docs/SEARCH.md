@@ -112,10 +112,28 @@ rollouts, steps, forward rows, seconds and both root values.
 | `8,8,8,h` | 0.690 | [0.590, 0.790] | 100 | 219.8 | 112 | 1788 |
 | `8,8,8,h,mix=1,vs=20` | 0.690 | [0.590, 0.790] | 100 | 231.2 | 112 | 1788 |
 
-Ablations at 100 pairs (`8,1,1,mix=1,vs=0` null control: candidates but a
-prior-only pick; `8,1,1`; `8,1,2`; `2,1,8`; `8,1,8,latched=0`; `8,1,16`) and
-the 16 trained lineups (`h2h.py --search 8,1,8`) are queued in
-`bopl-search-v1-c` / `-b`; see the addendum at the end of this file.
+Ablations at 100 pairs (200 games), same setup:
+
+| budget | score | 95% CI | ms / decision | rollouts | rows / decision | note |
+| --- | --- | --- | --- | --- | --- | --- |
+| `8,1,1,mix=1,vs=0` | 0.530 | [0.455, 0.605] | 7.9 | 8 | 18 | null control: 8 candidates, prior-only pick |
+| `8,1,1` | pending | | | | | one-step rollouts: the critic alone |
+| `8,1,2` | pending | | | | | |
+| `2,1,8` | pending | | | | | |
+| `8,1,8,latched=0` | pending | | | | | no search while latched |
+| `8,1,16` | pending | | | | | |
+
+The null control sits at 0.5: picking among the Gumbel-top-k candidates by the
+prior alone is just sampling the policy, so the gain is the returns, not the
+candidate machinery.
+
+On g111's own 16 trained lineups (`h2h.py`, the league's rating condition,
+seed-base 91001) the search *loses*: `8,1,8` scores 0.292 [0.167, 0.438] over
+48 games (24 pairs). A 96-pair repeat (seed-base 92001) is in
+`sweeps/search-v1/h2h.jsonl`. The search helps where the net is unsure
+(random any-3 kits) and hurts where it is sharp: with one rollout per
+candidate it swaps the net's well-tuned sample for the argmax of near-noise
+returns (docs/EI.md, "what the search actually does").
 
 Reading it:
 
