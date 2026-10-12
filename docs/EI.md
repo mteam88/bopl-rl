@@ -106,7 +106,7 @@ Training cost: 1,700 rows/s on the RTX 5070 shared with `bopl-allkit-1c`
 | --- | --- | --- | --- | --- | --- |
 | allkit-1@13.3B (reference) | | | | | 0.661 [0.629, 0.696] |
 | `ei1@14667445776` (run 0a) | 146 | iter0 | onehot, kl 0.3, 2 epochs | 0.507 [0.473, 0.539] | (not run) |
-| `ei1@14668744656` (run 0c) | 386 | iter0 | onehot, kl 0.3, 3 epochs | pending | |
+| `ei1@14668744656` (run 0c) | 386 | iter0 | onehot, kl 0.3, 3 epochs | 0.521 [0.488, 0.556] | (not run) |
 | run 0d | 565 | iter0 | onehot gated by candidate spread (`--weight-spread 0.02`), kl 0.3, 3 epochs | pending | |
 
 ## 5. What the student learned (run 0c, 20 held-out games, 50 k decisions)
@@ -142,6 +142,87 @@ observation does not contain. A per-decision one-hot label carries very little
 of the +16 points; it has to be averaged over far more decisions per situation
 than 1,200 games give, if it is recoverable from the observation at all.
 
-## 6. Next
+## 6. A listwise target on the same data (runs 1a, 1b)
 
-(filled in with the results)
+The onehot target asks the net to raise the search's action against the whole
+joint action space, and that is mostly the search's sampling pattern. The part
+that carries the gain is the *selection* among the k candidates, so
+`--target listwise` (`train/distill.py`) trains only that:
+
+    policy   KL(t || softmax_c log pi_student(c))   over the k candidates c
+    t(c)  ∝  pi_base(c) exp(beta q(c))              (completed-Q improved policy on the searched set)
+
+Where the returns are equal, `t` is the base's own preference and the term has
+no gradient, so the 63% coin-flip decisions pull nowhere and the high-spread
+ones carry the update; everything outside the candidate set is left to the
+anchor. A held-out number in return units goes with it: `q_gain`, the
+expected candidate return under the student's candidate distribution minus the
+base's (rollout noise on held-out games is independent of the net, so this is
+an unbiased measure of how much of the search's selection the net took over),
+next to `q_gain_search`, the search's own pick minus the base expectation.
+
+On iter0 (841 training games, 2.2 M rows, 44 held out), kl 0.3, lr 1e-4:
+
+| run | beta | held-out q_gain after 1 epoch | q_gain_search | pref student / base | held-out policy term epoch 0 -> 1 |
+| --- | --- | --- | --- | --- | --- |
+| 1a | 50 | -0.000007 | 0.0038 | 0.1317 / 0.1305 | 0.019 -> 0.029 |
+| 1b | 200 | -0.000006 | 0.0038 | 0.1313 / 0.1305 | 0.123 -> 0.132 |
+
+Nothing: the student's selection gain is zero to six decimals against the
+search's 0.0038 per decision, and the per-bucket numbers (each bucket is
+measured before the step that trains on it) were zero all through the epoch.
+The held-out policy term *rose*: the net fit the training labels' noise. Both
+runs were stopped after epoch 1 and not played (an all_combos eval is 4
+CPU-hours for an expected 0.50).
+
+How noisy is an n=1 label where it matters? One short game recorded with the
+screen below (`8,1,8` on every decision, `8,4,8,h` again on the decisions whose
+`8,1,8` spread is >= 0.02; the second search draws its own candidates, 3.7 of
+8 shared on average): over the shared candidates, the within-decision return
+deviations of the n=1 search and the n=4-plus-halving search correlate at
+0.51 (596 pairs, 166 decisions), and the n=1 spread regresses from 0.046 to
+0.028. So even on the high-spread decisions the n=1 label is about half
+noise, and on the 63% below 0.005 it is almost all noise.
+
+## 7. Iteration 1: label choice
+
+Options, scored by expected gain per CPU hour:
+
+- (b) Search returns as value targets, PPO turns them into policy. Rejected.
+  The raw net never reads its value head at play time, so any gain has to come
+  through a new PPO run on the GPU with a value-target path in the CUDA loss
+  (pufferlib-bopl.patch), and PPO's critic already fits the real returns of
+  13 G steps. The search's root return is an 8-decision lookahead
+  bootstrapped on that same critic. A small, indirect lever on a plateaued run,
+  at the most engineering.
+- (c) High-spread decisions only. Already inside the listwise target: equal
+  returns give no gradient, and beta weights decisions by their spread. 1a/1b
+  show that this alone doesn't help on n=1 labels.
+- (a) Several rollouts per candidate with halving. This attacks the measured
+  problem, label noise (reliability ~0.5 at n=1 even where the spread is
+  large), but `8,4,8,h` is 56 rollouts per decision against 8, so labelling
+  every decision costs 7x.
+- Chosen: **(a)+(c) screened**. Play under `8,1,8` as in iter0 and use it as a
+  screen. Where its candidate spread is >= 0.02 (about 1 decision in 10;
+  more early in games), search again at `8,4,8,h` on the same tick, play that
+  pick, and keep only those decisions as labels (`search_record.py
+  --label-budget 8,4,8,h --screen-spread 0.02`). Train `--target listwise` on
+  them. Each game costs about 2x an iter0 game, and every label is a
+  high-spread decision with 4-12 rollouts per candidate, where the search's
+  gain lives. The screen's own n=1 candidates are kept (`screen`) for the
+  noise measurement above.
+
+This is also the clean test of what limits distillation. If cleaner labels on
+the decisions that matter give held-out `q_gain > 0`, the limit was noise and
+more data pays. If they don't, the search's selection is not recoverable from
+the observation: it reads the simulator's exact, undelayed state through the
+privileged critic, which the delayed observation does not contain (`8,1,1`,
+the critic one decision ahead, already gives 0.60 of the 0.66). In that case
+EI by distillation is done at this scale, and the search should be used at
+play time.
+
+Side test, zero training: sample the raw net sharper. The search's pick at a
+critical decision is in part "don't take the rare bad sample", and a lower
+softmax temperature does some of that for free. A temperature can be baked
+into the checkpoint by scaling the actor rows. `all_combos.py --temperature-a`,
+`sweeps/ei-1/temp.sh`, 200 pairs against T=1.
