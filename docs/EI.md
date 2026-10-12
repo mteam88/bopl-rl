@@ -107,7 +107,7 @@ Training cost: 1,700 rows/s on the RTX 5070 shared with `bopl-allkit-1c`
 | allkit-1@13.3B (reference) | | | | | 0.661 [0.629, 0.696] |
 | `ei1@14667445776` (run 0a) | 146 | iter0 | onehot, kl 0.3, 2 epochs | 0.507 [0.473, 0.539] | (not run) |
 | `ei1@14668744656` (run 0c) | 386 | iter0 | onehot, kl 0.3, 3 epochs | 0.521 [0.488, 0.556] | (not run) |
-| run 0d | 565 | iter0 | onehot gated by candidate spread (`--weight-spread 0.02`), kl 0.3, 3 epochs | pending | |
+| `ei1@14670992528` (run 0d) | 536 | iter0 | onehot gated by candidate spread (`--weight-spread 0.02`), kl 0.3, 3 epochs | 0.486 [0.451, 0.520] | (not run) |
 
 ## 5. What the student learned (run 0c, 20 held-out games, 50 k decisions)
 
@@ -141,6 +141,29 @@ delay, the opponent's rollout actions under common random numbers), which the
 observation does not contain. A per-decision one-hot label carries very little
 of the +16 points; it has to be averaged over far more decisions per situation
 than 1,200 games give, if it is recoverable from the observation at all.
+
+Units `bopl-ei1-eval-0c` and `-0d` played only the allkit-1 leg (`OPPS` set to
+it); the g111 leg was skipped because neither student differs from its base.
+`bopl-ei1-gen-a`/`-b` finished iter0: 1,200 games (seeds 1000-1599,
+2000-2599), ~1.6 M decisions, both seats.
+
+The same diagnostic with the selection gain in return units (`qg`, x1000: the
+student's expected candidate return minus the base's, and the search's own pick
+minus the base's), on the 20 newest iter0 games (recorded after both students
+were trained; `sweeps/ei-1/diag-newest.txt`):
+
+| spread | share | qg 0c | qg 0d | qg search |
+| --- | --- | --- | --- | --- |
+| < 0.005 | 63% | -0.00 | -0.00 | 0.49 |
+| 0.005-0.02 | 27% | -0.13 | -0.08 | 4.7 |
+| 0.02-0.05 | 7-8% | -0.39 | -0.27 | 12.3 |
+| 0.05-0.2 | 2% | -0.75 | -0.92 | 27 |
+| > 0.2 | 0.2% | 1.9 | 1.05 | 230 |
+| all | | -0.07 | -0.06 | 3.5 |
+
+Both onehot students select *worse* among the candidates than the base,
+everywhere except the 0.2% kill/death decisions. Spread gating (0d) does not
+change that.
 
 ## 6. A listwise target on the same data (runs 1a, 1b)
 
