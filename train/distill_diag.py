@@ -12,6 +12,9 @@ search's candidate return spread (max - min mean return over the k candidates). 
              like the search did, where the ranking mattered?
     rank     Spearman correlation of the net's candidate log-probs with the candidates'
              mean returns (how much the net orders the candidates by search return)
+    q_gain   expected candidate return under the student's candidate distribution minus the
+             base's (x1000), next to the search's own (its pick's return minus the base's
+             expectation); on held-out games the rollout noise is independent of the nets
 
 If pref/rank rise only on the low-spread bins, the student learned the search's sampling
 pattern and not its selection.
@@ -39,6 +42,9 @@ def main(argv=None):
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--holdout', type=float, default=0.05)
     p.add_argument('--games', type=int, default=20, help='held-out games to replay')
+    p.add_argument('--newest', action='store_true',
+                   help='replay the newest --games games of games.jsonl instead of the split\'s held-out ones '
+                        '(games recorded after the student was trained are unseen whatever its split was)')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--threads', type=int, default=2)
     a = p.parse_args(argv)
@@ -48,6 +54,15 @@ def main(argv=None):
     student = load_policy(a.student, device)
     games = Games(a.data, 8, a.seed, a.holdout)
     rows = games.holdout[:a.games]
+    if a.newest:
+        import json
+        rows = []
+        for d_ in a.data:
+            for line in (d_ / 'games.jsonl').read_text().splitlines():
+                info = json.loads(line)
+                if (d_ / f"g{info['seed']}.npz").exists():
+                    rows.append((d_ / f"g{info['seed']}.npz", info['decisions']))
+        rows = rows[-a.games:]
     acc = {}  # bin -> list of per-row arrays
     for bucket in games.stream(rows, shuffle=False):
         S, T = bucket['valid'].shape
@@ -82,7 +97,9 @@ def main(argv=None):
                     cp = torch.softmax(cl, 1)
                     rec['pref_' + key] = (cp * chosen).sum(1)
                     rec['cl_' + key] = cl
+                    rec['eq_' + key] = (cp * q.masked_fill(~valid, 0)).sum(1)
                 rec['q'] = q; rec['cvalid'] = valid
+                rec['qc'] = (q * chosen).sum(1)
                 for k_, t in rec.items():
                     acc.setdefault(k_, []).append(t.cpu().numpy())
     d = {k: np.concatenate(v) for k, v in acc.items()}
@@ -103,18 +120,20 @@ def main(argv=None):
         return np.array(out)
     rank_b = spearman(d['cl_b'], d['q'], d['cvalid']); rank_s = spearman(d['cl_s'], d['q'], d['cvalid'])
     print(f"{len(rows)} held-out games, {ok.sum()} decisions")
-    print(f"{'spread':>14} {'n':>7} {'frac':>6} | {'agree b':>8} {'agree s':>8} | {'chosen b':>9} {'chosen s':>9} | {'pref b':>7} {'pref s':>7} | {'rank b':>7} {'rank s':>7}")
+    print(f"{'spread':>14} {'n':>7} {'frac':>6} | {'agree b':>8} {'agree s':>8} | {'chosen b':>9} {'chosen s':>9} | {'pref b':>7} {'pref s':>7} | {'rank b':>7} {'rank s':>7} | {'qg s':>6} {'qg srch':>7}")
     for lo, hi in zip(BINS[:-1], BINS[1:]):
         sel = (d['spread'] >= lo) & (d['spread'] < hi)
         if sel.sum() == 0:
             continue
         print(f"[{lo:.3f},{hi:.3f}) {sel.sum():7d} {sel.mean():6.3f} | {d['agree_b'][sel].mean():8.3f} {d['agree_s'][sel].mean():8.3f} "
               f"| {d['chosen_b'][sel].mean():9.3f} {d['chosen_s'][sel].mean():9.3f} | {d['pref_b'][sel].mean():7.3f} {d['pref_s'][sel].mean():7.3f} "
-              f"| {np.nanmean(rank_b[sel]):7.3f} {np.nanmean(rank_s[sel]):7.3f}")
+              f"| {np.nanmean(rank_b[sel]):7.3f} {np.nanmean(rank_s[sel]):7.3f} "
+              f"| {1000 * (d['eq_s'][sel] - d['eq_b'][sel]).mean():6.2f} {1000 * (d['qc'][sel] - d['eq_b'][sel]).mean():7.2f}")
     sel = np.ones(len(d['spread']), bool)
     print(f"{'all':>14} {sel.sum():7d} {1.0:6.3f} | {d['agree_b'].mean():8.3f} {d['agree_s'].mean():8.3f} "
           f"| {d['chosen_b'].mean():9.3f} {d['chosen_s'].mean():9.3f} | {d['pref_b'].mean():7.3f} {d['pref_s'].mean():7.3f} "
-          f"| {np.nanmean(rank_b):7.3f} {np.nanmean(rank_s):7.3f}")
+          f"| {np.nanmean(rank_b):7.3f} {np.nanmean(rank_s):7.3f} "
+          f"| {1000 * (d['eq_s'] - d['eq_b']).mean():6.2f} {1000 * (d['qc'] - d['eq_b']).mean():7.2f}")
 
 
 if __name__ == '__main__':
