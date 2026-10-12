@@ -51,6 +51,12 @@ HEADS = [(0, layout.ACT_AIM), (layout.ACT_AIM, layout.ACT_AIM + layout.ACT_BUTTO
 NEG = -1e9
 
 
+def load_policy(path, device):
+    policy, meta = load(Path(path).resolve())
+    flat = torch.from_numpy(np.array(policy.weights, dtype=np.float32)).to(device)
+    return policy_v4.PolicyV4(flat, meta['hidden'], meta['num_layers'], meta['aim_fourier'], meta['aim_ar'], **meta['v4_shape'])
+
+
 def masked_log_softmax(logits, mask):
     """Per-head log-softmax over allowed actions (mask 1 = allowed); disallowed -> very negative."""
     out = torch.empty_like(logits)
@@ -308,8 +314,8 @@ def main(argv=None):
     device = torch.device(a.device)
     policy, meta = load(a.base.resolve())
     shape = meta['v4_shape']
-    base_flat = torch.from_numpy(np.array(policy.weights, dtype=np.float32)).to(device)
-    base = policy_v4.PolicyV4(base_flat, meta['hidden'], meta['num_layers'], meta['aim_fourier'], meta['aim_ar'], **shape)
+    base = load_policy(a.base, device)
+    base_flat = base.flat
     student_flat = base_flat.clone().requires_grad_(True)
     student = policy_v4.PolicyV4(student_flat, meta['hidden'], meta['num_layers'], meta['aim_fourier'], meta['aim_ar'], **shape)
     optimizer = torch.optim.Adam([student_flat], lr=a.lr, betas=(0.9, 0.999))

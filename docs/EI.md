@@ -17,6 +17,9 @@ Code:
 - `train/distill.py`: fine-tunes the net in torch (`eval/policy_v4.PolicyV4`,
   which matches the C evaluator to 1e-4) on those games, teacher-forced from
   the zero state with truncated BPTT, and writes native checkpoints.
+- `train/distill_diag.py`: replays held-out games through base and student and
+  bins the search's candidate-return spread: did the student learn to *rank* the
+  candidates the way the search did, where the ranking mattered?
 - `native/artifacts/rl/sweeps/ei-1/{measure,train,eval}.sh`: the unit scripts.
 
 ## 1. Does the search still add on allkit-1?
@@ -106,6 +109,39 @@ Training cost: 1,700 rows/s on the RTX 5070 shared with `bopl-allkit-1c`
 | `ei1@14668744656` (run 0c) | 386 | iter0 | onehot, kl 0.3, 3 epochs | pending | |
 | run 0d | 565 | iter0 | onehot gated by candidate spread (`--weight-spread 0.02`), kl 0.3, 3 epochs | pending | |
 
-## 5. Next
+## 5. What the student learned (run 0c, 20 held-out games, 50 k decisions)
+
+`train/distill_diag.py`, per bin of the candidates' return spread (max - min of
+the k=8 mean returns). `pref` is the net's probability of the search's choice
+given it plays one of the 8 candidates (1/8 = no preference); `rank` the
+Spearman correlation between the net's candidate log-probs and the search's
+returns; `chosen` the log-prob of the search's action.
+
+| spread | share of decisions | agree base / student | chosen base / student | pref base / student | rank base / student |
+| --- | --- | --- | --- | --- | --- |
+| < 0.005 | 63% | 0.055 / 0.052 | -4.11 / -3.68 | 0.105 / 0.112 | 0.02 / 0.05 |
+| 0.005-0.02 | 28% | 0.117 / 0.106 | -5.04 / -4.14 | 0.158 / 0.153 | 0.06 / 0.05 |
+| 0.02-0.05 | 7% | 0.118 / 0.096 | -6.56 / -4.79 | 0.155 / 0.140 | 0.08 / 0.07 |
+| 0.05-0.2 | 1.8% | 0.130 / 0.115 | -7.01 / -5.00 | 0.165 / 0.153 | 0.11 / 0.12 |
+| > 0.2 | 0.2% | 0.112 / 0.103 | -7.19 / -5.14 | 0.155 / 0.151 | 0.09 / 0.11 |
+
+The student raised the log-prob of the search's action everywhere (by 2 nats
+where the base was confident), but its preference among the candidates did not
+move, on any bin, and its argmax agrees with the search slightly less than the
+base's does. It learned the search's sampling pattern (a flatter policy, the
+Gumbel-top-k without-replacement part) and none of its selection. The base
+already prefers the search's pick a little (0.16 vs 0.125 on the bins that
+matter), and the data did not sharpen that.
+
+Why the selection is hard to clone: with one rollout per candidate the chosen
+candidate is the argmax of eight return estimates whose spread is 0.003 at the
+median, so the label is mostly rollout noise around a small systematic edge,
+and the systematic part comes from the simulator state (no 9-tick observation
+delay, the opponent's rollout actions under common random numbers), which the
+observation does not contain. A per-decision one-hot label carries very little
+of the +16 points; it has to be averaged over far more decisions per situation
+than 1,200 games give, if it is recoverable from the observation at all.
+
+## 6. Next
 
 (filled in with the results)
