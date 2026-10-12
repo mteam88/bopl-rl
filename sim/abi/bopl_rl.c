@@ -291,7 +291,8 @@ void bopl_rl_default_config(BoplRlConfig *config, uint32_t players) {
 }
 int bopl_rl_in_process(const char *executable) {
     size_t length=executable?strlen(executable):0;
-    return length>3 && !strcmp(executable+length-3, ".so");
+    return (length>3 && !strcmp(executable+length-3, ".so"))
+        || (length>6 && !strcmp(executable+length-6, ".dylib"));  /* the q32 Rust sim on the Mac shim */
 }
 /* Copies `from` to `to`; a reflink on Btrfs/XFS, a byte copy elsewhere. */
 static int copy_file(const char *from, const char *to) {

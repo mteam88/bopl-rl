@@ -28,7 +28,8 @@ using UnityEngine;
 //     unless BOPL_RL_ABILITY_SPAWNS=1.
 // Ticks are counted per TickSimulation call, which is the simulation timeline
 // the training sims and the replay share (Updater.Update skips the call on
-// hitstop frames without simulating anything). Each round writes one JSON line
+// hitstop frames; stock, it still advanced the simulation clock there, which
+// FreezesHitstopClock stops while the agent plays). Each round writes one JSON line
 // to BOPL_AGENT_RESULTS (seed, players, winner, replay file) for
 // Tools/play-vs-agent.sh.
 // With BOPL_AGENT_CATALOG set (the launchers set it), the opponent and its kit
@@ -38,6 +39,14 @@ using UnityEngine;
 // every round. The shim needs no loadout of its own for that: the observation
 // and mask read the abilities from the game state. With neither variable set
 // the stock game is untouched.
+// With BOPL_AGENT_SHADOW=1 the shim also runs a shadow sim (train/bopl_shadow.h,
+// docs/SHADOW.md): the q32 Rust sim reset from this round's own replay setup
+// after level tick 1 and stepped with every player's applied packets, compared
+// with this game's observation every tick. The first mismatch of a round is
+// logged ("BOPL_AGENT_SHADOW: ... DESYNC ...") and shadowing stops for that
+// round. While the agent plays, hitstop frames freeze the simulation clock
+// (FreezesHitstopClock) as every sim does; BOPL_AGENT_HITSTOP_TIME=1 restores
+// the stock clock for an A/B.
 public static class RlAgent
 {
     [StructLayout(LayoutKind.Sequential)]
@@ -54,6 +63,16 @@ public static class RlAgent
     [DllImport(Library)] private static extern int bopl_agent_max_episode_ticks(IntPtr agent);
     [DllImport(Library)] private static extern int bopl_agent_decisions(IntPtr agent);
     [DllImport(Library)] private static extern IntPtr bopl_agent_id(IntPtr agent);
+    [DllImport(Library)] private static extern IntPtr bopl_shadow_open([MarshalAs(UnmanagedType.LPStr)] string library, byte[] error, UIntPtr capacity);
+    [DllImport(Library)] private static extern int bopl_shadow_begin(IntPtr shadow, byte[] archive, UIntPtr length, uint warmup);
+    [DllImport(Library)] private static extern int bopl_shadow_check_bytes(IntPtr shadow, byte[] bytes, UIntPtr length);
+    [DllImport(Library)] private static extern int bopl_shadow_step(IntPtr shadow, Action[] actions, UIntPtr count);
+    [DllImport(Library)] private static extern int bopl_shadow_end(IntPtr shadow);
+    [DllImport(Library)] private static extern IntPtr bopl_shadow_report(IntPtr shadow);
+    [DllImport(Library)] private static extern uint bopl_shadow_compared(IntPtr shadow);
+    [DllImport(Library)] private static extern IntPtr bopl_shadow_library(IntPtr shadow);
+    private const int ShadowOff = 0, ShadowTracking = 1, ShadowDesync = 2, ShadowEnded = 3, ShadowFailed = 4;
+    private static readonly string[] ShadowNames = { "off", "tracking", "desync", "ended", "failed" };
 
     private static readonly string envSpec = Environment.GetEnvironmentVariable("BOPL_AGENT");
     public static string Spec { get; private set; } = envSpec;
@@ -83,6 +102,18 @@ public static class RlAgent
     private static readonly Dictionary<int, InputPacket> applied = new Dictionary<int, InputPacket>();
     private static InputPacket agentPacket;
 
+    // Shadow sim (BOPL_AGENT_SHADOW=1).
+    public static readonly bool ShadowRequested = Environment.GetEnvironmentVariable("BOPL_AGENT_SHADOW") == "1";
+    private static readonly bool stockHitstopClock = Environment.GetEnvironmentVariable("BOPL_AGENT_HITSTOP_TIME") == "1";
+    private static IntPtr shadow;
+    private static bool shadowOpenTried;
+    private static int shadowStatus;
+    private static string shadowReport = "";
+    private static Action[] shadowPackets = new Action[0];
+    // This round's recording. Host.SaveReplay drops ReplaySession.Recording on
+    // the tick the round ends, before AfterTick steps the shadow with that tick.
+    private static ReplayArchive shadowRecording;
+
     public static string Id => id;
     public static int WarmupTicks => warmupTicks;
 
@@ -107,8 +138,33 @@ public static class RlAgent
         warmupTicks = bopl_agent_warmup_ticks(handle);
         maxEpisodeTicks = bopl_agent_max_episode_ticks(handle);
         agentIndex = player;
+        OpenShadow();
         return true;
     }
+
+    // One shadow world per launch (the library loads once per process).
+    private static void OpenShadow()
+    {
+        if (!ShadowRequested || shadowOpenTried) return;
+        shadowOpenTried = true;
+        var error = new byte[2048];
+        try {
+            shadow = bopl_shadow_open(null, error, (UIntPtr)error.Length);
+        } catch (EntryPointNotFoundException exception) {
+            Debug.LogError("BOPL_AGENT_SHADOW: this libbopl_agent has no shadow (rebuild it: make agent): " + exception.Message);
+            return;
+        }
+        if (shadow == IntPtr.Zero) { Debug.LogError("BOPL_AGENT_SHADOW: " + Encoding.UTF8.GetString(error).TrimEnd('\0')); return; }
+        Debug.Log("BOPL_AGENT_SHADOW: shadow sim " + Marshal.PtrToStringAnsi(bopl_shadow_library(shadow)));
+    }
+
+    // Updater.Update on a hitstop frame: true when the simulation clock
+    // (SimTimePassed, SimTimeSinceLevelLoaded, SimulationTicks) must not advance.
+    // The training sims, the replay player and the shadow never see hitstop
+    // frames, and sudden death, platform/orbit motion and several abilities
+    // read that clock, so while the agent plays a hitstop only freezes the
+    // picture. BOPL_AGENT_HITSTOP_TIME=1 keeps the stock behaviour.
+    public static bool FreezesHitstopClock => !stockHitstopClock && Active(out _);
 
     // RlAgentPicker: can the shim open spec? Its loadout comes back in kit.
     public static bool Probe(string spec, out int[] kit, out string error)
@@ -220,6 +276,7 @@ public static class RlAgent
         RlObservation.Reset();
         applied.Clear();
         agentPacket = default;
+        shadowStatus = ShadowOff; shadowReport = ""; shadowRecording = null;
         if (Environment.GetEnvironmentVariable("BOPL_RL_ABILITY_SPAWNS") != "1")
             foreach (var spawner in UnityEngine.Object.FindObjectsOfType<AbilitySpawner>(true)) spawner.enabled = false;
         humansFrozen = true;
@@ -246,16 +303,20 @@ public static class RlAgent
         }
         var agent = players[agentIndex];
         InputPacket packet = zero;
-        if (!terminal && !failed) {
+        bool agentDecides = !terminal && !failed;
+        if (agentDecides || shadowStatus == ShadowTracking) {
             try {
                 observation.SetLength(0);
                 uint flags = (terminal ? 1u : 0u) | (started ? 4u : 0u);
                 long simulationTime = (long)tick * GameTime.FixedTimeStep.m_rawValue;
                 RlObservation.Write(writer, RlBridge.Version, episodeTicks, flags, warmupTicks, simulationTime);
-                int status = bopl_agent_tick_bytes(handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action action);
-                if (status == 0) packet = ReplayArchive.Input(zero.seqNumber, action.angle, action.buttons);
-                else if (status == 1) terminal = true;
-                else { failed = true; Debug.LogError("BOPL_AGENT: shim tick failed (" + status + ") at episode tick " + episodeTicks); }
+                ShadowCheck();
+                if (agentDecides) {
+                    int status = bopl_agent_tick_bytes(handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action action);
+                    if (status == 0) packet = ReplayArchive.Input(zero.seqNumber, action.angle, action.buttons);
+                    else if (status == 1) terminal = true;
+                    else { failed = true; Debug.LogError("BOPL_AGENT: shim tick failed (" + status + ") at episode tick " + episodeTicks); }
+                }
             } catch (Exception exception) {
                 failed = true; Debug.LogError("BOPL_AGENT: " + exception);
             }
@@ -270,6 +331,7 @@ public static class RlAgent
     {
         if (!Active(out var players)) return;
         tick++;
+        ShadowAfterTick(players);
         if (tick <= warmupTicks) return;
         episodeTicks++;
         started |= !GameSessionHandler.HasGameEnded();
@@ -281,10 +343,88 @@ public static class RlAgent
                 long simulationTime = (long)tick * GameTime.FixedTimeStep.m_rawValue;
                 RlObservation.Write(writer, RlBridge.Version, episodeTicks, 1u | 4u, warmupTicks, simulationTime);
                 bopl_agent_tick_bytes(handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action _);
+                ShadowCheck();
             } catch (Exception exception) { Debug.LogError("BOPL_AGENT: " + exception); }
             terminal = true;
+            if (shadowStatus == ShadowTracking) ShadowSettle(bopl_shadow_end(shadow));
         }
         if (terminal && !resultWritten) { resultWritten = true; WriteResult(players); }
+    }
+
+    // Shadow, after level tick `tick` ran: begin from the round's recording after
+    // tick 1, confirm the warmup ticks were all-zero, then step the shadow with
+    // every player's packet of each episode tick (Recording.frames[tick - 1] is
+    // this tick's applied packets, PlayerList order, as the replay holds them).
+    private static void ShadowAfterTick(List<Player> players)
+    {
+        if (shadow == IntPtr.Zero) return;
+        if (tick == 1) { ShadowBegin(players); return; }
+        if (shadowStatus != ShadowTracking) return;
+        var recording = shadowRecording;
+        if (recording.frames.Count != tick) {
+            ShadowStop(ShadowFailed, "the round's replay recording stopped (" + recording.frames.Count + " frames at level tick " + tick
+                       + (ReferenceEquals(recording, ReplaySession.Recording) ? "" : ", recording closed") + ")");
+            return;
+        }
+        var frame = recording.frames[tick - 1];
+        if (frame.Length != players.Count) { ShadowStop(ShadowFailed, "recorded frame has " + frame.Length + " packets for " + players.Count + " players"); return; }
+        if (tick <= warmupTicks) {
+            for (int i = 0; i < frame.Length; i++)
+                if (frame[i].joystickAngle != 0 || ReplayArchive.Buttons(frame[i]) != 0) {
+                    ShadowStop(ShadowFailed, "warmup tick " + tick + " applied a non-zero packet for player " + players[i].Id + " (the shadow warms up with zero inputs)");
+                    return;
+                }
+            return;
+        }
+        if (shadowPackets.Length != frame.Length) shadowPackets = new Action[frame.Length];
+        for (int i = 0; i < frame.Length; i++)
+            shadowPackets[i] = new Action { angle = frame[i].joystickAngle, reserved = 0, buttons = ReplayArchive.Buttons(frame[i]) };
+        ShadowSettle(bopl_shadow_step(shadow, shadowPackets, (UIntPtr)shadowPackets.Length));
+    }
+
+    private static void ShadowBegin(List<Player> players)
+    {
+        var recording = ReplaySession.Recording;
+        if (warmupTicks < 1) { ShadowStop(ShadowFailed, "the agent has no warmup; the shadow needs one tick of recording before the episode"); return; }
+        if (recording == null || recording.frames.Count != 1 || recording.players.Length != players.Count) {
+            ShadowStop(ShadowFailed, "no replay recording for this round (Host.recordReplay off?)"); return;
+        }
+        for (int i = 0; i < players.Count; i++)
+            if (recording.players[i].id != players[i].Id) { ShadowStop(ShadowFailed, "recording player order differs from PlayerList"); return; }
+        shadowRecording = recording;
+        byte[] archive;
+        try { archive = recording.Encode(); }
+        catch (Exception exception) { ShadowStop(ShadowFailed, "round setup: " + exception.Message); return; }
+        int status = bopl_shadow_begin(shadow, archive, (UIntPtr)archive.Length, (uint)warmupTicks);
+        shadowReport = Marshal.PtrToStringAnsi(bopl_shadow_report(shadow));
+        shadowStatus = status;
+        if (status == ShadowTracking) Debug.Log("BOPL_AGENT_SHADOW: round " + round + ": " + shadowReport);
+        else Debug.LogError("BOPL_AGENT_SHADOW: round " + round + ": " + shadowReport);
+    }
+
+    private static void ShadowCheck()
+    {
+        if (shadowStatus != ShadowTracking) return;
+        int status = bopl_shadow_check_bytes(shadow, observation.GetBuffer(), (UIntPtr)observation.Length);
+        if (status == -2) { ShadowStop(ShadowFailed, "malformed observation record at episode tick " + episodeTicks); return; }
+        ShadowSettle(status);
+    }
+
+    // A status from the shim: log the round's first change away from tracking.
+    private static void ShadowSettle(int status)
+    {
+        if (status == shadowStatus) return;
+        shadowStatus = status;
+        shadowReport = Marshal.PtrToStringAnsi(bopl_shadow_report(shadow));
+        string line = "BOPL_AGENT_SHADOW: round " + round + " level " + roundLevel + " " + ShadowNames[Math.Max(0, Math.Min(4, status))] + ": " + shadowReport;
+        if (status == ShadowEnded) Debug.Log(line); else Debug.LogError(line);
+    }
+
+    private static void ShadowStop(int status, string reason)
+    {
+        shadowStatus = status;
+        shadowReport = reason;
+        Debug.LogError("BOPL_AGENT_SHADOW: round " + round + " level " + roundLevel + " " + ShadowNames[status] + ": " + reason);
     }
 
     // Host.CurrentInputAsPacket: the packet actually applied this tick for
@@ -325,7 +465,11 @@ public static class RlAgent
                 ["replay"] = Host.LastSavedReplay, ["replay_number"] = Host.replaysSaved,
                 ["stocks"] = Settings.Get().Stocks, ["game_mode"] = (int)Settings.Get().GameMode,
                 ["source_hash"] = ReplaySession.SourceHash, ["catalog_hash"] = ReplaySession.CatalogHash,
-                ["failed"] = failed, ["time"] = DateTime.UtcNow.ToString("o")
+                ["failed"] = failed, ["time"] = DateTime.UtcNow.ToString("o"),
+                ["shadow"] = shadow == IntPtr.Zero ? null : ShadowNames[shadowStatus],
+                ["shadow_compared"] = shadow == IntPtr.Zero ? 0u : bopl_shadow_compared(shadow),
+                ["shadow_report"] = shadow == IntPtr.Zero ? null : shadowReport.Split('\n')[0],
+                ["hitstop_clock"] = stockHitstopClock ? "stock" : "frozen"
             };
             File.AppendAllText(resultsPath, line.ToString(Newtonsoft.Json.Formatting.None) + "\n");
         } catch (Exception exception) { Debug.LogError("BOPL_AGENT: result log: " + exception); }

@@ -156,7 +156,7 @@ rust-ab-trace:
 # recorded per-tick inputs and reports the first divergence per game.
 replay-ab: $(OUT)/replay_ab
 
-$(OUT)/replay_ab: eval/rust_ab/replay_ab.c $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/replay_ab: eval/rust_ab/replay_ab.c $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/replay_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
@@ -323,25 +323,43 @@ $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_search.h train/polic
 PUFFERLIB ?= $(OUT)/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9/src
 agent: $(OUT)/libbopl_agent.so
 
-$(OUT)/libbopl_agent.so: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/libbopl_agent.so: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) train/bopl_agent.c -o $(OUT)/bopl_agent.o
 	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
 	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
-	$(CC) -shared $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o -lm -lpthread -o $@
-	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o
+	$(CC) $(CFLAGS) -std=gnu11 -fPIC -c $(INCLUDES) train/bopl_shadow.c -o $(OUT)/bopl_agent_shadow.o
+	$(CC) -shared $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o -ldl -lm -lpthread -o $@
+	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o
 
 # The same shim for the macOS player (arm64, run on the Mac: `make agent-mac`);
 # Mono resolves DllImport("bopl_agent") to BoplBattle.app/Contents/Plugins/libbopl_agent.dylib.
 agent-mac: $(OUT)/libbopl_agent.dylib
 
-$(OUT)/libbopl_agent.dylib: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/libbopl_agent.dylib: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) train/bopl_agent.c -o $(OUT)/bopl_agent.o
 	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
 	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
-	$(CC) -dynamiclib $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o -lm -lpthread -install_name @rpath/libbopl_agent.dylib -o $@
-	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o
+	$(CC) $(CFLAGS) -std=gnu11 -fPIC -c $(INCLUDES) train/bopl_shadow.c -o $(OUT)/bopl_agent_shadow.o
+	$(CC) -dynamiclib $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o -lm -lpthread -install_name @rpath/libbopl_agent.dylib -o $@
+	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o
+
+# The shadow sim the shim loads with BOPL_AGENT_SHADOW=1 (train/bopl_shadow.h,
+# docs/SHADOW.md): the bit-exact q32 Rust sim, found beside libbopl_agent.
+# Tools/play-vs-agent.sh copies it into the player's plugin directory.
+agent-shadow-lib: rust-q32
+	mkdir -p $(OUT)
+	cp $(RUST_ROLLOUT_Q32) $(OUT)/libbopl_sim_q32.so
+
+# Offline proof of the shim's shadow path (eval/shadow_replay.c): real game
+# recordings, the .NET reference standing in for the running game.
+shadow-replay: $(OUT)/shadow_replay rust-q32
+	$(abspath $(OUT)/shadow_replay) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) $(abspath $(GAMES))
+
+$(OUT)/shadow_replay: eval/shadow_replay.c train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -std=gnu11 $(INCLUDES) eval/shadow_replay.c train/bopl_shadow.c $(ABI)/bopl_rl.c -ldl -lm -lpthread -o $@
 
 $(OUT)/libbopl_rl.so: $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
@@ -368,7 +386,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac check-reward check-routing style-check style-score style-rates style-rates-check
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac agent-shadow-lib shadow-replay check-reward check-routing style-check style-score style-rates style-rates-check
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.

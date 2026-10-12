@@ -75,7 +75,7 @@ void bopl_rl_default_config(BoplRlConfig *config, uint32_t players);
 /* Paths must be absolute. Bootstrap replay selects the initial game bootstrap;
  * reset selects the actual RL configuration. timeout_ms covers each operation.
  * Error text is written to error (when non-NULL and capacity > 0).
- * An executable ending in ".so" is a NativeAOT library exporting this ABI
+ * An executable ending in ".so" (or ".dylib") is a library exporting this ABI
  * (sim/Native): it is loaded into this process, one private copy per handle,
  * and stepped by direct calls instead of a worker process and socket. */
 int bopl_rl_in_process(const char *executable);
