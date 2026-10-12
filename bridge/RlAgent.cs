@@ -367,6 +367,7 @@ public static class RlAgent
                 uint flags = (terminal ? 1u : 0u) | (started ? 4u : 0u);
                 long simulationTime = (long)tick * GameTime.FixedTimeStep.m_rawValue;
                 RlObservation.Write(writer, RlBridge.Version, episodeTicks, flags, warmupTicks, simulationTime);
+                if (episodeTicks == 0) Debug.Log("BOPL_AGENT: round " + round + " first row kills/deaths " + RlObservation.RowCounts(players));
                 ShadowCheck();
                 if (agentDecides) {
                     int decisionsBefore = bopl_agent_decisions(handle);
@@ -415,7 +416,11 @@ public static class RlAgent
             terminal = true;
             if (shadowStatus == ShadowTracking) ShadowSettle(bopl_shadow_end(shadow));
         }
-        if (terminal && !resultWritten) { resultWritten = true; LogTiming(); WriteResult(players); }
+        if (terminal && !resultWritten) {
+            resultWritten = true;
+            Debug.Log("BOPL_AGENT: round " + round + " terminal row kills/deaths " + RlObservation.RowCounts(players));
+            LogTiming(); WriteResult(players);
+        }
     }
 
     private static double Percentile(List<double> values, double q)

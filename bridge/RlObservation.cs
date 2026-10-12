@@ -52,6 +52,18 @@ internal static class RlObservation
         foreach (var player in players) roundBase[player.Id] = (player.Kills, player.Deaths);
     }
 
+    // "row k/d (match k/d)" per player as the last Write encoded them, for RlAgent's log.
+    internal static string RowCounts(List<Player> players)
+    {
+        var parts = new List<string>();
+        foreach (var player in players) {
+            var start = rebasing && roundBase.TryGetValue(player.Id, out var b) ? b : (kills: 0, deaths: 0);
+            parts.Add("p" + player.Id + " " + (player.Kills - start.kills) + "/" + (player.Deaths - start.deaths)
+                + " (match " + player.Kills + "/" + player.Deaths + ")");
+        }
+        return string.Join(", ", parts);
+    }
+
     // simulationTime: header.simulation_time raw value; RlBridge passes the game's
     // SimTimePassed (zeroed per reset), RlAgent passes ticks-since-level-load x
     // FixedTimeStep, which is the same quantity in the stock local game except
