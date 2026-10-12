@@ -272,3 +272,37 @@ decisions were already mostly signal, and iter1's labels are cleaner by a
 factor of ~1.4 in reliability, not 4. My prior before training is that iter1
 fails too: the limit is what the net can predict from its observation, not
 the noise.
+
+At 300 games (82 k relabelled decisions, 329 k pairs) the agreement is
+**r = 0.78**. The search's selection is real: over the actions both searches
+drew, the screen's n=1 pick beats the screen's prior-weighted mean by 10.55e-3
+on its own returns but by **4.31e-3 (+-0.10e-3) on the relabel's independent
+returns**. So about 40% of the apparent gain survives an unbiased re-measure,
+and a screened decision is worth ~4e-3 of return when the search acts.
+
+## 9. Can the net see what the search sees? (`train/q_probe.py`)
+
+Before spending GPU time on more distillation: fit a fresh MLP
+q(features, action) on within-decision return deviations of the iter0
+decisions with spread >= 0.02 (336 k decisions, 1,080 train games, 120
+held-out games), with features the base's trunk output y (all that the policy
+heads read), or y plus the 48-float privileged block that only the critic
+sees. Then score, on held-out games, the policy pi'(c) ∝ pi_base(c)·exp(beta z),
+with z the standardised prediction (`qprobe-iter0-soft.txt`):
+
+| features | held-out r | argmax gain | best soft gain (beta) |
+|---|---:|---:|---:|
+| base log-probs (prior) | 0.10 | +0.39e-3 | - |
+| y | 0.235 | -0.03e-3 to -0.67e-3 | +0.33e-3 (2) |
+| y + privileged | 0.250 | -0.13e-3 to -0.83e-3 | +0.15e-3 (2) |
+| search's n=1 pick (biased) | - | 18.45e-3 | - |
+
+A free-capacity probe on y ranks the candidates better than the prior (r 0.23
+vs 0.10), but what it learns is "which candidates are bad", the ones the base
+already rarely plays: its argmax loses to the base's own expectation, and the
+best soft policy gains 0.33e-3 per decision, under a tenth of the ~4e-3 the
+search really delivers (section 8). The privileged block adds nothing. So the
+search's gain is in states the trunk does not separate: it reads the exact
+simulator state forward 8 decisions, which y does not encode at this
+resolution. A policy-head fine-tune (what distill.py trains, plus a KL
+anchor) is bounded by this probe, and runs 0a-1b sit at or under it.
