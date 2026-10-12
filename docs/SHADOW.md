@@ -143,27 +143,18 @@ Live coverage:
   online play. These are covered offline where the sims can represent them:
   sudden death, 4p, all kits.
 
-## Next: search `8,1,1` synchronously in the shim
+## Next step: done (milestone 2)
 
-1. Give the shim's `BoplPuffer` a world.
-   - `bopl_search_shadow_reset` forks `real->world` (`bopl_rl_fork`). In
-     `bopl_agent.c` the env has no world (the game is the world).
-   - While `bopl_shadow_status == TRACKING`, point the env at
-     `bopl_shadow_world(shadow)`, after the check of S_e and before the
-     decision at e = 4k.
-   - Search must not step that world, only forks of it. The fork has to come
-     from the same in-process q32 library.
-2. Run `bopl_search_open/configure(8,1,1)` and decide through it on decision
-   ticks only. That is 8 rollouts × 1 decision ≈ 8 ms per decision at hidden
-   256 (SEARCH.md), against a 4-tick (66 ms) budget, so synchronous inside
-   `bopl_agent_tick_bytes` on Unity's main thread is affordable.
-   - Fall back to the raw policy when the shadow is not tracking.
-3. Opponents in rollouts: humans have no policy, so use the checkpoint's own
-   policy or a bot as the stand-in, as the training search does for its
-   opponent seat.
-4. Round limit: the game's rounds are unbounded. The shadow uses
-   `max_episode_ticks` 2160000. The search's timeout reward and any
-   time-left observation must read the shim's configured limit, not the
-   shadow's, or rollouts will see a different horizon than training.
-5. Measure live: decision latency (p95), frame time, and the desync rate with
-   search on. A desync must turn search off for the round, not end the round.
+The shim now searches every decision on forks of this shadow world with
+`BOPL_AGENT_SEARCH=8,1,1`: docs/INGAME_SEARCH.md. The five points of the plan:
+the env points at the shadow world for the decision only (forks, never steps
+it); `8,1,1` runs synchronously (~2 ms 2p, ~3.5 ms 3p live); every opponent,
+humans included, is modelled by the agent's own policy; rollouts stop at the
+shim's limit (`bopl_search_set_limit`), not the shadow's 2160000; and a desync,
+the cap or a search error falls back to the raw policy for the round.
+
+Found live while doing it: a jump held at the end of a round and pressed again
+in the next warmup desynced the shadow at episode tick 1 (the game kept the
+device's stale jump-edge memory across the freeze; the replay and the shadow
+see a fresh edge). `Player.RestoreLocalInputs` now carries the frozen
+override's edge memory over; see INGAME_SEARCH.md.

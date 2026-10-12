@@ -422,11 +422,25 @@ static void *inproc_reset_worker(void *arg) {
     p->reset_result=result;
     return NULL;
 }
+/* macOS gives a secondary thread 512 KB of stack; the Rust world's
+ * constructor alone overflows that (RolloutWorld::new), so the reset thread
+ * gets Linux's 8 MB default there too. */
+#ifdef __APPLE__
+static pthread_attr_t inproc_attr;
+static void inproc_attr_init(void) { pthread_attr_init(&inproc_attr); pthread_attr_setstacksize(&inproc_attr, (size_t)8<<20); }
+static const pthread_attr_t *inproc_thread_attr(void) {
+    static pthread_once_t once=PTHREAD_ONCE_INIT;
+    pthread_once(&once, inproc_attr_init);
+    return &inproc_attr;
+}
+#else
+static const pthread_attr_t *inproc_thread_attr(void) { return NULL; }
+#endif
 static int inproc_reset_begin(BoplRl *w, const BoplRlConfig *config) {
     Inproc *p=w->inproc;
     if (p->reset_pending_flag) { errno=EBUSY; return fail(w, "RL reset already in progress"); }
     p->reset_config=*config;
-    int created=pthread_create(&p->reset_thread, NULL, inproc_reset_worker, p);
+    int created=pthread_create(&p->reset_thread, inproc_thread_attr(), inproc_reset_worker, p);
     if (created) { errno=created; return fail(w, "RL reset thread"); }
     p->reset_pending_flag=true; w->error[0]=0;
     return BOPL_RL_OK;

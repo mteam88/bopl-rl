@@ -321,13 +321,24 @@ $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_search.h train/polic
 # a running game, plus the CPU policy evaluator. Loaded by the Unity build
 # (Assets/Scripts/Assembly-CSharp/RlAgent.cs) and eval/agent_shim.py.
 PUFFERLIB ?= $(OUT)/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9/src
+# The policy evaluator is built for the machine that runs the game, like the
+# research library's: -ffast-math plus the host's vector ISA turns ~800 us
+# per row into ~90 us, which the in-game search (BOPL_AGENT_SEARCH,
+# docs/INGAME_SEARCH.md) needs to fit 8,1,1 into a decision. Override for a
+# portable build (AGENT_EVAL_CPU=-march=x86-64-v3, AGENT_MAC_EVAL_CPU=-mcpu=apple-m1).
+# Fast-math reorders float sums, so the shim's logits are no longer bitwise
+# equal to the torch reference; eval/check_agent_fidelity.py needs the exact
+# build: make agent AGENT_EVAL_CPU= AGENT_EVAL_FAST=
+AGENT_EVAL_FAST ?= -ffast-math
+AGENT_EVAL_CPU ?= -march=native
+AGENT_MAC_EVAL_CPU ?= -mcpu=native
 agent: $(OUT)/libbopl_agent.so
 
-$(OUT)/libbopl_agent.so: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/libbopl_agent.so: train/bopl_agent.c train/bopl_agent.h train/bopl_search.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) train/bopl_agent.c -o $(OUT)/bopl_agent.o
 	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
-	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
+	$(CC) -O3 -std=gnu11 $(AGENT_EVAL_CPU) $(AGENT_EVAL_FAST) -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
 	$(CC) $(CFLAGS) -std=gnu11 -fPIC -c $(INCLUDES) train/bopl_shadow.c -o $(OUT)/bopl_agent_shadow.o
 	$(CC) -shared $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o -ldl -lm -lpthread -o $@
 	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o
@@ -336,11 +347,11 @@ $(OUT)/libbopl_agent.so: train/bopl_agent.c train/bopl_agent.h train/policy_eval
 # Mono resolves DllImport("bopl_agent") to BoplBattle.app/Contents/Plugins/libbopl_agent.dylib.
 agent-mac: $(OUT)/libbopl_agent.dylib
 
-$(OUT)/libbopl_agent.dylib: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/libbopl_agent.dylib: train/bopl_agent.c train/bopl_agent.h train/bopl_search.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) train/bopl_agent.c -o $(OUT)/bopl_agent.o
 	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
-	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
+	$(CC) -O3 -std=gnu11 $(AGENT_MAC_EVAL_CPU) $(AGENT_EVAL_FAST) -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
 	$(CC) $(CFLAGS) -std=gnu11 -fPIC -c $(INCLUDES) train/bopl_shadow.c -o $(OUT)/bopl_agent_shadow.o
 	$(CC) -dynamiclib $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o -lm -lpthread -install_name @rpath/libbopl_agent.dylib -o $@
 	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o $(OUT)/bopl_agent_shadow.o
@@ -352,6 +363,13 @@ agent-shadow-lib: rust-q32
 	mkdir -p $(OUT)
 	cp $(RUST_ROLLOUT_Q32) $(OUT)/libbopl_sim_q32.so
 
+# The same on the Mac (Tools/play-vs-agent-mac.sh), from native/ synced there
+# (docs/INGAME_SEARCH.md): cargo build --release --features q32.
+agent-shadow-lib-mac:
+	cargo build --release --features q32 --manifest-path native/Cargo.toml --target-dir native/target-q32
+	mkdir -p $(OUT)
+	cp native/target-q32/release/libbopl_sim.dylib $(OUT)/libbopl_sim_q32.dylib
+
 # Offline proof of the shim's shadow path (eval/shadow_replay.c): real game
 # recordings, the .NET reference standing in for the running game.
 shadow-replay: $(OUT)/shadow_replay rust-q32
@@ -360,6 +378,22 @@ shadow-replay: $(OUT)/shadow_replay rust-q32
 $(OUT)/shadow_replay: eval/shadow_replay.c train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -std=gnu11 $(INCLUDES) eval/shadow_replay.c train/bopl_shadow.c $(ABI)/bopl_rl.c -ldl -lm -lpthread -o $@
+
+# Offline proof that the in-game search (bopl_agent_search) plays exactly as
+# the research library's (eval/shim_search_check.c, docs/INGAME_SEARCH.md):
+# make shim-search-check SEARCH_CHECKPOINT=<policy-*.bin> [SEARCH_CHECK_ARGS="--players 3"]
+SEARCH_CHECK_ARGS ?=
+shim-search-check: $(OUT)/shim_search_check rust-q32
+	$(abspath $(OUT)/shim_search_check) $(abspath $(RUST_ROLLOUT_Q32)) $(abspath $(SEARCH_CHECKPOINT)) $(SEARCH_CHECK_ARGS)
+
+$(OUT)/shim_search_check: eval/shim_search_check.c train/bopl_agent.c train/bopl_agent.h train/bopl_search.h train/bopl_puffer.h train/policy_eval.c train/bopl_shadow.c train/bopl_shadow.h $(ABI)/bopl_rl_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) -O3 -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function $(INCLUDES) -c eval/shim_search_check.c -o $(OUT)/shim_search_check.o
+	$(CC) -O3 -std=gnu11 $(AGENT_EVAL_CPU) $(AGENT_EVAL_FAST) -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/shim_search_check_policy.o
+	$(CC) $(CFLAGS) -std=gnu11 $(INCLUDES) -c train/bopl_shadow.c -o $(OUT)/shim_search_check_shadow.o
+	$(CC) $(CFLAGS) -c $(ABI)/bopl_rl.c -o $(OUT)/shim_search_check_rl.o
+	$(CC) $(OUT)/shim_search_check.o $(OUT)/shim_search_check_policy.o $(OUT)/shim_search_check_shadow.o $(OUT)/shim_search_check_rl.o -ldl -lm -lpthread -o $@
+	rm -f $(OUT)/shim_search_check.o $(OUT)/shim_search_check_policy.o $(OUT)/shim_search_check_shadow.o $(OUT)/shim_search_check_rl.o
 
 $(OUT)/libbopl_rl.so: $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
@@ -386,7 +420,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac agent-shadow-lib shadow-replay check-reward check-routing style-check style-score style-rates style-rates-check
+.PHONY: shim-search-check divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac agent-shadow-lib agent-shadow-lib-mac shadow-replay check-reward check-routing style-check style-score style-rates style-rates-check
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.

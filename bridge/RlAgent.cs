@@ -47,6 +47,14 @@ using UnityEngine;
 // round. While the agent plays, hitstop frames freeze the simulation clock
 // (FreezesHitstopClock) as every sim does; BOPL_AGENT_HITSTOP_TIME=1 restores
 // the stock clock for an A/B.
+// With BOPL_AGENT_SEARCH=k,n,depth (implies the shadow; docs/INGAME_SEARCH.md)
+// each of the agent's decisions is searched on forks of the in-sync shadow
+// world (train/bopl_search.h, the research library's search, every player
+// modelled by the agent's own policy), synchronously inside the shim tick.
+// When the shadow is not tracking, the round reaches the agent's episode cap,
+// or the search fails, the agent plays the raw policy for the rest of the
+// round ("BOPL_AGENT_SEARCH: round ... raw policy ..."). Each round logs the
+// decision timing and the frame times, and its result line carries them.
 public static class RlAgent
 {
     [StructLayout(LayoutKind.Sequential)]
@@ -71,6 +79,12 @@ public static class RlAgent
     [DllImport(Library)] private static extern IntPtr bopl_shadow_report(IntPtr shadow);
     [DllImport(Library)] private static extern uint bopl_shadow_compared(IntPtr shadow);
     [DllImport(Library)] private static extern IntPtr bopl_shadow_library(IntPtr shadow);
+    [DllImport(Library)] private static extern void bopl_agent_set_map(IntPtr agent, uint map);
+    [DllImport(Library)] private static extern int bopl_agent_search(IntPtr agent, IntPtr shadow, [MarshalAs(UnmanagedType.LPStr)] string budget, byte[] error, UIntPtr capacity);
+    [DllImport(Library)] private static extern int bopl_agent_search_active(IntPtr agent);
+    [DllImport(Library)] private static extern IntPtr bopl_agent_search_note(IntPtr agent);
+    [DllImport(Library)] private static extern int bopl_agent_search_stats(IntPtr agent, double[] stats, int capacity);
+    private const int SearchStats = 14;
     private const int ShadowOff = 0, ShadowTracking = 1, ShadowDesync = 2, ShadowEnded = 3, ShadowFailed = 4;
     private static readonly string[] ShadowNames = { "off", "tracking", "desync", "ended", "failed" };
 
@@ -103,7 +117,9 @@ public static class RlAgent
     private static InputPacket agentPacket;
 
     // Shadow sim (BOPL_AGENT_SHADOW=1).
-    public static readonly bool ShadowRequested = Environment.GetEnvironmentVariable("BOPL_AGENT_SHADOW") == "1";
+    // Search (BOPL_AGENT_SEARCH=k,n,depth[,...]; "1" means the default 8,1,1).
+    private static readonly string searchBudget = SearchBudget(Environment.GetEnvironmentVariable("BOPL_AGENT_SEARCH"));
+    public static readonly bool ShadowRequested = Environment.GetEnvironmentVariable("BOPL_AGENT_SHADOW") == "1" || searchBudget != null;
     private static readonly bool stockHitstopClock = Environment.GetEnvironmentVariable("BOPL_AGENT_HITSTOP_TIME") == "1";
     private static IntPtr shadow;
     private static bool shadowOpenTried;
@@ -113,6 +129,20 @@ public static class RlAgent
     // This round's recording. Host.SaveReplay drops ReplaySession.Recording on
     // the tick the round ends, before AfterTick steps the shadow with that tick.
     private static ReplayArchive shadowRecording;
+
+    private static bool searchOn, searchFellBackLogged;
+    private static readonly double[] searchStats = new double[SearchStats];
+    // This round's wall times: the shim tick on decision ticks and on the
+    // others (ms), and the frames (Time.unscaledDeltaTime, ms) while it plays.
+    private static readonly List<double> decisionMs = new List<double>(4096), otherMs = new List<double>(16384), frameMs = new List<double>(16384);
+    private static int lastFrame = -1;
+    private static readonly System.Diagnostics.Stopwatch tickWatch = new System.Diagnostics.Stopwatch();
+
+    private static string SearchBudget(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value == "0") return null;
+        return value == "1" ? "8,1,1" : value;
+    }
 
     public static string Id => id;
     public static int WarmupTicks => warmupTicks;
@@ -139,6 +169,7 @@ public static class RlAgent
         maxEpisodeTicks = bopl_agent_max_episode_ticks(handle);
         agentIndex = player;
         OpenShadow();
+        AttachSearch();
         return true;
     }
 
@@ -156,6 +187,26 @@ public static class RlAgent
         }
         if (shadow == IntPtr.Zero) { Debug.LogError("BOPL_AGENT_SHADOW: " + Encoding.UTF8.GetString(error).TrimEnd('\0')); return; }
         Debug.Log("BOPL_AGENT_SHADOW: shadow sim " + Marshal.PtrToStringAnsi(bopl_shadow_library(shadow)));
+    }
+
+    // The search wraps this shim (a new one per match) around the shadow world.
+    private static void AttachSearch()
+    {
+        searchOn = false;
+        if (searchBudget == null) return;
+        if (shadow == IntPtr.Zero) { Debug.LogError("BOPL_AGENT_SEARCH: no shadow sim, the agent plays the raw policy"); return; }
+        var error = new byte[1024];
+        try {
+            if (bopl_agent_search(handle, shadow, searchBudget, error, (UIntPtr)error.Length) != 0) {
+                Debug.LogError("BOPL_AGENT_SEARCH=" + searchBudget + ": " + Encoding.UTF8.GetString(error).TrimEnd('\0') + "; the agent plays the raw policy");
+                return;
+            }
+        } catch (EntryPointNotFoundException exception) {
+            Debug.LogError("BOPL_AGENT_SEARCH: this libbopl_agent has no search (rebuild it: make agent): " + exception.Message);
+            return;
+        }
+        searchOn = true;
+        Debug.Log("BOPL_AGENT_SEARCH: budget " + searchBudget + " on the shadow world");
     }
 
     // Updater.Update on a hitstop frame: true when the simulation clock
@@ -272,7 +323,12 @@ public static class RlAgent
         round++; tick = 0; episodeTicks = 0; roundLevel = GameSession.CurrentLevel();
         started = terminal = failed = resultWritten = false;
         roundSeed = unchecked(baseSeed + (uint)round);
+        // The v4 rows' space flag reads the map (Host.BeginReplayRecording's level).
+        try { bopl_agent_set_map(handle, (uint)roundLevel); }
+        catch (EntryPointNotFoundException) { }
         bopl_agent_reset(handle, roundSeed);
+        searchFellBackLogged = false;
+        decisionMs.Clear(); otherMs.Clear(); frameMs.Clear(); lastFrame = -1;
         RlObservation.Reset();
         applied.Clear();
         agentPacket = default;
@@ -312,7 +368,17 @@ public static class RlAgent
                 RlObservation.Write(writer, RlBridge.Version, episodeTicks, flags, warmupTicks, simulationTime);
                 ShadowCheck();
                 if (agentDecides) {
+                    int decisionsBefore = bopl_agent_decisions(handle);
+                    tickWatch.Restart();
                     int status = bopl_agent_tick_bytes(handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action action);
+                    tickWatch.Stop();
+                    double ms = tickWatch.Elapsed.TotalMilliseconds;
+                    (bopl_agent_decisions(handle) != decisionsBefore ? decisionMs : otherMs).Add(ms);
+                    if (Time.frameCount != lastFrame) { if (lastFrame >= 0) frameMs.Add(Time.unscaledDeltaTime * 1000.0); lastFrame = Time.frameCount; }
+                    if (searchOn && !searchFellBackLogged && bopl_agent_search_active(handle) == 0) {
+                        searchFellBackLogged = true;
+                        Debug.LogWarning("BOPL_AGENT_SEARCH: round " + round + " level " + roundLevel + ": " + Marshal.PtrToStringAnsi(bopl_agent_search_note(handle)));
+                    }
                     if (status == 0) packet = ReplayArchive.Input(zero.seqNumber, action.angle, action.buttons);
                     else if (status == 1) terminal = true;
                     else { failed = true; Debug.LogError("BOPL_AGENT: shim tick failed (" + status + ") at episode tick " + episodeTicks); }
@@ -348,7 +414,76 @@ public static class RlAgent
             terminal = true;
             if (shadowStatus == ShadowTracking) ShadowSettle(bopl_shadow_end(shadow));
         }
-        if (terminal && !resultWritten) { resultWritten = true; WriteResult(players); }
+        if (terminal && !resultWritten) { resultWritten = true; LogTiming(); WriteResult(players); }
+    }
+
+    private static double Percentile(List<double> values, double q)
+    {
+        if (values.Count == 0) return 0;
+        var sorted = new List<double>(values); sorted.Sort();
+        return sorted[Math.Min(sorted.Count - 1, (int)Math.Floor(q * (sorted.Count - 1) + 0.5))];
+    }
+
+    private static double Mean(List<double> values)
+    {
+        double sum = 0; foreach (double v in values) sum += v;
+        return values.Count == 0 ? 0 : sum / values.Count;
+    }
+
+    private static double Max(List<double> values)
+    {
+        double max = 0; foreach (double v in values) if (v > max) max = v;
+        return max;
+    }
+
+    private static int Over(List<double> values, double limit)
+    {
+        int n = 0; foreach (double v in values) if (v > limit) n++;
+        return n;
+    }
+
+    private static string Ms(double ms) => ms.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+
+    // One line per round: the shim tick's wall time on decision ticks (search
+    // included) and on the rest, the frame times while the agent played, and
+    // the search's own counters.
+    private static void LogTiming()
+    {
+        string line = "BOPL_AGENT_TIMING: round " + round + " level " + roundLevel
+            + ": decision ticks " + decisionMs.Count + " mean " + Ms(Mean(decisionMs)) + " p50 " + Ms(Percentile(decisionMs, 0.5))
+            + " p95 " + Ms(Percentile(decisionMs, 0.95)) + " p99 " + Ms(Percentile(decisionMs, 0.99)) + " max " + Ms(Max(decisionMs)) + " ms"
+            + "; other ticks mean " + Ms(Mean(otherMs)) + " max " + Ms(Max(otherMs)) + " ms"
+            + "; frames " + frameMs.Count + " p50 " + Ms(Percentile(frameMs, 0.5)) + " p95 " + Ms(Percentile(frameMs, 0.95))
+            + " p99 " + Ms(Percentile(frameMs, 0.99)) + " max " + Ms(Max(frameMs)) + " ms, " + Over(frameMs, 1000.0 / 30.0) + " over 33 ms";
+        if (searchOn && bopl_agent_search_stats(handle, searchStats, SearchStats) == SearchStats)
+            line += "; search " + searchStats[1] + "/" + searchStats[0] + " decisions searched, " + searchStats[2] + " raw, search p50 "
+                + Ms(searchStats[5] * 1000) + " p95 " + Ms(searchStats[6] * 1000) + " max " + Ms(searchStats[4] * 1000) + " ms"
+                + (searchStats[12] >= 0 ? ", raw from episode tick " + searchStats[12] + ": " + Marshal.PtrToStringAnsi(bopl_agent_search_note(handle)) : "");
+        Debug.Log(line);
+    }
+
+    private static JObject TimingJson()
+    {
+        var timing = new JObject {
+            ["decision_ticks"] = decisionMs.Count, ["decision_ms_mean"] = Mean(decisionMs), ["decision_ms_p50"] = Percentile(decisionMs, 0.5),
+            ["decision_ms_p95"] = Percentile(decisionMs, 0.95), ["decision_ms_p99"] = Percentile(decisionMs, 0.99), ["decision_ms_max"] = Max(decisionMs),
+            ["other_ms_mean"] = Mean(otherMs), ["other_ms_max"] = Max(otherMs),
+            ["frames"] = frameMs.Count, ["frame_ms_p50"] = Percentile(frameMs, 0.5), ["frame_ms_p95"] = Percentile(frameMs, 0.95),
+            ["frame_ms_p99"] = Percentile(frameMs, 0.99), ["frame_ms_max"] = Max(frameMs), ["frames_over_33ms"] = Over(frameMs, 1000.0 / 30.0)
+        };
+        return timing;
+    }
+
+    private static JToken SearchJson()
+    {
+        if (!searchOn || bopl_agent_search_stats(handle, searchStats, SearchStats) != SearchStats) return null;
+        return new JObject {
+            ["budget"] = searchBudget, ["decisions"] = searchStats[0], ["searched"] = searchStats[1], ["raw"] = searchStats[2],
+            ["seconds"] = searchStats[3], ["max_ms"] = searchStats[4] * 1000, ["p50_ms"] = searchStats[5] * 1000, ["p95_ms"] = searchStats[6] * 1000,
+            ["p99_ms"] = searchStats[7] * 1000, ["rollouts"] = searchStats[8], ["rollout_steps"] = searchStats[9], ["forward_rows"] = searchStats[10],
+            ["root_searched"] = searchStats[11], ["raw_from_episode_tick"] = searchStats[12] >= 0 ? (JToken)searchStats[12] : null,
+            ["note"] = Marshal.PtrToStringAnsi(bopl_agent_search_note(handle))
+        };
     }
 
     // Shadow, after level tick `tick` ran: begin from the round's recording after
@@ -469,7 +604,8 @@ public static class RlAgent
                 ["shadow"] = shadow == IntPtr.Zero ? null : ShadowNames[shadowStatus],
                 ["shadow_compared"] = shadow == IntPtr.Zero ? 0u : bopl_shadow_compared(shadow),
                 ["shadow_report"] = shadow == IntPtr.Zero ? null : shadowReport.Split('\n')[0],
-                ["hitstop_clock"] = stockHitstopClock ? "stock" : "frozen"
+                ["hitstop_clock"] = stockHitstopClock ? "stock" : "frozen",
+                ["timing"] = TimingJson(), ["search"] = SearchJson()
             };
             File.AppendAllText(resultsPath, line.ToString(Newtonsoft.Json.Formatting.None) + "\n");
         } catch (Exception exception) { Debug.LogError("BOPL_AGENT: result log: " + exception); }

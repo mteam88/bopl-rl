@@ -23,7 +23,15 @@
  * search randomness comes from policy sampling.
  *
  * For phase 2 (expert iteration) every candidate keeps its visit count, mean
- * return and prior log-probability (research_search_stats). */
+ * return and prior log-probability (research_search_stats).
+ *
+ * Any player count the environment has (2..6): every other player is an
+ * opponent modelled by the same checkpoint on its own row, sampled in player
+ * order, so two-player searches draw exactly the random numbers they always
+ * did. `limit` (bopl_search_set_limit) ends rollouts at an episode-tick cap
+ * the forked world does not know about (the in-game shim forks a shadow sim
+ * whose own round limit is effectively infinite): the decision that reaches
+ * it pays the timeout outcome, as the truncating world would. */
 #ifndef BOPL_SEARCH_H
 #define BOPL_SEARCH_H
 #include "bopl_puffer.h"
@@ -50,14 +58,17 @@ typedef struct {
 typedef struct {
     BoplPuffer *env;                /* the live research environment (not owned) */
     float *weights; size_t weight_count; int hidden, layers, aim_fourier, aim_ar, shape[8];
-    void *policy;                   /* batch-2 evaluator: row 0 player 0, row 1 player 1 */
-    int width, state_floats;        /* decoder width; layers*2*hidden recurrent floats */
+    int players;                    /* env->players at open: one evaluator row per player */
+    void *policy;                   /* batch-`players` evaluator: row p is player p */
+    int width, state_floats;        /* decoder width; layers*players*hidden recurrent floats */
     int rollouts;                   /* shadows allocated (max rollouts of one round) */
     BoplPuffer *shadow;
     float *roll_state, *roll_next;  /* rollouts x state_floats */
-    float *rows, *logits;           /* 2 x (width+1), 2 x BOPL_DECODER scratch */
-    float *root_state, *root_next;  /* the real recurrent states of both players */
-    float *root_logits;             /* 2 x BOPL_DECODER at the root */
+    float *rows, *logits;           /* players x (width+1), players x BOPL_DECODER scratch */
+    float *root_state, *root_next;  /* the real recurrent states of every player */
+    float *root_logits;             /* players x BOPL_DECODER at the root */
+    float *root_rows;               /* players x (width+1): the root's raw rows (rows is rollout scratch) */
+    uint32_t limit;                 /* episode-tick cap for rollouts (0: the world's own) */
     uint32_t root_tick; int root_valid;  /* the live tick the root forward ran at: both players' act() calls on one decision share it */
     uint64_t *roll_rng;             /* one stream per rollout: rollout i of every candidate draws the
                                      * same opponent and policy samples (common random numbers) */
@@ -72,7 +83,7 @@ typedef struct {
     float prior_mix, value_scale;
     uint64_t rng;
     BoplSearchCand cand[BOPL_SEARCH_MAX_K]; int cands, chosen;
-    float root_value[2];
+    float root_value[BOPL_MAX_PLAYERS];
     /* Counters since reset: decisions, searched decisions, rollouts, decision
      * steps, policy forwards (rows) and wall seconds in research_search_act. */
     double seconds; long decisions, searched, rollouts_run, steps_run, forwards_run;
@@ -127,11 +138,12 @@ static void bopl_search_route(BoplPuffer *env) {
         env->mask_ptr[s]=env->action_mask+(size_t)s*BOPL_LOGITS;
     }
 }
-static int bopl_search_shadow_alloc(BoplPuffer *sh) {
+static int bopl_search_shadow_alloc(BoplPuffer *sh, int players) {
     memset(sh, 0, sizeof(*sh));
-    sh->observations=calloc(2*BOPL_OBS_STRIDE, sizeof(float));
-    sh->actions=calloc(2*BOPL_NUM_ATNS, sizeof(float)); sh->rewards=calloc(2, sizeof(float)); sh->terminals=calloc(2, sizeof(float));
-    sh->action_mask=calloc(2*BOPL_LOGITS, 1);
+    sh->observations=calloc((size_t)players*BOPL_OBS_STRIDE, sizeof(float));
+    sh->actions=calloc((size_t)players*BOPL_NUM_ATNS, sizeof(float));
+    sh->rewards=calloc((size_t)players, sizeof(float)); sh->terminals=calloc((size_t)players, sizeof(float));
+    sh->action_mask=calloc((size_t)players*BOPL_LOGITS, 1);
     return sh->observations && sh->actions && sh->rewards && sh->terminals && sh->action_mask?0:-1;
 }
 static void bopl_search_shadow_free(BoplPuffer *sh) {
@@ -164,8 +176,8 @@ static int bopl_search_shadow_reset(BoplSearch *s, BoplPuffer *sh) {
     sh->style=NULL; sh->style_slots=NULL; sh->pack_out=NULL; sh->pack_base=NULL; sh->telemetry=NULL; sh->scratch=NULL;
     memset(sh->bot_select, 0, sizeof(sh->bot_select));
     sh->written_count=0;   /* the rows are this shadow's: the next encode rewrites them whole */
-    memcpy(obs, real->observations, (size_t)2*BOPL_OBS_STRIDE*sizeof(float));
-    memcpy(mask, real->action_mask, (size_t)2*BOPL_LOGITS);
+    memcpy(obs, real->observations, (size_t)real->players*BOPL_OBS_STRIDE*sizeof(float));
+    memcpy(mask, real->action_mask, (size_t)real->players*BOPL_LOGITS);
     sh->reward_kill=s->kill; sh->reward_timeout=s->timeout;
     sh->no_autoreset=1;
     return 0;
@@ -185,31 +197,32 @@ static void bopl_search_close(BoplSearch *s) {
     if (!s) return;
     if (s->shadow) for (int r=0; r<s->rollouts; r++) bopl_search_shadow_free(&s->shadow[r]);
     free(s->shadow); free(s->roll_state); free(s->roll_next); free(s->rows); free(s->logits);
-    free(s->root_state); free(s->root_next); free(s->root_logits); free(s->roll_rng); free(s->weights);
+    free(s->root_state); free(s->root_next); free(s->root_logits); free(s->root_rows); free(s->roll_rng); free(s->weights);
     if (s->policy) bopl_policy_eval_close(s->policy);
     free(s);
 }
 static BoplSearch *bopl_search_open(BoplPuffer *env, const float *weights, size_t count, int hidden, int layers,
                                     int aim_fourier, int aim_ar, const int *shape, int rollouts, uint64_t seed) {
-    if (!env || !weights || rollouts<1 || hidden<1 || layers<1) return NULL;
+    if (!env || !weights || rollouts<1 || hidden<1 || layers<1 || env->players<2 || env->players>BOPL_MAX_PLAYERS) return NULL;
     BoplSearch *s=calloc(1, sizeof(*s)); if (!s) return NULL;
-    s->env=env; s->rollouts=rollouts; s->hidden=hidden; s->layers=layers; s->aim_fourier=aim_fourier; s->aim_ar=aim_ar;
+    int P=env->players;
+    s->env=env; s->players=P; s->rollouts=rollouts; s->hidden=hidden; s->layers=layers; s->aim_fourier=aim_fourier; s->aim_ar=aim_ar;
     memcpy(s->shape, shape, sizeof(s->shape));
     s->weights=malloc(count*sizeof(float)); s->weight_count=count;
     if (!s->weights) { bopl_search_close(s); return NULL; }
     memcpy(s->weights, weights, count*sizeof(float));
-    s->policy=bopl_policy_eval_create_v4(s->weights, count, 2, hidden, layers, aim_fourier, aim_ar, shape);
+    s->policy=bopl_policy_eval_create_v4(s->weights, count, P, hidden, layers, aim_fourier, aim_ar, shape);
     if (!s->policy) { bopl_search_close(s); return NULL; }
-    s->width=bopl_policy_eval_width(s->policy); s->state_floats=layers*2*hidden;
+    s->width=bopl_policy_eval_width(s->policy); s->state_floats=layers*P*hidden;
     s->shadow=calloc((size_t)rollouts, sizeof(BoplPuffer));
     s->roll_state=calloc((size_t)rollouts*s->state_floats, sizeof(float));
     s->roll_next=calloc((size_t)rollouts*s->state_floats, sizeof(float));
-    s->rows=calloc((size_t)2*(s->width+1), sizeof(float)); s->logits=calloc(2*BOPL_DECODER, sizeof(float));
+    s->rows=calloc((size_t)P*(s->width+1), sizeof(float)); s->logits=calloc((size_t)P*BOPL_DECODER, sizeof(float));
     s->root_state=calloc((size_t)s->state_floats, sizeof(float)); s->root_next=calloc((size_t)s->state_floats, sizeof(float));
-    s->root_logits=calloc(2*BOPL_DECODER, sizeof(float));
+    s->root_logits=calloc((size_t)P*BOPL_DECODER, sizeof(float)); s->root_rows=calloc((size_t)P*(s->width+1), sizeof(float));
     s->roll_rng=calloc((size_t)rollouts, sizeof(uint64_t));
-    if (!s->roll_rng || !s->shadow || !s->roll_state || !s->roll_next || !s->rows || !s->logits || !s->root_state || !s->root_next || !s->root_logits) { bopl_search_close(s); return NULL; }
-    for (int r=0; r<rollouts; r++) if (bopl_search_shadow_alloc(&s->shadow[r])) { bopl_search_close(s); return NULL; }
+    if (!s->roll_rng || !s->shadow || !s->roll_state || !s->roll_next || !s->rows || !s->logits || !s->root_state || !s->root_next || !s->root_logits || !s->root_rows) { bopl_search_close(s); return NULL; }
+    for (int r=0; r<rollouts; r++) if (bopl_search_shadow_alloc(&s->shadow[r], P)) { bopl_search_close(s); return NULL; }
     s->k=8; s->n=2; s->depth=8; s->halving=0; s->search_latched=1;
     s->gamma=0.995f; s->kill=0.2883693f; s->timeout=-1.0f; s->prior_mix=0; s->value_scale=1;
     s->rng=seed?seed:0x5EEDull;
@@ -222,6 +235,9 @@ static void bopl_search_reset(BoplSearch *s, uint64_t seed) {
     s->cands=0; s->chosen=-1; s->root_valid=0;
     if (seed) s->rng=seed;
 }
+/* Rollouts stop at episode tick `limit` with the timeout outcome (0: only
+ * the forked world's own terminal ends them). */
+static void bopl_search_set_limit(BoplSearch *s, uint32_t limit) { s->limit=limit; }
 static int bopl_search_configure(BoplSearch *s, int k, int n, int depth, int halving, int search_latched,
                                  float gamma, float kill, float timeout, float prior_mix, float value_scale) {
     if (k<1 || k>BOPL_SEARCH_MAX_K || n<1 || depth<1 || k*n>s->rollouts || !(gamma>0) || gamma>1 || !isfinite(kill) || !isfinite(timeout)
@@ -231,16 +247,16 @@ static int bopl_search_configure(BoplSearch *s, int k, int n, int depth, int hal
     return 0;
 }
 
-/* Policy forward of a shadow's two rows; the sampled next actions of both
- * players go to its action buffer, `value` gets player `me`'s critic value. */
+/* Policy forward of a shadow's rows; the sampled next actions of every
+ * player go to its action buffer, `value` gets player `me`'s critic value. */
 static void bopl_search_forward_shadow(BoplSearch *s, BoplPuffer *sh, float *state, float *next, int me, float *value, uint64_t *rng) {
     bopl_policy_eval_step_raw(s->policy, sh->observations, state, s->rows, next);
     bopl_policy_eval_game_logits(s->policy, s->rows, NULL, s->logits);
-    for (int p=0; p<2; p++) {
+    for (int p=0; p<s->players; p++) {
         const float *row=s->logits+(size_t)p*BOPL_DECODER;
         if (s->aim_ar) {
             /* Buttons first, then the aim head of that combo (bopl_aim.h). */
-            int combos[2]={0, 0};
+            int combos[BOPL_MAX_PLAYERS]={0};
             float *a=sh->actions+BOPL_NUM_ATNS*p;
             a[1]=(float)bopl_search_sample_head(row+BOPL_ACT_AIM, sh->action_mask+(size_t)p*BOPL_LOGITS+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, rng);
             combos[p]=(int)a[1];
@@ -250,7 +266,7 @@ static void bopl_search_forward_shadow(BoplSearch *s, BoplPuffer *sh, float *sta
         } else bopl_search_sample_action(row, sh->action_mask+(size_t)p*BOPL_LOGITS, rng, sh->actions+BOPL_NUM_ATNS*p);
     }
     *value=s->logits[(size_t)me*BOPL_DECODER+BOPL_LOGITS];
-    s->forwards_run+=2;
+    s->forwards_run+=s->players;
 }
 
 /* Gumbel-top-k over the joint masked prior of player `me` at the root. */
@@ -290,8 +306,6 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
     static _Thread_local float ret[4096], disc[4096], value[4096];
     static _Thread_local unsigned char done[4096];
     if (s->rollouts>4096) return -1;
-    const unsigned char *opp_mask=s->env->action_mask+(size_t)(1-me)*BOPL_LOGITS;
-    const float *opp_row=s->root_logits+(size_t)(1-me)*BOPL_DECODER;
     uint64_t round_seed=bopl_search_mix(&s->rng);
     for (int c=0; c<s->cands; c++) {
         if (!s->cand[c].alive) continue;
@@ -300,17 +314,24 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
             uint64_t *rng=&s->roll_rng[used]; *rng=round_seed^((uint64_t)(i+1)*0xD1B54A32D192ED03ull);
             if (bopl_search_shadow_reset(s, sh)) { snprintf(s->error, sizeof(s->error), "the world cannot fork"); return -1; }
             memcpy(s->roll_state+(size_t)used*s->state_floats, s->root_state, (size_t)s->state_floats*sizeof(float));
-            float *mine=sh->actions+BOPL_NUM_ATNS*me, *theirs=sh->actions+BOPL_NUM_ATNS*(1-me);
+            float *mine=sh->actions+BOPL_NUM_ATNS*me;
             mine[0]=(float)s->cand[c].aim; mine[1]=(float)s->cand[c].buttons; mine[2]=(float)s->cand[c].hold;
-            if (s->aim_ar) {
-                int combos[2]={0, 0};
-                theirs[1]=(float)bopl_search_sample_head(opp_row+BOPL_ACT_AIM, opp_mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, rng);
-                combos[1-me]=(int)theirs[1];
-                bopl_policy_eval_game_logits(s->policy, s->rows, combos, s->logits);   /* s->rows still holds the root rows */
-                const float *r=s->logits+(size_t)(1-me)*BOPL_DECODER;
-                theirs[0]=(float)bopl_search_sample_head(r, opp_mask, BOPL_ACT_AIM, rng);
-                theirs[2]=(float)bopl_search_sample_head(r+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, opp_mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, rng);
-            } else bopl_search_sample_action(opp_row, opp_mask, rng, theirs);
+            /* Every opponent's first action from its root prior, in player order. */
+            for (int o=0; o<s->players; o++) {
+                if (o==me) continue;
+                const unsigned char *opp_mask=s->env->action_mask+(size_t)o*BOPL_LOGITS;
+                const float *opp_row=s->root_logits+(size_t)o*BOPL_DECODER;
+                float *theirs=sh->actions+BOPL_NUM_ATNS*o;
+                if (s->aim_ar) {
+                    int combos[BOPL_MAX_PLAYERS]={0};
+                    theirs[1]=(float)bopl_search_sample_head(opp_row+BOPL_ACT_AIM, opp_mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, rng);
+                    combos[o]=(int)theirs[1];
+                    bopl_policy_eval_game_logits(s->policy, s->root_rows, combos, s->logits);
+                    const float *r=s->logits+(size_t)o*BOPL_DECODER;
+                    theirs[0]=(float)bopl_search_sample_head(r, opp_mask, BOPL_ACT_AIM, rng);
+                    theirs[2]=(float)bopl_search_sample_head(r+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, opp_mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, rng);
+                } else bopl_search_sample_action(opp_row, opp_mask, rng, theirs);
+            }
             owner[used]=c; ret[used]=0; disc[used]=1; done[used]=0; value[used]=0;
             used++;
         }
@@ -321,8 +342,12 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
             BoplPuffer *sh=&s->shadow[r];
             int terminal=bopl_search_shadow_step(sh);
             s->steps_run++;
-            ret[r]+=disc[r]*sh->rewards[me]; disc[r]*=s->gamma;
-            if (terminal) { done[r]=1; value[r]=0; continue; }
+            float reward=sh->rewards[me];
+            /* The cap the fork does not know: this decision truncates the episode. */
+            int capped=!terminal && s->limit && bopl_rl_state(sh->world)->header.episode_ticks>=s->limit;
+            if (capped) reward+=s->timeout;
+            ret[r]+=disc[r]*reward; disc[r]*=s->gamma;
+            if (terminal || capped) { done[r]=1; value[r]=0; continue; }
             /* Next decision's actions and, at the horizon, the leaf value. */
             float *state=s->roll_state+(size_t)r*s->state_floats, *next=s->roll_next+(size_t)r*s->state_floats;
             bopl_search_forward_shadow(s, sh, state, next, me, &value[r], &s->roll_rng[r]);
@@ -338,29 +363,36 @@ static int bopl_search_round(BoplSearch *s, int me, int n) {
 }
 
 /* The decision of player `me` on the live environment's current rows: the
- * real policy forward of both players (their recurrent states advance here,
+ * real policy forward of every player (their recurrent states advance here,
  * once per decision), then the search. out[3] = aim, buttons, hold. Returns
  * 0, or -1 with s->error set. `searched` tells whether the search ran (a
  * latched decision with search_latched off, or a budget of one, samples). */
-static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
-    double t0=bopl_search_now();
+/* The root forward of every player's live row, once per live decision keyed
+ * on `tick`: the real recurrent states advance here (a second call on the
+ * same tick, another player's act(), reuses it). Returns -1 with s->error
+ * when a row is not layout v4. */
+static int bopl_search_root(BoplSearch *s, uint32_t tick) {
     BoplPuffer *env=s->env;
-    if (me<0 || me>1) { snprintf(s->error, sizeof(s->error), "player %d", me); return -1; }
-    for (int p=0; p<2; p++) if (bopl_layout_of(env, p)!=4) {
-        snprintf(s->error, sizeof(s->error), "player %d's row is layout %d; the search models both players with a v4 checkpoint", p, bopl_layout_of(env, p));
+    for (int p=0; p<s->players; p++) if (bopl_layout_of(env, p)!=4) {
+        snprintf(s->error, sizeof(s->error), "player %d's row is layout %d; the search models every player with a v4 checkpoint", p, bopl_layout_of(env, p));
         return -1;
     }
-    uint32_t tick=bopl_rl_state(env->world)->header.tick;
-    if (!s->root_valid || tick!=s->root_tick) {
-        /* The real recurrent states advance here, once per live decision (a
-         * second act() on the same tick, the other player's, reuses the root). */
-        bopl_policy_eval_step_raw(s->policy, env->observations, s->root_state, s->rows, s->root_next);
-        bopl_policy_eval_game_logits(s->policy, s->rows, NULL, s->root_logits);
-        s->forwards_run+=2;
-        for (int p=0; p<2; p++) s->root_value[p]=s->root_logits[(size_t)p*BOPL_DECODER+BOPL_LOGITS];
-        float *swap=s->root_state; s->root_state=s->root_next; s->root_next=swap;
-        s->root_tick=tick; s->root_valid=1;
-    }
+    if (s->root_valid && tick==s->root_tick) return 0;
+    bopl_policy_eval_step_raw(s->policy, env->observations, s->root_state, s->root_rows, s->root_next);
+    bopl_policy_eval_game_logits(s->policy, s->root_rows, NULL, s->root_logits);
+    s->forwards_run+=s->players;
+    for (int p=0; p<s->players; p++) s->root_value[p]=s->root_logits[(size_t)p*BOPL_DECODER+BOPL_LOGITS];
+    float *swap=s->root_state; s->root_state=s->root_next; s->root_next=swap;
+    s->root_tick=tick; s->root_valid=1;
+    return 0;
+}
+/* bopl_search_act with the root keyed on an explicit decision tick (the
+ * in-game shim's environment has no world of its own between decisions). */
+static int bopl_search_act_at(BoplSearch *s, int me, uint32_t tick, int *out, int *searched) {
+    double t0=bopl_search_now();
+    BoplPuffer *env=s->env;
+    if (me<0 || me>=s->players || env->players!=s->players) { snprintf(s->error, sizeof(s->error), "player %d of %d", me, s->players); return -1; }
+    if (bopl_search_root(s, tick)) return -1;
     const unsigned char *mask=env->action_mask+(size_t)me*BOPL_LOGITS;
     int latched=env->hold_left[me]>0;
     int run=s->k>1 && (s->search_latched || !latched);
@@ -373,10 +405,10 @@ static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
         float a[3];
         const float *row=s->root_logits+(size_t)me*BOPL_DECODER;
         if (s->aim_ar) {
-            int combos[2]={0, 0};
+            int combos[BOPL_MAX_PLAYERS]={0};
             a[1]=(float)bopl_search_sample_head(row+BOPL_ACT_AIM, mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &s->rng);
             combos[me]=(int)a[1];
-            bopl_policy_eval_game_logits(s->policy, s->rows, combos, s->logits);
+            bopl_policy_eval_game_logits(s->policy, s->root_rows, combos, s->logits);
             const float *r=s->logits+(size_t)me*BOPL_DECODER;
             a[0]=(float)bopl_search_sample_head(r, mask, BOPL_ACT_AIM, &s->rng);
             a[2]=(float)bopl_search_sample_head(r+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, &s->rng);
@@ -415,6 +447,13 @@ static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
     if (searched) *searched=run;
     return 0;
 }
+/* The decision of player `me` on the live environment's current rows: the
+ * root forward keyed on the live world's tick, then the search. */
+static int bopl_search_act(BoplSearch *s, int me, int *out, int *searched) {
+    const BoplRlState *state=s->env->world?bopl_rl_state(s->env->world):NULL;
+    if (!state) { snprintf(s->error, sizeof(s->error), "the environment has no world state"); return -1; }
+    return bopl_search_act_at(s, me, state->header.tick, out, searched);
+}
 
 /* Per-candidate rows of BOPL_SEARCH_STAT_WIDTH floats: aim, buttons, hold,
  * visits, mean return, prior log-probability, chosen, sample variance of the
@@ -449,7 +488,7 @@ static double bopl_search_bench(BoplSearch *s, int what, int iterations, int bat
     }
     case 1: {
         if (bopl_search_shadow_reset(s, sh)) return -1;
-        float *v=sh->actions; for (int i=0; i<2*BOPL_NUM_ATNS; i++) v[i]=0;
+        float *v=sh->actions; for (int i=0; i<s->players*BOPL_NUM_ATNS; i++) v[i]=0;
         t0=bopl_search_now();
         for (int i=0; i<iterations; i++) {
             if (bopl_search_shadow_step(sh)) { if (bopl_search_shadow_reset(s, sh)) return -1; }

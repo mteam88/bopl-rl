@@ -14,6 +14,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+/* Builds that must outlive a failed step define BOPL_PUFFER_RECOVER: the
+ * in-game agent shim (bopl_agent.c) runs its decision-time search on forks of
+ * a shadow sim inside the running game, where a broken rollout must turn the
+ * search off, not abort the game. A failure then longjmps to
+ * bopl_recover_point when the caller armed one; everything else aborts as
+ * before. */
+#ifdef BOPL_PUFFER_RECOVER
+#include <setjmp.h>
+static _Thread_local jmp_buf *bopl_recover_point;
+#define BOPL_RECOVER() do { if (bopl_recover_point) longjmp(*bopl_recover_point, 1); } while (0)
+#else
+#define BOPL_RECOVER() do {} while (0)
+#endif
 
 enum { BOPL_EVENT_FIELDS=9, BOPL_TELEMETRY_SIZE=16,
        BOPL_REWARD_OUTCOME=9, BOPL_REWARD_KILLS, BOPL_REWARD_DEATHS,
@@ -1144,6 +1157,7 @@ static void bopl_failed_world(BoplPuffer *env, const BoplRl *world, const char *
     env->failed=1; env->log.game_errors++;
     snprintf(env->error, sizeof(env->error), "%s: %s", operation, bopl_rl_error(world));
     fprintf(stderr, "Bopl RL stopped: %s\n", env->error);
+    BOPL_RECOVER();
     /* Do not silently turn failed simulation into successful training episodes. */
     abort();
 }
@@ -1173,6 +1187,20 @@ static void bopl_world_ready(BoplPuffer *env) {
         }
     if (bopl_rl_ability_count(env->world)!=BOPL_ABILITY_COUNT) { fprintf(stderr, "Bopl RL policy catalog changed\n"); abort(); }
 }
+/* The world-open threads. macOS gives a secondary thread 512 KB of stack,
+ * less than the in-process Rust world's constructor needs (RolloutWorld::new
+ * overflows it); Linux's default (8 MB) is kept. */
+#ifdef __APPLE__
+static pthread_attr_t bopl_open_attr_value;
+static void bopl_open_attr_init(void) { pthread_attr_init(&bopl_open_attr_value); pthread_attr_setstacksize(&bopl_open_attr_value, (size_t)16<<20); }
+static const pthread_attr_t *bopl_open_attr(void) {
+    static pthread_once_t once=PTHREAD_ONCE_INIT;
+    pthread_once(&once, bopl_open_attr_init);
+    return &bopl_open_attr_value;
+}
+#else
+static const pthread_attr_t *bopl_open_attr(void) { return NULL; }
+#endif
 static void init(BoplPuffer *env) {
     const char *game=getenv("BOPL_RL_GAME"), *replay=getenv("BOPL_RL_BOOTSTRAP"), *logs=getenv("BOPL_RL_LOG_DIR");
     if (!game || !replay || !logs) { fprintf(stderr, "Set BOPL_RL_GAME, BOPL_RL_BOOTSTRAP and BOPL_RL_LOG_DIR to absolute paths\n"); abort(); }
@@ -1181,7 +1209,7 @@ static void init(BoplPuffer *env) {
     if (bopl_maps_selected(env->training_map_mask) && env->random_maps) {
         fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
     }
-    if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
+    if (pthread_create(&env->world_thread, bopl_open_attr(), bopl_world_open, env)) abort();
     env->world_opening=1;
     if (env->players<1 || env->players>BOPL_MAX_PLAYERS || env->banks<0 || env->banks>BOPL_MAX_BANKS
         || (env->banks && env->players!=2) || env->num_agents!=(env->banks?1+env->banks:env->players)) {
@@ -1203,7 +1231,7 @@ static void init(BoplPuffer *env) {
         length=snprintf(env->spare_log, sizeof(env->spare_log), "%s/worker-%ld-%u-spare.log", logs, (long)getpid(), env->rng);
         if (length<0 || (size_t)length>=sizeof(env->spare_log)) abort();
         /* Game start-up takes seconds; overlap it with the other workers' start-up. */
-        if (pthread_create(&env->spare_thread, NULL, bopl_spare_open, env)) abort();
+        if (pthread_create(&env->spare_thread, bopl_open_attr(), bopl_spare_open, env)) abort();
         env->spare_opening=1;
     }
     env->rng=env->rng*747796405u+2891336453u;
@@ -1506,7 +1534,7 @@ static void bopl_step_begin_from(BoplPuffer *env, BoplStepPhase *phase, const Bo
         }
         if (!isfinite(angle) || !isfinite(buttons) || !isfinite(hold) || angle<0 || angle>255 || buttons<0 || buttons>15
             || hold<0 || hold>BOPL_ACT_HOLD-1 || floorf(angle)!=angle || floorf(buttons)!=buttons || floorf(hold)!=hold) {
-            fprintf(stderr, "Invalid PufferLib action\n"); abort();
+            fprintf(stderr, "Invalid PufferLib action\n"); BOPL_RECOVER(); abort();
         }
         holds[i]=(int)hold;
         actions[i].angle=(uint8_t)angle;

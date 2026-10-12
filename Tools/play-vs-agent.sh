@@ -23,7 +23,9 @@
 # and a result row (with the bot and kit of that round) is appended to
 # native/artifacts/rl/human/games.jsonl (Tools/play_vs_agent_results.py).
 # BOPL_AGENT_SHADOW=1 also runs the shim's shadow sim and logs, per round,
-# whether it stayed in sync with the game (docs/SHADOW.md).
+# whether it stayed in sync with the game (docs/SHADOW.md). BOPL_AGENT_SEARCH=
+# k,n,depth (e.g. 8,1,1; implies the shadow) makes the agent search every
+# decision on the shadow world (docs/INGAME_SEARCH.md).
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUILD=${BOPL_BUILD:-$ROOT/Builds/Linux}
@@ -82,7 +84,7 @@ make -C "$ROOT" agent >/dev/null || [ -f "$LIB" ] || { echo "could not build lib
 mkdir -p "$BUILD/BoplBattle_Data/Plugins/x86_64"
 cp -f "$LIB" "$BUILD/BoplBattle_Data/Plugins/x86_64/libbopl_agent.so"
 # BOPL_AGENT_SHADOW=1 (docs/SHADOW.md): the q32 Rust sim the shim shadows the game with, beside the shim.
-if [ "${BOPL_AGENT_SHADOW:-}" = 1 ]; then
+if [ "${BOPL_AGENT_SHADOW:-}" = 1 ] || [ -n "${BOPL_AGENT_SEARCH:-}" ]; then
   make -C "$ROOT" agent-shadow-lib >/dev/null || [ -f "$ROOT/native/artifacts/rl/libbopl_sim_q32.so" ] || { echo "could not build the q32 shadow sim" >&2; exit 2; }
   cp -f "$ROOT/native/artifacts/rl/libbopl_sim_q32.so" "$BUILD/BoplBattle_Data/Plugins/x86_64/libbopl_sim_q32.so"
 fi

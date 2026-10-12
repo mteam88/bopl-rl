@@ -5,7 +5,9 @@
  * This file only adds: the sidecar reader, the policy forward pass via
  * policy_eval.c, the sampler, and the wire-format decoder. */
 #include "bopl_agent.h"
+#define BOPL_PUFFER_RECOVER  /* a failed search rollout falls back instead of aborting the game */
 #include "bopl_puffer.h"
+#include "bopl_search.h"
 #include "bopl_aim.h"
 #include <errno.h>
 #include <stdarg.h>
@@ -49,7 +51,18 @@ struct BoplAgent {
     /* roster (bopl_agent.h): members opened once, one drawn per round */
     BoplAgent **members; double *weights; char **specs; int count, current;
     char *log_path;
+    /* decision-time search (bopl_agent_search): the v4 checkpoint kept for it */
+    float *checkpoint; size_t checkpoint_count; int shape[8];
+    BoplSearch *search; BoplShadow *shadow;
+    int search_live;                 /* searching this round; 0 after a fallback */
+    char search_note[320];           /* why this round fell back ("" while searching) */
+    long search_stop;                /* episode tick of the fallback, -1 none */
+    int hold_saved[BOPL_MAX_PLAYERS][4];   /* hold_run before the decision's latch (the humans' mapping) */
+    long n_decisions, n_search, n_raw;     /* this round: policy decisions, chosen by the search, by the raw policy */
+    double search_seconds, search_max;
+    float *search_times; int search_samples;
 };
+#define BOPL_SEARCH_SAMPLES 16384
 #define BOPL_ROSTER_MAX 64
 
 uint32_t bopl_agent_abi_version(void) { return BOPL_AGENT_ABI; }
@@ -240,7 +253,9 @@ static int bopl_agent_open_policy(BoplAgent *a, const char *path, char *error, s
     if (a->delay!=0 && (a->delay!=9 || a->repeat!=4)) { free(data); bopl_agent_error(error, capacity, "unsupported observation delay %d / repeat %d", a->delay, a->repeat); return -1; }
     a->policy=v4?bopl_policy_eval_create_v4((const float*)data, length/sizeof(float), 1, (int)hidden, (int)layers, a->aim_fourier, a->aim_ar, shape)
                 :bopl_policy_eval_create_aim((const float*)data, length/sizeof(float), 1, BOPL_OBS_SIZE, (int)hidden, (int)layers, set, a->aim_fourier, a->aim_ar);
-    free(data);
+    /* A v4 checkpoint stays loaded for bopl_agent_search (its own batch-N evaluator). */
+    if (v4 && a->policy) { a->checkpoint=(float*)data; a->checkpoint_count=length/sizeof(float); memcpy(a->shape, shape, sizeof(a->shape)); }
+    else free(data);
     if (!a->policy) { bopl_agent_error(error, capacity, "weights (%zu floats) do not fit %s hidden %ld layers %ld aim_fourier %d aim_ar %d", length/sizeof(float), architecture, hidden, layers, a->aim_fourier, a->aim_ar); return -1; }
     a->hidden=(int)hidden; a->layers=(int)layers; a->is_policy=1;
     a->rstate=calloc((size_t)layers*hidden, sizeof(float)); a->rnext=calloc((size_t)layers*hidden, sizeof(float));
@@ -369,6 +384,8 @@ void bopl_agent_close(BoplAgent *a) {
         free(a); return;
     }
     bopl_policy_eval_close(a->policy);
+    bopl_search_close(a->search);
+    free(a->checkpoint); free(a->search_times);
     free(a->rstate); free(a->rnext); free(a->decoder); free(a->row);
     BoplPuffer *env=&a->env;
     free(env->observations); free(env->actions); free(env->rewards); free(env->terminals); free(env->action_mask);
@@ -393,6 +410,14 @@ void bopl_agent_reset(BoplAgent *a, uint32_t seed) {
     memset(a->decision, 0, sizeof(a->decision));
     memset(&a->phase, 0, sizeof(a->phase));
     memset(env->actions, 0, (size_t)a->players*BOPL_NUM_ATNS*sizeof(float));
+    if (a->search) {
+        /* The search's own streams (rollouts, candidates) per round, apart from the sampler's. */
+        uint64_t mix=(uint64_t)seed*0x9E3779B97F4A7C15ull^(0x5EA4C4u+(uint64_t)a->player);
+        uint64_t stream=bopl_splitmix(&mix);
+        bopl_search_reset(a->search, stream?stream:1);
+        a->search_live=1; a->search_note[0]=0; a->search_stop=-1;
+        a->n_decisions=a->n_search=a->n_raw=0; a->search_seconds=a->search_max=0; a->search_samples=0;
+    }
 }
 
 static uint64_t bopl_splitmix(uint64_t *state) {
@@ -444,6 +469,100 @@ static void bopl_agent_write_mask(BoplAgent *a, const BoplRlState *state) {
     }
 }
 
+/* ---- decision-time search (bopl_agent_search) ---- */
+static void bopl_agent_search_stop(BoplAgent *a, uint32_t tick, const char *format, ...) {
+    if (!a->search_live) return;
+    a->search_live=0; a->search_stop=(long)tick;
+    va_list args; va_start(args, format);
+    vsnprintf(a->search_note, sizeof(a->search_note), format, args);
+    va_end(args);
+    fprintf(stderr, "BOPL_AGENT_SEARCH: raw policy for the rest of the round from episode tick %u: %s\n", tick, a->search_note);
+}
+/* The agent's decision at episode tick e by the search, from a fork of the
+ * shadow world, which is the game's S_e when it is tracking (RlAgent checks
+ * S_e against it before this tick). The raw decision already in a->decision
+ * stands when the search cannot run; any failure ends the search for the
+ * round. */
+static void bopl_agent_search_decide(BoplAgent *a, const BoplRlState *before) {
+    if (!a->search_live) { a->n_raw++; a->n_decisions++; return; }
+    double t0=bopl_search_now();
+    BoplPuffer *env=&a->env;
+    uint32_t e=before->header.episode_ticks;
+    a->n_decisions++;
+    BoplRl *world=bopl_shadow_world(a->shadow);
+    const BoplRlState *now=world?bopl_rl_state(world):NULL;
+    if (!now) {
+        int status=bopl_shadow_status(a->shadow);
+        bopl_agent_search_stop(a, e, "shadow %s%s%s", bopl_shadow_status_name(status), status==BOPL_SHADOW_OFF?"":": ", status==BOPL_SHADOW_OFF?"":bopl_shadow_report(a->shadow));
+        a->n_raw++; return;
+    }
+    if (bopl_shadow_episode_tick(a->shadow)!=e || now->header.episode_ticks!=e || now->header.player_count!=(uint32_t)a->players) {
+        bopl_agent_search_stop(a, e, "shadow at episode tick %u (%u steps, %u players) for the decision at %u",
+                               now->header.episode_ticks, bopl_shadow_episode_tick(a->shadow), now->header.player_count, e);
+        a->n_raw++; return;
+    }
+    if ((int)e>=a->limit) { bopl_agent_search_stop(a, e, "episode cap %d reached", a->limit); a->n_raw++; return; }
+    /* The search forks the shadow, whose kill/death counters start at zero
+     * every round and whose telemetry counts (the game's record carries
+     * match totals and no telemetry): the reward baselines the rollouts
+     * difference against come from the shadow's own S_e for the search. */
+    uint32_t kills[BOPL_MAX_PLAYERS], deaths[BOPL_MAX_PLAYERS];
+    BoplRlTelemetry telemetry[BOPL_MAX_PLAYERS];
+    memcpy(kills, env->kills, sizeof(kills)); memcpy(deaths, env->deaths, sizeof(deaths));
+    memcpy(telemetry, env->previous_telemetry, sizeof(telemetry));
+    for (int i=0; i<a->players; i++) { env->kills[i]=(uint32_t)bopl_opponent_kills(now, i); env->deaths[i]=now->players[i].deaths; }
+    memcpy(env->previous_telemetry, now->telemetry, sizeof(telemetry));
+    env->world=world;
+    int out[3]={0, 0, 0}, searched=0;
+    volatile int status=0;
+    jmp_buf recover;
+    bopl_recover_point=&recover;
+    if (setjmp(recover)) status=-2;
+    else status=bopl_search_act_at(a->search, a->player, e, out, &searched);
+    bopl_recover_point=NULL;
+    env->world=NULL;
+    memcpy(env->kills, kills, sizeof(kills)); memcpy(env->deaths, deaths, sizeof(deaths));
+    memcpy(env->previous_telemetry, telemetry, sizeof(telemetry));
+    if (status) {
+        bopl_agent_search_stop(a, e, "%s", status==-2?"a rollout failed (the sim's error is on stderr: \"Bopl RL stopped\")":a->search->error);
+        a->n_raw++; return;
+    }
+    memcpy(a->decision, out, sizeof(out));
+    a->n_search++;
+    double seconds=bopl_search_now()-t0;
+    a->search_seconds+=seconds; if (seconds>a->search_max) a->search_max=seconds;
+    if (a->search_times && a->search_samples<BOPL_SEARCH_SAMPLES) a->search_times[a->search_samples++]=(float)seconds;
+}
+/* The other players' part of the decision that just ended, from the packets
+ * the shadow was stepped with: they are humans, not this shim's players, so
+ * their routed actions were zero. Their last tick's input becomes the
+ * decision's action (aim, the four action buttons) with the shortest hold, the
+ * one latch semantics a per-tick input has, so their own-action tails, the
+ * critic's opponent block and their masks are what the search's opponent
+ * model (the same checkpoint) expects. Only with the search on: the raw policy
+ * reads its own row alone. */
+static void bopl_agent_map_humans(BoplAgent *a, uint32_t e) {
+    if (!a->search_live || bopl_shadow_status(a->shadow)!=BOPL_SHADOW_TRACKING || bopl_shadow_episode_tick(a->shadow)!=e) return;
+    BoplRlAction packets[BOPL_MAX_PLAYERS];
+    if (bopl_shadow_packets(a->shadow, packets, BOPL_MAX_PLAYERS)!=(size_t)a->players) return;
+    BoplPuffer *env=&a->env;
+    for (int i=0; i<a->players; i++) {
+        if (i==a->player) continue;
+        uint16_t buttons=(uint16_t)(packets[i].buttons&15u);
+        a->phase.actions[i].angle=packets[i].angle; a->phase.actions[i].reserved=0; a->phase.actions[i].buttons=buttons;
+        a->phase.fresh[i]=1; a->phase.holds[i]=0;
+        env->held[i]=buttons; env->hold_left[i]=0;
+        for (int bit=0; bit<4; bit++) env->hold_run[i][bit]=(buttons&(1u<<bit))?a->hold_saved[i][bit]+1:0;
+    }
+}
+/* Every other player's mask from `state` (the search samples their actions
+ * under it); the agent's is bopl_agent_write_mask's. */
+static void bopl_agent_write_masks(BoplAgent *a, const BoplRlState *state) {
+    const BoplRlSlime *bodies[BOPL_MAX_PLAYERS];
+    bopl_controlling_bodies(state, bodies);
+    for (int i=0; i<a->players; i++) if (i!=a->player) bopl_write_mask_bodies(&a->env, i, bodies);
+}
+
 static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
     BoplPuffer *env=&a->env;
     memset(env->actions, 0, (size_t)a->players*BOPL_NUM_ATNS*sizeof(float));
@@ -465,9 +584,11 @@ static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
             a->decision[1]=bopl_sample_head(a->decoder+BOPL_ACT_AIM, mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &a->rng);
         }
         a->decision[2]=bopl_sample_head(a->decoder+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, &a->rng);
+        if (a->search) bopl_agent_search_decide(a, before);
         float *action=env->actions+(size_t)a->player*BOPL_NUM_ATNS;
         for (int h=0; h<3; h++) action[h]=(float)a->decision[h];
     }
+    if (a->search) memcpy(a->hold_saved, env->hold_run, sizeof(a->hold_saved));
     bopl_step_begin_from(env, &a->phase, before);
     if (!a->is_policy) {
         /* Report what the bot chose (bopl_step_begin_from ran bopl_bot_decide). */
@@ -498,6 +619,7 @@ int bopl_agent_tick(BoplAgent *a, const BoplRlState *state, BoplRlAction *out) {
         memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
         bopl_reset_observations(env, state);
         bopl_agent_write_mask(a, state);
+        if (a->search) bopl_agent_write_masks(a, state);
         a->primed=1;
     }
     if (e!=a->expected) return -1;
@@ -507,8 +629,10 @@ int bopl_agent_tick(BoplAgent *a, const BoplRlState *state, BoplRlAction *out) {
         if (env->observation_delay && !a->sampled && (a->tick==env->repeat-1 || terminal)) { bopl_step_sample(env, state); a->sampled=1; }
         if (a->tick>=env->repeat || terminal) {
             if (env->observation_delay && !a->sampled) return -1;
+            if (a->search) bopl_agent_map_humans(a, e);
             bopl_step_finish_from(env, &a->phase, state);
             bopl_agent_write_mask(a, state);
+            if (a->search) bopl_agent_write_masks(a, state);
             a->open=0;
         }
     }
@@ -556,3 +680,97 @@ const float *bopl_agent_logits(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?
 void bopl_agent_decision(const BoplAgent *a, int out[3]) { a=BOPL_MEMBER(a); if (a && out) memcpy(out, a->decision, sizeof(a->decision)); else if (out) memset(out, 0, 3*sizeof(int)); }
 int bopl_agent_decisions(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->decisions:0; }
 const char *bopl_agent_member_id(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->id:""; }
+
+/* ---- search API (bopl_agent.h) ---- */
+static int bopl_agent_parse_budget(const char *text, int *k, int *n, int *depth, int *halving, int *latched, float *mix, float *scale) {
+    *halving=0; *latched=1; *mix=0; *scale=1;
+    char buffer[256]; snprintf(buffer, sizeof(buffer), "%s", text);
+    char *save=NULL, *part=strtok_r(buffer, ",", &save);
+    int *head[3]={k, n, depth};
+    for (int i=0; i<3; i++, part=strtok_r(NULL, ",", &save)) {
+        if (!part) return -1;
+        char *end; long value=strtol(part, &end, 10);
+        if (end==part || *end || value<1 || value>4096) return -1;
+        *head[i]=(int)value;
+    }
+    for (; part; part=strtok_r(NULL, ",", &save)) {
+        char *end;
+        if (!strcmp(part, "h")) *halving=1;
+        else if (!strncmp(part, "mix=", 4)) { *mix=strtof(part+4, &end); if (end==part+4 || *end) return -1; }
+        else if (!strncmp(part, "vs=", 3)) { *scale=strtof(part+3, &end); if (end==part+3 || *end) return -1; }
+        else if (!strncmp(part, "latched=", 8)) { *latched=atoi(part+8)!=0; }
+        else return -1;
+    }
+    return 0;
+}
+static int bopl_agent_search_one(BoplAgent *a, BoplShadow *shadow, const char *budget, char *error, size_t capacity) {
+    if (!a->is_policy || a->layout!=BOPL4_LAYOUT_VERSION || !a->checkpoint) {
+        bopl_agent_error(error, capacity, "the search needs a policy v4 checkpoint (%s)", a->id); return -1;
+    }
+    if (a->players<2) { bopl_agent_error(error, capacity, "the search needs an opponent (players %d)", a->players); return -1; }
+    int k, n, depth, halving, latched; float mix, scale;
+    if (bopl_agent_parse_budget(budget, &k, &n, &depth, &halving, &latched, &mix, &scale)) {
+        bopl_agent_error(error, capacity, "search budget '%s': expected k,n,depth[,h][,mix=M][,vs=V][,latched=0]", budget); return -1;
+    }
+    /* Every player's row in the checkpoint's layout and writer bits: the
+     * search models each opponent with this checkpoint on its own row. */
+    BoplPuffer *env=&a->env;
+    for (int i=0; i<a->players; i++) { env->layout[i]=a->layout; bopl_set_ablate_of(env, i, a->ablate); }
+    bopl_search_close(a->search);
+    a->search=bopl_search_open(env, a->checkpoint, a->checkpoint_count, a->hidden, a->layers, a->aim_fourier, a->aim_ar, a->shape, k*n, 1);
+    if (!a->search) { bopl_agent_error(error, capacity, "cannot open the search (%d players, %d rollouts)", a->players, k*n); return -1; }
+    /* Training's reward scale, so returns match the value head (eval/search_policy.py). */
+    if (bopl_search_configure(a->search, k, n, depth, halving, latched, 0.995f, 0.2883693f, -1.0f, mix, scale)) {
+        bopl_search_close(a->search); a->search=NULL;
+        bopl_agent_error(error, capacity, "search budget '%s' rejected (k <= %d)", budget, BOPL_SEARCH_MAX_K); return -1;
+    }
+    bopl_search_set_limit(a->search, (uint32_t)a->limit);
+    if (!a->search_times) a->search_times=calloc(BOPL_SEARCH_SAMPLES, sizeof(float));
+    a->shadow=shadow; a->search_live=0; a->search_note[0]=0; a->search_stop=-1;
+    return 0;
+}
+int bopl_agent_search(BoplAgent *a, BoplShadow *shadow, const char *budget, char *error, size_t capacity) {
+    if (error && capacity) error[0]=0;
+    if (!a || !shadow || !budget) { bopl_agent_error(error, capacity, "bopl_agent_search: agent, shadow and budget required"); return -1; }
+    if (!a->members) return bopl_agent_search_one(a, shadow, budget, error, capacity);
+    int enabled=0;
+    for (int i=0; i<a->count; i++) {
+        char ignored[256];
+        if (!bopl_agent_search_one(a->members[i], shadow, budget, ignored, sizeof(ignored))) enabled++;
+    }
+    if (!enabled) { bopl_agent_error(error, capacity, "no roster member is a policy v4 checkpoint"); return -1; }
+    return 0;
+}
+int bopl_agent_search_active(const BoplAgent *a) { a=BOPL_MEMBER(a); return a && a->search && a->search_live; }
+const char *bopl_agent_search_note(const BoplAgent *a) { a=BOPL_MEMBER(a); return a && a->search?a->search_note:""; }
+static int bopl_float_order(const void *x, const void *y) { float a=*(const float*)x, b=*(const float*)y; return (a>b)-(a<b); }
+int bopl_agent_search_stats(const BoplAgent *a, double *out, int capacity) {
+    a=BOPL_MEMBER(a);
+    if (!out || capacity<BOPL_AGENT_SEARCH_STATS) return -BOPL_AGENT_SEARCH_STATS;
+    memset(out, 0, BOPL_AGENT_SEARCH_STATS*sizeof(double));
+    if (!a || !a->search) return 0;
+    double counters[5]={(double)a->search->rollouts_run, (double)a->search->steps_run, (double)a->search->forwards_run,
+                        (double)a->search->searched, a->search->seconds};
+    out[0]=(double)a->n_decisions; out[1]=(double)a->n_search; out[2]=(double)a->n_raw;
+    out[3]=a->search_seconds; out[4]=a->search_max;
+    if (a->search_samples) {
+        float *sorted=malloc((size_t)a->search_samples*sizeof(float));
+        if (sorted) {
+            memcpy(sorted, a->search_times, (size_t)a->search_samples*sizeof(float));
+            qsort(sorted, (size_t)a->search_samples, sizeof(float), bopl_float_order);
+            out[5]=sorted[(a->search_samples-1)/2];
+            out[6]=sorted[(int)((a->search_samples-1)*0.95)];
+            out[7]=sorted[(int)((a->search_samples-1)*0.99)];
+            free(sorted);
+        }
+    }
+    out[8]=counters[0]; out[9]=counters[1]; out[10]=counters[2]; out[11]=counters[3];
+    out[12]=(double)a->search_stop;
+    out[13]=(double)a->search_live;
+    return BOPL_AGENT_SEARCH_STATS;
+}
+void bopl_agent_set_map(BoplAgent *a, uint32_t map) {
+    if (!a) return;
+    if (a->members) { for (int i=0; i<a->count; i++) bopl_agent_set_map(a->members[i], map); return; }
+    a->env.config.map=map;
+}

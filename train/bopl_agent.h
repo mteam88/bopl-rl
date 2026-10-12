@@ -55,6 +55,7 @@
  * 256 aim logits; with aim_ar the buttons are drawn before the aim.
  * Not thread-safe per handle; handles are independent. */
 #include "bopl_rl.h"
+#include "bopl_shadow.h"
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -109,6 +110,42 @@ int bopl_agent_obs_size(void);
  * layout, BOPL4_OBS_SIZE for v4 checkpoints, else bopl_agent_obs_size(). */
 int bopl_agent_observation_size(const BoplAgent *agent);
 int bopl_agent_logits_size(void);
+
+/* The round's map (BoplRlConfig.map: the replay setup's level byte). The
+ * v4 row tells the policy whether it is on a space map, which only the map
+ * index says; without this call the shim assumes map 0 (not space). Persists
+ * until changed; call before the round's first tick. */
+void bopl_agent_set_map(BoplAgent *agent, uint32_t map);
+
+/* Decision-time search in the game (docs/INGAME_SEARCH.md): every decision
+ * of the agent is chosen by train/bopl_search.h on forks of `shadow`, a
+ * bopl_shadow.h world the caller keeps in lockstep with the game (begin,
+ * check S_e before the agent's tick e, step after it). budget is
+ * eval/search_policy.py's "k,n,depth[,h][,mix=M][,vs=V][,latched=0]"
+ * (default in-game budget 8,1,1). Policy v4 checkpoints only (a roster:
+ * every v4 member; others stay raw). Every player's row becomes the
+ * checkpoint's layout: the other players (humans) are modelled by the same
+ * checkpoint, their decisions mapped from the packets the shadow was stepped
+ * with (last tick of the decision: aim, the four action buttons, shortest
+ * hold). Rollouts end at the agent's episode limit with the timeout outcome.
+ * A round falls back to the raw policy for good, logging why on stderr and in
+ * bopl_agent_search_note, when the shadow is not tracking (desync, refused,
+ * not begun), is not at the decision's tick, the episode cap is reached, or
+ * the search fails (a rollout's sim error included: it does not abort the
+ * game). Call after open, before the first round. 0, or -1 with error. */
+int bopl_agent_search(BoplAgent *agent, BoplShadow *shadow, const char *budget, char *error, size_t capacity);
+/* 1 while this round's decisions are searched (0: off, or fell back). */
+int bopl_agent_search_active(const BoplAgent *agent);
+/* Why this round fell back to the raw policy ("" while searching). */
+const char *bopl_agent_search_note(const BoplAgent *agent);
+/* This round's search counters into out[BOPL_AGENT_SEARCH_STATS]: policy
+ * decisions, chosen by the search, chosen raw (fallback), search seconds,
+ * max seconds per decision, p50, p95, p99 seconds, rollouts, rollout decision
+ * steps, forward rows, searched (more than one candidate), fallback episode
+ * tick (-1 none), active. Returns the count written (0: no search), or minus
+ * the capacity needed. */
+enum { BOPL_AGENT_SEARCH_STATS=14 };
+int bopl_agent_search_stats(const BoplAgent *agent, double *out, int capacity);
 
 #ifdef __cplusplus
 }

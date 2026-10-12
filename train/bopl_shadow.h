@@ -10,7 +10,8 @@
  * format RlAgent already hands bopl_agent_tick_bytes) is compared with the
  * shadow's state using the replay differential's comparator
  * (sim/abi/bopl_rl_compare.h). The first mismatch of a round is reported and
- * the shadow stops for that round. No search runs yet.
+ * the shadow stops for that round. bopl_agent_search (bopl_agent.h) runs the
+ * decision-time search on forks of this world (docs/INGAME_SEARCH.md).
  *
  * Per round (RlAgent.cs drives this):
  *   bopl_shadow_begin(s, archive, length, warmup)  after level tick 1: setup
@@ -95,6 +96,10 @@ const char *bopl_shadow_report(const BoplShadow *shadow);
 /* Ticks compared this round, and the shadow's episode tick. */
 uint32_t bopl_shadow_compared(const BoplShadow *shadow);
 uint32_t bopl_shadow_episode_tick(const BoplShadow *shadow);
+/* The packets of the last bopl_shadow_step this round (episode tick
+ * bopl_shadow_episode_tick - 1), PlayerList order; returns their count, 0
+ * before the first step or when capacity is short. */
+size_t bopl_shadow_packets(const BoplShadow *shadow, BoplRlAction *out, size_t capacity);
 /* The shadow world (for the search milestone: bopl_rl_fork it) and its state;
  * NULL unless the round is TRACKING with the reset finished. */
 BoplRl *bopl_shadow_world(BoplShadow *shadow);

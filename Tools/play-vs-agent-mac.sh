@@ -25,6 +25,10 @@
 # built here with clang) placed in the bundle's Contents/Plugins, and the
 # game is launched with `open -n --env` so it runs in the GUI session (controller
 # input) with the environment intact.
+# BOPL_AGENT_SHADOW=1 / BOPL_AGENT_SEARCH=k,n,depth (docs/INGAME_SEARCH.md) also
+# need the q32 shadow sim, libbopl_sim_q32.dylib, beside the shim: built here
+# by `make agent-shadow-lib-mac` (cargo build --release --features q32) when
+# native/Cargo.toml is present, else taken from native/artifacts/rl.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP=${BOPL_APP:-$ROOT/Builds/macOS/BoplBattle.app}
@@ -64,6 +68,15 @@ make -C "$ROOT" agent-mac >/dev/null || [ -f "$LIB" ] || { echo "could not build
 mkdir -p "$APP/Contents/Plugins"
 cp -f "$LIB" "$APP/Contents/Plugins/libbopl_agent.dylib"
 codesign -s - -f "$APP/Contents/Plugins/libbopl_agent.dylib" 2>/dev/null
+if [ "${BOPL_AGENT_SHADOW:-}" = 1 ] || [ -n "${BOPL_AGENT_SEARCH:-}" ]; then
+  SIM=$ROOT/native/artifacts/rl/libbopl_sim_q32.dylib
+  if [ -f "$ROOT/native/Cargo.toml" ]; then
+    make -C "$ROOT" agent-shadow-lib-mac >/dev/null || { echo "could not build the q32 shadow sim (cargo build --release --features q32)" >&2; exit 2; }
+  fi
+  [ -f "$SIM" ] || { echo "no q32 shadow sim at $SIM (sync native/ and run make agent-shadow-lib-mac; docs/INGAME_SEARCH.md)" >&2; exit 2; }
+  cp -f "$SIM" "$APP/Contents/Plugins/libbopl_sim_q32.dylib"
+  codesign -s - -f "$APP/Contents/Plugins/libbopl_sim_q32.dylib" 2>/dev/null
+fi
 export DYLD_LIBRARY_PATH="$APP/Contents/Plugins${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 mkdir -p "$HUMAN"
@@ -104,6 +117,8 @@ ENVARGS=(--env "BOPL_AGENT_SEED=$BOPL_AGENT_SEED"
 [ -n "$AGENT" ] && ENVARGS+=(--env "BOPL_AGENT=$AGENT")
 [ -n "$KIT" ] && ENVARGS+=(--env "BOPL_AGENT_KIT=$KIT")
 [ -n "$CATALOG" ] && ENVARGS+=(--env "BOPL_AGENT_CATALOG=$CATALOG" --env "BOPL_AGENT_ROOT=$ROOT")
+[ -n "${BOPL_AGENT_SHADOW:-}" ] && ENVARGS+=(--env "BOPL_AGENT_SHADOW=$BOPL_AGENT_SHADOW")
+[ -n "${BOPL_AGENT_SEARCH:-}" ] && ENVARGS+=(--env "BOPL_AGENT_SEARCH=$BOPL_AGENT_SEARCH")
 open -W -n -a "$APP" "${ENVARGS[@]}"
 STATUS=$?
 "$PYTHON" "$ROOT/Tools/play_vs_agent_results.py" "$RESULTS" ${AGENT:+--agent "$AGENT"} --game "$GAME" --library "$LIB" --out "$HUMAN" --player-log "$PLAYER_LOG" --roster-log "$ROSTER_LOG"

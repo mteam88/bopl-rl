@@ -22,6 +22,8 @@ struct BoplShadow {
     BoplCompareOptions options;
     int status, reset_pending, sim_ended;
     uint32_t players, warmup, steps, compared;
+    /* The packets of the last step (the search maps the humans' inputs from them). */
+    BoplRlAction last[6]; uint32_t last_count;
     /* The game's Player.Kills/Deaths run for the whole match; the shadow's
      * start at zero every round. Compared relative to the round's first check. */
     int baseline_set;
@@ -163,7 +165,7 @@ int bopl_shadow_begin(BoplShadow *s, const void *archive, size_t length, uint32_
     if (!s) return BOPL_SHADOW_FAILED;
     if (s->reset_pending) { s->reset_pending = 0; (void)bopl_rl_reset_finish(s->world); }
     s->status = BOPL_SHADOW_TRACKING;
-    s->steps = s->compared = 0; s->sim_ended = 0; s->baseline_set = 0;
+    s->steps = s->compared = 0; s->sim_ended = 0; s->baseline_set = 0; s->last_count = 0;
     memset(&s->compare, 0, sizeof s->compare);
     s->report[0] = 0;
     if (!archive) return fail(s, "shadow: no round archive%s", NULL);
@@ -317,6 +319,7 @@ int bopl_shadow_step(BoplShadow *s, const BoplRlAction *actions, size_t count) {
         snprintf(detail, sizeof detail, "%zu packets for %u players", count, s->players);
         return fail(s, "shadow step: %s", detail);
     }
+    memcpy(s->last, actions, count * sizeof *actions); s->last_count = (uint32_t)count;
     if (s->sim_ended) { s->steps++; return s->status; }
     int result = bopl_rl_step(s->world, actions, count, 1);
     if (result == BOPL_RL_ENDED) { s->sim_ended = 1; s->steps++; return s->status; }
@@ -350,6 +353,11 @@ const char *bopl_shadow_status_name(int status) {
 const char *bopl_shadow_report(const BoplShadow *s) { return s ? s->report : ""; }
 uint32_t bopl_shadow_compared(const BoplShadow *s) { return s ? s->compared : 0; }
 uint32_t bopl_shadow_episode_tick(const BoplShadow *s) { return s ? s->steps : 0; }
+size_t bopl_shadow_packets(const BoplShadow *s, BoplRlAction *out, size_t capacity) {
+    if (!s || !out || capacity < s->last_count) return 0;
+    memcpy(out, s->last, s->last_count * sizeof *out);
+    return s->last_count;
+}
 BoplRl *bopl_shadow_world(BoplShadow *s) {
     if (!s || s->status != BOPL_SHADOW_TRACKING || finish_reset(s)) return NULL;
     return s->world;
