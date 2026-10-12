@@ -307,3 +307,10 @@ simulator state forward 8 decisions, which y does not encode at this
 resolution. This bounds any head on the current y. distill.py fine-tunes
 every weight, so a student could in principle reshape y, but runs 0a-1b,
 which do exactly that, land at or under the probe (held-out q_gain <= 0).
+
+Cleaner labels don't change it. The same probe on the first 300 iter1 games
+(44 k relabelled decisions at `8,4,8,h`, 30 held-out games,
+`qprobe-iter1.txt`): held-out r 0.28 (y) and 0.29 (y + privileged) against
+the prior's 0.14, argmax gain -0.8e-3 to -2.4e-3, soft gain within +-0.3e-3 of
+zero, while the train r climbs to 0.6 (it memorises). With ~85%-signal labels
+the probe ranks a little better and still can't turn that into a policy gain.
