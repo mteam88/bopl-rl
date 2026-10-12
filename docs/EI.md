@@ -314,3 +314,24 @@ Cleaner labels don't change it. The same probe on the first 300 iter1 games
 the prior's 0.14, argmax gain -0.8e-3 to -2.4e-3, soft gain within +-0.3e-3 of
 zero, while the train r climbs to 0.6 (it memorises). With ~85%-signal labels
 the probe ranks a little better and still can't turn that into a policy gain.
+
+## 10. Iteration 1: training
+
+`train/distill.py --labeled-only`: the policy term and the candidate stats
+(`pref`, `q_gain`) count only the relabelled decisions; the anchor and value
+terms still cover every decision. Unlabelled decisions carry n=1 returns
+under the 0.02 screen, which are noise.
+
+Run 2a, an early check on the first 366 games (348 train, 18 held out, 6.7 k
+held-out labels), listwise, beta 100, kl 0.3, 2 epochs, ~7 min per epoch:
+
+| | policy | pref student / base | q_gain | q_gain (search) |
+|---|---:|---:|---:|---:|
+| train, epoch 1 | 0.0206 | 0.2182 / 0.2175 | +0.10e-3 | 10.3e-3 |
+| train, epoch 2 | 0.0189 | 0.2207 / 0.2175 | +0.40e-3 | 10.3e-3 |
+| held out, epoch 0 | 0.0165 | 0.2336 / 0.2336 | 0 | 9.5e-3 |
+| held out, epoch 1 | 0.0173 | 0.2334 | +0.03e-3 | |
+| held out, epoch 2 | 0.0188 | 0.2322 | -0.12e-3 | |
+
+Same as iter0 and the probe: the student fits the training labels and the
+held-out policy loss rises from the first epoch.
