@@ -335,3 +335,14 @@ held-out labels), listwise, beta 100, kl 0.3, 2 epochs, ~7 min per epoch:
 
 Same as iter0 and the probe: the student fits the training labels and the
 held-out policy loss rises from the first epoch.
+
+Generation was stopped at 600 games (of the 1,200 the two units were
+queued for), since 2a and the probe both say more labels won't move held-out
+q_gain, and the CPU was better spent on the evals. Last games at 07:59.
+
+Run 2b, the iteration's student: all 600 games (570 train, 30 held out, 161 k
+training labels, 6.9 k held-out labels), listwise, beta 100, kl 0.3,
+`--labeled-only`, 1 epoch (2a's held-out loss was lowest after epoch 1),
+13 min on the shared GPU. Held out after the epoch: policy 0.0207 -> 0.0227,
+pref 0.2315 -> 0.2326, **q_gain -0.08e-3** against the search's 10.6e-3.
+Checkpoint `runs/2b/policy-14668192424.bin`, evaluated as `ei1@14668192424`.
