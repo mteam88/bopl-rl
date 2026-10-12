@@ -122,7 +122,7 @@ class PolicyV4:
         return (self.num_layers, self.hidden)
 
     def initial(self, agents):
-        return torch.zeros(self.num_layers, agents, self.hidden, dtype=self.flat.dtype)
+        return torch.zeros(self.num_layers, agents, self.hidden, dtype=self.flat.dtype, device=self.flat.device)
 
     def encode_set(self, obs, name, offset, count, width, id_column):
         rows = obs[:, offset:offset + count * width].reshape(obs.shape[0], count, width)
@@ -185,12 +185,15 @@ class PolicyV4:
         """(logits (B, LOGITS), value (B,)) of raw rows for a button combo (bopl_aim.h)."""
         batch = rows.shape[0]
         block_width = layout.aim_block_width(self.aim_fourier)
-        combos = torch.zeros(batch, dtype=torch.long) if buttons is None else torch.as_tensor(buttons).long()
+        device = rows.device
+        combos = torch.zeros(batch, dtype=torch.long, device=device) if buttons is None else torch.as_tensor(buttons).long().to(device)
         starts = (combos if self.aim_ar else torch.zeros_like(combos)) * block_width
-        index = starts.unsqueeze(1) + torch.arange(block_width).unsqueeze(0)
+        index = starts.unsqueeze(1) + torch.arange(block_width, device=device).unsqueeze(0)
         block = rows.gather(1, index)
         if self.aim_fourier:
-            aim = block @ fourier_aim_matrix(self.aim_fourier, rows.dtype).t()
+            if getattr(self, '_fourier', None) is None or self._fourier.device != device or self._fourier.dtype != rows.dtype:
+                self._fourier = fourier_aim_matrix(self.aim_fourier, rows.dtype).to(device)
+            aim = block @ self._fourier.t()
         else:
             aim = block
         rest_offset = layout.decoder_buttons_offset(self.aim_fourier, self.aim_ar)
