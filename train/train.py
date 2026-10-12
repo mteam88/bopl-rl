@@ -333,6 +333,8 @@ def arguments():
                    help='0 keeps learning rate constant; 1 uses native cosine decay over the run budget')
     p.add_argument('--min-lr-ratio', type=float, default=0.,
                    help='Final/base learning-rate ratio when --anneal-lr 1')
+    p.add_argument('--gae-lambda', type=float, default=None,
+                   help='GAE lambda; default keeps the PufferLib config value (0.90)')
     p.add_argument('--entropy', type=float, default=.01)
     p.add_argument('--entropy-floor', type=float, default=.0005)
     p.add_argument('--entropy-half-life', type=int, default=30_000_000,
@@ -683,6 +685,8 @@ def main():
                          learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
+    if a.gae_lambda is not None:
+        args['train'].update(gae_lambda=a.gae_lambda)
     # Scripted banks are the LAST ones. When share_min < 1 some of their matches
     # fall to frozen weights, so the pool manages every bank (bot matches stay
     # out of hist_*_bank). At share_min = share_max = 1 the leftover never
@@ -749,6 +753,7 @@ def main():
                   layout=dict(version=obs_layout_version, obs_size=obs_size, action_sizes=layout.ACTION_SIZES,
                               hold_lengths=layout.HOLD_LENGTHS),
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
+                  gae_lambda=args['train']['gae_lambda'],
                   selfplay=pool_config,
                   init_weights=checkpoint_identity(a.init_weights) if a.init_weights else None,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
