@@ -11693,10 +11693,16 @@ impl RolloutWorld {
     }
 
     /// MagnetGun.nullItemTypeIfDropped: the held SlimeController is still
-    /// there and active (MagnetGun.cs:918-925).
+    /// there and active (MagnetGun.cs:918-925). A held slime that casts a
+    /// form or a Dash hides itself (SlimeController.onEnterAbility,
+    /// SlimeController.cs:185-190), so the gun drops it at its next check,
+    /// before its locked branch could ragdoll and pin the hidden slime
+    /// (MagnetGun.cs:1071-1078, 1124-1128) or Shoot fire it (UpdateSim's
+    /// Fire comes after that branch, MagnetGun.cs:1149-1161). The form plays
+    /// on free of the gun.
     fn magnet_holdable(&self, slime: Slime) -> bool {
         match slime {
-            Slime::Player(index) => self.hittable(index),
+            Slime::Player(index) => self.hittable(index) && self.players[index].slime_active_self(),
             Slime::Clone(index) => self.clone_box_registered(index),
         }
     }
@@ -12152,7 +12158,19 @@ impl RolloutWorld {
                 slot.base.physics_scale = slot.base.scale;
             }
         }
-        let ragdoll_ended = self.players[index].obs_state == STATE_RAGDOLL;
+        // State.ragdoll is the SlimeController's, and a form or a Dash hides
+        // it (SlimeController.cs:185-190): its UpdateSim, PlayerPhysics
+        // included, does not run, so no ragdoll pass can fall to the form's
+        // body (Drill, Rock and Platform have no PlayerPhysics at all). A
+        // ragdoll applied to a hidden slime lands on `inactive_obs_state`
+        // (`controller_mut`).
+        debug_assert!(
+            !(in_ability && self.players[index].obs_state == STATE_RAGDOLL),
+            "player {index} ragdolled in {:?} at tick {}",
+            self.players[index].active as u32,
+            self.tick
+        );
+        let ragdoll_ended = !in_ability && self.players[index].obs_state == STATE_RAGDOLL;
         if ragdoll_ended && self.ragdoll_player_tick(index, action, jump_pressed) {
             // A ragdoll's OldUpdate returns after its cooldown loop.
             self.players[index].slime_updated = true;
@@ -44341,6 +44359,91 @@ mod tests {
 
         assert_eq!(world.players[1].base.position, firepoint);
         assert_eq!(world.players[0].magnet.held_position, firepoint);
+    }
+
+    /// nullItemTypeIfDropped lets go of a held slime once it is no longer
+    /// activeInHierarchy (MagnetGun.cs:918-925), and a form or a Dash hides
+    /// it (SlimeController.cs:185-190): the locked branch pauses the gun
+    /// instead of ragdolling the hidden slime (MagnetGun.cs:1071-1078). The
+    /// port used to ragdoll the form's body, which for Drill, Rock and
+    /// Platform has no PlayerPhysics, and gravity then divided by its zero
+    /// maxFallSpeed.
+    #[test]
+    fn magnet_drops_a_held_slime_that_casts_a_form() {
+        let data = data::get();
+        let held = MagnetHeld::Player(Slime::Player(1));
+        let hold = |form: ActiveAbility| {
+            let mut world = RolloutWorld::new();
+            let mut config = test_config();
+            config.player[0].abilities[0] = ABILITY_MAGNET;
+            world.reset(&config).unwrap();
+            world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Magnet);
+            world.players[0].magnet.aim = Vec2::RIGHT;
+            world.players[0].base.set_up(Vec2::UP);
+            world.players[0].magnet.phase = 3;
+            world.players[0].magnet.held = held;
+            world.players[0].magnet.held_base = world.magnet_held_base(held);
+            if form != ActiveAbility::None {
+                world.players[1].enter_test_form(&mut world.entities, form);
+            }
+            world.magnet_update_held_item(0, data);
+            world
+        };
+
+        // The control: a held slime that stays out is pinned and ragdolled.
+        let world = hold(ActiveAbility::None);
+        assert_eq!(world.players[0].magnet.held, held);
+        assert_eq!(world.players[1].obs_state, STATE_RAGDOLL);
+
+        for form in [
+            ActiveAbility::Drill,
+            ActiveAbility::Rock,
+            ActiveAbility::Platform,
+            ActiveAbility::Bow,
+            ActiveAbility::Dash,
+        ] {
+            let world = hold(form);
+            let magnet = &world.players[0].magnet;
+            assert_eq!(magnet.held, MagnetHeld::Nothing, "{}", form as u32);
+            assert_eq!(magnet.phase, 4, "the gun pauses ({})", form as u32);
+            assert_ne!(world.players[1].obs_state, STATE_RAGDOLL, "{}", form as u32);
+        }
+    }
+
+    /// allkit-1's crash (2026-10-11, map 82, Engine/Invisibility/Drill vs
+    /// Portal gun/Magnet gun/Web swing): player 1's Magnet gun holds player
+    /// 0's slime, which casts Drill in its own turn at tick 1072. The port
+    /// kept holding it, ragdolled the Drill body, and at tick 1126 the ragdoll
+    /// pass's gravity divided by the Drill's zero maxFallSpeed.
+    #[test]
+    fn a_magnet_held_slime_casting_drill_replays_without_dividing_by_zero() {
+        let raw = include_bytes!("../../fixtures/magnet-held-slime-casts-drill.rep");
+        let replay::Replay { config, ticks } = replay::decode(raw, 240, 10800).unwrap();
+        let mut world = RolloutWorld::new();
+        world.reset(&config).unwrap();
+        let victim = MagnetHeld::Player(Slime::Player(0));
+        let mut casts_while_held = 0;
+        for actions in &ticks[240..] {
+            if world.terminal {
+                break;
+            }
+            let held = world.players[1].magnet.held == victim;
+            let out = world.players[0].active == ActiveAbility::None;
+            world.step(actions, 1).unwrap();
+            for slot in world.players.iter() {
+                assert!(
+                    slot.active == ActiveAbility::None || slot.obs_state != STATE_RAGDOLL,
+                    "a form ragdolled at tick {}",
+                    world.tick
+                );
+            }
+            if held && out && world.players[0].active != ActiveAbility::None {
+                casts_while_held += 1;
+                assert_ne!(world.players[1].magnet.held, victim, "the gun still holds the form");
+            }
+        }
+        // The recording still reaches the cast it was captured for.
+        assert!(casts_while_held > 0, "the held slime never cast a form");
     }
 
     #[test]
