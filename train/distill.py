@@ -19,6 +19,11 @@ observation rows so the recurrent state is the student's own):
                     the one-hot is its exact output; the soft target needs a return scale (beta)
                     and on this game the candidates' returns differ by ~0.003 at the median, which
                     no single beta turns into both a meaningful and a bounded weight
+  --target listwise KL(t || softmax_c log pi_student(c)) over the k candidates only, with
+                    t(c) ∝ pi_base(c) exp(beta q(c)): moves only the net's preference *among* the
+                    searched candidates (the search's selection), not its absolute log-probs
+                    (the onehot target mostly taught the net the search's flatter sampling,
+                    docs/EI.md section 5); equal returns -> t = base preference -> no gradient
   anchor            kl * sum over heads KL(pi_base_h || pi_student_h)
   value             value * (v_student - v_root_base)^2, keeps the critic where it was
                     (the critic is privileged; PPO can recalibrate it later)
@@ -123,6 +128,26 @@ def onehot_targets(base_logp, cand, mask):
                          q_spread=(q.masked_fill(~valid, -1e9).amax(1) - q.masked_fill(~valid, 1e9).amin(1)))
 
 
+def candidate_logp(logp, cand):
+    """(S, K) joint log-prob of each candidate under masked per-head log-probs; padding -> NEG."""
+    valid = cand[..., 3] > 0
+    aim = cand[..., 0].long().clamp(0, layout.ACT_AIM - 1)
+    btn = cand[..., 1].long().clamp(0, layout.ACT_BUTTONS - 1)
+    hold = cand[..., 2].long().clamp(0, layout.ACT_HOLD - 1)
+    cl = (logp.gather(1, aim) + logp.gather(1, layout.ACT_AIM + btn)
+          + logp.gather(1, layout.ACT_AIM + layout.ACT_BUTTONS + hold))
+    return cl.masked_fill(~valid, NEG), valid
+
+
+def listwise_targets(base_cl, cand, valid, beta):
+    """Target over the k candidates only: t(c) ∝ p_base(c) exp(beta q(c)), the completed-Q
+    improved policy restricted to the searched set. Where the returns are equal it is the base's
+    own preference, so coin-flip decisions give no gradient; the rest of the action space is left
+    to the anchor."""
+    q = cand[..., 4]
+    return torch.softmax(base_cl + (beta * q).masked_fill(~valid, 0), 1)
+
+
 def kl_heads(p_logp_or_p, student_logp, mask, probs=False):
     """Sum over heads of KL(p || student) given p as probabilities (probs=True) or log-probs."""
     total = 0
@@ -209,7 +234,8 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
     state_s = student.initial(S).to(device)
     state_b = base.initial(S).to(device)
     stats = dict(rows=0.0, policy=0.0, anchor=0.0, value=0.0, moved=0.0, agree_student=0.0, agree_base=0.0,
-                 chosen_student=0.0, chosen_base=0.0, q_spread=0.0)
+                 chosen_student=0.0, chosen_base=0.0, q_spread=0.0,
+                 cand_rows=0.0, pref_student=0.0, pref_base=0.0, q_gain=0.0, q_gain_search=0.0)
     for t0 in range(0, T, a.bptt):
         t1 = min(T, t0 + a.bptt)
         obs = torch.from_numpy(bucket['obs'][:, t0:t1]).to(device, non_blocking=True)
@@ -229,15 +255,26 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
                 rows_b, new_b = base.step_raw(x, state_b)
                 logits_b, _ = base.game_logits(rows_b)
                 logp_b = masked_log_softmax(logits_b, m)
+                cl_b, cvalid = candidate_logp(logp_b, cand[:, i])
                 if a.target == 'soft':
                     targets, tstats = improved_targets(logp_b, cand[:, i], m, a.beta, a.clip)
+                elif a.target == 'listwise':
+                    targets = listwise_targets(cl_b, cand[:, i], cvalid, a.beta)
+                    log_t = torch.log(targets.clamp_min(1e-12))
+                    tstats = dict(moved=(targets * (log_t - torch.log_softmax(cl_b, 1))).sum(1),
+                                  q_spread=onehot_targets(logp_b, cand[:, i], m)[1]['q_spread'])
                 else:
                     targets, tstats = onehot_targets(logp_b, cand[:, i], m)
             with torch.set_grad_enabled(train):
                 rows_s, new_s = student.step_raw(x, state_s)
                 logits_s, value_s = student.game_logits(rows_s)
                 logp_s = masked_log_softmax(logits_s, m)
-                policy_term = kl_heads(targets, logp_s, m, probs=True)
+                cl_s, _ = candidate_logp(logp_s, cand[:, i])
+                if a.target == 'listwise':
+                    # KL(t || softmax over candidates of the student): zero where t is the base's preference
+                    policy_term = (targets * (log_t - torch.log_softmax(cl_s, 1))).sum(1) * cvalid.any(1)
+                else:
+                    policy_term = kl_heads(targets, logp_s, m, probs=True)
                 anchor_term = kl_heads(logp_b, logp_s, m)
                 value_term = (value_s - value[:, i]) ** 2
                 if a.weight_spread > 0:
@@ -262,6 +299,20 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
                     return (logp.gather(1, c_aim[:, None]) + logp.gather(1, 256 + c_btn[:, None])
                             + logp.gather(1, 272 + c_hold[:, None])).squeeze(1)
                 vf = v.float()
+                # Selection among the searched candidates: the probability of the search's pick given
+                # the net plays one of the k (pref), and the expected candidate return of the net's
+                # candidate distribution minus the base's (q_gain, in return units; on held-out games
+                # the rollout noise in q is independent of the net, so this is an unbiased measure of
+                # how much of the search's selection the net took over). q_gain_search: the search's own.
+                qc = cand[:, i][..., 4].masked_fill(~cvalid, 0)
+                ps, pb = torch.softmax(cl_s.detach(), 1), torch.softmax(cl_b, 1)
+                eb = (pb * qc).sum(1)
+                has = cvalid.any(1).float() * vf
+                stats['cand_rows'] += float(has.sum())
+                stats['pref_student'] += float(((ps * chosen).sum(1) * has).sum())
+                stats['pref_base'] += float(((pb * chosen).sum(1) * has).sum())
+                stats['q_gain'] += float((((ps * qc).sum(1) - eb) * has).sum())
+                stats['q_gain_search'] += float((((qc * chosen).sum(1) - eb) * has).sum())
                 stats['rows'] += float(vf.sum())
                 stats['policy'] += float((policy_term * vf).sum())
                 stats['anchor'] += float((anchor_term * vf).sum())
@@ -281,8 +332,9 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
 
 
 def summarise(stats):
-    n = max(stats['rows'], 1)
-    return {k: (v / n if k != 'rows' else v) for k, v in stats.items()}
+    n, nc = max(stats['rows'], 1), max(stats['cand_rows'], 1)
+    per_cand = ('pref_student', 'pref_base', 'q_gain', 'q_gain_search')
+    return {k: (v if k in ('rows', 'cand_rows') else v / (nc if k in per_cand else n)) for k, v in stats.items()}
 
 
 def main(argv=None):
@@ -294,8 +346,9 @@ def main(argv=None):
     p.add_argument('--games-per-batch', type=int, default=32, help='games per bucket (2 sequences each)')
     p.add_argument('--bptt', type=int, default=32, help='decisions per truncated-BPTT chunk')
     p.add_argument('--lr', type=float, default=1e-4)
-    p.add_argument('--target', choices=('soft', 'onehot'), default='onehot',
-                   help='onehot: the search\'s chosen action per head; soft: the completed-Q improved policy (beta)')
+    p.add_argument('--target', choices=('soft', 'onehot', 'listwise'), default='onehot',
+                   help='onehot: the search\'s chosen action per head; soft: the completed-Q improved policy (beta) '
+                        'marginalised onto the heads; listwise: the completed-Q policy over the k candidates only')
     p.add_argument('--beta', type=float, default=10.0, help='soft target: return -> log-weight scale of the improved policy')
     p.add_argument('--clip', type=float, default=4.0, help='clip of beta*(q - q_bar) in nats')
     p.add_argument('--weight-spread', type=float, default=0.0,
