@@ -119,7 +119,7 @@ Ablations at 100 pairs (200 games), same setup:
 | `8,1,1,mix=1,vs=0` | 0.530 | [0.455, 0.605] | 7.9 | 8 | 18 | null control: 8 candidates, prior-only pick |
 | `8,1,1` | 0.598 | [0.518, 0.680] | 8.2 | 8 | 18 | one-step rollouts: the critic one decision ahead |
 | `8,1,2` | 0.560 | [0.478, 0.645] | 12.1 | 8 | 34 | two-step rollouts |
-| `2,1,8` | pending | | | | | |
+| `2,1,8` | 0.588 | [0.510, 0.665] | 9.8 | 2 | 34 | two candidates, full-depth rollouts |
 | `8,1,8,latched=0` | pending | | | | | no search while latched |
 | `8,1,16` | pending | | | | | |
 
