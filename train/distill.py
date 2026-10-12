@@ -201,6 +201,7 @@ class Games:
         cand = np.zeros((S, T, K, 8), np.float32)
         value = np.zeros((S, T), np.float32)
         valid = np.zeros((S, T), bool)
+        labeled = np.zeros((S, T), bool)
         for g, d in enumerate(datas):
             t = d['obs'].shape[0]
             for seat in (0, 1):
@@ -210,7 +211,8 @@ class Games:
                 cand[s, :t] = d['cand'][:, seat]
                 value[s, :t] = d['root_value'][:, seat]
                 valid[s, :t] = True
-        return dict(obs=obs, mask=mask, cand=cand, value=value, valid=valid)
+                labeled[s, :t] = d['labeled'][:, seat] if 'labeled' in d.files else True
+        return dict(obs=obs, mask=mask, cand=cand, value=value, valid=valid, labeled=labeled)
 
     def stream(self, rows, shuffle):
         q = queue.Queue(maxsize=2)
@@ -243,6 +245,8 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
         cand = torch.from_numpy(bucket['cand'][:, t0:t1]).to(device, non_blocking=True)
         value = torch.from_numpy(bucket['value'][:, t0:t1]).to(device, non_blocking=True)
         valid = torch.from_numpy(bucket['valid'][:, t0:t1]).to(device, non_blocking=True)
+        labeled = torch.from_numpy(bucket['labeled'][:, t0:t1] if a.labeled_only
+                                   else np.ones((S, t1 - t0), bool)).to(device, non_blocking=True)
         loss_total = 0
         state_s = state_s.detach()
         for i in range(t1 - t0):
@@ -277,6 +281,7 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
                     policy_term = kl_heads(targets, logp_s, m, probs=True)
                 anchor_term = kl_heads(logp_b, logp_s, m)
                 value_term = (value_s - value[:, i]) ** 2
+                policy_term = policy_term * labeled[:, i]
                 if a.weight_spread > 0:
                     policy_term = policy_term * (tstats['q_spread'] / a.weight_spread).clamp(0, 1)
                 per_row = policy_term + a.kl * anchor_term + a.value * value_term
@@ -307,7 +312,7 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
                 qc = cand[:, i][..., 4].masked_fill(~cvalid, 0)
                 ps, pb = torch.softmax(cl_s.detach(), 1), torch.softmax(cl_b, 1)
                 eb = (pb * qc).sum(1)
-                has = cvalid.any(1).float() * vf
+                has = cvalid.any(1).float() * vf * labeled[:, i]
                 stats['cand_rows'] += float(has.sum())
                 stats['pref_student'] += float(((ps * chosen).sum(1) * has).sum())
                 stats['pref_base'] += float(((pb * chosen).sum(1) * has).sum())
@@ -353,6 +358,8 @@ def main(argv=None):
     p.add_argument('--clip', type=float, default=4.0, help='clip of beta*(q - q_bar) in nats')
     p.add_argument('--weight-spread', type=float, default=0.0,
                    help='if > 0, weight each decision\'s policy term by min(1, (max q - min q) / this)')
+    p.add_argument('--labeled-only', action='store_true',
+                   help='policy term and candidate stats only on relabelled decisions (search_record --label-budget)')
     p.add_argument('--kl', type=float, default=0.1, help='anchor weight: KL(base || student)')
     p.add_argument('--value', type=float, default=1.0, help='value anchor weight')
     p.add_argument('--clip-grad', type=float, default=1.0)
@@ -380,7 +387,7 @@ def main(argv=None):
     config = dict(meta['config'])
     config['distill'] = dict(base=str(a.base.resolve()), base_step=meta['step'], data=[str(d) for d in a.data],
                              games=len(games.train), decisions=games.decisions, epochs=a.epochs, lr=a.lr, target=a.target, beta=a.beta,
-                             clip=a.clip, kl=a.kl, value=a.value, weight_spread=a.weight_spread, bptt=a.bptt,
+                             clip=a.clip, kl=a.kl, value=a.value, weight_spread=a.weight_spread, bptt=a.bptt, labeled_only=a.labeled_only,
                              games_per_batch=a.games_per_batch)
     print(f'{len(games.train)} training games ({games.decisions} decisions), {len(games.holdout)} held out; device {device}', flush=True)
 
