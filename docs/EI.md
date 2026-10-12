@@ -249,3 +249,8 @@ critical decision is in part "don't take the rare bad sample", and a lower
 softmax temperature does some of that for free. A temperature can be baked
 into the checkpoint by scaling the actor rows. `all_combos.py --temperature-a`,
 `sweeps/ei-1/temp.sh`, 200 pairs against T=1.
+
+Temperature result: T=0.75 on all three heads scores **0.492 [0.438, 0.544]**
+against T=1 (200 pairs, `sweeps/ei-1/all_combos.jsonl`). Sharpening buys
+nothing, so T=0.5 was stopped unplayed to give the CPU to iter1 generation. The
+trained entropy is about right for this net.
