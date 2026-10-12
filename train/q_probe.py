@@ -96,6 +96,11 @@ def score(pred, d, idx):
     pb = torch.softmax(prior.masked_fill(~valid, -1e9), 1)
     eb = (pb * q * valid).sum(1)
     pick = lambda s: q.gather(1, s.masked_fill(~valid, -1e9).argmax(1, keepdim=True)).squeeze(1)
+    # Soft improvement: pi'(c) ∝ pi_base(c) exp(beta * standardised prediction), the policy a student could play.
+    z = pq / pq[valid].std().clamp_min(1e-12)
+    soft = {beta: float(((torch.softmax((prior + beta * z).masked_fill(~valid, -1e9), 1) * q * valid).sum(1) - eb).mean())
+            for beta in (0.25, 0.5, 1, 2)}
+    score.soft = soft
     return r, float((pick(pred) - eb).mean()), float((pick(q) - eb).mean()), float((pick(prior) - eb).mean())
 
 
@@ -122,8 +127,10 @@ def fit(feat, d, train, test, device, epochs, seed=0):
         dc = {k: v.cpu() for k, v in d.items()}
         r_te = score(pt, dc, test)
         r_tr = score(ptr, dc, train[:40960])
-        print(f'  epoch {epoch + 1}: train r {r_tr[0]:.3f} | held-out r {r_te[0]:.3f}, gain {r_te[1] * 1000:.2f} '
-              f'(search {r_te[2] * 1000:.2f}, base argmax {r_te[3] * 1000:.2f}) x1e-3', flush=True)
+        r_te = score(pt, dc, test)
+        soft = ' '.join(f'b{b}:{v * 1000:+.2f}' for b, v in score.soft.items())
+        print(f'  epoch {epoch + 1}: train r {r_tr[0]:.3f} | held-out r {r_te[0]:.3f}, argmax gain {r_te[1] * 1000:.2f} '
+              f'(search {r_te[2] * 1000:.2f}, base argmax {r_te[3] * 1000:.2f}), soft gain {soft} x1e-3', flush=True)
         if best is None or r_te[0] > best[0]:
             best = r_te
     return best
