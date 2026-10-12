@@ -45,8 +45,9 @@ class Model:
         import torch
         state=self.policy.initial(2,'cpu')
         policy=self.policy
+        temperature=getattr(self,'temperature',None) or (1.0,1.0,1.0)
         def head(row,index):
-            part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]
+            part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]/temperature[index]
             weights=np.exp(part-part.max()); weights/=weights.sum()
             return rng.choice(len(part),p=weights)
         def act(observation,mask):

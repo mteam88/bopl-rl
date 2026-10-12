@@ -15,6 +15,13 @@ One compressed .npz per game, DIR/g<seed>.npz:
     outcome    (2,)         float32   +1 win, -1 loss, 0 draw (timeout or trade), per seat
     meta       json         seed, map, kits, ticks, budget, checkpoint
 
+With --label-budget B --screen-spread X (screened labels): every decision is searched at
+--budget (the screen) and, where the screen's candidate returns spread by >= X, searched
+again at B (more rollouts per candidate, e.g. 8,4,8,h) on the same tick; that search's
+pick is played. Then `cand` holds B's candidates on labelled decisions and zeros elsewhere
+(train/distill.py's listwise target skips them), `screen` (same layout as cand) holds the
+screen's candidates on every decision, and `labeled` (T, 2) bool marks the relabelled ones.
+
 Everything a teacher-forced replay needs (the recurrent state is recomputed from obs
 in order), plus the search's per-candidate returns to build the improved-policy
 target (train/distill.py).
@@ -47,21 +54,40 @@ def maps_all():
     return map_catalogue.parse_map_ids(registry.MAPS)
 
 
-def record_game(env, handle, policy, seed, map_id, k, budget_text, checkpoint):
+def spread_of(stats):
+    q = stats[stats[:, 3] > 0, 4]
+    return float(q.max() - q.min()) if q.size else 0.0
+
+
+def record_game(env, handle, policy, seed, map_id, k, budget_text, checkpoint, screen=None, label=None, threshold=None):
     env.reset(seed, map_id)
     env.bot(0, 0); env.bot(1, 0)
     handle.reset(seed)
     kits = env.loadouts
-    obs, masks, cands, actions, values, rewards = [], [], [], [], [], []
+    obs, masks, cands, actions, values, rewards, screens, labeled = [], [], [], [], [], [], [], []
     while not env.ended:
         row = env.rows[:, :layout.V4_OBS_SIZE].astype(np.float16)
         mask = env.mask.copy().astype(np.uint8)
         act = np.zeros((2, 3), dtype=np.int16)
         cand = np.zeros((2, k, search_policy.STAT_WIDTH), dtype=np.float32)
+        scr = np.zeros((2, k, search_policy.STAT_WIDTH), dtype=np.float32)
+        lab = np.zeros(2, dtype=bool)
         for side in (0, 1):
             act[side] = handle.act(side)
             stats = handle.stats()
-            cand[side, :len(stats)] = stats[:k]
+            if label is None:
+                cand[side, :len(stats)] = stats[:k]
+                continue
+            scr[side, :len(stats)] = stats[:k]
+            if spread_of(stats) >= threshold:
+                # Same tick: the root forward is reused (bopl_search_act keys it on the live tick).
+                handle.configure(**label)
+                act[side] = handle.act(side)
+                stats = handle.stats()
+                cand[side, :len(stats)] = stats[:k]
+                lab[side] = True
+                handle.configure(**screen)
+        screens.append(scr); labeled.append(lab)
         counters = handle.counters()
         value = np.array([counters['root_value_0'], counters['root_value_1']], dtype=np.float32)
         players = env.state.players
@@ -81,9 +107,13 @@ def record_game(env, handle, policy, seed, map_id, k, budget_text, checkpoint):
     rewards[-1] += np.where(timeout, TRAINING_REWARD['timeout'], outcome)
     meta = dict(seed=seed, map=map_id, kits=kits, ticks=final['t'], timeout=timeout, outcome=outcome.tolist(),
                 budget=budget_text, checkpoint=str(checkpoint), decisions=len(obs))
-    return dict(obs=np.stack(obs), mask=np.stack(masks), cand=np.stack(cands), action=np.stack(actions),
-                root_value=np.stack(values), reward=np.stack(rewards), outcome=outcome,
-                meta=np.frombuffer(json.dumps(meta).encode(), dtype=np.uint8)), meta
+    out = dict(obs=np.stack(obs), mask=np.stack(masks), cand=np.stack(cands), action=np.stack(actions),
+               root_value=np.stack(values), reward=np.stack(rewards), outcome=outcome)
+    if label is not None:
+        out.update(screen=np.stack(screens), labeled=np.stack(labeled))
+        meta.update(label_budget=label, screen_spread=threshold, labeled=int(out['labeled'].sum()))
+    out['meta'] = np.frombuffer(json.dumps(meta).encode(), dtype=np.uint8)
+    return out, meta
 
 
 def main(argv=None):
@@ -95,6 +125,8 @@ def main(argv=None):
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--budget', default='8,1,8')
     p.add_argument('--limit', type=int, default=10800, help='episode ticks')
+    p.add_argument('--label-budget', help='relabel decisions whose screen spread is >= --screen-spread with this budget')
+    p.add_argument('--screen-spread', type=float, default=0.02)
     p.add_argument('--workspace', type=Path, default=Path('/tmp/bopl-search-record'))
     a = p.parse_args(argv)
     import games as league_games
@@ -102,6 +134,10 @@ def main(argv=None):
     a.out.mkdir(parents=True, exist_ok=True)
     policy, meta = load(a.checkpoint.resolve())
     budget = search_policy.parse_budget(a.budget)
+    label = search_policy.parse_budget(a.label_budget) if a.label_budget else None
+    capacity = max(budget['k'] * budget['n'], label['k'] * label['n'] if label else 0)
+    if label and label['k'] != budget['k']:
+        raise SystemExit('--label-budget must keep the screen\'s k')
     maps = maps_all()
     seeds = [a.seed + i for i in range(a.games)]
     seeds = [s for s in seeds if not (a.out / f'g{s}.npz').exists()]
@@ -114,13 +150,14 @@ def main(argv=None):
         with environment.Environment(seed=mine[0], limit=a.limit, delay=9, loadouts=loadouts) as env:
             for side in (0, 1):
                 env.set_layout(side, 4, ablate=writer_ablation(policy))
-            handle = search_policy.Handle(env, policy, budget['k'] * budget['n'], seed=mine[0])
+            handle = search_policy.Handle(env, policy, capacity, seed=mine[0])
             handle.configure(**budget)
             try:
                 for seed in mine:
                     map_id = int(np.random.default_rng(seed).choice(maps))
                     t0 = time.time()
-                    data, info = record_game(env, handle, policy, seed, map_id, budget['k'], a.budget, a.checkpoint)
+                    data, info = record_game(env, handle, policy, seed, map_id, budget['k'], a.budget, a.checkpoint,
+                                             screen=budget, label=label, threshold=a.screen_spread)
                     info['seconds'] = round(time.time() - t0, 1)
                     tmp = a.out / f'.g{seed}.npz.tmp'
                     with tmp.open('wb') as f:

@@ -55,6 +55,8 @@ def main(argv=None):
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--search', help='play A through the decision-time search (eval/search_policy.py) with this '
                    'budget: k,n,depth[,h][,mix=M][,vs=V] (search_policy.parse_budget)')
+    p.add_argument('--temperature-a', help='sample A\'s heads at this softmax temperature: one value or aim,buttons,hold '
+                   '(raw models only; < 1 sharpens)')
     a = p.parse_args(argv)
 
     if a.search:
@@ -63,6 +65,9 @@ def main(argv=None):
     else:
         built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate')}
     built['B'] = elo_ladder.Model('B', a.b.resolve(), 'candidate')
+    if a.temperature_a:
+        t = [float(v) for v in a.temperature_a.split(',')]
+        built['A'].temperature = tuple(t * 3 if len(t) == 1 else t)
     league_games.configure(a.out.parent / 'all-combos-workers')
     todo = tasks(a.pairs, a.seed_base, map_catalogue.parse_map_ids(registry.MAPS))
     kit_of = {(t['seed'], t['side']): t['a_kit'] for t in todo}
@@ -87,6 +92,7 @@ def main(argv=None):
     boot = [rng.choice(pairs, pairs.size).mean() for _ in range(2000)]
     names = ability_names()
     row = dict(label=a.label or f'{a.a} vs {a.b}', a=str(a.a), b=str(a.b), seed_base=a.seed_base, search=search,
+               temperature_a=a.temperature_a,
                games=len(played), score=float(pairs.mean()),
                ci=[float(np.quantile(boot, .025)), float(np.quantile(boot, .975))],
                draws=sum(g['outcome'] == 'draw' for g in played),
