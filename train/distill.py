@@ -234,6 +234,8 @@ def run_bucket(student, base, bucket, device, a, train, optimizer=None):
                 policy_term = kl_heads(targets, logp_s, m, probs=True)
                 anchor_term = kl_heads(logp_b, logp_s, m)
                 value_term = (value_s - value[:, i]) ** 2
+                if a.weight_spread > 0:
+                    policy_term = policy_term * (tstats['q_spread'] / a.weight_spread).clamp(0, 1)
                 per_row = policy_term + a.kl * anchor_term + a.value * value_term
                 loss = (per_row * v).sum() / max(1, int(v.sum()))
                 if train:
@@ -290,6 +292,8 @@ def main(argv=None):
                    help='onehot: the search\'s chosen action per head; soft: the completed-Q improved policy (beta)')
     p.add_argument('--beta', type=float, default=10.0, help='soft target: return -> log-weight scale of the improved policy')
     p.add_argument('--clip', type=float, default=4.0, help='clip of beta*(q - q_bar) in nats')
+    p.add_argument('--weight-spread', type=float, default=0.0,
+                   help='if > 0, weight each decision\'s policy term by min(1, (max q - min q) / this)')
     p.add_argument('--kl', type=float, default=0.1, help='anchor weight: KL(base || student)')
     p.add_argument('--value', type=float, default=1.0, help='value anchor weight')
     p.add_argument('--clip-grad', type=float, default=1.0)
@@ -317,7 +321,8 @@ def main(argv=None):
     config = dict(meta['config'])
     config['distill'] = dict(base=str(a.base.resolve()), base_step=meta['step'], data=[str(d) for d in a.data],
                              games=len(games.train), decisions=games.decisions, epochs=a.epochs, lr=a.lr, target=a.target, beta=a.beta,
-                             clip=a.clip, kl=a.kl, value=a.value, bptt=a.bptt, games_per_batch=a.games_per_batch)
+                             clip=a.clip, kl=a.kl, value=a.value, weight_spread=a.weight_spread, bptt=a.bptt,
+                             games_per_batch=a.games_per_batch)
     print(f'{len(games.train)} training games ({games.decisions} decisions), {len(games.holdout)} held out; device {device}', flush=True)
 
     def evaluate(tag, step):

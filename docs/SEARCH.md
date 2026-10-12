@@ -110,7 +110,7 @@ rollouts, steps, forward rows, seconds and both root values.
 | `8,1,8` | **0.672** | [0.621, 0.723] | 400 | 16.6 | 8 | 130 |
 | `16,1,8,h` | 0.677 | [0.626, 0.726] | 400 | 59.8 | 30 | 480 |
 | `8,8,8,h` | 0.690 | [0.590, 0.790] | 100 | 219.8 | 112 | 1788 |
-| `8,8,8,h,mix=1,vs=20` | pending | | | | | |
+| `8,8,8,h,mix=1,vs=20` | 0.690 | [0.590, 0.790] | 100 | 231.2 | 112 | 1788 |
 
 Ablations at 100 pairs (`8,1,1,mix=1,vs=0` null control: candidates but a
 prior-only pick; `8,1,1`; `8,1,2`; `2,1,8`; `8,1,8,latched=0`; `8,1,16`) and
@@ -128,6 +128,14 @@ Reading it:
 - Keeping the prior in the pick (`mix=1,vs=20`) hurts (0.603): the prior is
   what the raw opponent already plays, and the value signal, scaled by 20, is
   small against a Gumbel of unit scale. Pure argmax of the mean return wins.
+  At the big budget the mix is neutral (`8,8,8,h,mix=1,vs=20` 0.690, the same
+  as `8,8,8,h`): with 112 rollouts the mean returns separate enough that the
+  scaled value dominates the Gumbel anyway.
+- The same search on the stronger all-kit net gives the same gain:
+  `8,1,8` around allkit-1@14667m scores 0.660 [0.582, 0.733] against raw
+  allkit-1@14667m (200 games, 23.0 ms per decision on the loaded box;
+  `native/artifacts/rl/sweeps/ei-1/all_combos.jsonl`). The search's gain is
+  not a g111 artefact, which is what expert iteration (docs/EI.md) needs.
 - Per ability (pooled 8,1,8 and 16,1,8,h, 800 games): the gain is broad,
   lowest on Black hole (0.51), Grappling hook (0.58), Platform (0.59),
   Grenade (0.60), highest on Gold mushroom (0.83), Roll (0.77), Dash (0.77),
