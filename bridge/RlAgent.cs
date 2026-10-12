@@ -330,6 +330,7 @@ public static class RlAgent
         searchFellBackLogged = false;
         decisionMs.Clear(); otherMs.Clear(); frameMs.Clear(); lastFrame = -1;
         RlObservation.Reset();
+        RlObservation.RebaseRound(players);
         applied.Clear();
         agentPacket = default;
         shadowStatus = ShadowOff; shadowReport = ""; shadowRecording = null;

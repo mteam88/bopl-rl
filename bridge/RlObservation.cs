@@ -40,6 +40,18 @@ internal static class RlObservation
         return value;
     }
 
+    // Player.Kills/Deaths run for the whole match, but every training episode is
+    // one round starting at zero, so RlAgent rebases them on each round's start
+    // (the v4 row encodes both). Null for RlBridge, whose resets start at zero.
+    private static readonly Dictionary<int, (int kills, int deaths)> roundBase = new Dictionary<int, (int, int)>();
+    private static bool rebasing;
+
+    internal static void RebaseRound(List<Player> players)
+    {
+        roundBase.Clear(); rebasing = true;
+        foreach (var player in players) roundBase[player.Id] = (player.Kills, player.Deaths);
+    }
+
     // simulationTime: header.simulation_time raw value; RlBridge passes the game's
     // SimTimePassed (zeroed per reset), RlAgent passes ticks-since-level-load x
     // FixedTimeStep, which is the same quantity in the stock local game except
@@ -67,7 +79,8 @@ internal static class RlObservation
                 | (player.isProtectedFromTimeStop ? 8u : 0u) | (player.InSparkShot ? 16u : 0u)
                 | (player.InPlatformTransform ? 32u : 0u) | (player.InMachoThrow ? 64u : 0u));
             output.Write(player.playersAndClonesStillAlive); output.Write(player.StocksRemaining);
-            output.Write(player.Kills); output.Write(player.Deaths); output.Write((int)player.CauseOfDeath);
+            var counted = rebasing && roundBase.TryGetValue(player.Id, out var start) ? start : (kills: 0, deaths: 0);
+            output.Write(player.Kills - counted.kills); output.Write(player.Deaths - counted.deaths); output.Write((int)player.CauseOfDeath);
             output.Write(player.Position.x.m_rawValue); output.Write(player.Position.y.m_rawValue); output.Write(player.Scale.m_rawValue);
             output.Write(player.timeSpentInvisible.m_rawValue); output.Write(player.timeSinceEnteredAbility.m_rawValue);
         }
