@@ -120,8 +120,8 @@ Ablations at 100 pairs (200 games), same setup:
 | `8,1,1` | 0.598 | [0.518, 0.680] | 8.2 | 8 | 18 | one-step rollouts: the critic one decision ahead |
 | `8,1,2` | 0.560 | [0.478, 0.645] | 12.1 | 8 | 34 | two-step rollouts |
 | `2,1,8` | 0.588 | [0.510, 0.665] | 9.8 | 2 | 34 | two candidates, full-depth rollouts |
-| `8,1,8,latched=0` | pending | | | | | no search while latched |
-| `8,1,16` | pending | | | | | |
+| `8,1,8,latched=0` | 0.650 | [0.575, 0.725] | 19.1 | 8 | 130 | no search while latched: same as `8,1,8` |
+| `8,1,16` | not run | | | | | stopped 2026-10-12 05:01 to keep the box inside its CPU budget for EI |
 
 The null control sits at 0.5: picking among the Gumbel-top-k candidates by the
 prior alone is just sampling the policy, so the gain is the returns, not the
