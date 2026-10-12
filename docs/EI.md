@@ -109,6 +109,7 @@ Training cost: 1,700 rows/s on the RTX 5070 shared with `bopl-allkit-1c`
 | label | games | data | target | vs allkit-1@14667m | vs g111-l1-12800m |
 | --- | --- | --- | --- | --- | --- |
 | allkit-1@13.3B (reference) | | | | | 0.661 [0.629, 0.696] |
+| `allkit-1@14667m` (the base, reference) | | | | 0.5 | 0.696 [0.661, 0.728] |
 | `ei1@14667445776` (run 0a) | 146 | iter0 | onehot, kl 0.3, 2 epochs | 0.507 [0.473, 0.539] | (not run) |
 | `ei1@14668744656` (run 0c) | 386 | iter0 | onehot, kl 0.3, 3 epochs | 0.521 [0.488, 0.556] | (not run) |
 | `ei1@14670992528` (run 0d) | 536 | iter0 | onehot gated by candidate spread (`--weight-spread 0.02`), kl 0.3, 3 epochs | 0.486 [0.451, 0.520] | (not run) |
