@@ -91,6 +91,13 @@ void my_init(Env *env, Dict *kwargs) {
     if (env->loadout_set_count<0 || env->loadout_set_count>BOPL_LOADOUT_SET_MAX) abort();
     if (env->loadout_set_count) memcpy(env->loadout_set,bopl_loadout_sets,(size_t)env->loadout_set_count*6);
     if (env->loadout_pool && env->loadout_set_count) abort();
+    env->loadout_weighted=0;
+    for (int ability=0; ability<64; ability++) {
+        env->loadout_weight[ability]=bopl_loadout_weights[ability];
+        env->loadout_weighted|=bopl_loadout_weights[ability]!=0;
+    }
+    if (env->loadout_weighted) for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++)
+        if (((env->loadout_pool>>ability)&1u) && !env->loadout_weight[ability]) abort();
     env->loadout_mode=env->loadout_set_count?BOPL_LOADOUT_SET:(env->loadout_pool?BOPL_LOADOUT_POOL:BOPL_LOADOUT_FIXED);
     bopl_rl_default_config(&env->config, (uint32_t)env->players);
     env->config.map=(uint32_t)option(kwargs, "map", 0);

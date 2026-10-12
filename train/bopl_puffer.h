@@ -124,6 +124,9 @@ float bopl_roster_weight[BOPL_ROSTER_MAX];
 enum { BOPL_LOADOUT_SET_MAX=256, BOPL_LOADOUT_FIXED=0, BOPL_LOADOUT_POOL=1, BOPL_LOADOUT_SET=2 };
 int bopl_loadout_set_count=0;
 uint8_t bopl_loadout_sets[BOPL_LOADOUT_SET_MAX*6];
+/* Per-ability weights for pool draws, installed by train.py (--loadout-weights).
+ * All zero keeps the uniform draw, whose random stream is unchanged. */
+uint16_t bopl_loadout_weights[64];
 /* The style program (bopl_style.h) every environment created after
  * bopl_style_install runs, and the fade scale its payouts are paid at (set
  * each update). Without a program nothing below touches the reward. */
@@ -270,6 +273,8 @@ typedef struct {
     int loadout_mode, loadout_no_dup, mirror_share_ppm, loadout_set_count;
     uint64_t loadout_pool;
     uint8_t loadout_set[BOPL_LOADOUT_SET_MAX][6];
+    int loadout_weighted;
+    uint16_t loadout_weight[64];
     int observation_delay, delay_cursor, no_autoreset;
     /* Observation delay (nine ticks = two decisions at repeat 4): the world
      * states sampled at phase 3 of the last two decisions, encoded into the
@@ -1283,7 +1288,19 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
                     continue;
                 }
                 uint64_t available=pool;
-                for (uint32_t slot=0; slot<config->slots; slot++) {
+                for (uint32_t slot=0; slot<config->slots && env->loadout_weighted; slot++) {
+                    uint32_t total=0, chosen=0;
+                    for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++)
+                        if (available&(1ull<<ability)) total+=env->loadout_weight[ability];
+                    uint32_t pick=bopl_random(env)%total;
+                    for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++) if (available&(1ull<<ability)) {
+                        if (pick<env->loadout_weight[ability]) { chosen=ability; break; }
+                        pick-=env->loadout_weight[ability];
+                    }
+                    config->player[player].abilities[slot]=chosen;
+                    if (env->loadout_no_dup) available&=~(1ull<<chosen);
+                }
+                for (uint32_t slot=0; slot<config->slots && !env->loadout_weighted; slot++) {
                     uint32_t count=0;
                     for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++) count+=(uint32_t)((available>>ability)&1u);
                     uint32_t pick=bopl_random(env)%count, chosen=0;

@@ -17,7 +17,7 @@ from common import atomic_json
 import counters
 from evaluation_protocol import (SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents,
                                  DEFAULT_EVAL_SCRIPTED, DEFAULT_LOADOUT, map_ids, loadout_ids,
-                                 loadout_pool, resolve_loadouts)
+                                 loadout_pool, resolve_loadouts, ability_names)
 from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
@@ -49,6 +49,29 @@ def _arg(parser, function):
         except ValueError as error:
             raise argparse.ArgumentTypeError(str(error)) from error
     return parse
+
+
+def install_loadout_weights(module, weights):
+    """Per-ability pool weights ([[id, weight], ...], a JSON-safe pair list); empty keeps the uniform draw."""
+    import ctypes
+    storage=(ctypes.c_uint16*64).in_dll(ctypes.CDLL(module.__file__),'bopl_loadout_weights')
+    weights=dict((int(ability), int(weight)) for ability, weight in weights)
+    for ability in range(64):
+        storage[ability]=weights.get(ability,0)
+
+
+def loadout_weights(text):
+    """'Grenade=4,Rock=4,7=2' -> {id: weight}; unnamed pool abilities weigh 1."""
+    ids={name.lower(): ability for ability, name in ability_names().items()}
+    weights={}
+    for item in text.split(','):
+        key, _, value = item.partition('=')
+        key=key.strip().lower()
+        ability=int(key) if key.isdigit() else ids.get(key)
+        if ability is None or not value.strip().isdigit() or not 1 <= int(value) <= 1000:
+            raise argparse.ArgumentTypeError(f'expected ability=weight (1..1000), got {item!r}')
+        weights[ability]=int(value)
+    return weights
 
 
 def install_loadout_set(module, rows):
@@ -366,6 +389,8 @@ def arguments():
                    help='lineup file: three shared or six player-ordered ability IDs per line')
     p.add_argument('--loadout-no-dup', action='store_true',
                    help='sample distinct slots within each player (duplicates are legal by default)')
+    p.add_argument('--loadout-weights', type=loadout_weights, default={},
+                   help="pool draw weights, e.g. 'Grenade=4,Rock=4' (ability names or IDs); others weigh 1")
     p.add_argument('--mirror-share', type=float, default=0.,
                    help='probability both players receive player 0\'s loadout')
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
@@ -503,6 +528,10 @@ def arguments():
         a.loadouts=resolve_loadouts(a.loadout,a.loadout_pool,a.loadout_set,a.loadout_no_dup,a.mirror_share)
     except (ValueError,OSError) as error:
         p.error(str(error))
+    if a.loadout_weights:
+        if a.loadouts['mode'] != 'pool' or set(a.loadout_weights) - set(a.loadouts['pool']):
+            p.error('--loadout-weights needs --loadout-pool containing every weighted ability')
+        a.loadouts=dict(a.loadouts, weights=[[ability, a.loadout_weights.get(ability, 1)] for ability in a.loadouts['pool']])
     if a.n_scripted:
         # A scripted bot only plays the kit and the maps it was written for, the ones
         # its league member declares (registry.kits, registry.plays_map); anywhere
@@ -638,6 +667,7 @@ def main():
     if not _C.gpu:
         raise RuntimeError('Native training requires the CUDA build')
     install_loadout_set(_C,a.loadouts['lineups'])
+    install_loadout_weights(_C,a.loadouts.get('weights',[]))
     style = install_style(_C, a.style_program)
     if a.style_program is not None:
         (output/'style.bin').write_bytes(a.style_program.data)
