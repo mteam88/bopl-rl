@@ -20,7 +20,11 @@ Code:
 - `train/distill_diag.py`: replays held-out games through base and student and
   bins the search's candidate-return spread: did the student learn to *rank* the
   candidates the way the search did, where the ranking mattered?
-- `native/artifacts/rl/sweeps/ei-1/{measure,train,eval}.sh`: the unit scripts.
+- `train/label_noise.py`: on screened-relabel games, how well the n=1 screen
+  and the relabel agree, and the unbiased gain of the search's selection.
+- `train/q_probe.py`: can a fresh MLP on the net's trunk output (or + the
+  privileged block) rank the search's candidates? The ceiling for distillation.
+- `native/artifacts/rl/sweeps/ei-1/{measure,train,eval,temp}.sh`: the unit scripts.
 
 ## 1. Does the search still add on allkit-1?
 
