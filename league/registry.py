@@ -245,6 +245,9 @@ def trained_loadouts(config):
     if loadouts['mode'] == 'set':
         halves = {tuple(row[i:i + 3]) for row in loadouts['lineups'] for i in (0, 3) if row[i:i + 3]}
         return dict(mode='set', kits=[list(kit) for kit in sorted(halves)])
+    from evaluation_protocol import loadout_pool
+    if loadouts['mode'] == 'pool' and sorted(loadouts['pool']) == sorted(loadout_pool('all')):
+        return None  # drawn from every ability: kit-general, like the anchor
     raise ValueError(f"cannot declare kits for a {loadouts['mode']!r} loadout draw")
 
 
