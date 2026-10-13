@@ -2052,6 +2052,2178 @@
    },
    "path": "native/artifacts/rl/sweeps/g111-league-1/000/checkpoints/policy-12800032768.bin",
    "metadata_sha256": "01e9c21aad51fd52982ff00e0b6d2628a09c012da37dd7fbaf291143ffcacf38"
+  },
+  {
+   "id": "7369c7cb8daf6396837b142709559457679d4b417a8432a291c37fc2e797506a",
+   "name": "l1-main-2666m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main",
+    "step": 2666725376
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-10",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main/checkpoints/policy-2666725376.bin",
+   "metadata_sha256": "f026b47a5a95a15d564e1a1ba820ecd26a679bd5de14a886f8d3867c7ccd0961"
+  },
+  {
+   "id": "847ce1a7b8225e444bbf2635f82d29c4127bf7d9e2ae4e5cca6def3abf0d45c9",
+   "name": "l1-main-5333m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main",
+    "step": 5333450752
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main/checkpoints/policy-5333450752.bin",
+   "metadata_sha256": "c7bce9e5ce5c663c95a923ce439a73fd81cf1477279b997f70ac1ac079c19d40"
+  },
+  {
+   "id": "d3271db96bc493a0ad2b4042395552d878478ab69566c01b7cb2e25e2663f905",
+   "name": "l1-main-8000m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main",
+    "step": 8000176128
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main/checkpoints/policy-8000176128.bin",
+   "metadata_sha256": "d500ba61f35204563ed649c840d448ea1f8725c8f274ff0a839bb9f105d4abfb"
+  },
+  {
+   "id": "f2281fca7eb7472571c66ab21100bc8918b8db91bc63785095fc543726863512",
+   "name": "l1-main-10666m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main",
+    "step": 10666901504
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main/checkpoints/policy-10666901504.bin",
+   "metadata_sha256": "1c728b8e96daa00106e6dbbb3031dc83ec6bdbe1f8c6ccd99d37259b6a18fcaf"
+  },
+  {
+   "id": "1ff31022fb26506ad82f4d61f7c5c6beb9b06122f34a0cf66066dafc4e7216e7",
+   "name": "l1-le1-4000m",
+   "kind": "exploiter",
+   "parent": "l1-main-5333m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/le-1",
+    "step": 4000055296
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: league exploiter, timed out against the league (0.53 over 834917 games)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/le-1/checkpoints/policy-4000055296.bin",
+   "metadata_sha256": "9f7b09cdddd03e640d21e49ca75adf8e6841a112fb58f58d340ef9d9ca1b64b0"
+  },
+  {
+   "id": "bf46696956aec896df3a2af73b3b54d8dbe0f9beab6b472cd4f57ad57f756777",
+   "name": "l1-main2-2666m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 2666725376
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-2666725376.bin",
+   "metadata_sha256": "0b210cac2a68152938e6ad868fda56164122af8a21c2ce664bdaadc597b381cb"
+  },
+  {
+   "id": "88e18ab9c91b5befc62dd0392e476e5f7997adfb13b0f3f493a8cc77f79fc602",
+   "name": "l1-main2-5333m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 5333450752
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-5333450752.bin",
+   "metadata_sha256": "66b04cfd508458999b77a4f3c07350dccebd2156749000d7d9bbea87dd15282d"
+  },
+  {
+   "id": "31aa6ad21aa856b79e1fe0a7b7eba66b0dd1d5ebae8dede67edb0ffff861c2ca",
+   "name": "l1-main2-8000m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 8000176128
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-8000176128.bin",
+   "metadata_sha256": "1677c68aa7f2bcfc67a608c410790bec11d5efe9fbdfac45a8eca6748b44810a"
+  },
+  {
+   "id": "272657f11986bd2a2df0bf6dd8c13a44cf47893a14493bc110ba123c175422d3",
+   "name": "l1-main2-10666m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 10666901504
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-10666901504.bin",
+   "metadata_sha256": "654c72350193f0c7a7142c1bc85f63d91a729c91f4f93d0ba4e4851b8774fc6d"
+  },
+  {
+   "id": "57e7d2c7bdc84604140582424d4ad2e546985166b4a87bf89aa253fac594f30f",
+   "name": "l1-se1-arrow-hit-4000m",
+   "kind": "exploiter",
+   "parent": "l1-main2-2666m",
+   "target": "l1-main2-10666m",
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/se-1",
+    "step": 4000055296
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: style exploiter, style styles/arrow_hit.toml,styles/undodged_arrow.toml; timed out against l1-main2-10666m (0.63 over 901588 games)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/se-1/checkpoints/policy-4000055296.bin",
+   "metadata_sha256": "2ad1b5721ede496ea174e83e0720beb93f4a68d31d3e0c769d68f1ba2d133f55"
+  },
+  {
+   "id": "5b060f2dc04ce0221dcaf32fa42c626c0a31cd73c80c658de54d6033a75e2aa3",
+   "name": "l1-main2-13333m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 13333626880
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-13333626880.bin",
+   "metadata_sha256": "a222855cfe91b5c092b3fe07fe70d78e554f9b2b9c30c8c73b1ce3b822bfce65"
+  },
+  {
+   "id": "907dc4db9a282621bc65de252b2b45e1c640ca3aa1931874d1689f68fe550ae3",
+   "name": "l1-me1-8000m",
+   "kind": "exploiter",
+   "parent": "l1-main-2666m",
+   "target": "l1-main2-13333m",
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/me-1",
+    "step": 8000110592
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main exploiter, timed out against l1-main2-13333m (0.48 over 747522 games)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/me-1/checkpoints/policy-8000110592.bin",
+   "metadata_sha256": "89d4f604570e0a81380980710251ec9c5324c28ce2b0c9d3e4db001f9d61cd44"
+  },
+  {
+   "id": "8c9ccea2b91dc7b3accf0dfa348e5c7f5329085415cc89c38b8d55c53b0f6301",
+   "name": "l1-main2-16000m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 16000352256
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-16000352256.bin",
+   "metadata_sha256": "c191e28560cc5858bb518173e05e2f491c2e4f1849fc2796c5c7b8fc3095f56d"
+  },
+  {
+   "id": "398d87a5b3dfd397d22ba6f4d7539e702332985975a0316c76f03c4e8087ec66",
+   "name": "l1-le1-8000m",
+   "kind": "exploiter",
+   "parent": "l1-main-5333m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/le-1",
+    "step": 8000110592
+   },
+   "sim": "fb1052d4d9176b5f140d88a786ec57f693ab74b425b0f9b744e34e42d181d421",
+   "reward": {
+    "tag": "binding-88bde520",
+    "binding_sha256": "88bde520c6ab33f4a034c6559edefe5f1917961ae21636fccffaaefca42ca075",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: league exploiter, timed out against the league (0.50 over 792339 games)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/le-1/checkpoints/policy-8000110592.bin",
+   "metadata_sha256": "26e149a46189d6423722fbcc315a6f6601e494e09aed295e0b7adc7e7316ce21"
+  },
+  {
+   "id": "b72447d4310ebe6bcb065d36875d85a93abaf838c863b9d95ff2d0235a17645f",
+   "name": "l1-main2-18667m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 18667077632
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-18667077632.bin",
+   "metadata_sha256": "0741292ff9c09f2755b8fa481cdc1a8e816075ef19448d7318cfba9985b251c9"
+  },
+  {
+   "id": "63a86df2902e38756eb9547eabe45d76e41179a558efbdacc70f2bb001f25ff6",
+   "name": "l1-main2-21333m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 21333803008
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-21333803008.bin",
+   "metadata_sha256": "2ffd010323aa4677da7bc85df7d284332db51410763a8dc22b3a975f74da9b10"
+  },
+  {
+   "id": "f72ed791e1475cec17420567bf2d8e6cae365a2ce1bd9569e197aa6c3ed4dcf7",
+   "name": "l1-main2-24000m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 24000528384
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-24000528384.bin",
+   "metadata_sha256": "e70fe7cb73acd22d61c5f047c802131dcb0484c5fb03bf80679060ac1fed8647"
+  },
+  {
+   "id": "74d18fb5addfabb051e62eb122ed860b2d13c9dde44f01f79288c671c8efdbbc",
+   "name": "l1-main2-26667m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l1/main-r2",
+    "step": 26667253760
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-26c26276",
+    "binding_sha256": "26c26276e68786650eb974d967dcce3c3290138e6752e61e0028c4c4718fee65",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      20
+     ],
+     [
+      2,
+      11,
+      3
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      3,
+      2,
+      4
+     ],
+     [
+      5,
+      13,
+      14
+     ],
+     [
+      6,
+      3,
+      2
+     ],
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      8,
+      3,
+      24
+     ],
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      13,
+      3,
+      28
+     ],
+     [
+      14,
+      2,
+      10
+     ],
+     [
+      23,
+      22,
+      17
+     ],
+     [
+      24,
+      30,
+      18
+     ],
+     [
+      26,
+      14,
+      7
+     ],
+     [
+      28,
+      18,
+      6
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-11",
+    "rule": "league loop l1: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l1/main-r2/checkpoints/policy-26667253760.bin",
+   "metadata_sha256": "68b700b69dd3f0fc114ce8a76ec5106fdff88945332fa4e4faf0644f5d6142b3"
+  },
+  {
+   "id": "b94131cb036c575f7805e42045689c822ed04fc81ea7c6762322c909bb94a33e",
+   "name": "allkit2-11745m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/allkit-2/run",
+    "step": 11745230848
+   },
+   "sim": "beeffb708b95d95cbf473fa36c0b45e1ead43fdfe234c028f791fb8fd001041f",
+   "reward": {
+    "tag": "binding-4e37b02b",
+    "binding_sha256": "4e37b02b55520fdedb0472ec1857d3bb944e84711b1e04bee2221f105e2841c6",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": null,
+   "added": {
+    "date": "2026-10-13",
+    "rule": "allkit-2 stopped at 8.8B learner steps (flat since 2B); continuation of allkit-1 policy-26666729472"
+   },
+   "path": "native/artifacts/rl/sweeps/allkit-2/run/checkpoints/policy-11745230848.bin",
+   "metadata_sha256": "d206f38b3e7b95886d1669738606646650964689a60f4923245cf5aa0c1b369e"
+  },
+  {
+   "id": "31cb6c9e37a3e35ac2d658ebee58315da6a14c028a12766ff216e34080e04de4",
+   "name": "polish1-ann-2666m",
+   "kind": "main",
+   "parent": "allkit2-11745m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/polish-1/anneal",
+    "step": 2666725376
+   },
+   "sim": "beeffb708b95d95cbf473fa36c0b45e1ead43fdfe234c028f791fb8fd001041f",
+   "reward": {
+    "tag": "binding-4e37b02b",
+    "binding_sha256": "4e37b02b55520fdedb0472ec1857d3bb944e84711b1e04bee2221f105e2841c6",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": null,
+   "added": {
+    "date": "2026-10-13",
+    "rule": "manual"
+   },
+   "path": "native/artifacts/rl/sweeps/polish-1/anneal/checkpoints/policy-2666725376.bin",
+   "metadata_sha256": "30bf3e9b1bb5d95077ac653dcbc375012fac7999f86898c5cfe020e399081e4d"
+  },
+  {
+   "id": "d725307fee24fc259da740ba398b4a634f155e2f4f8d24628f9f871c57cb3926",
+   "name": "anneal20-26666m",
+   "kind": "main",
+   "parent": "allkit2-11745m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/final-1/anneal4b",
+    "step": 26666729472
+   },
+   "sim": "beeffb708b95d95cbf473fa36c0b45e1ead43fdfe234c028f791fb8fd001041f",
+   "reward": {
+    "tag": "binding-4e37b02b",
+    "binding_sha256": "4e37b02b55520fdedb0472ec1857d3bb944e84711b1e04bee2221f105e2841c6",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": null,
+   "added": {
+    "date": "2026-10-13",
+    "rule": "manual"
+   },
+   "path": "native/artifacts/rl/sweeps/final-1/anneal4b/checkpoints/policy-26666729472.bin",
+   "metadata_sha256": "c441c4f49779763cd702e7fa1b36fd6147e4d4e57a17392af3a606096bd003b6"
+  },
+  {
+   "id": "5b8f084cd312707883f819f607cbb141c135ecb492b805d8b091de642dda709a",
+   "name": "allkit1-26666m",
+   "kind": "main",
+   "parent": "g111-l1-12800m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/allkit-1/run",
+    "step": 26666729472
+   },
+   "sim": "8baa0df5b43ce3abb6d255f9e768dfc5234c4333804c4ce7a53ca022a3ecc802",
+   "reward": {
+    "tag": "binding-cebff3b5",
+    "binding_sha256": "cebff3b5e07b42156b7472f7c078321579812587f5e4ac8cf50654be30fe7dc4",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": null,
+   "added": {
+    "date": "2026-10-13",
+    "rule": "manual"
+   },
+   "path": "native/artifacts/rl/sweeps/allkit-1/run/checkpoints/policy-26666729472.bin",
+   "metadata_sha256": "08c9e2ce7f6b4505f2113629bf8e307644a7803296526bfe16197c0d687768eb"
   }
  ],
  "conditions": {
@@ -3085,5 +5257,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "4c7c38c78712d413f1b9e416bbabb9f1e0f386a29deb23f12f9e2ab34e2a5da7"
+ "league_sha256": "485937063af464443dcfc3449b7fd26133a0692ea97de7c27b249bd1ed78ba2c"
 }
