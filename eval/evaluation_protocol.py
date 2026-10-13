@@ -135,7 +135,7 @@ def resolve_loadouts(fixed=DEFAULT_LOADOUT, pool=None, lineup_file=None, no_dup=
 # new family (`search`). The level is always the last token of the public
 # name (`mixed-v2-hard`). Ids stay below 16 (train.py packs one per nibble).
 SCRIPTED_KINDS={'archer':1,'pursuer':2,'evasive':3,'mixed':4,'search':5,
-                'archer-v2':6,'pursuer-v2':7,'evasive-v2':8,'mixed-v2':9}
+                'archer-v2':6,'pursuer-v2':7,'evasive-v2':8,'mixed-v2':9,'uniform':10}
 SCRIPTED_LEVELS={'easy':0,'medium':1,'hard':2}
 SCRIPTED_NAMES=tuple(f'{kind}-{level}' for kind in SCRIPTED_KINDS for level in SCRIPTED_LEVELS)
 assert len(set(SCRIPTED_KINDS.values()))==len(SCRIPTED_KINDS) and max(SCRIPTED_KINDS.values())<16

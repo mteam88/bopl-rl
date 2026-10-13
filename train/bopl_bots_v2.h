@@ -451,6 +451,12 @@ static void bopl_bot_decide_v2(BoplBot *bot, const BoplRlState *state, int playe
     case BOPL_BOT_ARCHER_V2: case BOPL_BOT_PURSUER_V2: case BOPL_BOT_EVASIVE_V2: case BOPL_BOT_MIXED_V2:
         /* bopl_bots_v2_play.h: counts its own decisions, applies the mask parity and records last. */
         bot2_decide(bot, state, player_index, hold_left, held, hold_run, out); return;
+    case BOPL_BOT_UNIFORM:
+        /* elo_ladder.Random inside the environment: a uniform aim byte and button
+         * state, hold index 0, no mask. Every level plays the same; any kit, any map. */
+        bot->decisions++;
+        out[0]=(uint8_t)(bot_rand(bot)&255u); out[1]=(uint8_t)(bot_rand(bot)&15u); out[2]=0;
+        return;
     default: break;
     }
     bot->decisions++;

@@ -532,10 +532,11 @@ def arguments():
         if a.loadouts['mode'] != 'pool' or set(a.loadout_weights) - set(a.loadouts['pool']):
             p.error('--loadout-weights needs --loadout-pool containing every weighted ability')
         a.loadouts=dict(a.loadouts, weights=[[ability, a.loadout_weights.get(ability, 1)] for ability in a.loadouts['pool']])
-    if a.n_scripted:
+    if a.n_scripted and not all(scripted_roster.split_name(name)[0] == 'uniform' for name in roster_names):
         # A scripted bot only plays the kit and the maps it was written for, the ones
         # its league member declares (registry.kits, registry.plays_map); anywhere
-        # else it presses whatever sits in the slot it wants.
+        # else it presses whatever sits in the slot it wants. The uniform kind plays
+        # any kit on any map: it presses nothing on purpose.
         bot = registry.by_name(registry.load(verify=False))[roster_names[0]]
         dealt = (registry.trained_loadouts(dict(loadouts=a.loadouts)) if a.loadouts['mode'] != 'pool'
                  else dict(mode='pool'))
@@ -828,8 +829,10 @@ def main():
             atomic_json(output/'result.json', record)
     status('starting')
     saved = {}
+    # An all-uniform roster needs no league games: the uniform bot is the random anchor, at 0.
+    uniform_only = all(scripted_roster.split_name(name)[0] == 'uniform' for name in a.scripted_roster)
     roster_entries = (scripted_roster.entries_from_names(
-        a.scripted_roster, scripted_roster.league_ratings())
+        a.scripted_roster, {} if uniform_only else scripted_roster.league_ratings())
         if a.scripted_roster else [])
     # Resolved before the trainer exists so a typo'd member name, a missing
     # checkpoint or a member from another policy architecture fails here rather

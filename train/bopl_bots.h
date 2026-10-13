@@ -73,7 +73,8 @@ static int bot_cpu_avx512=-1;
 enum { BOPL_BOT_NONE=0, BOPL_BOT_ARCHER=1, BOPL_BOT_PURSUER=2, BOPL_BOT_EVASIVE=3, BOPL_BOT_MIXED=4, BOPL_BOT_V1_KINDS=4,
        BOPL_BOT_SEARCH=5,  /* rollout search on a forked Rust sim (bopl_bots_v2.h) */
        BOPL_BOT_ARCHER_V2=6, BOPL_BOT_PURSUER_V2=7, BOPL_BOT_EVASIVE_V2=8, BOPL_BOT_MIXED_V2=9,  /* bopl_bots_v2_play.h */
-       BOPL_BOT_KINDS=9 };
+       BOPL_BOT_UNIFORM=10,  /* uniform random actions, the eval's random anchor (bopl_bots_v2.h) */
+       BOPL_BOT_KINDS=10 };
 enum { BOPL_BOT_EASY=0, BOPL_BOT_MEDIUM=1, BOPL_BOT_HARD=2, BOPL_BOT_LEVELS=3 };
 
 /* Per-bot memory of the v2 kinds (bopl_bots_v2_play.h); v1 kinds never read it. */
@@ -125,7 +126,7 @@ typedef struct BoplBot {
 
 /* Indexed by kind; v2 kinds append after "mixed" (bopl_bots_v2.h checks the length). */
 static const char *BOPL_BOT_NAMES[]={"none", "archer", "pursuer", "evasive", "mixed", "search",
-                                     "archer-v2", "pursuer-v2", "evasive-v2", "mixed-v2"};
+                                     "archer-v2", "pursuer-v2", "evasive-v2", "mixed-v2", "uniform"};
 /* v2 kinds decide here (bopl_bots_v2.h); the v1 body of bopl_bot_decide is frozen. */
 static void bopl_bot_decide_v2(struct BoplBot *bot, const BoplRlState *state, int player_index,
                                int hold_left, uint16_t held, const int hold_run[4], uint8_t out[3]);

@@ -69,6 +69,8 @@ def league_ratings():
 
 def initial_elo(name, ratings):
     """The bot's league rating: relative to LEARNER_ELO, the fixed origin."""
+    if split_name(name)[0] == 'uniform':
+        return float(ratings.get('random', 0.0))  # the random anchor itself, pinned at 0 in the league
     if name not in ratings:
         raise ValueError(f'{name} has no league rating yet; run `league play` first')
     return float(ratings[name])
