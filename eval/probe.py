@@ -99,7 +99,7 @@ def dashboard(a, model, played, games_dir):
     (a.out / 'checkpoints').mkdir(exist_ok=True)
     config = dict(model.meta.get('config') or {}, schema=1, algorithm='recurrent PPO',
                   probe=dict(a=str(a.a), b=str(a.b), pairs=a.pairs, seed_base=a.seed_base,
-                                                                  temperature=a.temperature))
+                                                                  temperature=a.temperature, search=a.search))
     atomic_json(a.out / 'config.json', config)
     atomic_json(a.out / 'status.json', dict(status='complete', pid=None, step=0, learner_steps=0, elapsed=0,
                                             matches=len(played), target_steps=0, target_learner_steps=0))
@@ -120,12 +120,23 @@ def main(argv=None):
     p.add_argument('--save', choices=('losses', 'all', 'none'), default='losses')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--temperature', type=float, help="divide A's logits (all three heads) by this before sampling")
+    p.add_argument('--search', help='play A through the decision-time search (eval/search_policy.py) with this '
+                   'budget: k,n,depth[,h][,mix=M][,vs=V] (search_policy.parse_budget)')
     a = p.parse_args(argv)
 
-    built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate'),
+    if a.search:
+        import search_policy
+        player = search_policy.Search('A', a.a.resolve(), 'candidate', **search_policy.parse_budget(a.search))
+    else:
+        player = elo_ladder.Model('A', a.a.resolve(), 'candidate')
+    built = {'A': player,
              'B': elo_ladder.Random() if a.b == 'random' else elo_ladder.Model('B', Path(a.b).resolve(), 'candidate')}
     if a.temperature:
         built['A'].temperature = (a.temperature,) * 3
+    if a.search and a.b == 'random':
+        # The search models both players with A's checkpoint, so it needs B's row in A's layout too;
+        # the random anchor never reads its observation.
+        built['B'].attach = lambda env, side: env.set_layout(side, player.layout, ablate=player.ablate)
     games_dir = a.out / 'evaluations' / '000000000'
     games_dir.mkdir(parents=True, exist_ok=True)
     league_games.configure(a.out / 'workers')
