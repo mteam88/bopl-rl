@@ -214,7 +214,7 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
 # Not restored: the recurrent state, which starts as at an episode boundary.
 RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'layers', 'horizon',
                  'learner_passes', 'learning_rate', 'anneal_lr', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
-                 'reward_timeout', 'pool_size', 'pfsp_p', 'min_games', 'snapshot_interval',
+                 'reward_timeout', 'reward_self_death', 'pool_size', 'pfsp_p', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts',
@@ -258,7 +258,8 @@ def recorded_hypers(config):
                 anneal_lr=train['anneal_lr'], entropy=config['entropy'], entropy_floor=config['entropy_floor'],
                 entropy_half_life=config['entropy_half_life'], episode_ticks=config['episode_ticks'], stocks=config['stocks'],
                 training_maps=config['training_maps'], reward_kill=config['reward']['kill'],
-                reward_timeout=config['reward']['timeout'], pool_size=pool['max_size'], pfsp_p=pool['pfsp_p'],
+                reward_timeout=config['reward']['timeout'],
+                reward_self_death=-config['reward'].get('self_death', 0.0), pool_size=pool['max_size'], pfsp_p=pool['pfsp_p'],
                 min_games=pool['min_games'], snapshot_interval=pool['snapshot_interval'],
                 opponent_timeout=pool['opponent_timeout'],
                 pool_seed=pool['seed'], head_scale=config['entropy_head_scale'],
@@ -378,6 +379,9 @@ def arguments():
                    help='Per-kill bonus, also paid as a per-death penalty (game credit incl. self-kills)')
     p.add_argument('--reward-timeout', type=float, default=-.5,
                    help='Terminal reward for both players when the episode hits --episode-ticks (<= 0)')
+    p.add_argument('--reward-self-death', type=float, default=0.,
+                   help='Extra penalty (>= 0) per death the game files as self-inflicted or environmental '
+                        '(own weapon, water, falling), on top of --reward-kill\'s death penalty')
     p.add_argument('--stocks', type=int, default=0, help='Smash-style extra-life setting; 0 = vanilla Bopl, one life per round')
     p.add_argument('--training-maps', type=maps, default=[0],
                    help='identity map IDs, inclusive ranges, all, or named sets from native/data/map-sets.json')
@@ -476,6 +480,8 @@ def arguments():
             p.error(f'{name.replace("_", "-")} must be positive')
     if not math.isfinite(a.pfsp_p) or a.pfsp_p < 0:
         p.error('Expected a finite, non-negative pfsp-p')
+    if not math.isfinite(a.reward_self_death) or a.reward_self_death < 0:
+        p.error('Expected a finite, non-negative reward-self-death')
     a.pool_seed = a.seed if a.pool_seed is None else a.pool_seed
     a.buffers = a.buffers or (2 if a.workers % 4 == 0 else 1)
     if a.workers % (a.historical_every * a.buffers):
@@ -748,6 +754,7 @@ def main():
                        loadout_pool=pool_mask&0x7fffffff, loadout_pool_hi=(pool_mask>>31)&0x7fffffff,
                        loadout_no_dup=int(a.loadouts['no_dup']), mirror_share_ppm=round(a.loadouts['mirror_share']*1_000_000),
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
+                       reward_self_death_milli=round(a.reward_self_death*1000),
                        scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level],
                        obs_layout=layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3)
     pufferl.validate_config(args)
@@ -776,7 +783,8 @@ def main():
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   loadouts=a.loadouts,
                   observation_delay_ticks=9, telemetry_schema=1,
-                  reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
+                  reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill,
+                              self_death=-a.reward_self_death),
                   entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=a.head_scale,
                   entropy_free_rows=a.entropy_free_rows,
                   aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, v4_shape=v4_shape,

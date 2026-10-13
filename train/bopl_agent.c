@@ -170,7 +170,7 @@ static int bopl_agent_env_alloc(BoplAgent *a) {
     int n=a->players;
     env->players=n; env->num_agents=n; env->repeat=a->repeat; env->observation_delay=a->delay;
     env->no_autoreset=1;
-    env->reward_kill=0.1f; env->reward_timeout=0;
+    env->reward_kill=0.1f; env->reward_timeout=0; env->reward_self_death=0;
     bopl_rl_default_config(&env->config, (uint32_t)n);
     env->config.stocks=0; env->config.max_episode_ticks=(uint32_t)a->limit; env->config.warmup_ticks=(uint32_t)a->warmup;
     for (int i=0; i<n; i++) for (int s=0; s<3; s++) env->config.player[i].abilities[s]=(uint32_t)a->ability[s];

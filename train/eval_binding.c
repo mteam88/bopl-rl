@@ -141,7 +141,7 @@ BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay
     BoplPuffer *env=&research->env;
     env->players=2; env->num_agents=2; env->repeat=4; env->observation_delay=delay;
     env->no_autoreset=1; env->rng=seed;
-    env->reward_kill=0.1f; env->reward_timeout=0;  /* evaluation reports the phase-1 reward telemetry */
+    env->reward_kill=0.1f; env->reward_timeout=0; env->reward_self_death=0;  /* evaluation reports the phase-1 reward telemetry */
     bopl_rl_default_config(&env->config, 2);
     env->config.map=map; env->config.stocks=0; /* vanilla Bopl: one life per round, matching training */ env->config.max_episode_ticks=limit;
     for (int i=0; i<2; i++) {

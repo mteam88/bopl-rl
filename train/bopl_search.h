@@ -178,7 +178,7 @@ static int bopl_search_shadow_reset(BoplSearch *s, BoplPuffer *sh) {
     sh->written_count=0;   /* the rows are this shadow's: the next encode rewrites them whole */
     memcpy(obs, real->observations, (size_t)real->players*BOPL_OBS_STRIDE*sizeof(float));
     memcpy(mask, real->action_mask, (size_t)real->players*BOPL_LOGITS);
-    sh->reward_kill=s->kill; sh->reward_timeout=s->timeout;
+    sh->reward_kill=s->kill; sh->reward_timeout=s->timeout; sh->reward_self_death=0;
     sh->no_autoreset=1;
     return 0;
 }

@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
     /* R: the research environment, every row v4 with the checkpoint's bits. */
     BoplPuffer *R=calloc(1, sizeof(BoplPuffer));
     R->players=P; R->num_agents=P; R->repeat=agent->repeat; R->observation_delay=agent->delay; R->no_autoreset=1; R->rng=base_seed;
-    R->reward_kill=0.1f; R->reward_timeout=0;
+    R->reward_kill=0.1f; R->reward_timeout=0; R->reward_self_death=0;
     bopl_rl_default_config(&R->config, (uint32_t)P);
     R->config.stocks=0; R->config.warmup_ticks=(uint32_t)agent->warmup;
     for (int p=0; p<P; p++) {

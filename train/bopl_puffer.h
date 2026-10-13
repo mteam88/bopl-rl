@@ -339,8 +339,12 @@ typedef struct {
     int roster_pick;
     /* Reward shaping. Phase-1 comparison keeps the old trainer's values (kill
      * 0.1, timeout 0); the final trainer uses sparse outcome only, with a
-     * timeout penalty paid by both players. */
-    float reward_kill, reward_timeout;
+     * timeout penalty paid by both players. reward_self_death is an extra
+     * penalty (>= 0) for each death the game files as self-inflicted or
+     * environmental (own explosives, drowning, falling out), on top of the
+     * kill/death shaping: a strong net's losses to the uniform anchor are mostly
+     * these (sweeps/random-loss-study, 2026-10-13). 0 pays nothing. */
+    float reward_kill, reward_timeout, reward_self_death;
     /* Process-lifetime cumulative counters over decisions this environment
      * actually played (warmup runs inside the game's reset and never reaches
      * c_step, so it is excluded by construction). Unfinished episodes are
@@ -1226,7 +1230,8 @@ static void init(BoplPuffer *env) {
         if (kind>BOPL_BOT_KINDS) { fprintf(stderr, "Bopl RL: unknown scripted bot kind %u\n", kind); abort(); }
     }
     if (env->scripted_level<0 || env->scripted_level>=BOPL_BOT_LEVELS) { fprintf(stderr, "Bopl RL: scripted bot level\n"); abort(); }
-    if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
+    if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0
+        || !isfinite(env->reward_self_death) || env->reward_self_death<0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
     /* The spare is a second runtime (~240 MB) for an in-process game, the
      * same memory as its second process for a socket game; BOPL_RL_INPROC_SPARE=0
@@ -1415,6 +1420,13 @@ static int bopl_undecided(const BoplRlState *state, int players) {
 static int bopl_decided(const BoplRlState *state, int players) {
     return (state->header.flags&BOPL_RL_TERMINAL) && !(state->header.flags&BOPL_RL_TRUNCATED)
         && !bopl_undecided(state, players);
+}
+/* Deaths the game filed as self-inflicted (own weapon or ability) or
+ * environmental (water, falling) since `before`: what reward_self_death
+ * charges, on top of reward_kill's charge for every death. */
+static int64_t bopl_self_deaths(const BoplRlTelemetry *now, const BoplRlTelemetry *before) {
+    return (int64_t)now->deaths_self-before->deaths_self
+        +(int64_t)now->deaths_environment-before->deaths_environment;
 }
 /* Everything one decision pays one player. `previous_kills` and
  * `previous_deaths` are that player's counters as of the previous decision;
@@ -1645,13 +1657,15 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
         }
         BoplOutcome o=bopl_outcome(state, i, decided, env->kills[i], env->deaths[i],
                                    env->reward_kill, env->reward_timeout);
+        /* Read before previous_telemetry advances below. */
+        int64_t self_deaths=bopl_self_deaths(&state->telemetry[i], &env->previous_telemetry[i]);
         if (o.kills<0) bopl_failed(env, "opponent kill counter regressed");
         /* Terminal reward as paid: the win/loss outcome, or the timeout penalty
          * both players receive on truncation (0 in the phase-1 comparison). */
         float tail[BOPL_TELEMETRY_SIZE-BOPL_EVENT_FIELDS];
         tail[BOPL_REWARD_OUTCOME-BOPL_EVENT_FIELDS]=o.outcome;
         tail[BOPL_REWARD_KILLS-BOPL_EVENT_FIELDS]=env->reward_kill*(float)o.kills;
-        tail[BOPL_REWARD_DEATHS-BOPL_EVENT_FIELDS]=-env->reward_kill*(float)o.deaths;
+        tail[BOPL_REWARD_DEATHS-BOPL_EVENT_FIELDS]=-env->reward_kill*(float)o.deaths-env->reward_self_death*(float)self_deaths;
         tail[BOPL_EPISODES-BOPL_EVENT_FIELDS]=(float)terminal;
         tail[BOPL_WINS-BOPL_EVENT_FIELDS]=(float)o.won;
         tail[BOPL_TIMEOUTS-BOPL_EVENT_FIELDS]=terminal && o.truncated;
@@ -1663,6 +1677,7 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
         env->previous_telemetry[i]=state->telemetry[i];
         /* Retain the original arithmetic/order for the actual PPO reward. */
         float reward=o.shaping+o.outcome;
+        reward-=env->reward_self_death*(float)self_deaths;
         if (env->style && learner)
             reward+=bopl_style_scale*bopl_style_reward(env, state, style_events, style_event_count, style_support, i);
         *env->reward_ptr[slot]=reward; env->returns[i]+=reward;

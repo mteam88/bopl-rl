@@ -19,6 +19,7 @@
 
 #define REWARD_KILL 0.1f
 #define REWARD_TIMEOUT (-0.5f)
+#define REWARD_SELF_DEATH 0.5f
 
 typedef struct {
     uint32_t team, flags;              /* flags bit 1 is alive, bit 2 WonThisRound */
@@ -109,6 +110,14 @@ static float reward_for(const Case *c, int i) {
     build(&state, c);
     return reward_of(&state, c->players, i);
 }
+/* The same return with reward_self_death on: bopl_step_finish_from charges it
+ * per self-inflicted or environmental death, after the outcome. */
+static float penalized_for(const Case *c, int i) {
+    BoplRlState state;
+    BoplRlTelemetry zero={0};
+    build(&state, c);
+    return reward_of(&state, c->players, i)-REWARD_SELF_DEATH*(float)bopl_self_deaths(&state.telemetry[i], &zero);
+}
 static const Case *find(const char *name) {
     for (size_t i=0; i<sizeof(cases)/sizeof(*cases); i++)
         if (!strcmp(cases[i].name, name)) return &cases[i];
@@ -146,6 +155,17 @@ int main(void) {
          * trade pays exactly what losing pays. */
         {"a trade beats a plain loss by the kill shaping, no more",
          fabsf((trade_bomber-clean_loss)-REWARD_KILL)<1e-6f},
+        /* reward_self_death: a death the player caused costs more than one the
+         * opponent caused, and nobody else's return moves. */
+        {"with the self-death penalty, a suicide is worse than being killed",
+         penalized_for(find("lone suicide"), 0)<penalized_for(find("clean win"), 1)},
+        {"with the self-death penalty, a trade costs the bomber the penalty",
+         fabsf(penalized_for(find("mutual death"), 0)-(trade_bomber-REWARD_SELF_DEATH))<1e-6f},
+        {"with the self-death penalty, drowning costs the penalty",
+         fabsf(penalized_for(find("double drowning"), 0)-(reward_for(find("double drowning"), 0)-REWARD_SELF_DEATH))<1e-6f},
+        {"the self-death penalty leaves wins and opponent kills alone",
+         penalized_for(find("clean win"), 0)==clean_win && penalized_for(find("clean win"), 1)==clean_loss
+         && penalized_for(find("mutual death"), 1)==trade_victim && penalized_for(find("lone suicide"), 1)==survivor},
     };
     printf("ordering\n");
     for (size_t i=0; i<sizeof(order)/sizeof(*order); i++) {
