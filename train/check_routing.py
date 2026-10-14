@@ -439,8 +439,10 @@ def main():
         for workers, num_buffers in ((4, 1), (8, 2), (6 if every == 1 else 12, 2)):
             trainer_layout(lib, _C, check, f'{tag}trainer w{workers} b{num_buffers}', every, workers, num_buffers, banks,
                            env_kwargs, args.steps//2)
-        # Team play (docs/TEAM_PLAY.md): every second group's self-play game is a 2v2.
-        if every == 2:
+        # Team play (docs/TEAM_PLAY.md): every second group's self-play game is a 2v2. It scores
+        # team kills from the game's death events, which only the Rust port emits: on the .NET
+        # oracle a team environment fails by design, so the team cases run on the port only.
+        if every == 2 and Path(os.environ['BOPL_RL_GAME']).name.startswith('libbopl_sim'):
             for workers, num_buffers in ((8, 1), (16, 2)):
                 trainer_layout(lib, _C, check, f'team trainer w{workers} b{num_buffers}', every, workers, num_buffers, banks,
                                env_kwargs, args.steps//2, team_every=2)
