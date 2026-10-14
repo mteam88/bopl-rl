@@ -10,9 +10,11 @@ run, with what the picker shows and offers for each:
            spec (what BOPL_AGENT takes: a checkpoint path relative to the
            checkout, a bot name, or a .roster path), description, rating and
            interval (league Elo, random = 0) when the league has one, kits (the
-           loadouts the bot can play) and kit_ratings (per-kit Elo from a
-           `league candidate` rating, when there is one)
-  default  {bot, kit}: the newest league main, on a random kit from its set
+           loadouts the bot can play), pool (for a net trained on random kits:
+           the abilities its training drew every slot from, so any three of
+           them is a kit it knows; null otherwise) and kit_ratings (per-kit Elo
+           from a `league candidate` rating, when there is one)
+  default  {bot, kit}: the newest league main, on a random kit (from its set or pool)
   abilities  {id: name} (native/data/rollout.json), for the kit labels
 
 Sources: league/league.json for the members and their kits (`loadouts`, read
@@ -122,6 +124,18 @@ def checkpoint_kit(path):
     return [int(a) for a in kit] if all(a is not None for a in kit) else SCRIPTED_KIT
 
 
+def pool_of(member):
+    """The abilities a net trained on random kits drew from (its sidecar's
+    config.loadouts, mode "pool"), without 0 (none) and 1 (the select screen's
+    Random tile); None for any other member."""
+    if member.get('loadouts') or not member.get('path'):
+        return None
+    loadouts = sidecar(ROOT / member['path']).get('config', {}).get('loadouts') or {}
+    if loadouts.get('mode') != 'pool':
+        return None
+    return sorted({int(a) for a in loadouts.get('pool') or () if int(a) > 1}) or None
+
+
 def title_of(name):
     return name.replace('-', ' ').upper()
 
@@ -157,7 +171,8 @@ def describe_learned(member, names):
     elif kits and kits['mode'] == 'fixed':
         plays = f" Plays {kit_label(kits['fixed'], names)}."
     else:
-        plays = ' Plays any kit.'
+        pool = pool_of(member)
+        plays = f' Trained on random kits from {len(pool)} abilities: plays any kit.' if pool else ' Plays any kit.'
     origin = rule.split(':', 1)[1].strip() if rule.startswith('promoted') and ':' in rule else rule
     head = 'League main' + (', promoted ' + member['added']['date'] if rule.startswith('promoted') else '')
     return f'{head}.{family}{trained}{plays} {origin[:1].upper() + origin[1:]}.'.replace('..', '.')
@@ -190,7 +205,7 @@ def roster_entry(path, names):
                 spec=str(path.relative_to(ROOT)), rating=None, interval=None, rating_source=None,
                 description=f'Rating roster of {len(members)} members: each round draws one, weighted '
                             f'(Tools/rating_roster.py). All play {kit_label(kit, names)}.',
-                kits=[kit], kit_ratings={})
+                kits=[kit], pool=None, kit_ratings={})
 
 
 def build():
@@ -206,7 +221,7 @@ def build():
         if kind == 'scripted':
             if m['name'].startswith('search-'):
                 continue
-            spec, kits = m['name'], [SCRIPTED_KIT]
+            spec, kits, pool = m['name'], [SCRIPTED_KIT], None
             group = 'Scripted v2' if '-v2-' in m['name'] else 'Scripted v1'
             description = describe_scripted(m['name'])
         else:
@@ -216,13 +231,14 @@ def build():
             loadouts = m.get('loadouts')
             kits = ([list(loadouts['fixed'])] if loadouts and loadouts['mode'] == 'fixed'
                     else [list(k) for k in loadouts['kits']] if loadouts else [])
+            pool = pool_of(m)
             group = {'main': 'League', 'exploiter': 'Exploiters', 'specialist': 'Specialists'}[kind]
             description = describe_learned(m, names)
         elo, interval, source = ratings.get(m['name'], (None, None, None))
         bots.append(dict(id=m['name'], title=title_of(m['name']), kind=kind, group=group, spec=spec,
                          rating=round(elo, 1) if elo is not None else None,
                          interval=[round(v) for v in interval] if interval else None, rating_source=source,
-                         description=description, kits=kits,
+                         description=description, kits=kits, pool=pool,
                          kit_ratings={k: round(v) for k, v in per_kit.get(m['name'], {}).items()},
                          added=m['added']['date']))
     if ROSTERS.is_dir():
@@ -238,7 +254,7 @@ def build():
                              -(b['rating'] if b['rating'] is not None else -1e9), b['id']))
     return dict(schema=1, generated=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
                 condition=condition, rating_note='league Elo (Bradley-Terry, random = 0)' if condition else None,
-                default=dict(bot=default['id'], kit='random' if len(default['kits']) > 1 else 'fixed'),
+                default=dict(bot=default['id'], kit='random' if len(default['kits']) > 1 or default.get('pool') else 'fixed'),
                 abilities={str(k): v for k, v in names.items()}, groups=GROUPS, bots=bots)
 
 

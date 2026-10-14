@@ -5,8 +5,9 @@
 #   Tools/play-vs-agent-mac.sh <policy-*.bin | mixed-v2-hard | ... | <name>.roster> [--kit a,b,c|random]
 #                              [--seed N] [--maps training|held-out|0,1,2] [--no-picker]
 #
-# The opponent and its kit are chosen in the game (RlAgentPicker.cs: Y / Tab or
-# a click on the opponent seat) from native/artifacts/rl/human/bot-catalog.json,
+# The opponents and their kits are chosen in the game (RlAgentPicker.cs: L3 adds,
+# hold L3 removes, right stick picks, R3 edits; Ins / Del / Tab or a click on the
+# keyboard) from native/artifacts/rl/human/bot-catalog.json,
 # as on Linux. Tools/bot_catalog.py refreshes it when it can; without the
 # league package's numpy here the catalog has no ratings, so an existing file
 # (rsynced from the PowerSpec, with ratings) is kept instead. Bots whose

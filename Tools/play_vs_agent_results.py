@@ -25,8 +25,15 @@ tally()/Bradley-Terry can rate them like any other pairing:
   bot, bot_kind, bot_rating   the picker's catalog entry (Tools/bot_catalog.py:
                league member / bot / roster name, its kind, its league Elo then);
                null for a session started without the picker
-  kit_choice   "random" (a kit drawn from the bot's set each round) or the chosen
-               kit "a,b,c"; agent_kit is the kit the agent played this round
+  kit_choice   "random" (a kit drawn each round: from the bot's set, or from its
+               pool for a net trained on random kits), the chosen kit "a,b,c", or
+               "own" (the shim's loadout); agent_kit is the kit the agent played
+  bots, agents  how many bots played the round and, per bot, the record's entry
+               (agent, agent_id, bot, bot_kind, kit_choice, kit, bot_rating,
+               player, team, won). With two or more bots (free-for-all) the
+               top-level agent fields are the first bot's and outcome is "b"
+               when any bot won; such rows are not a 1v1 pairing, so ratings
+               (Tools/rating_roster.py) leave them out
   roster       when the spec was a .roster: the roster path; agent/agent_path/
                agent_sha256/b then describe the member the shim drew for the
                round (joined on the round seed from --roster-log, the shim's
@@ -130,7 +137,7 @@ def main():
             winner = record.get('winner')
             if record.get('draw') or winner is None:
                 outcome = 'draw'
-            elif winner == agent.get('id'):
+            elif any(winner == p.get('id') for p in agents):
                 outcome = 'b'
             else:
                 outcome = 'a'
@@ -149,6 +156,7 @@ def main():
                 'bot': record.get('bot'), 'bot_kind': record.get('bot_kind'), 'bot_rating': record.get('bot_rating'),
                 'kit_choice': record.get('kit_choice'), 'agent_kit': record.get('kit'),
                 'agent_index': record.get('agent_index'), 'agent_player': record.get('agent_player'),
+                'bots': record.get('bots', len(agents)), 'agents': record.get('agents'),
                 'human_abilities': [p.get('abilities') for p in humans], 'agent_abilities': agent.get('abilities'),
                 'human_keyboard': [p.get('keyboard') for p in humans], 'players': roster,
                 'warmup_ticks': record.get('warmup_ticks'), 'level_ticks': record.get('level_ticks'),
@@ -162,9 +170,12 @@ def main():
             }
             games.write(json.dumps(row) + '\n')
             written += 1
+            others = record.get('agents') or []
+            versus = ', '.join(f"{a.get('bot')} kit {a.get('kit')} ({a.get('kit_choice')})" for a in others) if len(others) > 1 else (
+                f"{record.get('bot') or (Path(spec).name if spec.endswith('.bin') else spec)} "
+                f"kit {agent.get('abilities')} ({record.get('kit_choice') or 'own'})")
             print(f"round {record.get('round')}: map {row['map']} seed {row['seed']} outcome {outcome} "
-                  f"({row['ticks']} ticks) vs {record.get('bot') or (Path(spec).name if spec.endswith('.bin') else spec)} "
-                  f"kit {agent.get('abilities')} ({record.get('kit_choice') or 'own'}) replay {replay_copy}")
+                  f"({row['ticks']} ticks) vs {versus} replay {replay_copy}")
     if args.player_log and args.player_log.exists():
         shutil.copy2(args.player_log, out / f'{session}-Player.log')
     if rosters and args.roster_log and args.roster_log.exists():

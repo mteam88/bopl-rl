@@ -32,13 +32,16 @@ using UnityEngine;
 // FreezesHitstopClock stops while the agent plays). Each round writes one JSON line
 // to BOPL_AGENT_RESULTS (seed, players, winner, replay file) for
 // Tools/play-vs-agent.sh.
-// With BOPL_AGENT_CATALOG set (the launchers set it), the opponent and its kit
-// come from the in-game picker instead (RlAgentPicker on the character select,
-// RlAgentCatalog for the bots and the remembered choice; BOPL_AGENT then only
-// preselects): the agent plays the chosen kit, or a kit drawn from its set for
-// every round. The shim needs no loadout of its own for that: the observation
-// and mask read the abilities from the game state. With neither variable set
-// the stock game is untouched.
+// With BOPL_AGENT_CATALOG set (the launchers set it), the opponents and their
+// kits come from the in-game picker instead (RlAgentPicker on the character
+// select, RlAgentCatalog for the bots and the remembered seats; BOPL_AGENT then
+// only preselects one): every seated bot is its own shim handle and player,
+// on its own team, and plays its chosen kit, or a kit drawn for every round
+// (from its set, or from its pool for a net trained on random kits). The shim
+// needs no loadout of its own for that: the observation and mask read the
+// abilities from the game state. The nets trained 1v1, so with two or more
+// bots the match is off what they trained on. With neither variable set the
+// stock game is untouched.
 // With BOPL_AGENT_SHADOW=1 the shim also runs a shadow sim (train/bopl_shadow.h,
 // docs/SHADOW.md): the q32 Rust sim reset from this round's own replay setup
 // after level tick 1 and stepped with every player's applied packets, compared
@@ -89,32 +92,38 @@ public static class RlAgent
     private static readonly string[] ShadowNames = { "off", "tracking", "desync", "ended", "failed" };
 
     private static readonly string envSpec = Environment.GetEnvironmentVariable("BOPL_AGENT");
-    public static string Spec { get; private set; } = envSpec;
     public static bool Enabled => RlAgentCatalog.Present || !string.IsNullOrEmpty(envSpec);
     private static readonly string resultsPath = Environment.GetEnvironmentVariable("BOPL_AGENT_RESULTS");
 
-    private static IntPtr handle;
-    private static string id = "";
-    private static int[] abilities;          // the shim's loadout; the kit played is kit
-    private static int[] kit;
+    // One per AI player of the match, in PlayerList order (they join after the humans).
+    private sealed class Agent
+    {
+        public IntPtr Handle;
+        public string Id = "", Spec, KitChoice;
+        public RlAgentCatalog.Seat Seat;     // null: BOPL_AGENT without the catalog
+        public int[] Abilities;              // the shim's loadout; the kit played is Kit
+        public int[] Kit;
+        public Player Player;
+        public int Index, MaxEpisodeTicks;
+        public bool Terminal, Failed;
+    }
+
+    private static readonly List<Agent> agents = new List<Agent>();
+    // The first agent's handle: the shadow and the search attach to it alone.
+    private static IntPtr handle => agents.Count > 0 ? agents[0].Handle : IntPtr.Zero;
     private static System.Random kitDraw;
-    private static RlAgentCatalog.Bot bot;
-    private static string kitChoice;
-    private static Player agentPlayer;
     private static NamedSpriteList abilityCatalog;
-    private static int warmupTicks, maxEpisodeTicks;
+    private static int warmupTicks;
     private static string openError;
 
     // Round state.
     private static Updater updater;          // the level scene's Updater; a new one is a new round
     private static int round = -1, tick, episodeTicks, roundLevel;
     private static uint baseSeed, roundSeed;
-    private static bool started, terminal, failed, humansFrozen, resultWritten;
-    private static int agentIndex = -1;
+    private static bool started, humansFrozen, resultWritten;
     private static readonly MemoryStream observation = new MemoryStream(65536);
     private static readonly BinaryWriter writer = new BinaryWriter(observation, Encoding.UTF8, true);
     private static readonly Dictionary<int, InputPacket> applied = new Dictionary<int, InputPacket>();
-    private static InputPacket agentPacket;
 
     // Shadow sim (BOPL_AGENT_SHADOW=1).
     // Search (BOPL_AGENT_SEARCH=k,n,depth[,...]; "1" means the default 8,1,1).
@@ -144,33 +153,36 @@ public static class RlAgent
         return value == "1" ? "8,1,1" : value;
     }
 
-    public static string Id => id;
+    public static string Id => agents.Count > 0 ? agents[0].Id : "";
     public static int WarmupTicks => warmupTicks;
 
-    // Opens the shim once (players/agent index fixed for the whole match).
-    private static bool Open(int players, int player)
+    // Opens one agent of the match (players and its index fixed for the whole match).
+    private static Agent Open(string spec, int players, int player)
     {
-        if (handle != IntPtr.Zero) { bopl_agent_close(handle); handle = IntPtr.Zero; }
         var error = new byte[1024];
+        IntPtr opened;
         try {
-            if (bopl_agent_abi_version() != 1) { openError = "libbopl_agent.so ABI mismatch"; return false; }
-            handle = bopl_agent_open(Spec, players, player, error, (UIntPtr)error.Length);
+            if (bopl_agent_abi_version() != 1) { openError = "libbopl_agent.so ABI mismatch"; return null; }
+            opened = bopl_agent_open(spec, players, player, error, (UIntPtr)error.Length);
         } catch (DllNotFoundException exception) {
             openError = "libbopl_agent.so not found (Tools/play-vs-agent.sh copies it into BoplBattle_Data/Plugins/x86_64): " + exception.Message;
-            return false;
+            return null;
         }
-        if (handle == IntPtr.Zero) {
+        if (opened == IntPtr.Zero) {
             openError = Encoding.UTF8.GetString(error).TrimEnd('\0');
-            return false;
+            return null;
         }
-        id = Marshal.PtrToStringAnsi(bopl_agent_id(handle));
-        abilities = new[] { bopl_agent_ability(handle, 0), bopl_agent_ability(handle, 1), bopl_agent_ability(handle, 2) };
-        warmupTicks = bopl_agent_warmup_ticks(handle);
-        maxEpisodeTicks = bopl_agent_max_episode_ticks(handle);
-        agentIndex = player;
-        OpenShadow();
-        AttachSearch();
-        return true;
+        return new Agent {
+            Handle = opened, Spec = spec, Index = player, Id = Marshal.PtrToStringAnsi(bopl_agent_id(opened)),
+            Abilities = new[] { bopl_agent_ability(opened, 0), bopl_agent_ability(opened, 1), bopl_agent_ability(opened, 2) },
+            MaxEpisodeTicks = bopl_agent_max_episode_ticks(opened)
+        };
+    }
+
+    private static void CloseAll()
+    {
+        foreach (var agent in agents) if (agent.Handle != IntPtr.Zero) bopl_agent_close(agent.Handle);
+        agents.Clear();
     }
 
     // One shadow world per launch (the library loads once per process).
@@ -243,33 +255,52 @@ public static class RlAgent
         return color;
     }
 
-    // CharacterSelectHandler.TryStartGame_inner: append the AI player after the
-    // human ones. Team and colour are ones no human took; the loadout is the
-    // picker's kit (RlAgentCatalog.KitFor), else the agent's training loadout
-    // (sidecar ability1..3, or the training defaults).
+    // CharacterSelectHandler.TryStartGame_inner: append the AI players after the
+    // human ones, one per picker seat (RlAgentCatalog.Seats; BOPL_AGENT alone is
+    // one). Each gets a team and a colour nobody else took, so several bots play
+    // free-for-all; the loadout is the seat's kit (RlAgentCatalog.KitFor), else
+    // the agent's training loadout (sidecar ability1..3, or the training defaults).
     public static void AddPlayers(List<Player> list, ref int nextId, PlayerColors colors, NamedSpriteList catalog)
     {
         if (!Enabled) return;
-        bot = null; kitChoice = null;
+        CloseAll();
+        updater = null;
+        var seats = new List<RlAgentCatalog.Seat>();
         if (RlAgentCatalog.Present) {
             RlAgentCatalog.EnsureLoaded();
-            bot = RlAgentCatalog.Chosen;
-            if (bot == null) { Debug.LogError("BOPL_AGENT: no opponent chosen (" + (RlAgentCatalog.LoadError ?? "the catalog has no bot available here") + ")"); return; }
-            Spec = bot.Path;
-            kitChoice = RlAgentCatalog.KitChoiceText;
+            seats.AddRange(RlAgentCatalog.Seats);
+            if (seats.Count == 0) { Debug.Log("BOPL_AGENT: no bot seated (" + (RlAgentCatalog.LoadError ?? "a match without bots") + ")"); return; }
+        } else seats.Add(null);
+        int room = Constants.MAX_PLAYERS - list.Count;
+        if (seats.Count > room) {
+            Debug.LogWarning("BOPL_AGENT: " + seats.Count + " bots for " + room + " free player slots; the last " + (seats.Count - room) + " sit out");
+            seats.RemoveRange(Math.Max(0, room), seats.Count - Math.Max(0, room));
         }
-        if (!Open(list.Count + 1, list.Count)) {
-            Debug.LogError("BOPL_AGENT=" + Spec + ": " + openError);
-            return;
+        // Every shim is opened for the final player count: a bot that fails to
+        // open (or warms up differently from the first) drops out and the rest
+        // are opened again for the smaller match.
+        while (seats.Count > 0) {
+            int failed = -1;
+            for (int i = 0; i < seats.Count && failed < 0; i++) {
+                string spec = seats[i]?.Bot.Path ?? envSpec;
+                var agent = Open(spec, list.Count + seats.Count, list.Count + i);
+                if (agent == null) { Debug.LogError("BOPL_AGENT=" + spec + ": " + openError); failed = i; break; }
+                agent.Seat = seats[i];
+                agents.Add(agent);
+                int warmup = bopl_agent_warmup_ticks(agent.Handle);
+                if (i == 0) warmupTicks = warmup;
+                else if (warmup != warmupTicks) {
+                    Debug.LogError("BOPL_AGENT=" + spec + ": warmup " + warmup + " ticks, the first bot's is " + warmupTicks + " (every player warms up together); it sits out");
+                    failed = i;
+                }
+            }
+            if (failed < 0) break;
+            CloseAll();
+            seats.RemoveAt(failed);
         }
-        int team = 0;
-        while (list.Exists(p => p.Team == team)) team++;
-        int color = ColorIndex(list.ConvertAll(p => p.Color), colors);
-        var player = new Player(nextId, team) {
-            Color = colors[color].playerMaterial, UsesKeyboardAndMouse = false, CanUseAbilities = true,
-            IsLocalPlayer = false, IsAgent = true, inputDevice = null,
-            Abilities = new List<GameObject>(3), AbilityIcons = new List<Sprite>(3)
-        };
+        if (agents.Count == 0) return;
+        OpenShadow();
+        AttachSearch();
         // One seed sequence per launch: a later match (after the picker changed the
         // bot) continues the round count, so no two rounds of a session share a seed.
         if (kitDraw == null) {
@@ -277,26 +308,39 @@ public static class RlAgent
             baseSeed = !string.IsNullOrEmpty(seed) && uint.TryParse(seed, out uint parsed) ? parsed : (uint)Environment.TickCount;
             kitDraw = new System.Random(unchecked((int)baseSeed));
         }
-        agentPlayer = player; abilityCatalog = catalog;
-        SetKit(RlAgentCatalog.Present ? RlAgentCatalog.KitFor(kitDraw) ?? abilities : abilities);
-        nextId++;
-        list.Add(player);
-        updater = null;
-        Debug.Log("BOPL_AGENT: " + id + (bot == null ? "" : " (" + bot.Id + ", kit " + kitChoice + ")") + " joins as player " + player.Id
-                  + " (team " + team + ", abilities " + string.Join(",", kit) + "), base seed " + baseSeed);
+        abilityCatalog = catalog;
+        var taken = list.ConvertAll(p => p.Color);
+        foreach (var agent in agents) {
+            int team = 0;
+            while (list.Exists(p => p.Team == team)) team++;
+            int color = ColorIndex(taken, colors);
+            taken.Add(colors[color].playerMaterial);
+            agent.Player = new Player(nextId, team) {
+                Color = colors[color].playerMaterial, UsesKeyboardAndMouse = false, CanUseAbilities = true,
+                IsLocalPlayer = false, IsAgent = true, inputDevice = null,
+                Abilities = new List<GameObject>(3), AbilityIcons = new List<Sprite>(3)
+            };
+            agent.KitChoice = RlAgentCatalog.KitChoiceText(agent.Seat);
+            SetKit(agent, RlAgentCatalog.KitFor(agent.Seat, kitDraw) ?? agent.Abilities);
+            nextId++;
+            list.Add(agent.Player);
+            Debug.Log("BOPL_AGENT: " + agent.Id + (agent.Seat == null ? "" : " (" + agent.Seat.Bot.Id + ", kit " + agent.KitChoice + ")") + " joins as player "
+                      + agent.Player.Id + " (team " + team + ", abilities " + string.Join(",", agent.Kit) + "), base seed " + baseSeed);
+        }
     }
 
     // Gives the agent's player this kit (ability catalog indices).
-    private static void SetKit(int[] next)
+    private static void SetKit(Agent agent, int[] next)
     {
-        kit = next;
-        agentPlayer.Abilities.Clear(); agentPlayer.AbilityIcons.Clear();
-        foreach (int ability in kit) {
+        agent.Kit = next;
+        var player = agent.Player;
+        player.Abilities.Clear(); player.AbilityIcons.Clear();
+        foreach (int ability in next) {
             if (ability < 0 || ability >= abilityCatalog.sprites.Count || abilityCatalog.sprites[ability].associatedGameObject == null) {
                 Debug.LogError("BOPL_AGENT: unknown ability index " + ability); continue;
             }
-            agentPlayer.Abilities.Add(abilityCatalog.sprites[ability].associatedGameObject);
-            agentPlayer.AbilityIcons.Add(abilityCatalog.sprites[ability].sprite);
+            player.Abilities.Add(abilityCatalog.sprites[ability].associatedGameObject);
+            player.AbilityIcons.Add(abilityCatalog.sprites[ability].sprite);
         }
     }
 
@@ -304,40 +348,60 @@ public static class RlAgent
     // every round, as training drew one per episode.
     public static void BeforeLevelLoad()
     {
-        if (!Enabled || handle == IntPtr.Zero || agentPlayer == null || kitChoice != "random") return;
-        if (!PlayerHandler.Get().PlayerList().Contains(agentPlayer)) return;
-        SetKit(RlAgentCatalog.KitFor(kitDraw));
-        Debug.Log("BOPL_AGENT: next round's kit " + string.Join(",", kit));
+        if (!Enabled) return;
+        var list = PlayerHandler.Get().PlayerList();
+        foreach (var agent in agents) {
+            if (agent.KitChoice != "random" || !list.Contains(agent.Player)) continue;
+            SetKit(agent, RlAgentCatalog.KitFor(agent.Seat, kitDraw));
+            Debug.Log("BOPL_AGENT: next round's kit for player " + agent.Player.Id + ": " + string.Join(",", agent.Kit));
+        }
     }
 
     private static bool Active(out List<Player> players)
     {
         players = null;
-        if (!Enabled || handle == IntPtr.Zero || GameLobby.isOnlineGame || GameLobby.isPlayingAReplay) return false;
+        if (!Enabled || agents.Count == 0 || GameLobby.isOnlineGame || GameLobby.isPlayingAReplay) return false;
         players = PlayerHandler.Get().PlayerList();
-        return agentIndex >= 0 && agentIndex < players.Count && players[agentIndex].IsAgent;
+        foreach (var agent in agents)
+            if (agent.Index >= players.Count || !ReferenceEquals(players[agent.Index], agent.Player)) return false;
+        return true;
     }
 
     private static void BeginRound(List<Player> players)
     {
         round++; tick = 0; episodeTicks = 0; roundLevel = GameSession.CurrentLevel();
-        started = terminal = failed = resultWritten = false;
+        started = resultWritten = false;
         roundSeed = unchecked(baseSeed + (uint)round);
-        // The v4 rows' space flag reads the map (Host.BeginReplayRecording's level).
-        try { bopl_agent_set_map(handle, (uint)roundLevel); }
-        catch (EntryPointNotFoundException) { }
-        bopl_agent_reset(handle, roundSeed);
+        for (int i = 0; i < agents.Count; i++) {
+            var agent = agents[i];
+            agent.Terminal = agent.Failed = false;
+            // The v4 rows' space flag reads the map (Host.BeginReplayRecording's level).
+            try { bopl_agent_set_map(agent.Handle, (uint)roundLevel); }
+            catch (EntryPointNotFoundException) { }
+            // The first bot on the round seed (as with one bot); the others on
+            // their own streams, so two copies of a net do not sample alike.
+            bopl_agent_reset(agent.Handle, unchecked(roundSeed + (uint)i * 0x9E3779B9u));
+        }
         searchFellBackLogged = false;
         decisionMs.Clear(); otherMs.Clear(); frameMs.Clear(); lastFrame = -1;
         RlObservation.Reset();
         RlObservation.RebaseRound(players);
         applied.Clear();
-        agentPacket = default;
         shadowStatus = ShadowOff; shadowReport = ""; shadowRecording = null;
         if (Environment.GetEnvironmentVariable("BOPL_RL_ABILITY_SPAWNS") != "1")
             foreach (var spawner in UnityEngine.Object.FindObjectsOfType<AbilitySpawner>(true)) spawner.enabled = false;
         humansFrozen = true;
-        Debug.Log("BOPL_AGENT: round " + round + " level " + roundLevel + " seed " + roundSeed);
+        Debug.Log("BOPL_AGENT: round " + round + " level " + roundLevel + " seed " + roundSeed + (agents.Count > 1 ? " (" + agents.Count + " bots)" : ""));
+    }
+
+    // The observation record of the state before this tick; terminal sets the
+    // record's terminal flag (the shim closes its decision on it).
+    private static void WriteObservation(bool terminal)
+    {
+        observation.SetLength(0);
+        uint flags = (terminal ? 1u : 0u) | (started ? 4u : 0u);
+        long simulationTime = (long)tick * GameTime.FixedTimeStep.m_rawValue;
+        RlObservation.Write(writer, RlBridge.Version, episodeTicks, flags, warmupTicks, simulationTime);
     }
 
     // Updater.Update, immediately before TickSimulation.
@@ -350,7 +414,6 @@ public static class RlAgent
         if (tick < warmupTicks) {
             // Training warmup: nobody moves.
             for (int i = 0; i < players.Count; i++) { players[i].OverrideInputWithNetworkInput(zero); applied[players[i].Id] = zero; }
-            agentPacket = zero;
             return;
         }
         if (humansFrozen) {
@@ -358,40 +421,47 @@ public static class RlAgent
             applied.Clear();
             humansFrozen = false;
         }
-        var agent = players[agentIndex];
-        InputPacket packet = zero;
-        bool agentDecides = !terminal && !failed;
-        if (agentDecides || shadowStatus == ShadowTracking) {
+        bool anyDecides = agents.Exists(a => !a.Terminal && !a.Failed);
+        bool written = false, terminalBit = agents[0].Terminal;
+        if (anyDecides || shadowStatus == ShadowTracking) {
             try {
-                observation.SetLength(0);
-                uint flags = (terminal ? 1u : 0u) | (started ? 4u : 0u);
-                long simulationTime = (long)tick * GameTime.FixedTimeStep.m_rawValue;
-                RlObservation.Write(writer, RlBridge.Version, episodeTicks, flags, warmupTicks, simulationTime);
+                // The shadow compares the record as the first bot's shim sees it.
+                WriteObservation(terminalBit);
+                written = true;
                 if (episodeTicks == 0) Debug.Log("BOPL_AGENT: round " + round + " first row kills/deaths " + RlObservation.RowCounts(players));
                 ShadowCheck();
-                if (agentDecides) {
-                    int decisionsBefore = bopl_agent_decisions(handle);
-                    tickWatch.Restart();
-                    int status = bopl_agent_tick_bytes(handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action action);
-                    tickWatch.Stop();
-                    double ms = tickWatch.Elapsed.TotalMilliseconds;
-                    (bopl_agent_decisions(handle) != decisionsBefore ? decisionMs : otherMs).Add(ms);
-                    if (Time.frameCount != lastFrame) { if (lastFrame >= 0) frameMs.Add(Time.unscaledDeltaTime * 1000.0); lastFrame = Time.frameCount; }
-                    if (searchOn && !searchFellBackLogged && bopl_agent_search_active(handle) == 0) {
-                        searchFellBackLogged = true;
-                        Debug.LogWarning("BOPL_AGENT_SEARCH: round " + round + " level " + roundLevel + ": " + Marshal.PtrToStringAnsi(bopl_agent_search_note(handle)));
-                    }
-                    if (status == 0) packet = ReplayArchive.Input(zero.seqNumber, action.angle, action.buttons);
-                    else if (status == 1) terminal = true;
-                    else { failed = true; Debug.LogError("BOPL_AGENT: shim tick failed (" + status + ") at episode tick " + episodeTicks); }
-                }
             } catch (Exception exception) {
-                failed = true; Debug.LogError("BOPL_AGENT: " + exception);
+                written = false;
+                foreach (var agent in agents) agent.Failed = true;
+                Debug.LogError("BOPL_AGENT: " + exception);
             }
         }
-        agentPacket = packet;
-        applied[agent.Id] = packet;
-        agent.OverrideInputWithNetworkInput(packet);
+        if (Time.frameCount != lastFrame && anyDecides) { if (lastFrame >= 0) frameMs.Add(Time.unscaledDeltaTime * 1000.0); lastFrame = Time.frameCount; }
+        foreach (var agent in agents) {
+            InputPacket packet = zero;
+            if (written && !agent.Terminal && !agent.Failed) {
+                try {
+                    if (terminalBit) { WriteObservation(false); terminalBit = false; }
+                    int decisionsBefore = bopl_agent_decisions(agent.Handle);
+                    tickWatch.Restart();
+                    int status = bopl_agent_tick_bytes(agent.Handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action action);
+                    tickWatch.Stop();
+                    double ms = tickWatch.Elapsed.TotalMilliseconds;
+                    (bopl_agent_decisions(agent.Handle) != decisionsBefore ? decisionMs : otherMs).Add(ms);
+                    if (agent == agents[0] && searchOn && !searchFellBackLogged && bopl_agent_search_active(agent.Handle) == 0) {
+                        searchFellBackLogged = true;
+                        Debug.LogWarning("BOPL_AGENT_SEARCH: round " + round + " level " + roundLevel + ": " + Marshal.PtrToStringAnsi(bopl_agent_search_note(agent.Handle)));
+                    }
+                    if (status == 0) packet = ReplayArchive.Input(zero.seqNumber, action.angle, action.buttons);
+                    else if (status == 1) agent.Terminal = true;
+                    else { agent.Failed = true; Debug.LogError("BOPL_AGENT: player " + agent.Player.Id + ": shim tick failed (" + status + ") at episode tick " + episodeTicks); }
+                } catch (Exception exception) {
+                    agent.Failed = true; Debug.LogError("BOPL_AGENT: " + exception);
+                }
+            }
+            applied[agent.Player.Id] = packet;
+            agent.Player.OverrideInputWithNetworkInput(packet);
+        }
     }
 
     // Updater.Update, immediately after TickSimulation.
@@ -404,19 +474,18 @@ public static class RlAgent
         episodeTicks++;
         started |= !GameSessionHandler.HasGameEnded();
         bool ended = started && GameSessionHandler.HasGameEnded();
-        if (ended && !terminal) {
-            // Hand the terminal state to the shim so it closes its decision like training did.
+        if (ended && agents.Exists(a => !a.Terminal)) {
+            // Hand the terminal state to the shims so they close their decision like training did.
             try {
-                observation.SetLength(0);
-                long simulationTime = (long)tick * GameTime.FixedTimeStep.m_rawValue;
-                RlObservation.Write(writer, RlBridge.Version, episodeTicks, 1u | 4u, warmupTicks, simulationTime);
-                bopl_agent_tick_bytes(handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action _);
+                WriteObservation(true);
+                foreach (var agent in agents)
+                    if (!agent.Terminal) bopl_agent_tick_bytes(agent.Handle, observation.GetBuffer(), (UIntPtr)observation.Length, out Action _);
                 ShadowCheck();
             } catch (Exception exception) { Debug.LogError("BOPL_AGENT: " + exception); }
-            terminal = true;
+            foreach (var agent in agents) agent.Terminal = true;
             if (shadowStatus == ShadowTracking) ShadowSettle(bopl_shadow_end(shadow));
         }
-        if (terminal && !resultWritten) {
+        if (!resultWritten && agents.TrueForAll(a => a.Terminal)) {
             resultWritten = true;
             Debug.Log("BOPL_AGENT: round " + round + " terminal row kills/deaths " + RlObservation.RowCounts(players));
             LogTiming(); WriteResult(players);
@@ -578,16 +647,18 @@ public static class RlAgent
         return true;
     }
 
+    // One line per round. The top-level agent fields are the first bot's (as
+    // with one bot); "agents" lists every bot with its kit, and agent_won is
+    // true when any bot won the round.
     private static void WriteResult(List<Player> players)
     {
         if (string.IsNullOrEmpty(resultsPath)) return;
         try {
             var catalog = SteamManager.instance.abilityIcons.sprites;
             var roster = new JArray();
-            Player winner = null; int alive = 0;
+            Player winner = null;
             foreach (var player in players) {
                 if (player.WonThisRound) winner = player;
-                if (player.IsAlive) alive++;
                 var loadout = new JArray();
                 foreach (var ability in player.Abilities) loadout.Add(catalog.FindIndex(entry => entry.associatedGameObject == ability));
                 roster.Add(new JObject { ["id"] = player.Id, ["team"] = player.Team, ["agent"] = player.IsAgent,
@@ -595,18 +666,30 @@ public static class RlAgent
                     ["kills"] = player.Kills, ["deaths"] = player.Deaths, ["won_round"] = player.WonThisRound,
                     ["games_won"] = player.GamesWon, ["cause_of_death"] = (int)player.CauseOfDeath });
             }
+            var bots = new JArray();
+            foreach (var agent in agents) {
+                var bot = agent.Seat?.Bot;
+                bots.Add(new JObject {
+                    ["agent"] = agent.Spec, ["agent_id"] = agent.Id, ["bot"] = bot?.Id, ["bot_kind"] = bot?.Kind, ["kit_choice"] = agent.KitChoice,
+                    ["kit"] = new JArray(agent.Kit[0], agent.Kit[1], agent.Kit[2]), ["bot_rating"] = bot?.Rating, ["player"] = agent.Player.Id,
+                    ["index"] = agent.Index, ["team"] = agent.Player.Team, ["won"] = winner != null && winner == agent.Player,
+                    ["decisions"] = bopl_agent_decisions(agent.Handle), ["max_episode_ticks"] = agent.MaxEpisodeTicks, ["failed"] = agent.Failed
+                });
+            }
+            var first = agents[0];
             var line = new JObject {
                 ["kind"] = "round", ["round"] = round, ["level"] = roundLevel, ["seed"] = roundSeed,
-                ["agent"] = Spec, ["agent_id"] = id, ["bot"] = bot?.Id, ["bot_kind"] = bot?.Kind, ["kit_choice"] = kitChoice,
-                ["kit"] = new JArray(kit[0], kit[1], kit[2]), ["bot_rating"] = bot?.Rating, ["agent_player"] = players[agentIndex].Id, ["agent_index"] = agentIndex,
+                ["agent"] = first.Spec, ["agent_id"] = first.Id, ["bot"] = first.Seat?.Bot.Id, ["bot_kind"] = first.Seat?.Bot.Kind, ["kit_choice"] = first.KitChoice,
+                ["kit"] = new JArray(first.Kit[0], first.Kit[1], first.Kit[2]), ["bot_rating"] = first.Seat?.Bot.Rating, ["agent_player"] = first.Player.Id, ["agent_index"] = first.Index,
+                ["bots"] = agents.Count, ["agents"] = bots,
                 ["players"] = roster, ["winner"] = winner == null ? null : (JToken)winner.Id, ["draw"] = winner == null,
                 ["agent_won"] = winner != null && winner.IsAgent,
                 ["episode_ticks"] = episodeTicks, ["level_ticks"] = tick, ["warmup_ticks"] = warmupTicks,
-                ["max_episode_ticks"] = maxEpisodeTicks, ["decisions"] = bopl_agent_decisions(handle),
+                ["max_episode_ticks"] = first.MaxEpisodeTicks, ["decisions"] = bopl_agent_decisions(first.Handle),
                 ["replay"] = Host.LastSavedReplay, ["replay_number"] = Host.replaysSaved,
                 ["stocks"] = Settings.Get().Stocks, ["game_mode"] = (int)Settings.Get().GameMode,
                 ["source_hash"] = ReplaySession.SourceHash, ["catalog_hash"] = ReplaySession.CatalogHash,
-                ["failed"] = failed, ["time"] = DateTime.UtcNow.ToString("o"),
+                ["failed"] = agents.Exists(a => a.Failed), ["time"] = DateTime.UtcNow.ToString("o"),
                 ["shadow"] = shadow == IntPtr.Zero ? null : ShadowNames[shadowStatus],
                 ["shadow_compared"] = shadow == IntPtr.Zero ? 0u : bopl_shadow_compared(shadow),
                 ["shadow_report"] = shadow == IntPtr.Zero ? null : shadowReport.Split('\n')[0],

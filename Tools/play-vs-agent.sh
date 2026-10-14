@@ -10,17 +10,19 @@
 # Launches this checkout's Linux build (Builds/Linux) the Sunshine/Moonlight-safe
 # way (play.sh / launch-desktop.sh: -force-glcore, compositor-managed maximized
 # window, never exclusive fullscreen) with the agent shim in place, so the
-# character select adds the AI player (RlAgent.cs) — the human joins with the
-# gamepad as usual and presses start. The opponent and its kit are chosen in the
-# game (RlAgentPicker.cs: Y / Tab or a click on the opponent seat) from the
-# catalog Tools/bot_catalog.py writes here on every launch
+# character select adds the AI players (RlAgent.cs) — the human joins with the
+# gamepad as usual and presses start. The opponents (up to five, each its own
+# shim handle, every bot for itself) and their kits are chosen in the game with
+# buttons nothing else binds (RlAgentPicker.cs: L3 adds a bot, hold L3 removes
+# it, the right stick picks one, R3 edits it; Ins / Del / Tab or a click on the
+# keyboard) from the catalog Tools/bot_catalog.py writes here on every launch
 # (native/artifacts/rl/human/bot-catalog.json); the game remembers the last
 # choice, and starts on the newest league main on a random kit. A spec on the
 # command line (and --kit) preselects instead. --no-picker is the old fixed-agent
 # mode: the spec, else $BOPL_AGENT_DEFAULT, else native/artifacts/rl/human/
 # default-agent, else mixed-v2-hard, on its own training kit. When the game
 # exits, every round's auto-saved replay is copied to native/artifacts/rl/human/
-# and a result row (with the bot and kit of that round) is appended to
+# and a result row (with every bot and kit of that round) is appended to
 # native/artifacts/rl/human/games.jsonl (Tools/play_vs_agent_results.py).
 # BOPL_AGENT_SHADOW=1 also runs the shim's shadow sim and logs, per round,
 # whether it stayed in sync with the game (docs/SHADOW.md). BOPL_AGENT_SEARCH=

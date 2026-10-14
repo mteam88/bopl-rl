@@ -64,6 +64,8 @@ def human_rating(directory, ratings):
     b = 'policy:<sha256>' or 'bot:<name>', the member's league id)."""
     played = []
     for row in human_games(directory):
+        if sum(1 for p in row.get('players') or () if p.get('agent')) > 1:
+            continue   # a free-for-all against several bots is no 1v1 pairing
         b = row.get('b') or ''
         member = b.split(':', 1)[1] if ':' in b else None
         if member in ratings:
