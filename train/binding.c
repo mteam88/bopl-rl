@@ -48,13 +48,22 @@ static int option(Dict *kwargs, const char *name, int fallback) {
  * environments are dealt to the banks round-robin (the j-th historical
  * environment plays bank j%banks) and tagged 1+bank for PufferLib's selfplay
  * pool. The trainer must build the agent permutation so slot 1+b of every
- * historical environment lands in bank b's slice of its buffer. */
+ * historical environment lands in bank b's slice of its buffer.
+ *
+ * `team_every` (0 = none; k = the self-play game of every k-th group, a group
+ * being `historical_every` environments) makes that self-play game a 2v2 team
+ * game: four learner players, seats 0,1 against 2,3 (BoplPuffer.team_play,
+ * docs/TEAM_PLAY.md). Historical games stay 1v1. NativeVector mirrors this. */
 void my_init(Env *env, Dict *kwargs) {
     unsigned int index=env->rng; // PufferLib assigns the physical environment index before my_init.
     env->rng^=(unsigned int)option(kwargs, "seed", 73);
     env->players=option(kwargs, "players", 6);
     int banks=option(kwargs, "banks", 0), every=option(kwargs, "historical_every", 0);
     env->banks=(every>0 && banks>0 && index%(unsigned)every==(unsigned)every-1)?banks:0;
+    int team_every=option(kwargs, "team_every", 0);
+    if (team_every<0 || (team_every && every!=2)) { fprintf(stderr, "Bopl RL: team_every needs historical_every 2\n"); abort(); }
+    env->team_play=team_every && !env->banks && (index/(unsigned)every)%(unsigned)team_every==(unsigned)team_every-1;
+    if (env->team_play) env->players=4;
     env->num_agents=env->banks?1+env->banks:env->players;
     env->active_bank=env->banks?(int)((index/(unsigned)every)%(unsigned)env->banks):-1;
     env->tag=env->banks?1+env->active_bank:0;
@@ -64,6 +73,7 @@ void my_init(Env *env, Dict *kwargs) {
     if (!env->side_rng) env->side_rng=1;
     DictItem *telemetry=dict_get_unsafe(kwargs, "telemetry_ptr");
     if (telemetry && telemetry->value) {
+        if (team_every) { fprintf(stderr, "Bopl RL: per-player telemetry rows assume two players\n"); abort(); }
         if ((size_t)(index+1)*env->players>(size_t)option(kwargs,"telemetry_agents",0)) abort();
         env->telemetry=(float*)(uintptr_t)telemetry->value+(size_t)index*env->players*BOPL_TELEMETRY_SIZE;
     }
@@ -100,6 +110,7 @@ void my_init(Env *env, Dict *kwargs) {
         if (((env->loadout_pool>>ability)&1u) && !env->loadout_weight[ability]) abort();
     env->loadout_mode=env->loadout_set_count?BOPL_LOADOUT_SET:(env->loadout_pool?BOPL_LOADOUT_POOL:BOPL_LOADOUT_FIXED);
     bopl_rl_default_config(&env->config, (uint32_t)env->players);
+    if (env->team_play) for (int i=0; i<env->players; i++) env->config.player[i].team=(uint32_t)(i/2);
     env->config.map=(uint32_t)option(kwargs, "map", 0);
     env->config.slots=(uint32_t)option(kwargs, "slots", 3);
     env->config.stocks=(uint32_t)option(kwargs, "stocks", 0);
@@ -193,6 +204,10 @@ void my_log(Log *log, Dict *out) {
     }
     for (int map=0; map<BOPL_COUNTER_MAPS; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);
+    }
+    if (log->team_episodes || log->team_kills) {
+        dict_set(out, "team_episodes", log->team_episodes); dict_set(out, "team_wins", log->team_wins);
+        dict_set(out, "team_kills", log->team_kills);
     }
 }
 

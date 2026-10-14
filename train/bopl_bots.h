@@ -226,7 +226,7 @@ static int bot_view(BotView *view, const BoplRlState *state, int index) {
     if (!state || (uint32_t)index>=state->header.player_count || state->header.player_count<2) return 0;
     view->me=&state->players[index];
     for (uint32_t i=0; i<state->header.player_count; i++)
-        if ((int)i!=index && (state->players[i].flags&1)) { view->foe=&state->players[i]; break; }
+        if ((int)i!=index && (state->players[i].flags&1) && state->players[i].team!=view->me->team) { view->foe=&state->players[i]; break; }
     view->my_slime=bot_slime(state, view->me->id);
     view->alive=(view->me->flags&1)!=0;
     if (!view->alive || !view->my_slime) return 0;

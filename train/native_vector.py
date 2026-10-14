@@ -15,8 +15,13 @@ class NativeVector:
     2/3 of the learner's rows are self-play; 1 makes every game a historical
     one, for an exploiter that trains only against its frozen target(s). A
     group is `every - 1` self-play games followed by one historical game.
+
+    `team_every` is binding.c's: 0 none, else the self-play game of every
+    `team_every`-th group is a 2v2 team game of four learner players (every 2
+    only). Groups are counted over the whole vector, so it must divide the
+    groups of a buffer for every buffer to hold the same rows.
     """
-    def __init__(self, backend, workers, buffers, banks, every=2):
+    def __init__(self, backend, workers, buffers, banks, every=2, team_every=0):
         if every not in (1, 2):
             raise ValueError('historical_every must be 1 or 2')
         if workers < 2 or workers % (every * buffers) or not 2 <= banks <= 8:
@@ -25,12 +30,19 @@ class NativeVector:
             raise ValueError('Historical games must be dealt evenly to the banks')
         self.backend, self.workers, self.buffers, self.banks = backend, workers, buffers, banks
         self.every = every
-        # Learner rows of one group: both rows of each self-play game, slot 0 of the historical one.
-        self.group_primary = 2 * (every - 1) + 1
         self.groups = workers // (every * buffers)   # groups per buffer
-        self.agents_per_buffer = self.groups * (self.group_primary + banks)
+        if team_every < 0 or (team_every and (every != 2 or self.groups % team_every)):
+            raise ValueError('team_every needs historical_every 2 and must divide the groups of a buffer')
+        self.team_every = team_every
+        # Players of each group's self-play game (4 in a team group), over one buffer's groups.
+        self.selfplay_players = [4 if team_every and g % team_every == team_every - 1 else 2 for g in range(self.groups)]
+        # Learner rows of one group: every row of each self-play game, slot 0 of the historical one.
+        self.group_primaries = [p * (every - 1) + 1 for p in self.selfplay_players]
+        self.team_rows = sum(p for p in self.selfplay_players if p == 4) * buffers
+        # Physical decisions per vector step: two players a game, two more in each team game.
+        self.physical_per_step = 2 * workers + self.team_rows // 2
+        self.agents_per_buffer = sum(self.group_primaries) + self.groups * banks
         self.total_agents = self.agents_per_buffer * buffers
-        self.learner_rows = workers // every * self.group_primary
         self.historical_per_bank = workers // every // banks
         # Compact row layout: a historical environment's
         # opponent plays on one of its `banks` slots for the environment's whole
@@ -42,7 +54,8 @@ class NativeVector:
         # sampled. Otherwise (groups % banks != 0) the legacy layout puts every
         # opponent row of bank b in bank b's slice.
         self.compact = self.groups % banks == 0
-        self.primary_rows = self.group_primary * self.groups
+        self.primary_rows = sum(self.group_primaries)
+        self.learner_rows = self.primary_rows * buffers
         self.live_per_bank = self.groups // banks if self.compact else self.groups
         self.live_rows = self.primary_rows + banks * self.live_per_bank
         self.lib = counters.bind(C.CDLL(backend.__file__))
@@ -70,8 +83,8 @@ class NativeVector:
         """
         expected = []
         for j in range(self.workers // self.every):
-            bank = j % self.banks
-            expected += [[2, 2, 0, 0, -1]] * (self.every - 1) + [[1 + self.banks, 2, self.banks, 1 + bank, bank]]
+            bank, players = j % self.banks, self.selfplay_players[j % self.groups]
+            expected += [[players, players, 0, 0, -1]] * (self.every - 1) + [[1 + self.banks, 2, self.banks, 1 + bank, bank]]
         return expected
 
     def permutation(self, before):
@@ -83,11 +96,12 @@ class NativeVector:
         for buffer in range(self.buffers):
             primary, frozen, idle = [], [[] for _ in range(self.banks)], []
             for group in range(self.groups):
-                primary.extend(range(slot, slot + self.group_primary))
+                own = self.group_primaries[group]
+                primary.extend(range(slot, slot + own))
                 active = int(before[self.every * (buffer * self.groups + group) + self.every - 1, 5])
                 for bank in range(self.banks):
-                    (frozen[bank] if not self.compact or bank == active else idle).append(slot + self.group_primary + bank)
-                slot += self.group_primary + self.banks
+                    (frozen[bank] if not self.compact or bank == active else idle).append(slot + own + bank)
+                slot += own + self.banks
             if self.compact and any(len(rows) != self.live_per_bank for rows in frozen):
                 raise RuntimeError('Historical games are not dealt evenly to the banks within a buffer')
             order = primary + [row for group in frozen for row in group] + idle

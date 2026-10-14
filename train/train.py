@@ -218,7 +218,7 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts',
-                 'historical_every', 'style_sha256')
+                 'historical_every', 'team_every', 'style_sha256')
 # The entropy schedule is a pure function of these and the learner step,
 # recomputed every update, so a resume may change it; the change is recorded.
 RESUME_SCHEDULE = ('entropy', 'entropy_floor', 'entropy_half_life')
@@ -271,7 +271,7 @@ def recorded_hypers(config):
                 n_scripted=config.get('scripted_banks', len(config.get('scripted_bots', [])) or (1 if config.get('scripted_roster') else 0)),
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0),
                 v4_shape=config.get('v4_shape'), loadouts=config.get('loadouts',resolve_loadouts()),
-                historical_every=env.get('historical_every', 2),
+                historical_every=env.get('historical_every', 2), team_every=env.get('team_every', 0),
                 style_sha256=(config.get('style') or {}).get('sha256'))
 
 
@@ -326,6 +326,10 @@ def arguments():
                    help='every k-th game is learner vs a frozen bank, the rest learner vs learner. 2: half the games, '
                         '2/3 of the learner rows self-play (a main agent). 1: every game against the banks, no '
                         'self-play rows (an exploiter training only against its frozen target(s))')
+    p.add_argument('--team-every', type=int, default=0,
+                   help='team play (docs/TEAM_PLAY.md): the self-play game of every k-th self-play/historical group is a '
+                        '2v2 team game of four learner players (0 = none; needs --historical-every 2). 2 puts half the '
+                        'learner rows in team games')
     p.add_argument('--seed', type=int, default=73)
     p.add_argument('--encoder', choices=('linear', 'set', 'v4'), default='linear',
                    help='v4: observation layout 4 and the policy v4 encoder/decoder (train/bopl_v4.cu)')
@@ -488,6 +492,8 @@ def arguments():
         p.error('workers must be divisible by historical-every times the buffer count')
     if (a.workers // a.historical_every) % a.banks:
         p.error('the historical games (workers / historical-every) must divide evenly among the banks')
+    if a.team_every and (a.team_every < 0 or a.historical_every != 2 or (a.workers // (2 * a.buffers)) % a.team_every):
+        p.error('team-every needs historical-every 2 and must divide the groups of a buffer (workers / 2 / buffers)')
     a.scripted_bots = list(a.scripted_bots or [])
     a.scripted_roster = a.scripted_roster or []
     if a.scripted_banks < 0:
@@ -698,7 +704,7 @@ def main():
     # PufferLib parses sys.argv itself; the wrapper owns this command's arguments.
     sys.argv = [sys.argv[0]]
     args = pufferl.load_config('bopl')
-    vector = NativeVector(_C, a.workers, a.buffers, a.banks, a.historical_every)
+    vector = NativeVector(_C, a.workers, a.buffers, a.banks, a.historical_every, a.team_every)
     learner_batch = vector.learner_rows * a.horizon
     if a.minibatch_div < 1 or vector.learner_rows % a.minibatch_div:
         raise SystemExit(f'--minibatch-div {a.minibatch_div} must divide the {vector.learner_rows} learner rows')
@@ -746,6 +752,7 @@ def main():
     map_chunks=map_mask_chunks(a.training_maps)
     pool_mask=sum(1 << ability for ability in a.loadouts['pool'])
     args['env'].update(players=2, banks=a.banks, historical_every=a.historical_every, seed=a.seed,
+                       **(dict(team_every=a.team_every) if a.team_every else {}),
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        # Four 31-bit chunks: binding options travel as doubles.
                        training_map_mask=map_chunks[0], training_map_mask_hi=map_chunks[1],
@@ -761,6 +768,8 @@ def main():
     # Physical decisions per learner decision: both players of every game per
     # step over the learner rows, 4/3 at historical_every 2 and 2 at 1.
     target_physical = math.ceil(a.steps * (2 * a.historical_every) / (2 * a.historical_every - 1))
+    if a.team_every:   # team games add learner rows, not frozen ones: one opponent row per historical game
+        target_physical = math.ceil(a.steps * (vector.learner_rows + a.workers // 2) / vector.learner_rows)
     # The pool counts native agent steps (padded rows included);
     # the knobs above count learner decisions.
     native_per_learner = native_batch / learner_batch
@@ -775,6 +784,7 @@ def main():
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native', map_catalogue='identity-124',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, historical_every=a.historical_every,
+                  team_every=a.team_every,
                   encoder=a.encoder, hidden=a.hidden, layers=a.layers,
                   scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,
                   scripted_share_min=a.scripted_share_min, scripted_share_max=a.scripted_share_max,
@@ -1238,7 +1248,7 @@ def main():
                 else:
                     counts = offset_counters(vector.snapshot(), base_counts)
                 if (counts['learner_steps']-previous['learner_steps'] != learner_batch
-                        or counts['game_steps']-previous['game_steps'] != a.workers*2*a.horizon):
+                        or counts['game_steps']-previous['game_steps'] != vector.physical_per_step*a.horizon):
                     raise RuntimeError('Native rollout physical/learner decision accounting mismatch')
                 elapsed = elapsed_before + time.monotonic()-training_started
                 # Snapshots, PFSP draws and bank retirements from this rollout's finished games.

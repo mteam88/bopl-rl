@@ -63,6 +63,10 @@ typedef struct {
      * button head was ignored because a latch was in force. */
     float hold_choice[BOPL_ACT_HOLD], latched_decisions;
     float map_fraction[124];   /* BOPL_COUNTER_MAPS */
+    /* Team games (BoplPuffer.team_play), learner players, n-averaged like the
+     * rest: episodes, wins, and kills of a teammate (bopl_team_kills). Always
+     * zero without team play, and my_log only reports them when non-zero. */
+    float team_episodes, team_wins, team_kills;
 } Log;
 enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
 /* The authored catalogue is dense at 0..123. Selection is a real 128-bit mask;
@@ -345,6 +349,12 @@ typedef struct {
      * kill/death shaping: a strong net's losses to the uniform anchor are mostly
      * these (sweeps/random-loss-study, 2026-10-13). 0 pays nothing. */
     float reward_kill, reward_timeout, reward_self_death;
+    /* Team play (docs/TEAM_PLAY.md): 0 = every player its own team, the
+     * historical 1v1 game; else the config's teams are the game's (2v2 self-play
+     * environments: seats 0,1 against 2,3, binding.c team_every) and a kill of a
+     * teammate is not paid as a kill but charged as one (bopl_team_kills, read
+     * from the game's death events). Set once, before the first reset. */
+    int team_play;
     /* Process-lifetime cumulative counters over decisions this environment
      * actually played (warmup runs inside the game's reset and never reaches
      * c_step, so it is excluded by construction). Unfinished episodes are
@@ -1428,6 +1438,28 @@ static int64_t bopl_self_deaths(const BoplRlTelemetry *now, const BoplRlTelemetr
     return (int64_t)now->deaths_self-before->deaths_self
         +(int64_t)now->deaths_environment-before->deaths_environment;
 }
+/* Team play: each player's kills of a teammate during the decision, from the
+ * game's death events (both phases of a sampled step). Player.Kill credits
+ * them like any kill, so bopl_opponent_kills counts them too and the counters
+ * alone cannot tell which victim a kill was. Self-kills stay deaths_self's.
+ * A backend without events cannot score a team game: it fails the env. */
+static int bopl_team_kills(const BoplRl *world, const BoplRlState *state, int players, int64_t *team_kills) {
+    for (int i=0; i<players; i++) team_kills[i]=0;
+    uint32_t count=0;
+    if (!world || !bopl_rl_event_support(world)) return -1;
+    const BoplRlEvent *events=bopl_rl_events(world, &count);
+    for (uint32_t e=0; e<count && events; e++) {
+        const BoplRlEvent *event=&events[e];
+        if (event->kind!=BOPL_EVENT_DEATH || !event->actor || event->actor==event->subject) continue;
+        int actor=-1, subject=-1;
+        for (int i=0; i<players; i++) {
+            if (state->players[i].id==event->actor) actor=i;
+            if (state->players[i].id==event->subject) subject=i;
+        }
+        if (actor>=0 && subject>=0 && state->players[actor].team==state->players[subject].team) team_kills[actor]++;
+    }
+    return 0;
+}
 /* Everything one decision pays one player. `previous_kills` and
  * `previous_deaths` are that player's counters as of the previous decision;
  * kills are opponent kills, never the game's self-crediting count. */
@@ -1636,6 +1668,9 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
     int decided=bopl_decided(state, env->players);
     const BoplRlEvent *style_events=NULL; uint32_t style_event_count=0; int style_support=0;
     if (env->style && world) style_events=bopl_style_events(env->world, &style_event_count, &style_support);
+    int64_t team_kills[BOPL_MAX_PLAYERS]={0};
+    if (env->team_play && bopl_team_kills(world?env->world:NULL, state, env->players, team_kills))
+        bopl_failed(env, "team play needs the game's death events");
     for (int i=0; i<env->players; i++) {
         const BoplRlPlayer *player=&state->players[i];
         int slot=bopl_slot(env, i), learner=!env->banks || i==env->side;
@@ -1657,6 +1692,11 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
         }
         BoplOutcome o=bopl_outcome(state, i, decided, env->kills[i], env->deaths[i],
                                    env->reward_kill, env->reward_timeout);
+        if (env->team_play) {
+            /* A teammate's death is not a kill: it is charged like the player's own. */
+            o.kills-=team_kills[i];
+            o.shaping=env->reward_kill*((float)o.kills-(float)o.deaths-(float)team_kills[i]);
+        }
         /* Read before previous_telemetry advances below. */
         int64_t self_deaths=bopl_self_deaths(&state->telemetry[i], &env->previous_telemetry[i]);
         if (o.kills<0) bopl_failed(env, "opponent kill counter regressed");
@@ -1664,7 +1704,7 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
          * both players receive on truncation (0 in the phase-1 comparison). */
         float tail[BOPL_TELEMETRY_SIZE-BOPL_EVENT_FIELDS];
         tail[BOPL_REWARD_OUTCOME-BOPL_EVENT_FIELDS]=o.outcome;
-        tail[BOPL_REWARD_KILLS-BOPL_EVENT_FIELDS]=env->reward_kill*(float)o.kills;
+        tail[BOPL_REWARD_KILLS-BOPL_EVENT_FIELDS]=env->reward_kill*((float)o.kills-(float)team_kills[i]);
         tail[BOPL_REWARD_DEATHS-BOPL_EVENT_FIELDS]=-env->reward_kill*(float)o.deaths-env->reward_self_death*(float)self_deaths;
         tail[BOPL_EPISODES-BOPL_EVENT_FIELDS]=(float)terminal;
         tail[BOPL_WINS-BOPL_EVENT_FIELDS]=(float)o.won;
@@ -1687,6 +1727,7 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
             c->kills+=(double)o.kills;
             for (int bit=0; bit<4; bit++) c->buttons[bit]+=(actions[i].buttons>>bit)&1u;
             if (fresh[i]) env->log.hold_choice[holds[i]]++; else env->log.latched_decisions++;
+            env->log.team_kills+=(float)team_kills[i];
         } else c->opponent_game_decisions++;
         env->deaths[i]=player->deaths; env->kills[i]=(uint32_t)bopl_opponent_kills(state, i);
         if (terminal) {
@@ -1696,6 +1737,7 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
             env->log.episode_return+=env->returns[i]; env->log.episode_length+=env->steps; env->log.n++;
             if (learner) {
                 env->log.learner_episodes++; env->log.learner_wins+=o.won;
+                if (env->team_play) { env->log.team_episodes++; env->log.team_wins+=o.won; }
                 if (env->banks) {
                     env->log.historical_episodes++; env->log.historical_wins+=o.won;
                     /* The pool's Elo/swap statistics skip a match whose opponent

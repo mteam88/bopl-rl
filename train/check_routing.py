@@ -127,7 +127,22 @@ def mutual(obs, a, b):
     return abs(other_a[9] + other_b[9]) < 1e-5 and abs(other_a[10] + other_b[10]) < 1e-5
 
 
-def trainer_layout(lib, _C, check, name, every, workers, num_buffers, banks, env_kwargs, steps):
+def allied(obs, rows):
+    """A 2v2 game's four rows (seats 0,1 against 2,3): each sees itself and three others,
+    exactly its teammate flagged same-team, and the teammates see each other mirrored.
+    Player rows after self run in seat order skipping self, so seat a's ally sits at row
+    1 for a < 2 and row 3 for a >= 2 (train/bopl_puffer.h's player loop)."""
+    blocks = [obs[r][PLAYER0:PLAYER0+4*PLAYER].reshape(4, PLAYER) for r in rows]
+    for a, b in enumerate(blocks):
+        if not (b[:, 0] == 1).all() or b[0, 1] != 1 or (b[1:, 1] != 0).any(): return False
+        if b[1:, 2].tolist() != ([1, 0, 0] if a < 2 else [0, 0, 1]): return False
+    for a, row in ((0, 1), (2, 3)):
+        mine, theirs = blocks[a][row], blocks[a+1][1 if a == 0 else 3]
+        if abs(mine[9] + theirs[9]) >= 1e-5 or abs(mine[10] + theirs[10]) >= 1e-5: return False
+    return True
+
+
+def trainer_layout(lib, _C, check, name, every, workers, num_buffers, banks, env_kwargs, steps, team_every=0):
     """The permutation train.py installs (NativeVector.permutation) on a real vector.
 
     Checks that every buffer's rows are [learner rows | bank 0 | ... | bank n-1 | idle]
@@ -136,12 +151,15 @@ def trainer_layout(lib, _C, check, name, every, workers, num_buffers, banks, env
     slice; each historical environment's opponent row for bank k lies in bank k's slice
     (compact: only the active bank, the others in the never-uploaded idle tail); the
     idle tail stays blank while the games step; and the per-update accounting train.py
-    asserts (learner_rows learner and 2*workers physical decisions per step) holds. The
-    stepping checks need one buffer (the host step path drives one); multi-buffer and
-    legacy (non-compact) layouts get the routing and region checks only.
+    asserts (learner_rows learner and one physical decision per player per step) holds.
+    The stepping checks need one buffer (the host step path drives one); multi-buffer and
+    legacy (non-compact) layouts get the routing and region checks only. With team_every
+    every team_every-th group's self-play game is a 2v2 (docs/TEAM_PLAY.md): its four
+    rows are all learner rows and must see their teammate as one (allied).
     """
     from native_vector import NativeVector
-    nv = NativeVector(_C, workers, num_buffers, banks, every)
+    nv = NativeVector(_C, workers, num_buffers, banks, every, team_every)
+    if team_every: env_kwargs = dict(env_kwargs, team_every=team_every)
     apb, primary, live = nv.agents_per_buffer, nv.primary_rows, nv.live_per_bank
     vec = _C.create_vec(dict(vec=dict(total_agents=nv.total_agents, num_buffers=num_buffers), env=env_kwargs), True)
     nv.gpu_obs_ptr = native_handle(lib).gpu_obs_ptr
@@ -186,21 +204,30 @@ def trainer_layout(lib, _C, check, name, every, workers, num_buffers, banks, env
         vec.close(); return
     obs, _, terminals = host_rows(lib, native, nv.total_agents)
     actions = np.zeros((nv.total_agents, NUM_ATNS), dtype=np.float32)
-    pairs_ok, idle_blank, last = True, True, envs
+    pairs_ok, teams_ok, idle_blank, last = True, True, True, envs
+    team_envs = sum(e['num_agents'] == 4 and not e['banks'] for e in envs)
     for step in range(steps):
         for r in range(nv.total_agents): actions[r] = (1 + (r*37+step) % 255, (r+step) % 16, 0)
         vec.cpu_step(actions.ctypes.data)
         cur = layout(lib, native, workers)
         for i, e in enumerate(cur):
             rows = e['slots'] if not e['banks'] else [e['slots'][0], e['slots'][1+e['bank']]]
-            if e['matches'] == last[i]['matches'] and not mutual(obs, *rows): pairs_ok = False
+            if e['matches'] != last[i]['matches']: continue
+            if len(rows) == 4:
+                if not allied(obs, rows): teams_ok = False
+            elif not mutual(obs, *rows): pairs_ok = False
         if any(obs[r].any() for r in idle): idle_blank = False
         last = cur
     check(f'{name}: learner and active-bank rows stay two mutually visible players', pairs_ok)
+    if team_every:
+        check(f'{name}: team games are 2v2 and each row sees its teammate as one', teams_ok and team_envs == nv.team_rows//4,
+              team_envs=team_envs, team_rows=nv.team_rows)
     check(f'{name}: idle rows stay blank', idle_blank, idle=len(idle))
     snap = counters.snapshot(lib, native)
-    check(f'{name}: counters match the trainer accounting (learner_rows learner, 2*workers physical per step)',
-          snap['learner_steps'] == nv.learner_rows*steps and snap['game_steps'] == 2*workers*steps
+    players = sum(e['players'] for e in envs)
+    check(f'{name}: counters match the trainer accounting (learner_rows learner, one physical per player per step)',
+          snap['learner_steps'] == nv.learner_rows*steps and snap['game_steps'] == players*steps
+          and players == 2*workers + 2*team_envs
           and snap['opponent_game_decisions'] == len(hist)*steps, snap={k: snap[k] for k in ('learner_steps', 'game_steps', 'opponent_game_decisions')},
           learner_rows=nv.learner_rows, steps=steps)
     vec.close()
@@ -412,6 +439,11 @@ def main():
         for workers, num_buffers in ((4, 1), (8, 2), (6 if every == 1 else 12, 2)):
             trainer_layout(lib, _C, check, f'{tag}trainer w{workers} b{num_buffers}', every, workers, num_buffers, banks,
                            env_kwargs, args.steps//2)
+        # Team play (docs/TEAM_PLAY.md): every second group's self-play game is a 2v2.
+        if every == 2:
+            for workers, num_buffers in ((8, 1), (16, 2)):
+                trainer_layout(lib, _C, check, f'team trainer w{workers} b{num_buffers}', every, workers, num_buffers, banks,
+                               env_kwargs, args.steps//2, team_every=2)
     # Final-trainer reward: no kill shaping, timeout -0.5 paid by both players of a truncated match.
     vec = _C.create_vec(dict(vec=dict(total_agents=4, num_buffers=1), env=dict(env_kwargs, banks=0, historical_every=0,
                              reward_kill_milli=0, reward_timeout_milli=-500)), True)
