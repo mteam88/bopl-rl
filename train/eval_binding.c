@@ -135,25 +135,50 @@ static void research_style_free(ResearchStyle *style) {
     if (style->loaded) bopl_style_free(&style->program);
     free(style->slots); style->slots=NULL; style->loaded=0;
 }
-BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay) {
+/* `players` seats on `teams` (NULL: every player its own team, the 1v1 game);
+ * any shared team turns on team play (BoplPuffer.team_play: teammates' deaths
+ * are not paid as kills). Every per-player buffer is players rows. */
+BoplPuffer *research_open_teams(uint32_t seed, uint32_t map, uint32_t limit, int delay, int players, const uint32_t *teams) {
+    if (players<2 || players>BOPL_MAX_PLAYERS) return NULL;
     ResearchEnv *research=calloc(1, sizeof(*research));
     if (!research) return NULL;
     BoplPuffer *env=&research->env;
-    env->players=2; env->num_agents=2; env->repeat=4; env->observation_delay=delay;
+    env->players=players; env->num_agents=players; env->repeat=4; env->observation_delay=delay;
     env->no_autoreset=1; env->rng=seed;
     env->reward_kill=0.1f; env->reward_timeout=0; env->reward_self_death=0;  /* evaluation reports the phase-1 reward telemetry */
-    bopl_rl_default_config(&env->config, 2);
+    bopl_rl_default_config(&env->config, (uint32_t)players);
     env->config.map=map; env->config.stocks=0; /* vanilla Bopl: one life per round, matching training */ env->config.max_episode_ticks=limit;
-    for (int i=0; i<2; i++) {
+    for (int i=0; i<players; i++) {
         env->config.player[i].abilities[1]=4;
         env->config.player[i].abilities[2]=14;
+        if (teams) {
+            if (teams[i]>=BOPL_MAX_PLAYERS) { free(research); return NULL; }
+            env->config.player[i].team=teams[i];
+            for (int j=0; j<i; j++) env->team_play|=teams[j]==teams[i];
+        }
     }
-    env->observations=calloc(2*BOPL_OBS_STRIDE, sizeof(float));
-    env->actions=calloc(2*BOPL_NUM_ATNS, sizeof(float)); env->rewards=calloc(2, sizeof(float)); env->terminals=calloc(2, sizeof(float));
-    env->action_mask=calloc(2*BOPL_LOGITS, 1);
+    env->observations=calloc((size_t)players*BOPL_OBS_STRIDE, sizeof(float));
+    env->actions=calloc((size_t)players*BOPL_NUM_ATNS, sizeof(float)); env->rewards=calloc((size_t)players, sizeof(float));
+    env->terminals=calloc((size_t)players, sizeof(float));
+    env->action_mask=calloc((size_t)players*BOPL_LOGITS, 1);
     if (!env->observations || !env->actions || !env->rewards || !env->terminals || !env->action_mask) abort();
     research_route(env);
     init(env); c_reset(env); return env;
+}
+BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay) {
+    return research_open_teams(seed, map, limit, delay, 2, NULL);
+}
+int research_players(BoplPuffer *env) { return env->players; }
+/* Pin every player's three abilities (players x 3 ids, player-ordered) in the
+ * fixed loadout mode: the next reset plays exactly these kits and draws no
+ * loadout randomness. The two-player set mode cannot name more seats. */
+int research_set_kits(BoplPuffer *env, const uint32_t *kits, int count) {
+    if (!kits || count!=env->players*3) return -1;
+    for (int i=0; i<count; i++) if (kits[i]==0 || kits[i]>=BOPL_ABILITY_COUNT) return -1;
+    env->loadout_mode=BOPL_LOADOUT_FIXED; env->loadout_pool=0; env->loadout_set_count=0; env->mirror_share_ppm=0;
+    for (int player=0; player<env->players; player++) for (int slot=0; slot<3; slot++)
+        env->config.player[player].abilities[slot]=kits[player*3+slot];
+    return 0;
 }
 /* Configure the same native episode sampler as training. `sets` is count rows
  * of six player-ordered bytes. The caller resets once after this call. */
@@ -228,7 +253,7 @@ int research_forks(BoplPuffer *env) {
 }
 void research_step(BoplPuffer *env, const float *actions) {
     if (((ResearchEnv*)env)->open) { fprintf(stderr, "research_step during a tick-split decision\n"); abort(); }
-    memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float)); c_step(env);
+    memcpy(env->actions, actions, (size_t)env->players*BOPL_NUM_ATNS*sizeof(float)); c_step(env);
     ResearchStyle *style=&((ResearchEnv*)env)->style;
     if (style->loaded) {
         /* no_autoreset: the world still holds this decision's state and events. */
@@ -296,7 +321,7 @@ int research_style_tallies(BoplPuffer *env, double *out, int capacity) {
 int research_step_begin(BoplPuffer *env, const float *actions) {
     ResearchEnv *research=(ResearchEnv*)env;
     if (research->open || research->style.loaded) return -1;
-    memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float));
+    memcpy(env->actions, actions, (size_t)env->players*BOPL_NUM_ATNS*sizeof(float));
     bopl_step_begin(env, &research->phase);
     research->open=1; research->tick=0; research->sampled=0;
     return 0;
