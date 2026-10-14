@@ -4255,6 +4255,37 @@
    },
    "path": "native/artifacts/rl/sweeps/final-5/run/checkpoints/policy-18666684416.bin",
    "metadata_sha256": "f32e86bf345b70b26d9e16a0f3fc2b79bf781fe4686dc2050a7f18ea45e2e29c"
+  },
+  {
+   "id": "f1e15b20033ae36b5a8f21064eae7587e32aa70f722c518bbd04a52d32009745",
+   "name": "team5b-6250m",
+   "kind": "main",
+   "parent": "final5-18666m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/team-1/run",
+    "step": 6250004480
+   },
+   "sim": "beeffb708b95d95cbf473fa36c0b45e1ead43fdfe234c028f791fb8fd001041f",
+   "reward": {
+    "tag": "binding-67ba59fa",
+    "binding_sha256": "67ba59fae9b2cab9aa472c3d0803a0ba4f1f646edcae06c6fda0e1b9b6b82d5a",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": null,
+   "added": {
+    "date": "2026-10-14",
+    "rule": "team-1: 5B steps from f5 with --team-every 2; 2v2 vs A20 0.660 [0.623,0.698] (f5 0.525), team kills/game 0.072 (f5 0.222), 1v1 vs f5 0.500 +-0.035, vs random 0.971 = f5"
+   },
+   "path": "native/artifacts/rl/sweeps/team-1/run/checkpoints/policy-6250004480.bin",
+   "metadata_sha256": "828301cc6621b25f02c0413acc1ba4789babf4877cf394e7bb366a6fb7778066"
   }
  ],
  "conditions": {
@@ -5288,5 +5319,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "5069108575368aefdc7bed8934bc9e3aca52fc8185ef7c0c320424f6f8c187df"
+ "league_sha256": "797bd541d448a06824cad5bdfefa14f2cd1acf486c4b9047929314f86e33f748"
 }
