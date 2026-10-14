@@ -367,11 +367,16 @@ def summary(pool, ledger, saturation=True):
     # Keyed by candidate NAME, not by step: a league member is not a snapshot of
     # this run and has no step, so a step key could not name one.
     name_of = {path: ledger[path]['name'] for path in ledger}
-    for key in ('intended', 'realized'):
-        saturation[key] = {name_of.get(path, '?'): share for path, share in saturation[key].items()}
     # Members the pool has evicted still consumed curriculum; keep them as one
-    # number rather than growing every metrics line with the whole ledger.
+    # number rather than growing every metrics line with the whole ledger (the
+    # full distribution is pool/state.json's ledger). `realized` holds every
+    # snapshot ever drawn: unpruned it was 33 KB of a 45 KB line 6B steps in,
+    # and a 16B run's metrics.jsonl reached 11-14 GB.
     live = {entry['path'] for entry in pool['pool']}
+    saturation['intended'] = {name_of.get(path, '?'): share for path, share in saturation['intended'].items()}
+    realized = saturation.pop('realized')
+    saturation['realized'] = {name_of.get(path, '?'): share for path, share in realized.items() if path in live}
+    saturation['realized_evicted'] = sum(share for path, share in realized.items() if path not in live)
     played = saturation.pop('played')
     saturation['played'] = {name_of[path]: share for path, share in played.items() if path in live}
     saturation['played_evicted'] = sum(share for path, share in played.items() if path not in live)
