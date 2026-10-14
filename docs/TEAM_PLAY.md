@@ -116,4 +116,66 @@ The candidate is team-1 (`sweeps/team-1/run.sh`):
   - **1v1 regression:** all-combos T vs f5 over 250+ pairs, and the probe vs
     random.
 
-Results are below.
+## Results (2026-10-14)
+
+team-1 ran 5.0B learner steps in 87 minutes (14:06 to 15:34 EDT, ~1M
+learner steps/s). The candidate is
+`sweeps/team-1/run/checkpoints/policy-6250004480.bin` (t5b). The mid
+checkpoint `policy-1562542080.bin` (1.25B, t1.25b) was evaluated too.
+
+**Team games.** 250 side-swapped seed pairs (500 games), seed base 171001,
+random all-combos kits, 4 workers. "Score" is the team's wins plus half its
+draws. CIs are seed-pair bootstrap 95% intervals. "Team kills/game" counts
+only that model's seats.
+
+| game | score [95% CI] | team kills/game, A's model | games with a team kill on A's team |
+|---|---|---|---|
+| B1 f5+f5 vs A20+A20 (baseline) | 0.525 [0.484, 0.566] | 0.222 (A20: 0.226) | 0.218 |
+| C1 t1.25b+t1.25b vs A20+A20 | 0.598 [0.556, 0.637] | 0.106 | 0.106 |
+| C1 t5b+t5b vs A20+A20 | 0.660 [0.623, 0.698] | 0.072 (A20: 0.240) | 0.068 |
+| C2 t5b+t5b vs f5+f5 | 0.655 [0.618, 0.690] | 0.086 (f5: 0.216) | 0.086 |
+| C3 t5b+A20 vs f5+A20 (ally quality) | 0.621 [0.583, 0.660] | 0.068 (f5: 0.110) | 0.124 |
+
+Paired differences on the same seeds (`sweeps/team-1/paired.py`):
+
+| comparison | score | team kills/game |
+|---|---|---|
+| C1 t5b vs B1 f5 | +0.135 [+0.079, +0.192] | -0.150 [-0.196, -0.104] |
+| C1 t1.25b vs B1 f5 | +0.073 [+0.016, +0.132] | -0.116 [-0.158, -0.074] |
+| C1 t5b vs t1.25b | +0.062 [+0.006, +0.117] | -0.034 [-0.066, -0.002] |
+
+- t5b's team kills per game are about a third of f5's (0.072 vs 0.222), and
+  it is the better ally of a fixed partner: +0.121 in C3. Both C2 and C3 are
+  scored against 0.5, the symmetric baseline. The gains were still growing at
+  5B.
+- In C3, A20 kills its teammate a lot as a partner: 0.182 per game with t5b,
+  0.148 with t1.25b. So the share of games with a team kill on t5b's team
+  (0.124) is mostly A20's doing.
+- In training self-play, team kills per learner player-episode fell from 0.05
+  to 0.019. Over the whole run the 1v1 win rate against the frozen banks held
+  at 0.51 to 0.53.
+
+**1v1.** All-combos against f5, 4 workers:
+
+| run | score [95% CI] |
+|---|---|
+| t1.25b vs f5, seeds 131001 | 0.471 [0.422, 0.521] |
+| t5b vs f5, seeds 131001 | 0.490 [0.439, 0.540] |
+| t5b vs f5, seeds 141001 | 0.509 [0.459, 0.556] |
+
+Pooled over the 1000 games, t5b scores 0.500 against f5 (about ±0.035).
+There is no detectable 1v1 regression.
+
+Against the uniform random anchor (`eval/probe.py`, 250 pairs), t5b scores
+0.971 (483 wins, 12 losses, 5 draws). f5 scores 0.971 (483-12-5) on the same
+schedule.
+
+**Untested.** These remain unmeasured:
+
+- free-for-all with three or more players;
+- uneven teams;
+- teams of three;
+- human teammates.
+
+All of the training was 2v2 at seats 0,1 against 2,3. The row writer is
+symmetric in seats, so the seats themselves should not matter.
