@@ -4224,6 +4224,37 @@
    },
    "path": "native/artifacts/rl/sweeps/allkit-1/run/checkpoints/policy-26666729472.bin",
    "metadata_sha256": "08c9e2ce7f6b4505f2113629bf8e307644a7803296526bfe16197c0d687768eb"
+  },
+  {
+   "id": "be6be934756cad73b274a49345ba5c7848ed7134e2c6d4c36fe058bd831c3775",
+   "name": "final5-18666m",
+   "kind": "main",
+   "parent": "anneal20-26666m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/final-5/run",
+    "step": 18666684416
+   },
+   "sim": "beeffb708b95d95cbf473fa36c0b45e1ead43fdfe234c028f791fb8fd001041f",
+   "reward": {
+    "tag": "binding-2e002b95",
+    "binding_sha256": "2e002b959d541a6691aea48fd0cee1348395c7ab6e7ac8a1b40fa1a65df4df66",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": null,
+   "added": {
+    "date": "2026-10-14",
+    "rule": "ladder-5: Elo 669 [654,683] tied best, weakest ability 636 best; 3 half-LR anneals from A20 (final-3/4/5)"
+   },
+   "path": "native/artifacts/rl/sweeps/final-5/run/checkpoints/policy-18666684416.bin",
+   "metadata_sha256": "f32e86bf345b70b26d9e16a0f3fc2b79bf781fe4686dc2050a7f18ea45e2e29c"
   }
  ],
  "conditions": {
@@ -5257,5 +5288,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "485937063af464443dcfc3449b7fd26133a0692ea97de7c27b249bd1ed78ba2c"
+ "league_sha256": "5069108575368aefdc7bed8934bc9e3aca52fc8185ef7c0c320424f6f8c187df"
 }
