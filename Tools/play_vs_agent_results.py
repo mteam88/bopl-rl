@@ -18,7 +18,10 @@ tally()/Bradley-Terry can rate them like any other pairing:
   seed         round seed handed to the shim (bopl_agent_reset); replays the agent
   side         index of the human in the roster (0)
   ticks        episode ticks (after the 240-tick warmup)
-  outcome      "a" (human won), "b" (agent won), "draw" (nobody / both)
+  outcome      "a" (the human's team won), "b" (a bot team won), "draw" (nobody, or a
+               tie the game split over several teams). Rounds go to a team (the last
+               team standing; a bot may be on the human's team): the record's
+               winner_team / human_won decide, older records its winner id
   agent        the spec the round was played with (the record's, as the in-game
                picker can change it between matches; else --agent), agent_path,
                agent_sha256 (checkpoint)
@@ -30,10 +33,12 @@ tally()/Bradley-Terry can rate them like any other pairing:
                "own" (the shim's loadout); agent_kit is the kit the agent played
   bots, agents  how many bots played the round and, per bot, the record's entry
                (agent, agent_id, bot, bot_kind, kit_choice, kit, bot_rating,
-               player, team, won). With two or more bots (free-for-all) the
+               player, team, won, ally_of_human). With two or more bots the
                top-level agent fields are the first bot's and outcome is "b"
-               when any bot won; such rows are not a 1v1 pairing, so ratings
+               when a bot team won; such rows are not a 1v1 pairing, so ratings
                (Tools/rating_roster.py) leave them out
+  winner_team  the team that won the round (null: draw); allied: some bot was on
+               a human's team (rating_roster.py leaves these out too)
   roster       when the spec was a .roster: the roster path; agent/agent_path/
                agent_sha256/b then describe the member the shim drew for the
                round (joined on the round seed from --roster-log, the shim's
@@ -137,6 +142,8 @@ def main():
             winner = record.get('winner')
             if record.get('draw') or winner is None:
                 outcome = 'draw'
+            elif 'human_won' in record:
+                outcome = 'a' if record['human_won'] else 'b'
             elif any(winner == p.get('id') for p in agents):
                 outcome = 'b'
             else:
@@ -157,6 +164,7 @@ def main():
                 'kit_choice': record.get('kit_choice'), 'agent_kit': record.get('kit'),
                 'agent_index': record.get('agent_index'), 'agent_player': record.get('agent_player'),
                 'bots': record.get('bots', len(agents)), 'agents': record.get('agents'),
+                'winner_team': record.get('winner_team'), 'allied': record.get('allied', False),
                 'human_abilities': [p.get('abilities') for p in humans], 'agent_abilities': agent.get('abilities'),
                 'human_keyboard': [p.get('keyboard') for p in humans], 'players': roster,
                 'warmup_ticks': record.get('warmup_ticks'), 'level_ticks': record.get('level_ticks'),
@@ -171,10 +179,14 @@ def main():
             games.write(json.dumps(row) + '\n')
             written += 1
             others = record.get('agents') or []
-            versus = ', '.join(f"{a.get('bot')} kit {a.get('kit')} ({a.get('kit_choice')})" for a in others) if len(others) > 1 else (
-                f"{record.get('bot') or (Path(spec).name if spec.endswith('.bin') else spec)} "
+            def side(bot):
+                team = bot.get('team')
+                return f" team {team}{' (ally)' if bot.get('ally_of_human') else ''}" if team is not None else ''
+            versus = ', '.join(f"{a.get('bot')}{side(a)} kit {a.get('kit')} ({a.get('kit_choice')})" for a in others) if len(others) > 1 else (
+                f"{record.get('bot') or (Path(spec).name if spec.endswith('.bin') else spec)}{side(others[0]) if others else ''} "
                 f"kit {agent.get('abilities')} ({record.get('kit_choice') or 'own'})")
-            print(f"round {record.get('round')}: map {row['map']} seed {row['seed']} outcome {outcome} "
+            teams = f", team {record['winner_team']} won" if record.get('winner_team') is not None else ''
+            print(f"round {record.get('round')}: map {row['map']} seed {row['seed']} outcome {outcome}{teams} "
                   f"({row['ticks']} ticks) vs {versus} replay {replay_copy}")
     if args.player_log and args.player_log.exists():
         shutil.copy2(args.player_log, out / f'{session}-Player.log')

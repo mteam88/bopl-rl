@@ -13,9 +13,16 @@ using UnityEngine;
 // training drew one per episode: from the bot's lineup set, or three abilities
 // from its pool for a bot trained on random kits) or a fixed kit, one of its
 // set or any three abilities its pool allows (Bot.Pool: the trained pool, else
-// the abilities of its set). The seats start from BOPL_AGENT (a launcher
-// argument) and BOPL_AGENT_KIT when given, else the last confirmed seats
-// (<persistentDataPath>/bopl-agent-choice.json), else the catalog's default.
+// the abilities of its set). Each seat also has a team, one of the six the
+// character select's TeamSelector offers (TeamColors.asset: 0 blue, 1 orange,
+// 2 green, 3 pink, 4 yellow, 5 teal; players on one team are allies, and the
+// round goes to the last team standing): a human's team makes the bot an ally,
+// another bot's teams them up. A new bot takes the latest team (the highest
+// index) no joined human and no other bot is on (LaterTeam). The seats start
+// from BOPL_AGENT (a launcher argument) and BOPL_AGENT_KIT when given, else the
+// last confirmed seats (<persistentDataPath>/bopl-agent-choice.json; a file
+// from before teams loads with every team unset, and the picker gives each the
+// default), else the catalog's default.
 public static class RlAgentCatalog
 {
     public sealed class Bot
@@ -35,15 +42,29 @@ public static class RlAgentCatalog
     }
 
     // One bot at the character select; Kit null is Random (or, for a bot with
-    // neither a set nor a pool, the loadout the shim reports).
+    // neither a set nor a pool, the loadout the shim reports). Team -1 is unset
+    // (the default, LaterTeam, is given when the bot is seated).
     public sealed class Seat
     {
         public Bot Bot;
         public int[] Kit;
-        public Seat Copy() => new Seat { Bot = Bot, Kit = Kit == null ? null : (int[])Kit.Clone() };
+        public int Team = -1;
+        public Seat Copy() => new Seat { Bot = Bot, Kit = Kit == null ? null : (int[])Kit.Clone(), Team = Team };
     }
 
     public const int MaxSeats = 5;   // six select boxes, one at least for a human
+    public const int Teams = 6;      // TeamColors.asset, the TeamSelector's choices
+    public static readonly string[] TeamNames = { "blue", "orange", "green", "pink", "yellow", "teal" };
+
+    public static bool ValidTeam(int team) => team >= 0 && team < Teams;
+
+    // The default team for a new bot: the latest (highest index) nobody in
+    // taken is on; with all six taken (it cannot be: six players at most), the last.
+    public static int LaterTeam(ICollection<int> taken)
+    {
+        for (int team = Teams - 1; team >= 0; team--) if (!taken.Contains(team)) return team;
+        return Teams - 1;
+    }
 
     public static readonly List<Bot> Bots = new List<Bot>();
     public static readonly List<string> Groups = new List<string>();
@@ -114,7 +135,7 @@ public static class RlAgentCatalog
                         if (Seats.Count >= MaxSeats) break;
                         var bot = Bots.Find(b => b.Id == (string)entry["bot"]);
                         if (bot == null && entry["spec"] != null && Available((string)entry["spec"])) bot = AdHoc((string)entry["spec"]);
-                        if (bot != null) Seats.Add(new Seat { Bot = bot, Kit = ParseKit(bot, (string)entry["kit"]) });
+                        if (bot != null) Seats.Add(new Seat { Bot = bot, Kit = ParseKit(bot, (string)entry["kit"]), Team = ParseTeam(entry["team"]) });
                     }
                     if (saved["bots"] is JArray none && none.Count == 0) savedEmpty = true;
                 }
@@ -127,6 +148,9 @@ public static class RlAgentCatalog
         if (Seats.Count == 0 && !savedEmpty && DefaultBot != null) Seats.Add(NewSeat());
         Debug.Log("BOPL_AGENT: catalog " + catalogPath + ": " + Bots.Count + " bots available; starting with " + Describe());
     }
+
+    // A saved team; files from before teams have none (-1: the default).
+    private static int ParseTeam(JToken token) => token != null && token.Type == JTokenType.Integer && ValidTeam((int)token) ? (int)token : -1;
 
     // The last confirmed seats were none (every bot removed): start with none.
     private static bool savedEmpty;
@@ -226,7 +250,7 @@ public static class RlAgentCatalog
     {
         if (Seats.Count == 0) return "no bot";
         var parts = new List<string>();
-        foreach (var seat in Seats) parts.Add(seat.Bot.Id + " (" + KitChoiceText(seat) + ")");
+        foreach (var seat in Seats) parts.Add(seat.Bot.Id + " (" + KitChoiceText(seat) + (ValidTeam(seat.Team) ? ", team " + seat.Team : "") + ")");
         return string.Join(", ", parts);
     }
 
@@ -238,7 +262,8 @@ public static class RlAgentCatalog
         if (!save) return;
         try {
             var list = new JArray();
-            foreach (var seat in Seats) list.Add(new JObject { ["bot"] = seat.Bot.Id, ["spec"] = seat.Bot.Path, ["kit"] = KitChoiceText(seat) });
+            foreach (var seat in Seats)
+                list.Add(new JObject { ["bot"] = seat.Bot.Id, ["spec"] = seat.Bot.Path, ["kit"] = KitChoiceText(seat), ["team"] = ValidTeam(seat.Team) ? (JToken)seat.Team : null });
             // The first bot also at the top level, as builds before the seats read it.
             var json = new JObject { ["bots"] = list, ["time"] = DateTime.UtcNow.ToString("o") };
             if (Seats.Count > 0) { json["bot"] = Seats[0].Bot.Id; json["spec"] = Seats[0].Bot.Path; json["kit"] = KitChoiceText(Seats[0]); }

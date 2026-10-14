@@ -36,12 +36,17 @@ using UnityEngine;
 // kits come from the in-game picker instead (RlAgentPicker on the character
 // select, RlAgentCatalog for the bots and the remembered seats; BOPL_AGENT then
 // only preselects one): every seated bot is its own shim handle and player,
-// on its own team, and plays its chosen kit, or a kit drawn for every round
-// (from its set, or from its pool for a net trained on random kits). The shim
-// needs no loadout of its own for that: the observation and mask read the
-// abilities from the game state. The nets trained 1v1, so with two or more
-// bots the match is off what they trained on. With neither variable set the
-// stock game is untouched.
+// on the team its seat chose (a human's makes it an ally, another bot's teams
+// them up; unset, the latest team nobody is on), and plays its chosen kit, or
+// a kit drawn for every round (from its set, or from its pool for a net
+// trained on random kits). The shim needs no loadout of its own for that: the
+// observation and mask read the abilities from the game state, and every
+// player's team, so the rows mark teammates as allies and the primary enemy
+// is the nearest player on another team. The nets trained 1v1, so with two or
+// more bots, or a bot on a human's team, the match is off what they trained
+// on (a teammate was never seen); the scripted bots target the first other
+// living player whatever its team (train/bopl_bots.h bot_view). With neither
+// variable set the stock game is untouched.
 // With BOPL_AGENT_SHADOW=1 the shim also runs a shadow sim (train/bopl_shadow.h,
 // docs/SHADOW.md): the q32 Rust sim reset from this round's own replay setup
 // after level tick 1 and stepped with every player's applied packets, compared
@@ -257,9 +262,10 @@ public static class RlAgent
 
     // CharacterSelectHandler.TryStartGame_inner: append the AI players after the
     // human ones, one per picker seat (RlAgentCatalog.Seats; BOPL_AGENT alone is
-    // one). Each gets a team and a colour nobody else took, so several bots play
-    // free-for-all; the loadout is the seat's kit (RlAgentCatalog.KitFor), else
-    // the agent's training loadout (sidecar ability1..3, or the training defaults).
+    // one). Each gets its seat's team (unset: the latest team no human and no
+    // earlier bot is on, RlAgentCatalog.LaterTeam) and a colour nobody else
+    // took; the loadout is the seat's kit (RlAgentCatalog.KitFor), else the
+    // agent's training loadout (sidecar ability1..3, or the training defaults).
     public static void AddPlayers(List<Player> list, ref int nextId, PlayerColors colors, NamedSpriteList catalog)
     {
         if (!Enabled) return;
@@ -310,9 +316,10 @@ public static class RlAgent
         }
         abilityCatalog = catalog;
         var taken = list.ConvertAll(p => p.Color);
+        var teams = list.ConvertAll(p => p.Team);
         foreach (var agent in agents) {
-            int team = 0;
-            while (list.Exists(p => p.Team == team)) team++;
+            int team = agent.Seat != null && RlAgentCatalog.ValidTeam(agent.Seat.Team) ? agent.Seat.Team : RlAgentCatalog.LaterTeam(teams);
+            teams.Add(team);
             int color = ColorIndex(taken, colors);
             taken.Add(colors[color].playerMaterial);
             agent.Player = new Player(nextId, team) {
@@ -487,7 +494,8 @@ public static class RlAgent
         }
         if (!resultWritten && agents.TrueForAll(a => a.Terminal)) {
             resultWritten = true;
-            Debug.Log("BOPL_AGENT: round " + round + " terminal row kills/deaths " + RlObservation.RowCounts(players));
+            Debug.Log("BOPL_AGENT: round " + round + " terminal row kills/deaths " + RlObservation.RowCounts(players) + "; won the round: "
+                      + string.Join(", ", players.FindAll(p => p.WonThisRound).ConvertAll(p => "p" + p.Id + " (team " + p.Team + (p.IsAgent ? ", bot" : "") + ")")));
             LogTiming(); WriteResult(players);
         }
     }
@@ -648,17 +656,24 @@ public static class RlAgent
     }
 
     // One line per round. The top-level agent fields are the first bot's (as
-    // with one bot); "agents" lists every bot with its kit, and agent_won is
-    // true when any bot won the round.
+    // with one bot); "agents" lists every bot with its kit and team. The round
+    // goes to a team (GameSessionHandler: the last team standing, and every
+    // player on it gets WonThisRound); winner_team is that team, null when the
+    // flag spans no team or several (DeclareGameUndecided on a tie), which is a
+    // draw. winner is the winning team's first player (a human before the bots),
+    // human_won / agent_won whether a human's / a bot's team won (both, with an
+    // ally bot), and allied whether any bot shares a team with a human.
     private static void WriteResult(List<Player> players)
     {
         if (string.IsNullOrEmpty(resultsPath)) return;
         try {
             var catalog = SteamManager.instance.abilityIcons.sprites;
             var roster = new JArray();
-            Player winner = null;
+            var winners = players.FindAll(p => p.WonThisRound);
+            int winningTeam = winners.Count > 0 && winners.TrueForAll(p => p.Team == winners[0].Team) ? winners[0].Team : -1;
+            Player winner = winningTeam >= 0 ? winners[0] : null;
+            bool allied = agents.Exists(a => players.Exists(p => !p.IsAgent && p.Team == a.Player.Team));
             foreach (var player in players) {
-                if (player.WonThisRound) winner = player;
                 var loadout = new JArray();
                 foreach (var ability in player.Abilities) loadout.Add(catalog.FindIndex(entry => entry.associatedGameObject == ability));
                 roster.Add(new JObject { ["id"] = player.Id, ["team"] = player.Team, ["agent"] = player.IsAgent,
@@ -672,7 +687,8 @@ public static class RlAgent
                 bots.Add(new JObject {
                     ["agent"] = agent.Spec, ["agent_id"] = agent.Id, ["bot"] = bot?.Id, ["bot_kind"] = bot?.Kind, ["kit_choice"] = agent.KitChoice,
                     ["kit"] = new JArray(agent.Kit[0], agent.Kit[1], agent.Kit[2]), ["bot_rating"] = bot?.Rating, ["player"] = agent.Player.Id,
-                    ["index"] = agent.Index, ["team"] = agent.Player.Team, ["won"] = winner != null && winner == agent.Player,
+                    ["index"] = agent.Index, ["team"] = agent.Player.Team, ["won"] = winningTeam >= 0 && agent.Player.Team == winningTeam,
+                    ["ally_of_human"] = players.Exists(p => !p.IsAgent && p.Team == agent.Player.Team),
                     ["decisions"] = bopl_agent_decisions(agent.Handle), ["max_episode_ticks"] = agent.MaxEpisodeTicks, ["failed"] = agent.Failed
                 });
             }
@@ -683,7 +699,9 @@ public static class RlAgent
                 ["kit"] = new JArray(first.Kit[0], first.Kit[1], first.Kit[2]), ["bot_rating"] = first.Seat?.Bot.Rating, ["agent_player"] = first.Player.Id, ["agent_index"] = first.Index,
                 ["bots"] = agents.Count, ["agents"] = bots,
                 ["players"] = roster, ["winner"] = winner == null ? null : (JToken)winner.Id, ["draw"] = winner == null,
-                ["agent_won"] = winner != null && winner.IsAgent,
+                ["winner_team"] = winningTeam >= 0 ? (JToken)winningTeam : null, ["winners"] = new JArray(winners.ConvertAll(p => (object)p.Id).ToArray()),
+                ["agent_won"] = winner != null && winners.Exists(p => p.IsAgent), ["human_won"] = winner != null && winners.Exists(p => !p.IsAgent),
+                ["allied"] = allied,
                 ["episode_ticks"] = episodeTicks, ["level_ticks"] = tick, ["warmup_ticks"] = warmupTicks,
                 ["max_episode_ticks"] = first.MaxEpisodeTicks, ["decisions"] = bopl_agent_decisions(first.Handle),
                 ["replay"] = Host.LastSavedReplay, ["replay_number"] = Host.replaysSaved,

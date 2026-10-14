@@ -66,6 +66,8 @@ def human_rating(directory, ratings):
     for row in human_games(directory):
         if sum(1 for p in row.get('players') or () if p.get('agent')) > 1:
             continue   # a free-for-all against several bots is no 1v1 pairing
+        if row.get('allied'):
+            continue   # nor is a bot on the human's team
         b = row.get('b') or ''
         member = b.split(':', 1)[1] if ':' in b else None
         if member in ratings:

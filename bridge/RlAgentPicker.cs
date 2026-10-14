@@ -10,7 +10,14 @@ using UnityEngine.UI;
 // column like a joined player's in a box nobody joined (the rightmost free
 // ones), showing the bot, its rating, the kit it will play (cycling through
 // example kits when the kit is Random) and its slime in the colour it will
-// get. Up to five bots; each joins the match as its own player and team.
+// get, the column in its team's colours as a joined box shows its player's
+// team. Up to five bots; each joins the match as its own player, on the team
+// its seat chose: any of the six the boxes offer (TeamSelector), so a human's
+// team makes it an ally ("ally" over the column) and another bot's teams them
+// up. A new bot takes the latest team (the highest index: teal, then yellow,
+// pink, green, orange, blue) no joined player and no other bot is on
+// (RlAgentCatalog.LaterTeam). While bots are seated the start button also
+// needs two teams among the ready players and the bots (TeamsSplit).
 //
 // It reads only buttons the character select leaves unbound, so it never
 // takes a press from a player choosing their own abilities (the boxes read A,
@@ -21,7 +28,7 @@ using UnityEngine.UI;
 //   R3 (right stick press)      edit the highlighted bot (again: done)
 //   right stick left / right    highlight another bot
 // and in the editor, a panel over the boxes:
-//   right stick left / right    field: bot > kit > slot 1 > slot 2 > slot 3
+//   right stick left / right    field: bot > team > kit > slot 1 > slot 2 > slot 3
 //   right stick up / down       change it (held: repeats, faster the longer)
 //   R3 done, L3 add another bot, hold L3 remove this one
 // The editor lists the bots grouped as the catalog does (league, exploiters,
@@ -65,7 +72,8 @@ public class RlAgentPicker : MonoBehaviour
         public int Box = -1;
         public RectTransform Root;
         public Image Border;
-        public TextMeshProUGUI Header, Title, Info, Kit, Badge, Key, KeyAction;
+        public TextMeshProUGUI Header, Title, Info, Team, Kit, Badge, Key, KeyAction;
+        public readonly List<Graphic> Fills = new List<Graphic>(), Edges = new List<Graphic>();   // in the team's fill / border colour
         public readonly Image[] Icons = new Image[3];
         public Image Slime;
         public float Cycle;
@@ -75,11 +83,11 @@ public class RlAgentPicker : MonoBehaviour
     private const float PanelWidth = 2800f, PanelHeight = 1880f;
     private const float ListWidth = 1000f, ListHeight = 1500f, ListX = -860f, ListY = -10f;
     private const float RowHeight = 112f, HeaderHeight = 92f, RowGap = 12f;
-    private const float DetailLeft = -250f, DetailCenter = 560f, KitRowY = 180f, RingY = -20f;
+    private const float DetailLeft = -250f, DetailCenter = 560f, KitRowY = 180f, TeamRowY = 300f, RingY = -20f;
     private const float RepeatDelay = 0.35f, RepeatRateVertical = 0.11f, RepeatRateHorizontal = 0.22f;
     private const float HoldToRemove = 0.6f, StickPress = 0.55f;
     private const int GridColumns = 5, GridCells = 20, AbilityColumns = 12, AbilityCells = 48;
-    private const int FieldBot = 0, FieldKit = 1, FieldSlot = 2;   // slots: FieldSlot + 0..2
+    private const int FieldBot = 0, FieldTeam = 1, FieldKit = 2, FieldSlot = 3;   // slots: FieldSlot + 0..2
 
     private static RlAgentPicker instance;
     private bool open;
@@ -89,8 +97,24 @@ public class RlAgentPicker : MonoBehaviour
     // input while the editor has it, and on any frame the picker acted.
     public static bool BlocksInput => instance != null && (instance.open || instance.toggledFrame == Time.frameCount);
 
+    // CharacterSelectHandler's start button: with bots seated it counts their teams.
+    public static bool Seated => instance != null && instance.seats.Count > 0;
+
+    // Two teams at least among the ready players and the bots (else the round
+    // would have nobody to fight).
+    public static bool TeamsSplit()
+    {
+        if (instance == null) return true;
+        var teams = new HashSet<int>();
+        foreach (var (_, team, ready) in instance.HumanTeams()) if (ready) teams.Add(team);
+        foreach (var view in instance.seats) teams.Add(view.Seat.Team);
+        return teams.Count > 1;
+    }
+
     private CharacterSelectHandler handler;
     private PlayerColors playerColors;
+    private TeamColors teamColors;
+    private TeamSelector[] boxTeams;   // per select box: its player's team
     private NamedSpriteList abilities;
     private TMP_FontAsset font;
     private Color blue, edge, orange, deep, light;
@@ -111,11 +135,15 @@ public class RlAgentPicker : MonoBehaviour
     private RectTransform stripRow;
     private readonly List<(Image box, TextMeshProUGUI key, TextMeshProUGUI action)> stripHints = new List<(Image, TextMeshProUGUI, TextMeshProUGUI)>();
     private TextMeshProUGUI stripNote;
+    private GameObject teamWarning;   // over the strip while everyone is on one team
 
     // Editor.
     private CanvasGroup overlay;
     private RectTransform panel, listViewport, listContent;
-    private Image listFrame, kitRow;
+    private Image listFrame, kitRow, teamRow;
+    private readonly (Image outer, Image inner, TextMeshProUGUI label)[] teamCells = new (Image, Image, TextMeshProUGUI)[RlAgentCatalog.Teams];
+    private TextMeshProUGUI teamHeader, teamStatus;
+    private float builtAt;            // Time.unscaledTime the picker was built (the scene opened)
     private readonly List<Row> rows = new List<Row>();
     private TextMeshProUGUI title, detailName, detailKind, detailRating, detailDescription, kitHeader, kitOptionText, kitNote, errorText, emptyText;
     private Image kindChip;
@@ -156,6 +184,13 @@ public class RlAgentPicker : MonoBehaviour
         playerColors = colors;
         abilities = SteamManager.instance.abilityIcons;
         bots = RlAgentCatalog.Bots;
+        boxTeams = new TeamSelector[handler.characterSelectBoxes.Length];
+        for (int i = 0; i < boxTeams.Length; i++) boxTeams[i] = handler.characterSelectBoxes[i].GetComponentInChildren<TeamSelector>(true);
+        teamColors = template.GetComponentInChildren<TeamSelector>(true)?.teams;
+        if (teamColors == null || teamColors.teamColors.Length < RlAgentCatalog.Teams) {
+            Debug.LogWarning("RlAgentPicker: no team colours in the select box");
+            teamColors = null;
+        }
         blue = handler.blue; orange = handler.orange;
         edge = new Color(0.082f, 0.333f, 0.509f);
         deep = new Color(0.09f, 0.46f, 0.76f);
@@ -183,6 +218,7 @@ public class RlAgentPicker : MonoBehaviour
         usingGamepad = Gamepad.all.Count > 0;
 
         var root = template.GetComponentInParent<Canvas>().rootCanvas;
+        builtAt = Time.unscaledTime;
         BuildStrip(root);
         BuildOverlay(root);
         // The remembered seats, as many as there are free boxes (players who
@@ -194,7 +230,12 @@ public class RlAgentPicker : MonoBehaviour
             saved.RemoveRange(room, saved.Count - room);
             RlAgentCatalog.SetSeats(saved, false);
         }
-        foreach (var seat in saved) seats.Add(BuildSeat(seat));
+        // Seats from before teams (or the launcher's) get the default, in order.
+        foreach (var seat in saved) {
+            if (!RlAgentCatalog.ValidTeam(seat.Team)) seat.Team = DefaultTeam();
+            seats.Add(BuildSeat(seat));
+        }
+        RlAgentCatalog.SetSeats(seats.ConvertAll(view => view.Seat), false);
         Layout();
         foreach (var view in seats) RefreshSeat(view);
         RefreshStrip();
@@ -323,6 +364,72 @@ public class RlAgentPicker : MonoBehaviour
 
     private static string RatingText(RlAgentCatalog.Bot bot) => bot.Rating.HasValue ? Mathf.RoundToInt(bot.Rating.Value).ToString() : "";
 
+    // ---- teams ----
+
+    private Color TeamFill(int team) => teamColors != null && RlAgentCatalog.ValidTeam(team) ? teamColors.teamColors[team].fill : blue;
+    private Color TeamBorder(int team) => teamColors != null && RlAgentCatalog.ValidTeam(team) ? teamColors.teamColors[team].border : edge;
+    private static string TeamName(int team) => RlAgentCatalog.ValidTeam(team) ? RlAgentCatalog.TeamNames[team] : "no";
+
+    // The joined players' boxes: (box, team, ready). A box's team is its
+    // TeamSelector's, which it hands the player when it readies.
+    private List<(int box, int team, bool ready)> HumanTeams()
+    {
+        var humans = new List<(int, int, bool)>();
+        var boxes = handler.characterSelectBoxes;
+        for (int i = 0; i < boxes.Length; i++) {
+            var box = boxes[i];
+            if (Mine(i) || !box.gameObject.activeSelf || box.menuState == CharSelectMenu.join) continue;
+            int team = boxTeams[i] != null ? boxTeams[i].selectedIndex : box.playerInit.team;
+            humans.Add((i, team, box.menuState == CharSelectMenu.ready || box.menuState == CharSelectMenu.trueReady));
+        }
+        return humans;
+    }
+
+    // A human's name on the screen: "you" when only one joined, else the box ("p2").
+    private static string HumanName(int box, int humans) => humans == 1 ? "you" : "p" + (box + 1);
+
+    // The latest team no joined player and no seated bot (but skip) is on.
+    private int DefaultTeam(SeatView skip = null)
+    {
+        var taken = new List<int>();
+        foreach (var (_, team, _) in HumanTeams()) taken.Add(team);
+        foreach (var view in seats) if (view != skip) taken.Add(view.Seat.Team);
+        return RlAgentCatalog.LaterTeam(taken);
+    }
+
+    // Who else is on team: the humans by name, the other bots as "bot k".
+    private (List<string> humans, List<string> bots) TeamMates(int team, int self, bool shortNames)
+    {
+        var humans = new List<string>(); var others = new List<string>();
+        var joined = HumanTeams();
+        foreach (var (box, t, _) in joined) if (t == team) humans.Add(HumanName(box, joined.Count));
+        for (int k = 0; k < seats.Count; k++)
+            if (k != self && seats[k].Seat.Team == team) others.Add((shortNames ? "b" : "bot ") + (k + 1));
+        return (humans, others);
+    }
+
+    // The editor's subtitle: what the draft's team means for the match and the bot.
+    private string TeamNote()
+    {
+        if (draft == null) return "";
+        if (OneTeam()) return "<color=#ffb04a>everyone is on one team: the match needs two</color>";
+        var (humans, others) = TeamMates(draft.Team, editing, false);
+        if (humans.Count + others.Count == 0) return "<color=#ffffff>the nets trained 1 v 1</color>";
+        if (draft.Bot.Kind == "scripted") return "<color=#ffb04a>scripted bots target their teammates too</color>";
+        return "<color=#ffffff>the nets trained 1 v 1: a teammate is new to them</color>";
+    }
+
+    // Everyone (the joined players and the bots, with the edit in progress) on one team.
+    private bool OneTeam()
+    {
+        var teams = new HashSet<int>();
+        var joined = HumanTeams();
+        if (joined.Count == 0 || seats.Count == 0) return false;
+        foreach (var (_, team, _) in joined) teams.Add(team);
+        for (int k = 0; k < seats.Count; k++) teams.Add(open && k == editing && draft != null ? draft.Team : seats[k].Seat.Team);
+        return teams.Count == 1;
+    }
+
     // ---- seats ----
 
     private bool Mine(int box) => seats.Exists(view => view.Box == box);
@@ -398,14 +505,19 @@ public class RlAgentPicker : MonoBehaviour
         var fill = Picture("fill", root, columnFill, blue, new Vector2(-8f, 29.4f), new Vector2(607.1f, 1801.7f), true);
         fill.gameObject.AddComponent<Mask>().showMaskGraphic = true;
         OnClick(fill, () => EditSeat(view));
+        view.Fills.Add(fill);
         view.Border = Picture("border", root, columnBorder, edge, new Vector2(-13.4f, 29.4f), new Vector2(640f, 1801.7f));
         Transform column = fill.transform;
         view.Header = Label("header", root, "opponent", 78f, edge, new Vector2(-4.9f, 840.5f), new Vector2(560f, 128f));
         view.Title = Label("title", column, "", 58f, Color.white, new Vector2(0f, 700f), new Vector2(540f, 130f));
         view.Info = Label("info", column, "", 48f, edge, new Vector2(0f, 598f), new Vector2(560f, 64f));
+        view.Edges.Add(view.Info);
+        view.Team = Label("team", column, "", 40f, Color.white, new Vector2(0f, 532f), new Vector2(560f, 60f));
+        view.Team.enableWordWrapping = false;
         float[] lines = { 334.3f, 18.3f, -296.8f };
         for (int i = 0; i < 3; i++) {
             var circle = Picture("ability" + i, column, ring, edge, new Vector2(-1f, lines[i] + 4f), new Vector2(263.8f, 280.6f));
+            view.Edges.Add(circle);
             view.Icons[i] = Picture("icon", circle.transform, null, Color.white, new Vector2(0.7f, -5.8f), new Vector2(419.9f, 402.4f));
         }
         view.Kit = Label("kit", column, "", 46f, Color.white, new Vector2(0f, -480f), new Vector2(570f, 120f));
@@ -413,15 +525,18 @@ public class RlAgentPicker : MonoBehaviour
         view.Slime = Picture("slime", column, slime, Color.white, new Vector2(0.7f, -651f), new Vector2(240.7f, 165.8f));
         // A badge where the box shows its device, and one where it has the ready button.
         var top = Picture("badge", root, disc, blue, new Vector2(-8.4f, 1080.4f), new Vector2(260f, 263f));
-        Picture("ring", top.transform, ring, edge, Vector2.zero, new Vector2(275f, 266f));
+        view.Fills.Add(top);
+        view.Edges.Add(Picture("ring", top.transform, ring, edge, Vector2.zero, new Vector2(275f, 266f)));
         view.Badge = Label("bot", top.transform, "bot", 84f, Color.white, new Vector2(0f, -4f), new Vector2(240f, 120f));
         var key = Picture("edit", root, disc, blue, new Vector2(0f, -847.2f), new Vector2(236f, 239f), true);
         OnClick(key, () => EditSeat(view));
-        Picture("ring", key.transform, ring, edge, Vector2.zero, new Vector2(250f, 241f));
+        view.Fills.Add(key);
+        view.Edges.Add(Picture("ring", key.transform, ring, edge, Vector2.zero, new Vector2(250f, 241f)));
         view.Key = Label("key", key.transform, "", 72f, Color.white, new Vector2(0f, 20f), new Vector2(220f, 100f));
         view.Key.enableWordWrapping = false;
         view.Key.overflowMode = TextOverflowModes.Overflow;
         view.KeyAction = Label("action", key.transform, "edit", 34f, edge, new Vector2(0f, -50f), new Vector2(220f, 50f));
+        view.Edges.Add(view.KeyAction);
         return view;
     }
 
@@ -486,9 +601,20 @@ public class RlAgentPicker : MonoBehaviour
             taken.Add(playerColors[color].playerMaterial);
             view.Slime.material = playerColors[color].uiMaterial;
             bool focused = i == focus;
-            view.Header.text = seats.Count > 1 ? "opponent " + (i + 1) : "opponent";
-            view.Border.color = focused && seats.Count > 1 ? orange : edge;
-            view.Header.color = focused && seats.Count > 1 ? orange : edge;
+            // The team: the column in its colours, "ally" over it when a human is on it.
+            int team = view.Seat.Team;
+            Color teamEdge = TeamBorder(team);
+            foreach (var graphic in view.Fills) graphic.color = TeamFill(team);
+            foreach (var graphic in view.Edges) graphic.color = teamEdge;
+            var (humans, others) = TeamMates(team, i, false);
+            string role = humans.Count > 0 ? "ally" : "opponent";
+            humans.AddRange(others);
+            view.Team.text = TeamName(team) + " team" + (humans.Count > 0 ? "  <size=85%>with " + string.Join(", ", humans) + "</size>" : "");
+            view.Header.text = seats.Count > 1 ? role + " " + (i + 1) : role;
+            // The highlight is orange, white on the orange and yellow teams' columns.
+            Color highlight = team == 1 || team == 4 ? Color.white : orange;
+            view.Border.color = focused && seats.Count > 1 ? highlight : teamEdge;
+            view.Header.color = focused && seats.Count > 1 ? highlight : teamEdge;
             view.Key.text = focused ? (usingGamepad ? "r3" : "tab") : "";
             view.Key.fontSize = usingGamepad ? 80f : 64f;
             // Holding L3 shrinks the bot it will remove.
@@ -496,6 +622,8 @@ public class RlAgentPicker : MonoBehaviour
             var box = handler.characterSelectBoxes[view.Box].GetComponent<RectTransform>();
             view.Root.localScale = box.localScale * scale;
         }
+        // Nobody to fight: the start button stays away (TeamsSplit), say why.
+        if (teamWarning != null) teamWarning.SetActive(!open && OneTeam());
     }
 
     private bool Loads(RlAgentCatalog.Bot bot, out string error)
@@ -524,6 +652,8 @@ public class RlAgentPicker : MonoBehaviour
         if (!CanAdd) { AudioManager.Get()?.Play("decline"); Flash(seats.Count >= RlAgentCatalog.MaxSeats ? "five bots at most" : "no free box for another bot"); return false; }
         var seat = RlAgentCatalog.NewSeat(from ?? (seats.Count > 0 ? seats[focus].Seat : null));
         if (seat.Bot == null || !Loads(seat.Bot, out string error)) { AudioManager.Get()?.Play("decline"); Flash("can't load the bot"); return false; }
+        // A copy keeps the bot and kit but not the team: a new bot takes the latest free one.
+        seat.Team = DefaultTeam();
         var view = BuildSeat(seat);
         seats.Add(view);
         focus = seats.Count - 1;
@@ -572,7 +702,10 @@ public class RlAgentPicker : MonoBehaviour
         UnityEngine.Events.UnityAction[] clicks = { () => AddSeat(), () => RemoveSeat(focus), () => OpenEditor(focus), () => Focus(focus + 1) };
         for (int i = 0; i < clicks.Length; i++) {
             var (hint, _) = Box("hint" + i, stripRow, Vector2.zero, new Vector2(520f, 96f), edge, blue, 48f, 6f, true);
-            OnClick(hint, clicks[i]);
+            // The results screen's "ability select" sits where these hints do: the
+            // click that leaves it must not land on one (it removed a bot) as the scene opens.
+            var click = clicks[i];
+            OnClick(hint, () => { if (Time.unscaledTime > builtAt + 1f) click(); });
             var key = Box("key", hint.transform, Vector2.zero, new Vector2(200f, 72f), Color.white, Color.white, 36f, 1f);
             var keyText = Label("text", key.outer.transform, "", 42f, edge, Vector2.zero, new Vector2(200f, 72f));
             var action = Label("action", hint.transform, "", 46f, Color.white, Vector2.zero, new Vector2(300f, 90f), TextAlignmentOptions.Left);
@@ -580,6 +713,11 @@ public class RlAgentPicker : MonoBehaviour
             stripHints.Add((hint, keyText, action));
         }
         stripNote = Label("note", stripRow, "", 44f, edge, new Vector2(0f, 0f), new Vector2(1400f, 96f));
+        var (warning, _) = Box("teams", rootRect, new Vector2(0f, 214f), new Vector2(1500f, 96f), orange, blue, 48f, 6f);
+        warning.rectTransform.anchorMin = warning.rectTransform.anchorMax = new Vector2(0.5f, 0f);
+        Label("text", warning.transform, "everyone is on one team: give a bot another team to start", 44f, Color.white, Vector2.zero, new Vector2(1460f, 90f)).enableWordWrapping = false;
+        teamWarning = warning.gameObject;
+        teamWarning.SetActive(false);
     }
 
     private void RefreshStrip()
@@ -697,8 +835,25 @@ public class RlAgentPicker : MonoBehaviour
         kindChip = chip.outer;
         detailKind = Label("text", kindChip.transform, "", 44f, Color.white, Vector2.zero, new Vector2(320f, 80f));
         detailRating = Label("rating", p, "", 60f, Color.white, new Vector2(DetailLeft + width * 0.5f + 380f, 570f), new Vector2(width - 380f, 90f), TextAlignmentOptions.Left);
-        detailDescription = Label("description", p, "", 42f, Color.white, new Vector2(DetailLeft + width * 0.5f, 385f), new Vector2(width, 240f), TextAlignmentOptions.TopLeft);
+        detailDescription = Label("description", p, "", 38f, Color.white, new Vector2(DetailLeft + width * 0.5f, 440f), new Vector2(width, 164f), TextAlignmentOptions.TopLeft);
         detailDescription.lineSpacing = -8f;
+        // The team row: the six teams in their colours, each with who is on it.
+        teamHeader = Label("team", p, "team", 70f, edge, new Vector2(DetailLeft + 90f, TeamRowY), new Vector2(180f, 100f), TextAlignmentOptions.Left);
+        float teamLeft = DetailLeft + 190f, teamRight = DetailLeft + width;
+        var (teamOuter, _) = Box("teams", p, new Vector2((teamLeft + teamRight) * 0.5f, TeamRowY), new Vector2(teamRight - teamLeft, 104f), edge, deep, 52f, 7f, true);
+        teamRow = teamOuter;
+        OnClick(teamRow, () => SetField(FieldTeam));
+        for (int t = 0; t < RlAgentCatalog.Teams; t++) {
+            int team = t;
+            var (outer, inner) = Box("team" + t, teamRow.transform, new Vector2(-(teamRight - teamLeft) * 0.5f + 92f + t * 150f, 0f), new Vector2(136f, 80f), TeamBorder(t), TeamFill(t), 40f, 7f, true);
+            OnClick(outer, () => { SetField(FieldTeam); SetTeam(team, true); });
+            var label = Label("who", outer.transform, "", 34f, Color.white, Vector2.zero, new Vector2(128f, 76f));
+            label.enableWordWrapping = false;
+            teamCells[t] = (outer, inner, label);
+        }
+        float statusLeft = -(teamRight - teamLeft) * 0.5f + 92f + RlAgentCatalog.Teams * 150f - 50f, statusWidth = (teamRight - teamLeft) * 0.5f - statusLeft - 30f;
+        teamStatus = Label("status", teamRow.transform, "", 38f, Color.white, new Vector2(statusLeft + statusWidth * 0.5f, 0f), new Vector2(statusWidth, 100f), TextAlignmentOptions.Left);
+        teamStatus.lineSpacing = -12f;
         kitHeader = Label("kit", p, "kit", 70f, edge, new Vector2(DetailLeft + 90f, KitRowY), new Vector2(180f, 100f), TextAlignmentOptions.Left);
         // The kit row: Random, a trained kit, or custom; up / down steps it.
         float rowLeft = DetailLeft + 190f, rowRight = DetailLeft + width;
@@ -808,7 +963,7 @@ public class RlAgentPicker : MonoBehaviour
     private bool FieldOpen(int f)
     {
         if (bots.Count == 0 || draft == null) return false;
-        if (f == FieldBot) return true;
+        if (f == FieldBot || f == FieldTeam) return true;
         if (f == FieldKit) return KitOptions(draft.Bot) > 1;
         return f >= FieldSlot && f < FieldSlot + 3 && draft.Bot.CanCustomize;
     }
@@ -832,6 +987,7 @@ public class RlAgentPicker : MonoBehaviour
     {
         if (!open || bots.Count == 0) return;
         if (field == FieldBot) SelectBot(cursor + step, true);
+        else if (field == FieldTeam) SetTeam((draft.Team + step + RlAgentCatalog.Teams) % RlAgentCatalog.Teams, true);
         else if (field == FieldKit) {
             int count = KitOptions(draft.Bot);
             if (count > 1) SetKitOption((kitOption + step + count) % count, true);
@@ -851,7 +1007,7 @@ public class RlAgentPicker : MonoBehaviour
             var previous = draft.Bot;
             int[] kit = previous.CanRandomize && RlAgentCatalog.Allowed(bot, draft.Kit) ? draft.Kit : null;
             if (kit == null && !bot.CanRandomize && bot.Kits.Count > 0) kit = (int[])bot.Kits[0].Clone();
-            draft = new RlAgentCatalog.Seat { Bot = bot, Kit = kit == null ? null : (int[])kit.Clone() };
+            draft = new RlAgentCatalog.Seat { Bot = bot, Kit = kit == null ? null : (int[])kit.Clone(), Team = draft.Team };
             kitOption = OptionOf(draft);
             if (kitOption != CustomOption(bot)) lastCustom = null;
             if (!FieldOpen(field)) field = FieldBot;
@@ -859,6 +1015,15 @@ public class RlAgentPicker : MonoBehaviour
         errorText.text = "";
         RefreshDetails(true);
         KeepVisible();
+    }
+
+    private void SetTeam(int team, bool sound)
+    {
+        if (!open || draft == null || !RlAgentCatalog.ValidTeam(team)) return;
+        if (sound && team != draft.Team) AudioManager.Get()?.Play("navigateMenu2");
+        draft.Team = team;
+        RefreshDetails(false);
+        teamCells[team].outer.transform.localScale = Vector3.one * 1.2f;
     }
 
     private void SetKitOption(int option, bool sound)
@@ -936,10 +1101,11 @@ public class RlAgentPicker : MonoBehaviour
             row.Check.enabled = editing >= 0 && editing < seats.Count && bots[row.Bot] == seats[editing].Seat.Bot;
             row.Check.color = selected ? orange : edge;
         }
-        title.text = seats.Count > 1 ? "opponent " + (editing + 1) + " of " + seats.Count
-            + "  <size=42%><color=#ffffff>every bot plays for itself; the nets trained 1 v 1</color></size>"
-            : "choose your opponent";
+        bool ally = draft != null && TeamMates(draft.Team, editing, false).humans.Count > 0;
+        title.text = (seats.Count > 1 ? (ally ? "ally " : "opponent ") + (editing + 1) + " of " + seats.Count : ally ? "choose your ally" : "choose your opponent")
+            + "  <size=42%>" + TeamNote() + "</size>";
         listFrame.color = field == FieldBot ? orange : edge;
+        RefreshTeams();
         if (bots.Count == 0 || draft == null) {
             detailName.text = ""; detailKind.text = ""; kindChip.enabled = false; detailRating.text = ""; detailDescription.text = "";
             kitHeader.text = ""; kitOptionText.text = ""; kitNote.text = ""; kitRow.gameObject.SetActive(false);
@@ -1035,6 +1201,36 @@ public class RlAgentPicker : MonoBehaviour
         else if (bot.Kind == "roster") kitNote.text = "every roster member plays this kit";
         else kitNote.text = "";
         kitNote.enabled = errorText.text.Length == 0;
+    }
+
+    // The team row: every team with who else is on it, the draft's ringed.
+    private void RefreshTeams()
+    {
+        bool shown = bots.Count > 0 && draft != null;
+        teamRow.gameObject.SetActive(shown);
+        teamHeader.text = shown ? "team" : "";
+        if (!shown) return;
+        bool focused = field == FieldTeam;
+        teamRow.color = focused ? orange : edge;
+        teamHeader.color = focused ? orange : edge;
+        for (int t = 0; t < RlAgentCatalog.Teams; t++) {
+            var (outer, inner, label) = teamCells[t];
+            bool selected = t == draft.Team;
+            outer.color = selected ? (focused ? orange : Color.white) : TeamBorder(t);
+            inner.color = TeamFill(t);
+            var (humans, others) = TeamMates(t, editing, true);
+            humans.AddRange(others);
+            label.text = humans.Count > 0 ? string.Join(" ", humans) : "";
+            label.fontSize = humans.Count > 1 ? 28f : 34f;
+            if (!selected) outer.transform.localScale = Vector3.one;
+            else if (outer.transform.localScale.x < 1.1f) outer.transform.localScale = Vector3.one * 1.1f;
+        }
+        // Two short lines (the warnings go in the title's subtitle, TeamNote).
+        var (allies, mates) = TeamMates(draft.Team, editing, true);
+        bool allied = allies.Count > 0;
+        allies.AddRange(mates);
+        string with = allied ? "ally of " + string.Join(", ", allies) : mates.Count > 0 ? "with " + string.Join(", ", mates) : "on its own";
+        teamStatus.text = "<color=#9fd6ff>" + TeamName(draft.Team) + " team</color>\n<size=85%>" + with + "</size>";
     }
 
     // Scroll the list so the highlighted row and its group header are in view.
@@ -1305,6 +1501,10 @@ public class RlAgentPicker : MonoBehaviour
         listContent.anchoredPosition = new Vector2(0f, scroll);
         float ease = 1f - Mathf.Exp(-12f * dt);
         foreach (var icon in kitIcons) icon.transform.localScale = Vector3.Lerp(icon.transform.localScale, Vector3.one, ease);
+        if (draft != null && RlAgentCatalog.ValidTeam(draft.Team)) {
+            var chosen = teamCells[draft.Team].outer.transform;
+            chosen.localScale = Vector3.Lerp(chosen.localScale, Vector3.one * 1.1f, ease);
+        }
     }
 
     // Narrow screens (wider than 16:9 here means a shorter canvas) shrink the panel to fit.
