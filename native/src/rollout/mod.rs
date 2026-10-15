@@ -4555,6 +4555,10 @@ pub struct PlayerSlot {
     pub active: ActiveAbility,
     /// Player.ExtraLife (ReviveStatus.cs), kept on the player's own slot.
     pub extra_life: u8,
+    /// Where SpawnPlayers puts the slime: the authored spawn of its team's
+    /// rank among the sorted distinct teams, fanned out past the first
+    /// player there. An unspawned slime lands here when it is instantiated.
+    pub team_spawn: Vec2,
 }
 
 /// The end of `PlayerSlot`'s hot fields: the body and the small fields after
@@ -5077,6 +5081,7 @@ impl PlayerSlot {
         self.input_packet = player.input_packet;
         self.last_action = player.last_action;
         self.unspawned = player.unspawned;
+        self.team_spawn = player.team_spawn;
         self.respawn_ticks = player.respawn_ticks;
         self.respawn_spawn_ticks = player.respawn_spawn_ticks;
         self.respawn_selected = player.respawn_selected;
@@ -7618,6 +7623,7 @@ impl RolloutWorld {
                 facing_right: true,
                 prev_input_align: Fix::ZERO,
                 unspawned: 0,
+                team_spawn: spawn,
                 has_spawned: false,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
@@ -40426,8 +40432,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.unspawned -= 1;
             if slot.unspawned == 0 {
-                let spawns = &data.maps[self.map].team_spawns;
-                slot.base.position = spawns[slot.team as usize % spawns.len()];
+                slot.base.position = slot.team_spawn;
                 slot.reported_position = slot.base.position;
                 slot.respawn_spawn_ticks = data.player.spawn_anim_ticks;
             }
@@ -43278,6 +43283,38 @@ mod tests {
             max_episode_ticks: 7200,
             player: [player; MAX_PLAYERS],
             ..CConfig::default()
+        }
+    }
+
+    /// A replay re-stepped from level tick 0 (warmup 0, the slimes not yet
+    /// instantiated) must put every slime where a full warmup does:
+    /// SpawnPlayers maps a team's rank among the sorted distinct teams onto the
+    /// authored spawns and fans out the players sharing one, so a team id past
+    /// the spawn count (the bot picker's teal, 5) is not `team % spawns`.
+    #[test]
+    fn unspawned_slimes_land_on_their_team_rank_spawn() {
+        for teams in [&[0u32, 1, 5][..], &[1, 4, 0], &[0, 4, 3, 1], &[5, 5, 2, 2]] {
+            let mut config = test_config();
+            config.players = teams.len() as u32;
+            for (i, &team) in teams.iter().enumerate() {
+                config.player[i].team = team;
+                config.player[i].color = i as u32;
+            }
+            let mut warm = RolloutWorld::new();
+            warm.reset(&config).unwrap();
+            config.warmup_ticks = 0;
+            let mut cold = RolloutWorld::new();
+            cold.reset(&config).unwrap();
+            let actions = [CAction::default(); MAX_BODIES];
+            for _ in 0..240 {
+                cold.step(&actions[..teams.len()], 1).unwrap();
+            }
+            for i in 0..teams.len() {
+                assert_eq!(
+                    cold.players[i].base.position, warm.players[i].base.position,
+                    "teams {teams:?}: player {i}"
+                );
+            }
         }
     }
 
