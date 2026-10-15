@@ -150,6 +150,8 @@ def main(argv=None):
     p.add_argument('--workers', type=int, default=10)
     p.add_argument('--seed-base', type=int, default=181001)
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--temperature', type=float, nargs='+',
+                   help="subjects' sampling temperature: one value for all heads or aim buttons hold (default 1)")
     a = p.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
     league_games.configure(a.out / 'workers')
@@ -161,6 +163,8 @@ def main(argv=None):
     summary = {}
     for sname, spath in (split(s) for s in a.subject):
         subject = participant(spath, 'A')
+        if a.temperature:
+            subject.temperature = tuple(a.temperature * 3 if len(a.temperature) == 1 else a.temperature)
         for oname, ospec in opponents:
             games = run({'A': subject, 'B': participant(ospec, 'B')}, todo, a.workers, a.seed_base)
             with open(a.out / 'games.jsonl', 'a') as f:
@@ -171,7 +175,7 @@ def main(argv=None):
             print(f'{sname:>8} vs {oname:<14} ' + '  '.join(f'{m} {row[m][0]:.3g}' for m in METRICS), flush=True)
         everyone = [json.loads(l) for l in open(a.out / 'games.jsonl') if json.loads(l)['subject'] == sname]
         summary[sname]['all'] = summarize(everyone, np.random.default_rng(0))
-    (a.out / 'summary.json').write_text(json.dumps(dict(kit=list(kit), pairs=a.pairs, seed_base=a.seed_base,
+    (a.out / 'summary.json').write_text(json.dumps(dict(kit=list(kit), pairs=a.pairs, seed_base=a.seed_base, temperature=a.temperature,
                                                         close=CLOSE, summary=summary), indent=1))
 
 

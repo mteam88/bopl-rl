@@ -96,4 +96,9 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
                 raise FloatingPointError(f'Nonfinite native training diagnostic: {src}')
             value = None
         result[dest] = float(value) if value is not None else None
+    # KL-to-reference runs only (train.py --kl-reference): the sampled
+    # KL(pi || reference) per learner decision and its reward coefficient.
+    for key in ('kl_reference', 'kl_coef'):
+        if loss.get(key) is not None:
+            result[key] = float(loss[key])
     return result
