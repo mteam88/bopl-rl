@@ -111,6 +111,16 @@ int bopl_agent_obs_size(void);
 int bopl_agent_observation_size(const BoplAgent *agent);
 int bopl_agent_logits_size(void);
 
+/* Forced decision (human behaviour cloning, eval/human_dataset.py): the next
+ * policy decision plays (angle, buttons, hold) instead of a sample; the
+ * policy still runs, so bopl_agent_logits is its distribution on that row.
+ * The decision is made legal under the mask first (a latch keeps its held
+ * buttons and hold 0; a bow held since the last decision is released);
+ * bopl_agent_forced_fixed reports what was changed (bit 8: latched buttons
+ * differed, 16: latched hold, 32: buttons masked, 64: hold masked). */
+void bopl_agent_force(BoplAgent *agent, int angle, int buttons, int hold);
+int bopl_agent_forced_fixed(const BoplAgent *agent);
+
 /* The round's map (BoplRlConfig.map: the replay setup's level byte). The
  * v4 row tells the policy whether it is on a space map, which only the map
  * index says; without this call the shim assumes map 0 (not space). Persists

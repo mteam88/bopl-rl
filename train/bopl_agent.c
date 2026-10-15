@@ -61,6 +61,8 @@ struct BoplAgent {
     long n_decisions, n_search, n_raw;     /* this round: policy decisions, chosen by the search, by the raw policy */
     double search_seconds, search_max;
     float *search_times; int search_samples;
+    /* Forced decisions (bopl_agent_force): human behaviour cloning. */
+    int forced, forced_decision[3], forced_fixed;
 };
 #define BOPL_SEARCH_SAMPLES 16384
 #define BOPL_ROSTER_MAX 64
@@ -575,7 +577,31 @@ static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
          * head is conditioned on the sampled combo (bopl_aim.h), else aim,
          * buttons, hold. The button and hold logits do not depend on the combo. */
         bopl_policy_eval_game_logits(a->policy, a->row, NULL, a->decoder);
-        if (a->aim_ar) {
+        int forced_now=a->forced;
+        if (forced_now) {
+            /* bopl_agent_force: the caller's decision, made legal under the
+             * mask the policy saw (a latch keeps its buttons and the shortest
+             * hold; a bow still held since the last decision is released). */
+            int angle=a->forced_decision[0], buttons=a->forced_decision[1], hold=a->forced_decision[2], fixed=0;
+            if (angle<0 || angle>=BOPL_ACT_AIM) { angle=0; fixed|=1; }
+            if (buttons<0 || buttons>=BOPL_ACT_BUTTONS) { buttons=0; fixed|=2; }
+            if (hold<0 || hold>=BOPL_ACT_HOLD) { hold=0; fixed|=4; }
+            if (env->hold_left[a->player]>0) {
+                if (buttons!=(int)env->held[a->player]) fixed|=8;
+                buttons=(int)env->held[a->player];
+                if (hold) fixed|=16;
+                hold=0;
+            } else if (!mask[BOPL_ACT_AIM+buttons]) {
+                /* A banned button is one whose lone press is masked (the bow latch). */
+                int banned=0;
+                for (int bit=0; bit<4; bit++) if (!mask[BOPL_ACT_AIM+(1<<bit)]) banned|=1<<bit;
+                buttons&=~banned; if (!mask[BOPL_ACT_AIM+buttons]) buttons=0;
+                fixed|=32;
+            }
+            if (!mask[BOPL_ACT_AIM+BOPL_ACT_BUTTONS+hold]) { hold=0; fixed|=64; }
+            a->decision[0]=angle; a->decision[1]=buttons; a->decision[2]=hold;
+            a->forced_fixed=fixed; a->forced=0;
+        } else if (a->aim_ar) {
             a->decision[1]=bopl_sample_head(a->decoder+BOPL_ACT_AIM, mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &a->rng);
             bopl_policy_eval_game_logits(a->policy, a->row, &a->decision[1], a->decoder);
             a->decision[0]=bopl_sample_head(a->decoder, mask, BOPL_ACT_AIM, &a->rng);
@@ -583,8 +609,8 @@ static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
             a->decision[0]=bopl_sample_head(a->decoder, mask, BOPL_ACT_AIM, &a->rng);
             a->decision[1]=bopl_sample_head(a->decoder+BOPL_ACT_AIM, mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &a->rng);
         }
-        a->decision[2]=bopl_sample_head(a->decoder+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, &a->rng);
-        if (a->search) bopl_agent_search_decide(a, before);
+        if (!forced_now) a->decision[2]=bopl_sample_head(a->decoder+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, &a->rng);
+        if (a->search && !forced_now) bopl_agent_search_decide(a, before);
         float *action=env->actions+(size_t)a->player*BOPL_NUM_ATNS;
         for (int h=0; h<3; h++) action[h]=(float)a->decision[h];
     }
@@ -667,6 +693,11 @@ int bopl_agent_tick_bytes(BoplAgent *a, const void *bytes, size_t length, BoplRl
     return bopl_agent_tick(a, s, out);
 }
 
+void bopl_agent_force(BoplAgent *a, int angle, int buttons, int hold) {
+    a=BOPL_MEMBER(a); if (!a) return;
+    a->forced=1; a->forced_decision[0]=angle; a->forced_decision[1]=buttons; a->forced_decision[2]=hold;
+}
+int bopl_agent_forced_fixed(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->forced_fixed:0; }
 int bopl_agent_ability(const BoplAgent *a, int slot) { return a && slot>=0 && slot<3?a->ability[slot]:-1; }
 int bopl_agent_warmup_ticks(const BoplAgent *a) { return a?a->warmup:-1; }
 int bopl_agent_repeat(const BoplAgent *a) { return a?a->repeat:-1; }
