@@ -137,10 +137,22 @@ def command_add(args):
         origin=dict(run=args.run_dir, step=args.step) if args.run_dir else None,
         sim=(config.get('runtime') or {}).get('player_binary_sha256'),
         reward=reward_tag(config) if config else None,
-        loadouts=registry.trained_loadouts(config),
+        loadouts=declared_loadouts(config, args.kits),
         added=dict(date=date.today().isoformat(), rule=args.rule))
     registry.write(league['members'] + [member], league.get('conditions', {}))
     print(f"added {args.name} ({args.kind}) id {member['id'][:16]}")
+
+
+def declared_loadouts(config, kits):
+    """The run's trained kits, or with --kits the subset the member is declared on (an
+    exploiter that beat its target on only some of the kits it trained on)."""
+    trained = registry.trained_loadouts(config)
+    if not kits:
+        return trained
+    chosen = [[int(x) for x in kit.split(',')] for kit in kits.split()]
+    if not trained or trained.get('mode') != 'set' or any(kit not in trained['kits'] for kit in chosen):
+        raise SystemExit(f'--kits {kits}: every kit must be one the run trained on ({trained})')
+    return dict(mode='set', kits=sorted(chosen))
 
 
 # ---- play --------------------------------------------------------------------
@@ -419,6 +431,7 @@ def main(argv=None):
     add.add_argument('--parent', help='member the weights were forked from; omit for random init')
     add.add_argument('--target', help='member an exploiter was trained to beat')
     add.add_argument('--rule', default='manual')
+    add.add_argument('--kits', help='declare only these trained kits ("2,26,3 26,3,2"); default every trained kit')
     add.set_defaults(run=command_add)
 
     play = sub.add_parser('play', help='play matchups and append aggregated counts')

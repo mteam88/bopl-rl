@@ -32,3 +32,10 @@ loadout_set = "native/data/lineups-x2-missile.txt"
 reward_timeout = 0
 styles = []        # shrink_safe_area was tried and almost never fired on these kits: plain win reward
 timeout = 1000000000
+
+[[recipe]]
+name = "drill-grenade"   # x2-drill-1500m: +0.286 [+0.215,+0.357] over f5's own play on Dash/Drill/Grenade kits; ~plateau at 750M
+loadout_set = "native/data/lineups-x2-drillgrenade.txt"   # trained on lineups-x2-drill.txt; its third kit, Drill/Platform/Gust, did not improve
+reward_timeout = 0
+styles = ["styles/drill_snipe.toml"]
+timeout = 1000000000

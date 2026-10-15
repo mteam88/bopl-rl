@@ -4547,6 +4547,51 @@
    },
    "path": "native/artifacts/rl/sweeps/exploiters-2/missile/run/checkpoints/policy-1500053504.bin",
    "metadata_sha256": "7c101d6ff18065b2d35bf8eb16a06e599d651ae6d0caff5c3a2ab5dafb970dd6"
+  },
+  {
+   "id": "17e95fadc902da16da60705bec0d48850c1076cfcd6444d1725774e665a422e8",
+   "name": "x2-drill-1500m",
+   "kind": "exploiter",
+   "parent": "final5-18666m",
+   "target": "final5-18666m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/exploiters-2/drill/run",
+    "step": 1500053504
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-dea87471",
+    "binding_sha256": "dea874714bff4641dfe0c9a22716bf126fe2433abe10bea25868c77d015c6120",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": 0.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      26,
+      3,
+      2
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "2026-10-15: drill exploiter (trained on Dash/Drill/Grenade, Drill/Grenade/Dash, Drill/Platform/Gust; declared on the two Drill+Grenade+Dash kits only, the hole Matthew found by hand; learner-first vs f5 on mirror + Matthew's 16 + 32 random kits, timeout reward 0, drill_snipe style), f5 fine-tune 750M learner steps, ~plateau (+0.01/100M). On the declared kits vs f5 0.778, +0.286 [+0.215,+0.357] paired over f5 on the same kits (264 games); vs team5b +0.414, vs A20 +0.422 on them. Drill/Platform/Gust -0.070 [-0.164,+0.025] (not declared). Off its kits 0.442, -0.033 [-0.103,+0.037]"
+   },
+   "path": "native/artifacts/rl/sweeps/exploiters-2/drill/run/checkpoints/policy-1500053504.bin",
+   "metadata_sha256": "1fcb825649a05a6c99c49dd49c5a533dc0e181a3717d0e1649623741e069d907"
   }
  ],
  "conditions": {
@@ -5580,5 +5625,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "94c3e481544ac8b04b36f2bfe828f84d5acd50941e531489b3d9d29599a43fdb"
+ "league_sha256": "1bc26417f460bde5b7eafb40dcfca279e3df3811423efaad43f2b69f3baf48d2"
 }
