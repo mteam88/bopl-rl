@@ -5,7 +5,7 @@
 # death itself, plus a little per tick for staying alive just out of reach of a
 # living opponent that is closing in (the lure).
 name = "bait"
-kits = [[2, 14, 25], [27, 14, 2], [32, 2, 14]]  # exploiters-2 bait (lineups-x2-bait.txt)
+kits = [[25, 27, 13], [32, 19, 2], [16, 38, 5]]  # exploiters-2 bait (lineups-x2-bait.txt)
 fade = { start = 0.0, end = 0.7 }
 [let]
 chased = "count_over(180, alive(opp) and dist(self, opp) < 18) > 0"

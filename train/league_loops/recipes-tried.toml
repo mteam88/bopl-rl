@@ -1,0 +1,19 @@
+# Exploiter recipes that were tried and did not work, or work only partly. Same fields as recipes.toml,
+# plus `result`. Nothing here is used by the league loops; it exists so the next sweep does not repeat them.
+# Scores are paired against f5's own play on the same rows (eval/exploit_paired.py), 200 seed pairs.
+
+[[recipe]]
+name = "drill-platform-gust"   # third kit of lineups-x2-drill.txt (26,14,7)
+loadout_set = "native/data/lineups-x2-drill.txt"
+reward_timeout = 0
+styles = ["styles/drill_snipe.toml"]
+timeout = 1000000000
+result = "2026-10-15: Drill/Platform/Gust -0.070 vs control after 750M learner steps while the Dash/Drill/Grenade kits gained +0.286; x2-drill-1500m declares only those two kits"
+
+# Style notes (exploiters-2, 2026-10-15), rate = style events per learner decision:
+# - shrink_safe_area on the missile kits: ~1e-6, effectively off; missile won on win reward alone.
+# - trap_kill (Mine/Spike/Platform kills) on the trap kits: ~2e-6, effectively off.
+# - drill_snipe on Dash/Drill/Grenade: ~7e-4, does fire.
+# - blink_ringout on the Blink gun kits: ~7e-5.
+# - eval/kit_sweep.py probe gaps (g111, A20 vs f5's control) did not predict exploitability: both probes were
+#   -0.2 on Dash/Drill/Grenade, where the exploiter then gained +0.29. Use the control score (--probe none).

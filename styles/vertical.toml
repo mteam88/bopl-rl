@@ -4,7 +4,7 @@
 # may have blind spots in vertical fights. Also pays arrow hits landed while
 # vertically offset.
 name = "vertical"
-kits = [[3, 2, 4], [2, 10, 14], [2, 3, 20]]  # exploiters-2 vertical (lineups-x2-vertical.txt)
+kits = [[3, 2, 4], [2, 3, 20], [20, 4, 14]]  # exploiters-2 vertical (lineups-x2-vertical.txt)
 fade = { start = 0.0, end = 0.7 }
 [let]
 offset = "alive(opp) and abs(self.y - opp.y) > 4 and abs(self.y - opp.y) > abs(self.x - opp.x)"

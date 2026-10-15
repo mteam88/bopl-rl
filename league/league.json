@@ -4592,6 +4592,56 @@
    },
    "path": "native/artifacts/rl/sweeps/exploiters-2/drill/run/checkpoints/policy-1500053504.bin",
    "metadata_sha256": "1fcb825649a05a6c99c49dd49c5a533dc0e181a3717d0e1649623741e069d907"
+  },
+  {
+   "id": "6740f56fbfb5895c486c9c0a178e373ae4503028a3b855b4f5bd64c9941746da",
+   "name": "x2-trap-1500m",
+   "kind": "exploiter",
+   "parent": "final5-18666m",
+   "target": "final5-18666m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/exploiters-2/trap/run",
+    "step": 1500053504
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-dea87471",
+    "binding_sha256": "dea874714bff4641dfe0c9a22716bf126fe2433abe10bea25868c77d015c6120",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": 0.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      7,
+      24,
+      14
+     ],
+     [
+      11,
+      14,
+      3
+     ],
+     [
+      24,
+      11,
+      14
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "2026-10-15: trap-kit exploiter (Gust/Mine/Platform, Spike/Platform/Grenade, Mine/Spike/Platform; learner-first vs f5 on mirror + Matthew's 16 + 32 random kits, timeout reward 0, trap_kill style which barely fired), f5 fine-tune 750M learner steps, training score 0.637 -> 0.757 (+0.01/100M at the end). Vs f5 0.775, +0.155 [+0.100,+0.210] paired over f5 on the same rows (400 games); per kit 7,24,14 +0.098 [+0.011,+0.185], 11,14,3 +0.123 [+0.021,+0.225], 24,11,14 +0.239 [+0.146,+0.332]. Vs team5b 0.748 (+0.085 [-0.002,+0.172]), vs A20 0.812 (+0.188 [+0.114,+0.261]). Off its kits 0.440, -0.035 [-0.095,+0.025]"
+   },
+   "path": "native/artifacts/rl/sweeps/exploiters-2/trap/run/checkpoints/policy-1500053504.bin",
+   "metadata_sha256": "7fd034b995e4815e3532054fdd9f25bfce62f80418f1a024d7d0afea11f341e6"
   }
  ],
  "conditions": {
@@ -5625,5 +5675,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "1bc26417f460bde5b7eafb40dcfca279e3df3811423efaad43f2b69f3baf48d2"
+ "league_sha256": "e5bc880402ef9570a84d7c1d877d84bbf5b5f7ea6d094cf92ee7dbfa0fca965c"
 }

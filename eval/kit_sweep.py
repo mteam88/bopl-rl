@@ -53,8 +53,9 @@ def ci(d):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--main', default=f'f5={S}/final-5/run/checkpoints/policy-18666684416.bin')
-    p.add_argument('--probe', action='append', default=None)
+    p.add_argument('--probe', action='append', default=None, help="NAME=PATH (repeat); 'none' for the control only")
     p.add_argument('--extra', default='26,3,2 2,10,14 6,14,2 29,2,14 18,2,3', help='extra kits (space-separated)')
+    p.add_argument('--json', type=Path, help='ranked output (default kit-weakness.json beside --out)')
     p.add_argument('--kits-random', type=int, default=23)
     p.add_argument('--rows', type=int, default=10)
     p.add_argument('--seed', type=int, default=20261015)
@@ -64,10 +65,12 @@ def main():
     a = p.parse_args()
     probes = a.probe or [f'g111={S}/generalist-111-20b/000/checkpoints/policy-26026704896.bin',
                          f'a20={S}/final-1/anneal4b/checkpoints/policy-26666729472.bin']
+    probes = [x for x in probes if x != 'none']
     mname, mpath = a.main.split('=', 1)
     rng = random.Random(a.seed)
     kits = list(dict.fromkeys(matthew16() + [tuple(int(x) for x in k.split(',')) for k in a.extra.split()]))
-    while len(kits) < len(matthew16()) + len(a.extra.split()) + a.kits_random:
+    target = len(kits) + a.kits_random
+    while len(kits) < target:
         k = tuple(rng.sample(POOL, 3))
         if k not in kits:
             kits.append(k)
@@ -113,9 +116,9 @@ def main():
                                       ci=[round(x, 4) for x in interval])
         row['best_gap'] = max((v['diff'] for v in row['gap'].values()), default=None)
         table.append(row)
-    table.sort(key=lambda r: (-(r['best_gap'] or 0), -r['control']))
+    table.sort(key=lambda r: (-(r['best_gap'] if r['best_gap'] is not None else r['control'] - 0.5), -r['control']))
     out = dict(main=a.main, probes=probes, rows_per_kit=a.rows, kits=table)
-    (a.out.parent / 'kit-weakness.json').write_text(json.dumps(out, indent=1))
+    (a.json or a.out.parent / 'kit-weakness.json').write_text(json.dumps(out, indent=1))
     print(f"{'kit':<34}{'ctl':>6}  " + '  '.join(f'{pr.split("=")[0]:>22}' for pr in probes))
     for r in table:
         print(f"{r['name']:<34}{r['control']:>6.3f}  " + '  '.join(
