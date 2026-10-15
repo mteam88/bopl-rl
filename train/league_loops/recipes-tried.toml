@@ -17,3 +17,11 @@ result = "2026-10-15: Drill/Platform/Gust -0.070 vs control after 750M learner s
 # - blink_ringout on the Blink gun kits: ~7e-5.
 # - eval/kit_sweep.py probe gaps (g111, A20 vs f5's control) did not predict exploitability: both probes were
 #   -0.2 on Dash/Drill/Grenade, where the exploiter then gained +0.29. Use the control score (--probe none).
+
+[[recipe]]
+name = "gold-other"   # the two kits of lineups-x2-gold.txt other than Gold mushroom/Dash/Bow
+loadout_set = "native/data/lineups-x2-gold.txt"
+reward_timeout = 0
+styles = ["styles/punish_low_offense.toml"]
+timeout = 1000000000
+result = "2026-10-15: after 750M learner steps (plateau from ~450M) Gold mushroom/Grenade/Poke ball -0.015, Gold mushroom/Web swing/Freeze ray +0.059 (both n.s.); f5's control there is already ~0.8, the kits themselves are strong; x2-gold-1500m declares only 34,2,4"

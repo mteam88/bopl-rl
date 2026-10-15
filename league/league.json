@@ -4642,6 +4642,46 @@
    },
    "path": "native/artifacts/rl/sweeps/exploiters-2/trap/run/checkpoints/policy-1500053504.bin",
    "metadata_sha256": "7fd034b995e4815e3532054fdd9f25bfce62f80418f1a024d7d0afea11f341e6"
+  },
+  {
+   "id": "9f722e377b026542378225959b064d184968168a05508358fe4827e17ca090d8",
+   "name": "x2-gold-1500m",
+   "kind": "exploiter",
+   "parent": "final5-18666m",
+   "target": "final5-18666m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/exploiters-2/gold/run",
+    "step": 1500053504
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-dea87471",
+    "binding_sha256": "dea874714bff4641dfe0c9a22716bf126fe2433abe10bea25868c77d015c6120",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": 0.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      34,
+      2,
+      4
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "2026-10-15: Gold mushroom exploiter (trained on Gold mushroom/Dash/Bow, Gold mushroom/Grenade/Poke ball, Gold mushroom/Web swing/Freeze ray; learner-first vs f5 on mirror + Matthew's 16 + 32 random kits, timeout reward 0, punish_low_offense style), f5 fine-tune 750M learner steps, plateau from ~450M (training 0.80 -> 0.836). Over all three kits +0.045 [-0.004,+0.094] (400 games, n.s.); declared on Gold mushroom/Dash/Bow only: +0.090 [+0.024,+0.155] in the main eval, confirmed on fresh seeds (291001+) 0.897 vs f5's 0.785, +0.112 [+0.061,+0.163] (300 games). 34,3,33 -0.015, 34,32,36 +0.059 (n.s., not declared)"
+   },
+   "path": "native/artifacts/rl/sweeps/exploiters-2/gold/run/checkpoints/policy-1500053504.bin",
+   "metadata_sha256": "b9a091ba3f856f96a098cc6bcc144bb590d62da8e6619676bedf65297587369e"
   }
  ],
  "conditions": {
@@ -5675,5 +5715,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "e5bc880402ef9570a84d7c1d877d84bbf5b5f7ea6d094cf92ee7dbfa0fca965c"
+ "league_sha256": "66dd1c3ed15192b5c40de1e987886f1b4eaec87111f368412a9f411393e709cc"
 }

@@ -46,3 +46,10 @@ loadout_set = "native/data/lineups-x2-trap.txt"
 reward_timeout = 0
 styles = ["styles/trap_kill.toml"]   # fired ~2e-6 per decision: in effect plain win reward
 timeout = 1000000000
+
+[[recipe]]
+name = "gold-dash"   # x2-gold-1500m: +0.112 [+0.061,+0.163] over f5's own play on Gold mushroom/Dash/Bow (fresh-seed confirmation); plateau by ~450M
+loadout_set = "native/data/lineups-x2-golddash.txt"   # trained on lineups-x2-gold.txt; its other two Gold mushroom kits did not improve
+reward_timeout = 0
+styles = ["styles/punish_low_offense.toml"]
+timeout = 1000000000
