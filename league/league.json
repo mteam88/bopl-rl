@@ -4352,6 +4352,61 @@
     "date": "2026-10-15",
     "rule": "aggressive scripted bot (bopl_bots_v2_play.h rusher): punishes camping, never backs off a ready bow"
    }
+  },
+  {
+   "id": "7d7c61790f3d94823a34063e6066f1e948c033ef9c26e55c01ec4af62b59155b",
+   "name": "anticamp-camper-1000m",
+   "kind": "exploiter",
+   "parent": "final5-18666m",
+   "target": "final5-18666m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/anticamp/camper-1/run",
+    "step": 1000013824
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-efb3f419",
+    "binding_sha256": "efb3f41907578bd142c3173de6593ad72862211fa563789e18d67392286d5efa",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": 0.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      14
+     ],
+     [
+      2,
+      20,
+      14
+     ],
+     [
+      2,
+      26,
+      14
+     ],
+     [
+      25,
+      2,
+      14
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "2026-10-15: camper exploiter (Dash/Dash/Platform, Dash/Drill/Platform, Dash/Meteor/Platform, Teleport/Dash/Platform; learner-first kits, keep-away style, timeout reward 0), f5 fine-tune 500M learner steps, stopped at plateau. vs f5 on its kits 0.766 [0.721,0.811], +0.080 [+0.021,+0.136] paired over f5 on the same kits; off its kits 0.337. Forces main to kill an evader"
+   },
+   "path": "native/artifacts/rl/sweeps/anticamp/camper-1/run/checkpoints/policy-1000013824.bin",
+   "metadata_sha256": "51d4d34bf1180475118c2931cc4ccfc1aedc37ba8dcb03dfc04d9805ebe0950d"
   }
  ],
  "conditions": {
@@ -5385,5 +5440,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "a9a83443a4cd182bfb01962f0ca258c93ac5af89fa5484bfe5121ff38de52dfe"
+ "league_sha256": "2a49f391f6d3f54c053d5e11224db7c54fe100c34b760c71da7966b73211ab24"
 }

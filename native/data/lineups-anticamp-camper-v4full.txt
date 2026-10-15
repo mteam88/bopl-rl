@@ -1,0 +1,5 @@
+# camper-1 kits against 2,4,14 only (2026-10-15): for v4full, which only knows that kit.
+2,2,14,2,4,14
+2,26,14,2,4,14
+2,20,14,2,4,14
+25,2,14,2,4,14

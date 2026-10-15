@@ -5,7 +5,7 @@
 # alone (train.py --reward-timeout 0: a timeout is worth half a win, as the
 # league scores it).
 name = "camp_keepaway"
-kits = [[2, 2, 14]]
+kits = [[2, 2, 14], [2, 26, 14], [2, 20, 14], [25, 2, 14]]  # camper-1 (lineups-anticamp-camper.txt)
 fade = { start = 0.0, end = 0.7 }
 
 [[term]]
