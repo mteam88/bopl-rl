@@ -4,8 +4,10 @@ Two checks:
 
   sim    Drive a research Environment (eval_binding.c, any backend) decision by
          decision; hand every tick's state to the shim as the game would. At
-         every decision boundary the shim's observation row, action mask and
-         (policies) decoder output must be bit-identical to the environment's,
+         every decision boundary the shim's observation row and action mask
+         must be bit-identical to the environment's, and (policies) its decoder
+         logits must match the torch reference within LOGIT_ATOL (C and torch
+         round differently: f5 differs by at most 1.1e-4, every argmax agrees),
          and the shim's per-tick InputPacket must equal what the environment
          applied (recovered from the own-action tail of the next observation).
          For bots the two decide independently from the same states and seed,
@@ -33,6 +35,8 @@ import layout
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
+LOGIT_ATOL = 1e-3  # shim (C) vs torch reference logits
+
 
 def sample_masked(rng, mask):
     """A random legal action (the "human" of the sim check): one index per head."""
@@ -100,7 +104,8 @@ def check_sim(args):
                         rows, state = policy.step_raw(torch.from_numpy(env.obs_row(1)[None].copy()), state)
                         # The shim's logits are the game logits of the button combo it sampled (aim_ar).
                         logits, value = policy.game_logits(rows, np.array([agent.decision[1]], dtype=np.int32))
-                        if not np.array_equal(logits.numpy()[0], agent.logits[:layout.LOGITS]): mismatches.append(('logits', decisions))
+                        if not np.allclose(logits.numpy()[0], agent.logits[:layout.LOGITS], rtol=0, atol=LOGIT_ATOL):
+                            mismatches.append(('logits', decisions))
                         logits_checked += 1
                     human = sample_masked(rng, env.mask[0])
                     decision = list(agent.decision)
