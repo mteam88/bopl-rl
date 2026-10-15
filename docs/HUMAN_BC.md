@@ -178,5 +178,137 @@ the train stream), so split-K partial sums of concurrent GEMMs overwrote each ot
   and the same learning dynamics as the batched chain.
 - Production was not affected: the batched rollout chain never calls cuBLASLt, and no training
   log in tp-spec or exploiters-2 shows the batched chain disabled.
-- Regression check: `train/check_rollout_paths.py` plays one checkpoint at lr 0 through both chains
-  and fails if deaths, kills, episodes or win share differ by more than 4 SE.
+- Regression check: `train/check_rollout_paths.py` plays human-bc.bin through both chains at
+  lr 1e-20 (train.py rejects 0), 3M learner steps each, about 2 minutes on the GPU. It fails if
+  deaths, kills, episodes or win share per decision differ by more than 4 SE.
+  - Fixed binary: ok, max |z| 1.1.
+  - Pre-fix binary: FAIL, win share 0.036 vs 0.154 (z +35), deaths z -9.8. Here the race corrupted
+    f5's forwards as well as the learner's.
+
+## 4. RL from the BC net against f5
+
+Setup: `native/artifacts/rl/sweeps/human-exploiter/train.sh`.
+- f5's training config (anticamp hyperparameters), learner-first kits from lineups-human-exploiter.txt.
+- 256 workers × 4 buffers × 4 banks, horizon 128.
+- Init bc-randcos, which is `human-bc.bin`.
+
+Win share and score are against f5 unless the text says otherwise.
+
+### Probes, 20M learner steps
+
+The last window is 18-20M learner steps. "outcome" is the mean of win 1, loss -1, so score = (1 + outcome) / 2.
+
+| probe | entropy | dec/ep | dash/min | kills / 1k dec | outcome | KL to BC |
+|---|---|---|---|---|---|---|
+| no KL | 0.10 | 1243 | 0.0 | 0.00 | -0.983 | - |
+| no KL, per-bank chain (Lt-fixed) | 0.45 | 1190 | 0.0 | 0.00 | -0.989 | - |
+| pressure-hx style, timeout reward off | 0.18 | 1228 | 0.2 | 0.00 | -0.977 | - |
+| pressure ×10 | 0.16 | 1213 | 0.0 | 0.00 | -0.988 | - |
+| entropy 0.01, floor 0.003, head scale 1 | 4.89 | 1109 | 0.0 | 0.00 | -0.978 | - |
+| γ 0.9997, timeout reward off | 1.68 | 874 | 0.0 | 0.00 | -0.989 | - |
+| init bc-f5re | 1.07 | 1392 | 0.0 | 0.00 | -0.989 | - |
+| init bc-f5head (f5 trunk) | 3.69 | 1747 | 0.6 | 0.00 | -0.902 | - |
+| KL β 0.01 | 0.12 | 1355 | 0.0 | 0.00 | -0.984 | 0.045 |
+| KL β 0.01 + pressure | 0.11 | 1318 | 0.0 | 0.00 | -0.983 | 0.045 |
+| **KL β 0.03, γ 0.999** | 3.08 | 250 | 6.7 | 0.05 | -0.955 | 0.005 |
+| KL β 0.03, γ 0.999 + pressure | 3.03 | 267 | 6.4 | 0.05 | -0.960 | 0.006 |
+| KL β 0.1 | 2.99 | 266 | 6.7 | 0.04 | -0.964 | 0.003 |
+| KL β 0.1, γ 0.999 | 3.26 | 216 | 7.6 | 0.05 | -0.963 | 0.001 |
+| KL β 0.3 | 3.25 | 213 | 7.6 | 0.05 | -0.962 | 0.0005 |
+| KL β 1.0 | 3.30 | 200 | 7.8 | 0.05 | -0.966 | 0.0002 |
+
+The BC net starts at about 2% wins against f5. With β < 0.03 and no KL, every variant collapses
+within 10M steps to the same passive policy, and so does every non-KL fix tried: entropy floor,
+γ, a pressure style at ×10, an f5-trunk init and a value warmup (the critic is fitted to f5's
+value; EV 0.86-0.97).
+- The passive policy stops pressing buttons (button entropy below 0.01) and plays about 1200
+  decisions an episode.
+- It never kills. It dies more slowly, so it loses later.
+
+With β ≥ 0.03 the policy stays BC-like: 7 dashes a minute, about 250 decisions an episode,
+KL 0.0002-0.006 nats a decision. In 20M steps it does not get better either.
+
+Why β must be at least 0.03: KL(π‖ρ) is mode-seeking, so collapsing onto one of the BC net's
+low-entropy modes costs little KL. A penalty of β = 0.01 (0.045 nats × 0.01 per decision) is small
+next to the advantage the passive mode buys, which is dying later.
+
+### Long runs (β 0.03, γ 0.999, pressure-hx, timeout reward off)
+
+| run | opponents (bank groups, pool) | learner steps | in-training result | end state |
+|---|---|---|---|---|
+| rl-kl03 | f5 only (league ×4, pool 2) | 142M | win vs f5 0.022 → 0.027, flat from 40M | dec/ep 273 → 474, drifting passive |
+| rl-cur | f5 + v4-lite-1920m + l1-main-2666m + own snapshots (all,all,all,league) | 80M | stuck on its first snapshot for 50M, then the hard members drove passivity | win 0.24 vs the pool, about 800 dec/ep, button entropy 0.09 |
+| **rl-self** | f5 + own snapshots (all ×4, pool 8, snapshot 10M, opponent timeout 10M) | 200M (checkpoint policy-400031744, global steps) | win vs pool 0.50-0.62, f5 score 0.045 [0.038, 0.051] at 0-50M → 0.088 [0.055, 0.122] at 200M | stable: kills/ep 0.19 → 0.26, dec/ep 265 → 330, entropy 2.4 → 2.2, KL 0.06 |
+
+- Only the self-snapshot pool stayed stable.
+- The f5-only pool and the pool with weak and strong league members both drifted passive.
+- rl-cur's pitfall: the PFSP band gate only retires an opponent whose score CI lies outside
+  15-85%. The opponent timeout is the only escape, so set `--opponent-timeout`.
+
+### Paired evaluation against f5
+
+eval/exploit_eval.py, 200 seed pairs × both seats on the human-exploiter kits, the same seeds for
+every subject. Score is win 1 and draw 0.5, with a 95% bootstrap CI over seed pairs. The control is f5 as the subject.
+
+| subject | score vs f5 | diff vs humanbc | diff vs control | game s | closing | uses/min |
+|---|---|---|---|---|---|---|
+| control (f5) | 0.341 [0.290, 0.394] | - | - | 123 | 0.30 | 8.8 |
+| humanbc (BC net) | 0.031 [0.016, 0.048] | - | -0.310 [-0.364, -0.258] | 13.4 | 0.47 | 13.8 |
+| rl-kl03 at 142M | **0.065** [0.044, 0.089] | **+0.034** [+0.009, +0.060] | -0.276 [-0.331, -0.223] | 33.5 | 0.39 | 11.1 |
+| rl-cur at 80M | 0.035 [0.019, 0.052] | +0.004 | - | 51.8 | - | - |
+| rl-self at 100M | 0.046 [0.029, 0.065] | +0.015 [-0.009, +0.039] | - | 37.8 | 0.35 | 11.3 |
+| rl-self at 200M | 0.046 [0.028, 0.068] | +0.015 [-0.010, +0.041] | -0.295 [-0.350, -0.242] | 47.4 | 0.33 | 10.7 |
+
+- rl-self at 200M minus rl-self at 100M is +0.000 [-0.025, +0.026]. rl-self at 200M minus rl-kl03 is -0.019 [-0.049, +0.011].
+- The in-training f5 rise does not show up in the paired eval.
+- No net comes close to the control, so nothing was registered.
+
+Style drift: KL β 0.03 keeps the action distribution near the BC net (0.06 nats a decision), but
+play moves toward f5's.
+- Games last 13 s → 47 s.
+- Closing falls 0.47 → 0.33 (f5 0.30).
+- Item uses fall 13.8 → 10.7 a minute (f5 8.8).
+- These differences are significant, all CIs exclude 0.
+
+A higher β (0.1) holds the style more tightly but learned nothing in 20M steps.
+
+## 5. Artifact and the l2 loop
+
+`native/artifacts/rl/human-bc/human-bc.bin` (+ `.json`), sha256
+8c66d73c877814d43bf8fd3020597889c2adbfebe8bbce852da23c4d7c32f8fd. This is bc-randcos epoch 10, the f5
+architecture, loadable with `--init-weights`.
+
+l2.toml reset point: league-exploiter resets (league_exploiter_reset = 0.25) should restart from
+human-bc.bin with KL to it, instead of the newest main or a random init.
+
+What the loop needs for human-style league-exploiter turns:
+- **Code (tp-spec):**
+  - Merge the `human-exploiter` commits: train.py `--kl-reference`/`--kl-coef`/`--gamma`,
+    pufferlib-bopl.patch, train/bopl_rollout.cu, and the bopl_v4.cu Lt fix. Then rebuild `_C`
+    with `train/build.py --device cuda` and run `train/check_rollout_paths.py`.
+  - Add `kl_reference`, `kl_coef` and `gamma` to `sweep_config.TRAIN_FLAGS`. Without them the
+    loop rejects the keys.
+  - league_loop.py: a `[loop] league_exploiter_init = "native/artifacts/rl/human-bc/human-bc.bin"`
+    path. `start_flags` uses it for a fresh league-exploiter run in place of the newest main, and
+    `slot['init']` (the parent recorded by `add_member`) becomes `human-bc`.
+  - Set `league_exploiter_random_init = false`.
+- **[league-exploiter] flags:**
+  - `kl_reference = "native/artifacts/rl/human-bc/human-bc.bin"`, `kl_coef = 0.03`, `gamma = 0.999`.
+  - `kl_coef` below 0.03 collapses. 0.1 or more stays human-like but learns slowly.
+  - Kits: `loadout_set = "native/data/lineups-human-exploiter.txt"`, `loadout_learner_first = true`.
+    These are Matthew's kits; the BC data covers only them.
+  - Optional: `style = "styles/pressure-hx.toml"` with `reward_timeout = -1`. It had no
+    measurable effect in the probes.
+  - Pool: the stable configuration was the run's own snapshots plus the target, with
+    `bank_groups = "all,all,all,all"`, `pool_size = 8`, `snapshot_interval = 10000000` and
+    `opponent_timeout = 10000000`.
+  - l2's current league-exploiter pool (`league` ×4, pool 2, PFSP hard) is the configuration that
+    drifted passive here.
+- **Speed:** KL forces the per-bank rollout chain, 80-145k learner steps/s against about 700k
+  batched.
+  - One exploiter_turn of 1B learner steps takes about 2-3.5 hours.
+  - The 4B league_exploiter_timeout takes about 8-14 hours.
+  - The per-bank run uses about 11.5 of 12.2 GB of GPU memory.
+- **Expectation:** at 0.05 vs f5 after 200M steps, a human-style exploiter will time out rather
+  than beat the league. A timed-out turn is added as a member, so these turns add weak,
+  human-style members.
