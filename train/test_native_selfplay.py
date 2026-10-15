@@ -403,6 +403,34 @@ class BankGroups(PoolHarness):
         for group in ('all', 'league', 'exploiters'):
             self.assertNotIn(pinned, [e['path'] for e in native_selfplay.candidates(self.pool, group)])
 
+    def test_without_a_pinned_bank_pinned_members_are_ordinary_candidates(self):
+        native_selfplay.groups(self.pool, ['all', 'all', 'all', 'exploiters'])
+        pinned = self.add_member('camper.bin', permanent=True, kind='exploiter')
+        self.pool['pool'][-1]['pinned'] = True
+        for group in ('all', 'league', 'exploiters'):
+            self.assertIn(pinned, [e['path'] for e in native_selfplay.candidates(self.pool, group)])
+
+    def test_a_forgotten_bank_draws_exploiters_and_the_players_we_lose_to(self):
+        native_selfplay.groups(self.pool, ['all', 'all', 'all', 'forgotten'])
+        exploiter = self.add_member('exploiter.bin', games=10, wins=9, permanent=True, kind='exploiter')
+        lost = self.add_member('old-main.bin', games=10, wins=3, permanent=True, kind='main')
+        self.add_member('beaten-main.bin', games=10, wins=8, permanent=True, kind='main')
+        table = native_selfplay.scores(self.pool, self.ledger)
+        got = {e['path'] for e in native_selfplay.candidates(self.pool, 'forgotten', table)}
+        self.assertEqual(got, {exploiter, lost})
+        for epoch in range(20):
+            self.assertIn(self.settle_bank(3, epoch), (exploiter, lost))
+            self.pool['banks'][3]['pending_opp_path'] = None
+
+    def test_a_forgotten_bank_keeps_an_opponent_it_starts_beating(self):
+        native_selfplay.groups(self.pool, ['all', 'all', 'all', 'forgotten'])
+        self.add_member('exploiter.bin', permanent=True, kind='exploiter')
+        main = self.add_member('old-main.bin', games=10, wins=8, permanent=True, kind='main')
+        self.pool['banks'][3]['cur_opp_path'] = main
+        self.trainer.global_step = 1
+        self.step(logs(4), 0)
+        self.assertIsNone(self.pool['banks'][3]['pending_opp_path'], 'leaving the group is not staleness')
+
     def test_a_malformed_spec_is_refused(self):
         for spec in (['all'] * 3, ['all', 'all', 'all', 'mains']):
             with self.assertRaises(ValueError):

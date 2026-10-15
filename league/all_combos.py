@@ -1,6 +1,6 @@
 """All-combo benchmark: two checkpoints on random kits drawn from every ability.
 
-    venv/bin/python league/all_combos.py A.bin B.bin --pairs 500 --workers 6 --out results.jsonl
+    venv/bin/python league/all_combos.py A.bin {B.bin|random} --pairs 500 --workers 6 --out results.jsonl
 
 The league's rating condition plays each member on the kits it trained on (16 for
 the generalist-111 lineage), so it cannot say how good a policy is on the other
@@ -47,7 +47,7 @@ def tasks(pairs, seed_base, maps):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('a', type=Path)
-    p.add_argument('b', type=Path)
+    p.add_argument('b', help='checkpoint path, or "random" for the uniform random anchor')
     p.add_argument('--pairs', type=int, default=500)
     p.add_argument('--workers', type=int, default=6)
     p.add_argument('--seed-base', type=int, default=131001)
@@ -64,7 +64,7 @@ def main(argv=None):
         built = {'A': search_policy.Search('A', a.a.resolve(), 'candidate', **search_policy.parse_budget(a.search))}
     else:
         built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate')}
-    built['B'] = elo_ladder.Model('B', a.b.resolve(), 'candidate')
+    built['B'] = elo_ladder.Random() if a.b == 'random' else elo_ladder.Model('B', Path(a.b).resolve(), 'candidate')
     if a.temperature_a:
         t = [float(v) for v in a.temperature_a.split(',')]
         built['A'].temperature = tuple(t * 3 if len(t) == 1 else t)

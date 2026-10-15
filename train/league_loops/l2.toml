@@ -1,0 +1,119 @@
+# League loop l2 (2026-10-15): AlphaStar-style league on kit pinning (docs/LEAGUE.md
+# "Kit pinning", "League loop l2"). One main, continued from final5-18666m with f5's own
+# config; recipe main exploiters judged by a paired evaluation; occasional random-init
+# league exploiters; a cheap all-combos gate on every main snapshot.
+#
+# Turns on one GPU: main 2B, main exploiter 1B, main 2B, main exploiter 1B, main 2B,
+# league exploiter 1B learner steps, repeating: main gets 2/3 of learner steps and joins
+# the league every 2B (AlphaStar: every 2e9); a league exploiter is every 3rd exploiter turn.
+#
+# Main's games: half self-play (historical_every 2, the vector's own learner-vs-learner
+# games: the self-play share cannot go below 50% without a C change), 37.5% PFSP over the
+# whole league and its own snapshots (three `all` banks), 12.5% over `forgotten` (main
+# exploiters plus every player main now scores under 0.5 against), a fifth of which is
+# rusher-hard. AlphaStar: 35 / 50 / 15. PFSP is f5's f_hard with p = 3, (1-x)^3.
+# Every league member that declares kits plays them (--pinned-opponents auto).
+#
+# Learning rate: constant. train.py's cosine runs over the run's own --steps and restarts
+# at every --resume (pufferl.epoch is not restored), so an anneal across turns is not
+# expressible; f5's base 0.000242609 is the rate final-3/4/5 each restarted at.
+
+[loop]
+name = "l2"
+dir = "native/artifacts/rl/league-loops/l2"
+init = "native/artifacts/rl/sweeps/final-5/run/checkpoints/policy-18666684416.bin"
+init_member = "final5-18666m"
+seed_members = "league"            # every member the main's architecture loads (32 on 2026-10-15)
+main_turn = 2000000000
+exploiter_turn = 1000000000
+rotation = ["main", "main-exploiter", "main", "main-exploiter", "main", "league-exploiter"]
+main_exploiter_timeout = 2000000000     # camper-1 plateaued by 0.5B, punisher-2 by ~1.8B (learner)
+league_exploiter_timeout = 4000000000   # random init: exploit-g111-1 reached 0.29 vs its main in 6.9B
+league_exploiter_random_init = true
+league_exploiter_reset = 0.25           # AlphaStar
+main_steps = 100000000000
+memory_max = ""
+memory_high = "12G"
+rating_games = 0                        # the [evals] gate instead of a 480-game league rating
+
+[evals]
+decide = true
+workers = 4
+memory_high = "6G"
+gate_pairs = 200                        # 400 games per opponent, same seeds every snapshot
+gate_opponents = { random = "random", f5 = "final5-18666m", a20 = "anneal20-26666m" }
+exploit_pairs = 200                     # exploiter and control (the main itself) on the same 200 seed pairs
+exploit_margin = 0.0                    # paired 95% lower bound above 0, as camper/punisher were registered
+league_members = 6
+league_pairs = 100
+league_margin = 0.0
+
+# Every agent: f5's architecture and allkit-1's optimiser settings (sweeps/allkit-1/args.txt).
+[train]
+encoder = "v4"
+hidden = 256
+layers = 1
+v4_set_inner = 64
+v4_ffn_dim = 0
+v4_critic_dim = 384
+v4_ablate = 0
+aim_fourier = 4
+workers = 256
+buffers = 4
+banks = 4
+horizon = 128
+learner_passes = 1
+minibatch_div = 2
+cudagraphs = 1
+mirror_share = 0.0
+training_maps = "training-111"
+episode_ticks = 10800
+entropy = 0.0005
+entropy_floor = 0.0005
+entropy_half_life = 2874446584
+entropy_head_scale = "0.028821467398601395,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.2883693237829292
+reward_timeout = -1
+no_eval = true
+
+[main]
+# f5 (sweeps/final-5/run.sh): its args, seed 91, pool 8, f_hard p = 3, all kits.
+seed = 91
+loadout_pool = "all"
+learning_rate = 0.000242609
+anneal_lr = 0
+pool_size = 8
+pfsp_p = 3.0
+bank_groups = "all,all,all,forgotten"
+pinned_opponents = "auto"
+scripted_roster = "rusher-hard"
+scripted_banks = 1                       # the last bank, the forgotten one
+scripted_share_min = 0.2
+scripted_share_max = 0.2
+scripted_elo = "rusher-hard=0"          # no league rating; one entry at a fixed share, so it only labels telemetry
+checkpoint_every = 666666667
+
+[main-exploiter]
+# anticamp/train.sh: every game vs the newest main, constant allkit LR (see the header).
+recipes = "train/league_loops/recipes.toml"
+historical_every = 1
+bank_groups = "league,league,league,league"
+pool_size = 2
+pfsp_p = 1.0
+learning_rate = 0.0004852184640654399
+anneal_lr = 0
+checkpoint_every = 250000000
+seed = 1211                              # + 100 per reset
+
+[league-exploiter]
+historical_every = 1
+bank_groups = "league,league,league,league"
+pool_size = 2
+pfsp_p = 1.0                             # AlphaStar's league exploiter: linear
+loadout_pool = "all"
+pinned_opponents = "auto"
+learning_rate = 0.0004852184640654399
+anneal_lr = 0
+checkpoint_every = 250000000
+seed = 2211

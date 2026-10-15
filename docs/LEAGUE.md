@@ -245,7 +245,20 @@ The `pinned` bank group draws only pinned members, and while a run has a
 `pinned` bank no other group draws them, so their share of games is that bank's
 share: one bank of four at `--historical-every 2` is 12.5% of all games, close to
 AlphaStar's 15% for main exploiters. PFSP inside the bank is the run's own
-(`--pfsp-p`).
+(`--pfsp-p`). Without a `pinned` bank, pinned members are ordinary candidates of
+every group and are only pinned when drawn.
+
+`--pinned-opponents auto` (alone) pins every `--opponents` member that has kits
+in `league.json`: exploiters and specialists, but also every main trained on a
+lineup (`g111-*`, `l1-*`: their 15-16 g111 kits) and `v4-lite-*` (2,4,14).
+Members trained on `--loadout-pool all` have no kits and play the run's draw.
+
+**The `forgotten` bank group** (AlphaStar's 15% of main-exploiter and
+"forgotten" past-main games) draws every `kind: exploiter` member (main and
+league exploiters alike) plus any member the learner currently scores under 0.5
+against (`FORGOTTEN` in `native_selfplay.py`), falling back to `league` and then
+`all` when that is empty. A loaded opponent is not swapped out just because the
+learner starts beating it: the bank's staleness check uses the whole pool.
 
 **A scripted bot can share the bank.** `--scripted-roster rusher-hard
 --scripted-banks 1` puts the bot on the last bank; at a fixed
@@ -268,7 +281,48 @@ the last swap, `off_kit`, which must stay 0) and the console prints it.
 
 To add an exploiter later: `league add` it with its kits in `loadouts` (a run
 trained with `--loadout-set ... --loadout-learner-first` declares the learner
-halves), then name it in `--pinned-opponents`; a `--resume` picks it up.
+halves), then name it in `--pinned-opponents` (or rely on `auto`); a
+`--resume` picks it up.
+
+## League loop l2
+
+`train/league_loops/l2.toml` runs `train/league_loop.py` as an AlphaStar-style
+league around f5 (`final5-18666m`); the loop's docstring has the design. In short:
+
+- **main**: continues f5 with f5's config (same reward, no style), 2e9 steps per
+  turn. Half its games are self-play (the vector's learner-vs-learner
+  environments; 35% would need a C change, since `--historical-every 2` fixes
+  historical environments at 1/2). The other half are over four banks:
+  `all,all,all,forgotten` with `--pfsp-p 3` (hard), the league re-read every
+  turn (`seed_members = "league"`), every member with kits pinned (`auto`), and
+  rusher-hard on 20% of the forgotten bank's matches. Each snapshot is
+  `league add`ed and gated with `league/all_combos.py` against random, f5 and
+  A20 (`gates/<name>.jsonl`, one line per turn in `summary.md`).
+- **main exploiter**: the next recipe from `train/league_loops/recipes.toml`
+  (seeded with the anticamp camper and punisher; append a `[[recipe]]` to add
+  one, read at every reset). Warm-starts from the newest main with
+  `--loadout-set <recipe> --loadout-learner-first`, plays only that main, 1e9
+  steps per turn. After each turn `eval/exploit_eval.py` plays the exploiter and
+  the main itself (the control) on the same seeds and kits against the main. If
+  the paired difference's 95% interval clears `exploit_margin` it is added with
+  its kits (and so pinned in every later main turn) and reset; at 2e9 it resets
+  unregistered.
+- **league exploiter** (every third exploiter turn): random init, `--loadout-pool
+  all`, PFSP over the whole league; joins when its pooled score against
+  `league_members` sampled members clears 0.5 with 95% confidence; 4e9 timeout.
+
+The learning rate is constant (`--anneal-lr 0`): train.py's cosine restarts at
+every `--resume`, so it cannot span turns. Members are append-only. State is in
+`<dir>/state.json`, `turns.jsonl` and `summary.md`; stopping and restarting the
+loop's unit adopts a running turn or resumes it. Evaluations are CPU jobs, one
+at a time, in their own units (`bopl-<loop>-job-*`) at `MemoryHigh`
+`[evals] memory_high`, overlapping the next GPU turn.
+
+```
+systemd-run --user --unit=bopl-l2 --collect -p MemoryHigh=12G \
+  -p WorkingDirectory=$PWD --setenv=BOPL_RL_BACKEND=rust \
+  $PWD/native/artifacts/rl/venv/bin/python -u train/league_loop.py train/league_loops/l2.toml
+```
 
 ## Why both Elo and Nash
 

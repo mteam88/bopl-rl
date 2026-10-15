@@ -113,12 +113,20 @@ def _league_entry(m):
 # of whatever f_hard leaves them in a pool of dozens of past mains. A group with
 # no member in the pool draws from the next wider one (exploiters -> league ->
 # all), the way AlphaStar falls back to self-play when a branch is empty.
+#   forgotten   AlphaStar's 15% branch itself: the exploiters plus every other
+#               candidate (league member or own snapshot) the learner currently
+#               scores under FORGOTTEN against - the past players it can no
+#               longer beat. Membership moves with the score; empty falls back
+#               like exploiters (league -> all).
 #   pinned      the run's pinned members only (train.py --pinned-opponents): they
-#               play their own kits (bank_kits.py), and no other group draws
-#               them, so their share of the games is the pinned banks' share
-#               instead of whatever PFSP pours into members that beat us. No
+#               play their own kits (bank_kits.py), and while any bank is
+#               `pinned` no other group draws them, so their share of the games
+#               is the pinned banks' share instead of whatever PFSP pours into
+#               members that beat us. Without a pinned bank, pinned members are
+#               ordinary candidates of every group (still on their own kits). No
 #               fallback: train.py refuses a pinned bank without pinned members.
-GROUPS = ('all', 'league', 'exploiters', 'pinned')
+GROUPS = ('all', 'league', 'exploiters', 'forgotten', 'pinned')
+FORGOTTEN = 0.5
 
 
 def groups(pool, spec=None):
@@ -130,11 +138,18 @@ def groups(pool, spec=None):
         bank['group'] = group
 
 
-def candidates(pool, group):
-    """The pool entries a bank of `group` draws from."""
+def candidates(pool, group, table=None):
+    """The pool entries a bank of `group` draws from (`forgotten` reads the scores `table`)."""
     if group == 'pinned':
         return [entry for entry in pool['pool'] if entry.get('pinned')]
-    entries = [entry for entry in pool['pool'] if not entry.get('pinned')]
+    exclusive = any(bank.get('group') == 'pinned' for bank in pool['banks'])
+    entries = [entry for entry in pool['pool'] if not (exclusive and entry.get('pinned'))]
+    if group == 'forgotten':
+        chosen = [entry for entry in entries if entry.get('kind') == 'exploiter'
+                  or (table is not None and table.get(entry['path'], 0.5) < FORGOTTEN)]
+        if chosen:
+            return chosen
+        group = 'league'
     if group == 'exploiters':
         chosen = [entry for entry in entries if entry.get('kind') == 'exploiter']
         if chosen:
@@ -288,8 +303,13 @@ def step(trainer, backend, pool, ledger, epoch):
         # Not (or no longer) one of the bank's candidates: the bootstrap in a
         # bank of league members at the start of an exploiter, or a member a
         # resume dropped. Replaced now rather than played out to the timeout.
-        drawable = {entry['path']: table[entry['path']] for entry in candidates(pool, bank.get('group', 'all'))}
-        stale = bank['cur_opp_path'] not in drawable
+        drawable = {entry['path']: table[entry['path']] for entry in candidates(pool, bank.get('group', 'all'), table)}
+        # A forgotten bank's opponent leaves the group when the learner starts
+        # beating it; that is the matchup settling, not staleness (it would
+        # otherwise swap every time a score crossed FORGOTTEN).
+        stale = bank['cur_opp_path'] not in (
+            drawable if bank.get('group') != 'forgotten'
+            else {entry['path'] for entry in candidates(pool, 'all')} | set(drawable))
         if not (settled or timed_out or stale):
             continue
         # The pool grows when the learner OUTGREW a matchup -- the whole
@@ -298,7 +318,7 @@ def step(trainer, backend, pool, ledger, epoch):
         if settled and pfsp.score_interval(wins, losses, draws)[0] > pfsp.BAND[1]:
             _snapshot(trainer, backend, pool)
             table = scores(pool, ledger)
-            drawable = {entry['path']: table[entry['path']] for entry in candidates(pool, bank.get('group', 'all'))}
+            drawable = {entry['path']: table[entry['path']] for entry in candidates(pool, bank.get('group', 'all'), table)}
         _, f, _ = intent(pool, drawable)
         path, = pfsp.sample(pool['rng'], drawable, f, 1)
         pool['picks'].append(path)

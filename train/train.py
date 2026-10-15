@@ -431,9 +431,11 @@ def arguments():
                         "native_selfplay.groups. May change on --resume")
     p.add_argument('--pinned-opponents', default='',
                    help='Comma list of league members that play their own declared kits (league.json '
-                        '`loadouts`) from the frozen seat, drawn only by banks of group `pinned` '
-                        '(docs/LEAGUE.md "Kit pinning"). The learner keeps its own kit draw in those '
-                        'games. Their share of the games is the pinned banks\' share. May change on --resume')
+                        '`loadouts`) from the frozen seat (docs/LEAGUE.md "Kit pinning"), or `auto`: '
+                        'every --opponents member that declares kits. The learner keeps its own kit draw '
+                        'in those games. With a bank of group `pinned` only such banks draw them (their '
+                        'share of the games is those banks\' share); without one they are ordinary '
+                        'candidates of every group, pinned wherever drawn. May change on --resume')
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
                    help='Comma-separated bot kinds that take over the last banks. Without '
                         '--scripted-roster each kind is a one-entry roster at --scripted-level; '
@@ -565,6 +567,8 @@ def arguments():
     a.pinned_opponents = [s for s in a.pinned_opponents.split(',') if s]
     if len(set(a.pinned_opponents)) != len(a.pinned_opponents):
         p.error('--pinned-opponents names a member twice')
+    if 'auto' in a.pinned_opponents and a.pinned_opponents != ['auto']:
+        p.error('--pinned-opponents auto stands alone')
     try:
         a.scripted_elo = {name: float(elo) for name, _, elo in
                           (item.partition('=') for item in a.scripted_elo.split(',') if item)}
@@ -783,8 +787,8 @@ def main():
     bank_groups = [g for g in a.bank_groups.split(',') if g] or ['all'] * policy_banks
     if len(bank_groups) != policy_banks or any(g not in native_selfplay.GROUPS for g in bank_groups):
         raise SystemExit(f'--bank-groups needs {policy_banks} of {native_selfplay.GROUPS}, got {a.bank_groups!r}')
-    if ('pinned' in bank_groups) != bool(a.pinned_opponents):
-        raise SystemExit('--pinned-opponents and a `pinned` entry in --bank-groups go together')
+    if 'pinned' in bank_groups and not a.pinned_opponents:
+        raise SystemExit('a `pinned` entry in --bank-groups needs --pinned-opponents')
     scripted_first_bank = a.banks - a.n_scripted
     scripted_kinds = 0
     for i in range(a.n_scripted):
@@ -913,12 +917,18 @@ def main():
     else:
         names = None if a.opponents == 'league' else [s for s in a.opponents.split(',') if s]
         league_opponents = registry.opponents(registry.load(), names, policy=run_policy)
-    # Pinned members (bank_kits.py): drawn only by `pinned` banks, on their own kits.
+    # Pinned members (bank_kits.py): on their own kits wherever drawn, and with
+    # a `pinned` bank drawn only there (native_selfplay.candidates).
     pinned_rows, pinned_kits = {}, {}
     if a.pinned_opponents:
         league_table = registry.load()
         by_name = registry.by_name(league_table)
-        pinned = registry.opponents(league_table, a.pinned_opponents, policy=run_policy)
+        if a.pinned_opponents == ['auto']:
+            pinned = [o for o in league_opponents if registry.kits(by_name[o['name']])]
+        else:
+            pinned = registry.opponents(league_table, a.pinned_opponents, policy=run_policy)
+        if 'pinned' in bank_groups and not pinned:
+            raise SystemExit('a `pinned` bank but no --opponents member declares kits to pin')
         for member in pinned:
             kits = registry.kits(by_name[member['name']])
             if not kits:

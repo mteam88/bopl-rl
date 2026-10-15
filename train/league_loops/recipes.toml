@@ -1,0 +1,22 @@
+# Main-exploiter recipes for league loops with [evals] decide (train/league_loop.py).
+# Each new main exploiter takes the next entry (cycling): warm start from the newest
+# main, --loadout-learner-first on `loadout_set` (first half = the exploiter's kit,
+# second = main's), `reward_timeout`, and `styles` as one style program faded over
+# `timeout` learner steps (default [loop] main_exploiter_timeout). `train` may add
+# train.py flags. The loop re-reads this file at every reset: append, never reorder
+# (the loop's position is an index into this list).
+#
+# Seeded from native/artifacts/rl/sweeps/anticamp/train.sh (2026-10-15), the runs that
+# became anticamp-camper-1000m (camper-1) and anticamp-punisher-4000m (punisher-2).
+
+[[recipe]]
+name = "camper"
+loadout_set = "native/data/lineups-anticamp-camper.txt"
+reward_timeout = 0
+styles = ["styles/camp_keepaway.toml"]
+
+[[recipe]]
+name = "punisher"
+loadout_set = "native/data/lineups-anticamp-punisher2.txt"
+reward_timeout = -1
+styles = ["styles/pressure.toml", "styles/punish_spent_mobility.toml", "styles/arrow_hit.toml"]
