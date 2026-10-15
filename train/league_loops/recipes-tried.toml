@@ -25,3 +25,19 @@ reward_timeout = 0
 styles = ["styles/punish_low_offense.toml"]
 timeout = 1000000000
 result = "2026-10-15: after 750M learner steps (plateau from ~450M) Gold mushroom/Grenade/Poke ball -0.015, Gold mushroom/Web swing/Freeze ray +0.059 (both n.s.); f5's control there is already ~0.8, the kits themselves are strong; x2-gold-1500m declares only 34,2,4"
+
+[[recipe]]
+name = "vertical-meteor-platform"   # third kit of lineups-x2-vertical.txt (20,4,14)
+loadout_set = "native/data/lineups-x2-vertical.txt"
+reward_timeout = 0
+styles = ["styles/vertical.toml"]
+timeout = 1000000000
+result = "2026-10-15: Meteor/Bow/Platform +0.011 [-0.109,+0.131] after 750M learner steps while the Grenade+Dash kits gained +0.155; x2-vertical-1500m declares only those two"
+
+[[recipe]]
+name = "bait"
+loadout_set = "native/data/lineups-x2-bait.txt"   # Teleport/Grappling hook/Smoke, Web swing/Invisibility/Dash, Roll/Portal gun/Engine
+reward_timeout = 0
+styles = ["styles/bait.toml"]
+timeout = 1000000000
+result = "2026-10-15: training score vs f5 0.196 -> 0.214 in 750M learner steps (control 0.181); flat. These kits lose to f5 whatever the learner does; not evaluated or registered"

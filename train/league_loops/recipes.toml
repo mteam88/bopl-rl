@@ -53,3 +53,10 @@ loadout_set = "native/data/lineups-x2-golddash.txt"   # trained on lineups-x2-go
 reward_timeout = 0
 styles = ["styles/punish_low_offense.toml"]
 timeout = 1000000000
+
+[[recipe]]
+name = "vertical-grenade-dash"   # x2-vertical-1500m: +0.155 [+0.083,+0.227] over f5's own play on Grenade/Dash/Bow and Dash/Grenade/Meteor; plateau by ~600M
+loadout_set = "native/data/lineups-x2-vertgrenade.txt"   # trained on lineups-x2-vertical.txt; its third kit, Meteor/Bow/Platform, did not improve
+reward_timeout = 0
+styles = ["styles/vertical.toml"]
+timeout = 1000000000

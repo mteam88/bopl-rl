@@ -4682,6 +4682,51 @@
    },
    "path": "native/artifacts/rl/sweeps/exploiters-2/gold/run/checkpoints/policy-1500053504.bin",
    "metadata_sha256": "b9a091ba3f856f96a098cc6bcc144bb590d62da8e6619676bedf65297587369e"
+  },
+  {
+   "id": "784d88666da61c0f3db750ef1266bad211fa1597574cefbcdd98c9acb0cf7b0a",
+   "name": "x2-vertical-1500m",
+   "kind": "exploiter",
+   "parent": "final5-18666m",
+   "target": "final5-18666m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/exploiters-2/vertical/run",
+    "step": 1500053504
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-dea87471",
+    "binding_sha256": "dea874714bff4641dfe0c9a22716bf126fe2433abe10bea25868c77d015c6120",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": 0.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      3,
+      20
+     ],
+     [
+      3,
+      2,
+      4
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "2026-10-15: vertical exploiter (trained on Grenade/Dash/Bow, Dash/Grenade/Meteor, Meteor/Bow/Platform; learner-first vs f5 on mirror + Matthew's 16 + 32 random kits, timeout reward 0, vertical style: kills and arrow hits from above/below), f5 fine-tune 750M learner steps, plateau from ~600M (training 0.568 -> 0.647). Over all three kits +0.108 [+0.045,+0.171] (400 games). Declared on Grenade/Dash/Bow and Dash/Grenade/Meteor: vs f5 0.692, +0.155 [+0.083,+0.227] (268 games); per kit +0.149 [+0.057,+0.242], +0.160 [+0.049,+0.272]; vs team5b +0.044, vs A20 +0.054 (both n.s.). Meteor/Bow/Platform +0.011 (not declared). Off its kits 0.355, -0.120 [-0.194,-0.046]"
+   },
+   "path": "native/artifacts/rl/sweeps/exploiters-2/vertical/run/checkpoints/policy-1500053504.bin",
+   "metadata_sha256": "24c89dc8c6dd5a67a88d2ae41285d3f07b1241a78d76f275a5a3550351e3f476"
   }
  ],
  "conditions": {
@@ -5715,5 +5760,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "66dd1c3ed15192b5c40de1e987886f1b4eaec87111f368412a9f411393e709cc"
+ "league_sha256": "31bd9201177a23418ff6385afd5db1e896ae80e923dda8fcba049c811fd57d57"
 }
