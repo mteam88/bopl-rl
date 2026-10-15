@@ -67,3 +67,10 @@ loadout_set = "native/data/lineups-x2-blinkplat.txt"
 reward_timeout = 0
 styles = ["styles/blink_ringout.toml"]
 timeout = 1000000000
+
+[[recipe]]
+name = "blink-grenade"   # x2-blink-3000m: +0.123 [+0.063,+0.182] over f5's own play on these kits after 1.5B learner steps; still rising slowly
+loadout_set = "native/data/lineups-x2-blink.txt"
+reward_timeout = 0
+styles = ["styles/blink_ringout.toml"]
+timeout = 2000000000
