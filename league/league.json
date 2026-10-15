@@ -4407,6 +4407,101 @@
    },
    "path": "native/artifacts/rl/sweeps/anticamp/camper-1/run/checkpoints/policy-1000013824.bin",
    "metadata_sha256": "51d4d34bf1180475118c2931cc4ccfc1aedc37ba8dcb03dfc04d9805ebe0950d"
+  },
+  {
+   "id": "949bbf18582a2eab01ab8b54850f15d39b984ad2576f9544e7d3c3323f37d895",
+   "name": "anticamp-punisher-4000m",
+   "kind": "exploiter",
+   "parent": "final5-18666m",
+   "target": "final5-18666m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/anticamp/punisher-2/run",
+    "step": 4000055296
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-5bc13f76",
+    "binding_sha256": "5bc13f7647e5a07c6471beb8704c813d35a85d80cd2e63c1f2a8803f5fdfd6b9",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      3,
+      28
+     ],
+     [
+      2,
+      4,
+      14
+     ],
+     [
+      2,
+      9,
+      36
+     ],
+     [
+      2,
+      20,
+      3
+     ],
+     [
+      2,
+      23,
+      36
+     ],
+     [
+      2,
+      24,
+      9
+     ],
+     [
+      2,
+      26,
+      3
+     ],
+     [
+      2,
+      26,
+      4
+     ],
+     [
+      2,
+      37,
+      11
+     ],
+     [
+      20,
+      28,
+      14
+     ],
+     [
+      25,
+      28,
+      3
+     ],
+     [
+      27,
+      10,
+      4
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "2026-10-15: aggressive punisher exploiter (12 offense kits: Bow, Grenade, Beam, Meteor, Drill, Rock, Freeze ray, Missile, Mjolnir, Spike, Mine, Tesla with Dash/Teleport/Grapple/Platform; learner-first kits) trained 2B learner steps from f5 against f5 on campy kits (2,4,14 mirror and the camper kits); pressure + punish_spent_mobility + arrow_hit styles, timeout reward -1. vs f5 on those kits 0.662 [0.602,0.718], +0.312 [+0.232,+0.387] paired over f5 on the same rows, games 48 s vs 89 s; vs f5 on random kits +0.098 [+0.028,+0.169]"
+   },
+   "path": "native/artifacts/rl/sweeps/anticamp/punisher-2/run/checkpoints/policy-4000055296.bin",
+   "metadata_sha256": "570800cbd440df9ba208079e5052388cdb9b351c2d528b2628524d96f8d91bd5"
   }
  ],
  "conditions": {
@@ -5440,5 +5535,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "2a49f391f6d3f54c053d5e11224db7c54fe100c34b760c71da7966b73211ab24"
+ "league_sha256": "3b65b852a2d3c17f8c4cdc182bb9931666603fce576bc4f0df9e43ca036d8cb9"
 }
