@@ -1,0 +1,11 @@
+# Knockback ring-out (exploiters-2, 2026-10-15): a kill where the opponent leaves
+# the map (death cause RING_OUT) credited to this player and not via Blink gun
+# (blink_ringout covers that), e.g. pushed, gusted, pulled or beamed off an edge.
+name = "knock_ringout"
+kits = [[23, 22, 17], [24, 30, 18], [7, 22, 2]]  # exploiters-2 ringout (lineups-x2-ringout.txt)
+fade = { start = 0.0, end = 0.7 }
+[[term]]
+name = "ringout"
+on = "death"
+when = "ev.actor == self and ev.subject != self and ev.cause == death.RING_OUT and not (ev.flags & death_flag.RELATED_BLINKED)"
+value = "0.1"

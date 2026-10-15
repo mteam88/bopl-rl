@@ -436,9 +436,11 @@ $(OUT)/libstyle_check.so: eval/style_check.c train/bopl_style.h $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	clang $(CFLAGS) -march=znver4 -ffp-contract=off -std=gnu11 -Wno-unused-function -fPIC -shared $(INCLUDES) eval/style_check.c -lm -o $@
 
+# One program per style: all of styles/ together exceeds the VM's 32-term limit.
 style-check: $(OUT)/libstyle_check.so
-	native/artifacts/rl/venv/bin/python eval/style_check.py --lib $(abspath $<) --games $(STYLE_CHECK_GAMES) \
-	  --json $(abspath $(OUT))/style-check.json $(STYLE_FILES) eval/style_check.toml
+	set -e; for style in $(STYLE_FILES); do \
+	  native/artifacts/rl/venv/bin/python eval/style_check.py --lib $(abspath $<) --games $(STYLE_CHECK_GAMES) \
+	    --json $(abspath $(OUT))/style-check-$$(basename $$style .toml).json $$style eval/style_check.toml; done
 
 # Human/bot rates of every style over the replay dumps (the report's table).
 style-score:

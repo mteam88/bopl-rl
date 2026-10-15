@@ -1,0 +1,20 @@
+# Bait (exploiters-2, 2026-10-15; Matthew via parent): the opponent dies to the
+# environment or itself (no kill credited to this player: water, blast zone, its
+# own hazard) while it had been chasing this player. Last night 201 of 300
+# camper wins over f5 had no credited kill: f5 dies chasing evaders. Pays the
+# death itself, plus a little per tick for staying alive just out of reach of a
+# living opponent that is closing in (the lure).
+name = "bait"
+kits = [[2, 14, 25], [27, 14, 2], [32, 2, 14]]  # exploiters-2 bait (lineups-x2-bait.txt)
+fade = { start = 0.0, end = 0.7 }
+[let]
+chased = "count_over(180, alive(opp) and dist(self, opp) < 18) > 0"
+[[term]]
+name = "env_death"
+on = "death"
+when = "self.alive and ev.subject != self and ev.actor != self and chased"
+value = "0.15"
+[[term]]
+name = "lure"
+when = "self.alive and alive(opp) and header.sudden_death == 0 and dist(self, opp) > 8 and dist(self, opp) < 18"
+value = "3e-5 * dt"

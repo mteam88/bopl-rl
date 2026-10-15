@@ -1,0 +1,19 @@
+# Vertical (exploiters-2, 2026-10-15; Matthew via parent): kills from well above
+# or below the victim (vertical gap over 4 units and larger than the horizontal
+# one). Scripted bots' top way to lose was jumping up at a foe overhead, so nets
+# may have blind spots in vertical fights. Also pays arrow hits landed while
+# vertically offset.
+name = "vertical"
+kits = [[3, 2, 4], [2, 10, 14], [2, 3, 20]]  # exploiters-2 vertical (lineups-x2-vertical.txt)
+fade = { start = 0.0, end = 0.7 }
+[let]
+offset = "alive(opp) and abs(self.y - opp.y) > 4 and abs(self.y - opp.y) > abs(self.x - opp.x)"
+[[term]]
+name = "kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self and abs(self.y - ev.y) > 4 and abs(self.y - ev.y) > abs(self.x - ev.x)"
+value = "0.1"
+[[term]]
+name = "hit"
+when = "self.arrow_hits > prev(self.arrow_hits) and prev(offset)"
+value = "0.03 * (self.arrow_hits - prev(self.arrow_hits))"

@@ -20,3 +20,15 @@ name = "punisher"
 loadout_set = "native/data/lineups-anticamp-punisher2.txt"
 reward_timeout = -1
 styles = ["styles/pressure.toml", "styles/punish_spent_mobility.toml", "styles/arrow_hit.toml"]
+
+# exploiters-2 (2026-10-15, native/artifacts/rl/sweeps/exploiters-2): f5 fine-tunes against frozen f5,
+# kits from eval/kit_sweep.py and the g111/matthew16 leads. f5's side of each lineup: the mirror,
+# Matthew's 16 combos and random kits. Budgets are learner steps; failed recipes are not listed here
+# (see sweeps/exploiters-2/recipes-notes.md).
+
+[[recipe]]
+name = "missile"   # x2-missile-1500m: +0.176 [+0.123,+0.230] over f5's own play on these kits; still +0.01/100M at 750M
+loadout_set = "native/data/lineups-x2-missile.txt"
+reward_timeout = 0
+styles = []        # shrink_safe_area was tried and almost never fired on these kits: plain win reward
+timeout = 1000000000

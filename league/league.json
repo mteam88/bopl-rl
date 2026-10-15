@@ -4502,6 +4502,51 @@
    },
    "path": "native/artifacts/rl/sweeps/anticamp/punisher-2/run/checkpoints/policy-4000055296.bin",
    "metadata_sha256": "570800cbd440df9ba208079e5052388cdb9b351c2d528b2628524d96f8d91bd5"
+  },
+  {
+   "id": "3e323cc65bf3682e4da0091b1e5bc1f53e8d935c9ad1e948feaf8ced178a34c7",
+   "name": "x2-missile-1500m",
+   "kind": "exploiter",
+   "parent": "final5-18666m",
+   "target": "final5-18666m",
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/exploiters-2/missile/run",
+    "step": 1500053504
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-dea87471",
+    "binding_sha256": "dea874714bff4641dfe0c9a22716bf126fe2433abe10bea25868c77d015c6120",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": 0.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      10,
+      11,
+      14
+     ],
+     [
+      14,
+      2,
+      10
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "2026-10-15: missile exploiter (Missile/Spike/Platform, Platform/Dash/Missile; learner-first kits vs f5 on mirror + Matthew's 16 + 48 random kits, timeout reward 0, shrink_safe_area style which almost never fired), f5 fine-tune 750M learner steps (still +0.01/100M). vs f5 on its kits 0.874 [0.839,0.906], +0.176 [+0.123,+0.230] paired over f5 on the same kits; vs team5b +0.273, vs A20 +0.165 on them; off its kits 0.398, -0.077 [-0.144,-0.010]. Forces main to handle missile pressure"
+   },
+   "path": "native/artifacts/rl/sweeps/exploiters-2/missile/run/checkpoints/policy-1500053504.bin",
+   "metadata_sha256": "7c101d6ff18065b2d35bf8eb16a06e599d651ae6d0caff5c3a2ab5dafb970dd6"
   }
  ],
  "conditions": {
@@ -5535,5 +5580,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "3b65b852a2d3c17f8c4cdc182bb9931666603fce576bc4f0df9e43ca036d8cb9"
+ "league_sha256": "94c3e481544ac8b04b36f2bfe828f84d5acd50941e531489b3d9d29599a43fdb"
 }

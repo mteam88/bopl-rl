@@ -1,0 +1,12 @@
+# Trap kills (exploiters-2, 2026-10-15; Matthew via parent): kills by a placed
+# Mine, Spike or Platform (the killing entity's source ability, from the event
+# stream; Platform kills are mostly squishes). Earlier loss taxonomies found most
+# bot non-wins were platform squishes.
+name = "trap_kill"
+kits = [[7, 24, 14], [11, 14, 3], [24, 11, 14]]  # exploiters-2 trap (lineups-x2-trap.txt)
+fade = { start = 0.0, end = 0.7 }
+[[term]]
+name = "trap"
+on = "death"
+when = "ev.actor == self and ev.subject != self and (ev.source_ability == ability.Mine or ev.source_ability == ability.Spike or ev.source_ability == ability.Platform)"
+value = "0.1"
