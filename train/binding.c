@@ -97,6 +97,8 @@ void my_init(Env *env, Dict *kwargs) {
     env->loadout_pool=pool_lo|(pool_hi<<31);
     env->loadout_no_dup=option(kwargs,"loadout_no_dup",0);
     env->mirror_share_ppm=option(kwargs,"mirror_share_ppm",0);
+    env->loadout_learner_first=option(kwargs,"loadout_learner_first",0);
+    env->config_side=env->spare_side=0;
     env->loadout_set_count=bopl_loadout_set_count;
     if (env->loadout_set_count<0 || env->loadout_set_count>BOPL_LOADOUT_SET_MAX) abort();
     if (env->loadout_set_count) memcpy(env->loadout_set,bopl_loadout_sets,(size_t)env->loadout_set_count*6);
@@ -109,6 +111,9 @@ void my_init(Env *env, Dict *kwargs) {
     if (env->loadout_weighted) for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++)
         if (((env->loadout_pool>>ability)&1u) && !env->loadout_weight[ability]) abort();
     env->loadout_mode=env->loadout_set_count?BOPL_LOADOUT_SET:(env->loadout_pool?BOPL_LOADOUT_POOL:BOPL_LOADOUT_FIXED);
+    if (env->loadout_learner_first && env->loadout_mode!=BOPL_LOADOUT_SET) {
+        fprintf(stderr, "Bopl RL: loadout_learner_first needs a lineup set\n"); abort();
+    }
     bopl_rl_default_config(&env->config, (uint32_t)env->players);
     if (env->team_play) for (int i=0; i<env->players; i++) env->config.player[i].team=(uint32_t)(i/2);
     env->config.map=(uint32_t)option(kwargs, "map", 0);
@@ -299,6 +304,17 @@ int bopl_vec_layout(const void *gpu_observations, int *out, int capacity) {
         for (int s=0; s<BOPL_MAX_SLOTS; s++)
             row[8+s]=s<envs[i].num_agents?(int)(envs[i].obs_ptr[s]-(float*)vec->observations)/OBS_SIZE:-1;
     }
+    return vec->size;
+}
+/* Per environment, the abilities the current episode dealt players 0 and 1
+ * (6 ints, env->config), for checks of the loadout draw against the side in
+ * bopl_vec_layout (train/check_learner_first.py). Returns the count or -1. */
+int bopl_vec_kits(const void *gpu_observations, int *out, int capacity) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec || capacity<vec->size*6) return -1;
+    Env *envs=(Env*)vec->envs;
+    for (int i=0; i<vec->size; i++) for (int player=0; player<2; player++) for (int slot=0; slot<3; slot++)
+        out[i*6+player*3+slot]=player<envs[i].players?(int)envs[i].config.player[player].abilities[slot]:0;
     return vec->size;
 }
 /* The same vector-level routing controls PufferLib exposes on its trainer, for

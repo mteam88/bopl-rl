@@ -243,7 +243,9 @@ def trained_loadouts(config):
     if loadouts['mode'] == 'fixed':
         return dict(mode='fixed', fixed=list(loadouts['fixed']))
     if loadouts['mode'] == 'set':
-        halves = {tuple(row[i:i + 3]) for row in loadouts['lineups'] for i in (0, 3) if row[i:i + 3]}
+        # A learner-first run (train.py --loadout-learner-first) only ever held each row's first half.
+        seats = (0,) if loadouts.get('learner_first') else (0, 3)
+        halves = {tuple(row[i:i + 3]) for row in loadouts['lineups'] for i in seats if row[i:i + 3]}
         return dict(mode='set', kits=[list(kit) for kit in sorted(halves)])
     from evaluation_protocol import loadout_pool
     if loadouts['mode'] == 'pool' and sorted(loadouts['pool']) == sorted(loadout_pool('all')):

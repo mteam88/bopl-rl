@@ -45,7 +45,7 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'historical_every
                'anneal_lr', 'min_lr_ratio', 'entropy', 'entropy_floor',
                'entropy_half_life', 'entropy_head_scale', 'entropy_free_rows',
                'episode_ticks', 'reward_kill', 'reward_timeout', 'stocks',
-               'training_maps', 'loadout', 'loadout_pool', 'loadout_set', 'loadout_no_dup', 'mirror_share',
+               'training_maps', 'loadout', 'loadout_pool', 'loadout_set', 'loadout_no_dup', 'loadout_learner_first', 'mirror_share',
                'checkpoint_every', 'pool_size', 'pfsp_p',
                'min_games', 'snapshot_interval', 'opponent_timeout',
                'pool_seed', 'cudagraphs', 'no_eval', 'eval_every',
@@ -57,7 +57,7 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'historical_every
                # policy v4: --encoder v4 shape flags and the writer ablation
                'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
                'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate', 'v4_row_budget')
-STORE_TRUE = ('no_eval', 'loadout_no_dup')
+STORE_TRUE = ('no_eval', 'loadout_no_dup', 'loadout_learner_first')
 # Virtual swept parameters for the scripted-bot curriculum:
 # scripted_banks = how many banks draw from [fixed].scripted_roster (passed
 # through as --scripted-banks), or without a roster how many of

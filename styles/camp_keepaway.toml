@@ -1,0 +1,14 @@
+# Camp / keep away (Matthew 2026-10-15: "one that just uses create platform and
+# dash and camps, which forces the main bot to learn to kill"): for the camper
+# exploiter only. Paid per tick while alive and well away from the opponent,
+# outside sudden death; fades out so the end of training is win/draw/loss
+# alone (train.py --reward-timeout 0: a timeout is worth half a win, as the
+# league scores it).
+name = "camp_keepaway"
+kits = [[2, 2, 14]]
+fade = { start = 0.0, end = 0.7 }
+
+[[term]]
+name = "away"
+when = "self.alive and alive(opp) and header.sudden_death == 0 and dist(self, opp) > 15"
+value = "6e-5 * dt"

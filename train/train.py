@@ -399,6 +399,10 @@ def arguments():
                    help='sample distinct slots within each player (duplicates are legal by default)')
     p.add_argument('--loadout-weights', type=loadout_weights, default={},
                    help="pool draw weights, e.g. 'Grenade=4,Rock=4' (ability names or IDs); others weigh 1")
+    p.add_argument('--loadout-learner-first', action='store_true',
+                   help='with --loadout-set (six-id rows) and frozen banks: each row is [learner kit | opponent kit] '
+                        'whichever seat the learner draws, so an exploiter always plays its own kit against its '
+                        "target's (league exploiters with a kit of their own, e.g. a camper)")
     p.add_argument('--mirror-share', type=float, default=0.,
                    help='probability both players receive player 0\'s loadout')
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
@@ -540,6 +544,10 @@ def arguments():
         a.loadouts=resolve_loadouts(a.loadout,a.loadout_pool,a.loadout_set,a.loadout_no_dup,a.mirror_share)
     except (ValueError,OSError) as error:
         p.error(str(error))
+    if a.loadout_learner_first:
+        if a.loadouts['mode'] != 'set' or a.loadouts['mirror_share'] or a.team_every:
+            p.error('--loadout-learner-first needs --loadout-set, no --mirror-share and no --team-every')
+        a.loadouts=dict(a.loadouts, learner_first=True)
     if a.loadout_weights:
         if a.loadouts['mode'] != 'pool' or set(a.loadout_weights) - set(a.loadouts['pool']):
             p.error('--loadout-weights needs --loadout-pool containing every weighted ability')
@@ -759,7 +767,9 @@ def main():
                        training_map_mask_2=map_chunks[2], training_map_mask_3=map_chunks[3],
                        ability1=a.loadouts['fixed'][0], ability2=a.loadouts['fixed'][1], ability3=a.loadouts['fixed'][2],
                        loadout_pool=pool_mask&0x7fffffff, loadout_pool_hi=(pool_mask>>31)&0x7fffffff,
-                       loadout_no_dup=int(a.loadouts['no_dup']), mirror_share_ppm=round(a.loadouts['mirror_share']*1_000_000),
+                       loadout_no_dup=int(a.loadouts['no_dup']),
+                       **(dict(loadout_learner_first=1) if a.loadouts.get('learner_first') else {}),
+                       mirror_share_ppm=round(a.loadouts['mirror_share']*1_000_000),
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
                        reward_self_death_milli=round(a.reward_self_death*1000),
                        scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level],

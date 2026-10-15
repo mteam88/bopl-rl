@@ -1,0 +1,18 @@
+# Pressure (anti-camper punisher, 2026-10-15): stay within striking range of a
+# living opponent, and kill early - a kill is worth more the sooner it lands
+# (full at 0 s, nothing from 120 s, when sudden death starts). With
+# --reward-timeout -1 a timeout is a loss, so waiting the opponent out never pays.
+name = "pressure"
+kits = [[2, 4, 14]]
+fade = { start = 0.0, end = 0.7 }
+
+[[term]]
+name = "close"
+when = "self.alive and alive(opp) and dist(self, opp) < 12"
+value = "8e-5 * dt"
+
+[[term]]
+name = "early_kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self"
+value = "0.1 * max(0, 1 - now / 7200)"

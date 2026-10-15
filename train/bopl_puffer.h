@@ -275,6 +275,13 @@ typedef struct {
     int repeat, random_maps, random_loadouts, failed;
     BoplMapMask training_map_mask;
     int loadout_mode, loadout_no_dup, mirror_share_ppm, loadout_set_count;
+    /* Learner-first lineups (train.py --loadout-learner-first): in a bank
+     * environment a set row is [learner kit | opponent kit], so an exploiter
+     * always plays its own kit against its target's. The match's side is
+     * drawn with the config (from side_rng, one draw per match as without
+     * the flag) and the row's halves are seated to match; config_side and
+     * spare_side are the sides of env->config and env->spare_config. */
+    int loadout_learner_first, config_side, spare_side;
     uint64_t loadout_pool;
     uint8_t loadout_set[BOPL_LOADOUT_SET_MAX][6];
     int loadout_weighted;
@@ -1295,6 +1302,15 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
             const uint8_t *row=env->loadout_set[bopl_random(env)%(uint32_t)env->loadout_set_count];
             for (int player=0; player<env->players; player++) for (uint32_t slot=0; slot<config->slots; slot++)
                 config->player[player].abilities[slot]=row[(mirror && player==1?0:player)*3+(int)slot];
+            if (env->loadout_learner_first && env->banks && env->players==2) {
+                int side=(int)(bopl_side_random(env)&1u);
+                if (side) for (uint32_t slot=0; slot<config->slots; slot++) {
+                    uint32_t held=config->player[0].abilities[slot];
+                    config->player[0].abilities[slot]=config->player[1].abilities[slot];
+                    config->player[1].abilities[slot]=held;
+                }
+                if (config==&env->spare_config) env->spare_side=side; else env->config_side=side;
+            }
         } else {
             for (int player=0; player<env->players; player++) {
                 if (mirror && player==1) {
@@ -1491,7 +1507,7 @@ static void c_reset(BoplPuffer *env) {
          * episode after this one. */
         if (bopl_rl_reset_finish(env->spare)) bopl_failed_world(env, env->spare, "spare reset");
         BoplRl *loaded=env->spare; env->spare=env->world; env->world=loaded;
-        env->config=env->spare_config;
+        env->config=env->spare_config; env->config_side=env->spare_side;
     } else {
         bopl_draw_config(env, &env->config);
         if (bopl_rl_reset(env->world, &env->config)) bopl_failed(env, "reset");
@@ -1521,7 +1537,8 @@ static void c_reset(BoplPuffer *env) {
             memset(env->obs_ptr[1+bank], 0, BOPL_OBS_STRIDE*sizeof(float)); bopl_written_zeroed(env, env->obs_ptr[1+bank]);
             if (env->mask_ptr[1+bank]) memset(env->mask_ptr[1+bank], 1, BOPL_LOGITS);
         }
-        env->side=(int)(bopl_side_random(env)&1u);
+        env->side=env->loadout_learner_first && env->loadout_mode==BOPL_LOADOUT_SET && env->players==2
+            ?env->config_side:(int)(bopl_side_random(env)&1u);
         /* A fresh recurrent state for the row this match's opponent runs on. */
         *env->terminal_ptr[1+env->active_bank]=1;
         /* A scripted bank drives this match's opponent player from C; the
