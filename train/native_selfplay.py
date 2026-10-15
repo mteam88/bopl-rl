@@ -94,7 +94,10 @@ def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_s
 
 
 def _league_entry(m):
-    return dict(path=str(m['path']), name=str(m['name']), permanent=True, kind=m.get('kind'))
+    entry = dict(path=str(m['path']), name=str(m['name']), permanent=True, kind=m.get('kind'))
+    if m.get('pinned'):
+        entry['pinned'] = True
+    return entry
 
 
 # A bank's GROUP says which candidates it draws from:
@@ -110,7 +113,12 @@ def _league_entry(m):
 # of whatever f_hard leaves them in a pool of dozens of past mains. A group with
 # no member in the pool draws from the next wider one (exploiters -> league ->
 # all), the way AlphaStar falls back to self-play when a branch is empty.
-GROUPS = ('all', 'league', 'exploiters')
+#   pinned      the run's pinned members only (train.py --pinned-opponents): they
+#               play their own kits (bank_kits.py), and no other group draws
+#               them, so their share of the games is the pinned banks' share
+#               instead of whatever PFSP pours into members that beat us. No
+#               fallback: train.py refuses a pinned bank without pinned members.
+GROUPS = ('all', 'league', 'exploiters', 'pinned')
 
 
 def groups(pool, spec=None):
@@ -124,16 +132,19 @@ def groups(pool, spec=None):
 
 def candidates(pool, group):
     """The pool entries a bank of `group` draws from."""
+    if group == 'pinned':
+        return [entry for entry in pool['pool'] if entry.get('pinned')]
+    entries = [entry for entry in pool['pool'] if not entry.get('pinned')]
     if group == 'exploiters':
-        chosen = [entry for entry in pool['pool'] if entry.get('kind') == 'exploiter']
+        chosen = [entry for entry in entries if entry.get('kind') == 'exploiter']
         if chosen:
             return chosen
         group = 'league'
     if group == 'league':
-        chosen = [entry for entry in pool['pool'] if entry.get('permanent')]
+        chosen = [entry for entry in entries if entry.get('permanent')]
         if chosen:
             return chosen
-    return pool['pool']
+    return entries
 
 
 def reconcile(pool, ledger, league):
@@ -155,6 +166,8 @@ def reconcile(pool, ledger, league):
             kept.append(entry)
         elif entry['path'] in by_path:
             entry['kind'] = by_path[entry['path']]['kind']
+            entry.pop('pinned', None)
+            entry.update({k: v for k, v in by_path[entry['path']].items() if k == 'pinned'})
             kept.append(entry)
         else:
             dropped.append(entry['name'])

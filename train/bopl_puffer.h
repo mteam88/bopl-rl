@@ -131,6 +131,25 @@ uint8_t bopl_loadout_sets[BOPL_LOADOUT_SET_MAX*6];
 /* Per-ability weights for pool draws, installed by train.py (--loadout-weights).
  * All zero keeps the uniform draw, whose random stream is unchanged. */
 uint16_t bopl_loadout_weights[64];
+/* Kit pinning per frozen bank (train.py --pinned-opponents, docs/LEAGUE.md
+ * "Kit pinning"). A bank environment created with bank_kits=1 deals the
+ * frozen seat one of its bank's current rows instead of the run's own draw:
+ * row[0..2] the frozen member's kit, row[3..5] the learner's (0 = keep the
+ * learner's own draw). No rows = the run's draw, as without the flag. A
+ * scripted bot on such a bank plays bopl_bot_kit and never a space map (its
+ * match falls to the bank's frozen weights there). train.py installs a bank's
+ * rows (bopl_bank_kits_install, binding.c) each time it loads a member into
+ * the bank, while that bank's matches run: the table is double-buffered, the
+ * generation published last, and a match whose setup was drawn (one episode
+ * ahead, on the spare) under an older generation is re-dealt and re-reset at
+ * its start (bopl_bank_kit_redraws counts those). */
+enum { BOPL_BANK_KITS_MAX=64 };
+uint8_t bopl_bank_kit_rows[BOPL_MAX_BANKS][2][BOPL_BANK_KITS_MAX][6];
+int bopl_bank_kit_count[BOPL_MAX_BANKS][2];
+int bopl_bank_kit_gen[BOPL_MAX_BANKS];
+uint8_t bopl_bot_kit[3];
+unsigned long bopl_bank_kit_redraws;
+typedef struct { int valid, bot, gen, src; uint8_t base[6]; } BoplPin;
 /* The style program (bopl_style.h) every environment created after
  * bopl_style_install runs, and the fade scale its payouts are paid at (set
  * each update). Without a program nothing below touches the reward. */
@@ -282,6 +301,15 @@ typedef struct {
      * the flag) and the row's halves are seated to match; config_side and
      * spare_side are the sides of env->config and env->spare_config. */
     int loadout_learner_first, config_side, spare_side;
+    /* Kit pinning (bank_kits, see bopl_bank_kit_rows): the side is drawn with
+     * the config as for learner-first, and so is whether a scripted bank's
+     * bot plays the match (bot: the same share flip c_reset makes, from the
+     * config's seed, and never on a space map). base is the run's own draw
+     * before the frozen seat was pinned, gen the bank-table generation the
+     * pin was taken from, src 0 run draw / 1 member row / 2 bot kit.
+     * pin_config and pin_spare belong to env->config and env->spare_config. */
+    int bank_kits;
+    BoplPin pin_config, pin_spare;
     uint64_t loadout_pool;
     uint8_t loadout_set[BOPL_LOADOUT_SET_MAX][6];
     int loadout_weighted;
@@ -1275,9 +1303,58 @@ static void bopl_spare_ready(BoplPuffer *env) {
     if (bopl_rl_map_count(env->spare)!=bopl_rl_map_count(env->world)
         || bopl_rl_ability_count(env->spare)!=bopl_rl_ability_count(env->world)) { fprintf(stderr, "Bopl RL spare catalog differs\n"); abort(); }
 }
+/* Kit pinning (bopl_bank_kit_rows). Whether a scripted bank's bot plays this
+ * setup: the share flip c_reset makes for it, taken from the setup's seed
+ * (c_reset seeds bot_rng the same way), and never on a space map. */
+static int bopl_pin_bot(const BoplPuffer *env, const BoplRlConfig *config) {
+    uint32_t kind=(env->scripted_kinds>>(4*env->active_bank))&15u;
+    if (!kind || bopl_map_selected(BOPL_SPACE_MAPS, config->map)) return 0;
+    float share=bopl_scripted_share;
+    if (share<1.0f) {
+        uint32_t rng=config->seed*2654435761u^0x9E3779B9u;
+        rng=rng*747796405u+2891336453u;
+        if ((float)(rng>>8)*(1.0f/16777216.0f)>=share) return 0;
+    }
+    return 1;
+}
+/* Seat the frozen player (1-side) on its pin under the bank's current table,
+ * from the run's own draw in pin->base. The row is a hash of the setup's
+ * seed, so no stream the unpinned draws use moves. Returns whether a kit changed. */
+static int bopl_pin_apply(BoplPuffer *env, BoplRlConfig *config, BoplPin *pin, int side) {
+    int bank=env->active_bank, gen=__atomic_load_n(&bopl_bank_kit_gen[bank], __ATOMIC_ACQUIRE);
+    int opponent=1-side, changed=0;
+    uint8_t kit[6];
+    memcpy(kit, pin->base, sizeof(kit));
+    pin->gen=gen; pin->src=0;
+    if (pin->bot) {
+        if (bopl_bot_kit[0]) { memcpy(kit+opponent*3, bopl_bot_kit, 3); pin->src=2; }
+    } else {
+        int count=bopl_bank_kit_count[bank][gen&1];
+        if (count>0 && count<=BOPL_BANK_KITS_MAX) {
+            uint32_t h=config->seed*0x85ebca6bu^0xc2b2ae35u;
+            h^=h>>16; h*=0x7feb352du; h^=h>>15;
+            const uint8_t *row=bopl_bank_kit_rows[bank][gen&1][h%(uint32_t)count];
+            memcpy(kit+opponent*3, row, 3);
+            if (row[3]) memcpy(kit+side*3, row+3, 3);
+            pin->src=1;
+        }
+    }
+    for (int player=0; player<2; player++) for (uint32_t slot=0; slot<config->slots && slot<3; slot++) {
+        changed|=config->player[player].abilities[slot]!=kit[player*3+(int)slot];
+        config->player[player].abilities[slot]=kit[player*3+(int)slot];
+    }
+    return changed;
+}
 /* The setup of the next episode: the same draws, in the same order, as the
  * single-process path makes at the start of that episode. */
 static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
+    int pinning=env->bank_kits && env->banks && env->players==2;
+    /* The config this draw starts from (the live one, or the spare copied
+     * from it) carries this match's pinned kits; a fixed-kit run draws no
+     * kit and would keep them, so the run's own draw goes back first. */
+    if (pinning && env->pin_config.valid)
+        for (int player=0; player<2; player++) for (uint32_t slot=0; slot<config->slots && slot<3; slot++)
+            config->player[player].abilities[slot]=env->pin_config.base[player*3+(int)slot];
     config->seed=bopl_random(env);
     if (bopl_maps_selected(env->training_map_mask)) {
         uint32_t count=0;
@@ -1343,6 +1420,21 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
                 }
             }
         }
+    }
+    if (pinning) {
+        int spare=config==&env->spare_config;
+        BoplPin *pin=spare?&env->pin_spare:&env->pin_config;
+        int side;
+        if (env->loadout_learner_first && mode==BOPL_LOADOUT_SET) side=spare?env->spare_side:env->config_side;
+        else {
+            side=(int)(bopl_side_random(env)&1u);
+            if (spare) env->spare_side=side; else env->config_side=side;
+        }
+        for (int player=0; player<2; player++) for (int slot=0; slot<3; slot++)
+            pin->base[player*3+slot]=(uint8_t)config->player[player].abilities[slot];
+        pin->valid=1;
+        pin->bot=bopl_pin_bot(env, config);
+        bopl_pin_apply(env, config, pin, side);
     }
 }
 static int bopl_loadouts_valid(const BoplPuffer *env) {
@@ -1507,7 +1599,16 @@ static void c_reset(BoplPuffer *env) {
          * episode after this one. */
         if (bopl_rl_reset_finish(env->spare)) bopl_failed_world(env, env->spare, "spare reset");
         BoplRl *loaded=env->spare; env->spare=env->world; env->world=loaded;
-        env->config=env->spare_config; env->config_side=env->spare_side;
+        env->config=env->spare_config; env->config_side=env->spare_side; env->pin_config=env->pin_spare;
+        /* Kit pinning: the spare drew this setup an episode ago; if the trainer
+         * has since loaded another member into the bank, deal its kit now and
+         * reset again (direct path; once per environment per swap). */
+        if (env->bank_kits && env->banks && env->players==2 && env->pin_config.valid && !env->pin_config.bot
+            && env->pin_config.gen!=__atomic_load_n(&bopl_bank_kit_gen[env->active_bank], __ATOMIC_ACQUIRE)
+            && bopl_pin_apply(env, &env->config, &env->pin_config, env->config_side)) {
+            if (bopl_rl_reset(env->world, &env->config)) bopl_failed(env, "reset");
+            __atomic_add_fetch(&bopl_bank_kit_redraws, 1ul, __ATOMIC_RELAXED);
+        }
     } else {
         bopl_draw_config(env, &env->config);
         if (bopl_rl_reset(env->world, &env->config)) bopl_failed(env, "reset");
@@ -1537,7 +1638,7 @@ static void c_reset(BoplPuffer *env) {
             memset(env->obs_ptr[1+bank], 0, BOPL_OBS_STRIDE*sizeof(float)); bopl_written_zeroed(env, env->obs_ptr[1+bank]);
             if (env->mask_ptr[1+bank]) memset(env->mask_ptr[1+bank], 1, BOPL_LOGITS);
         }
-        env->side=env->loadout_learner_first && env->loadout_mode==BOPL_LOADOUT_SET && env->players==2
+        env->side=((env->loadout_learner_first && env->loadout_mode==BOPL_LOADOUT_SET) || env->bank_kits) && env->players==2
             ?env->config_side:(int)(bopl_side_random(env)&1u);
         /* A fresh recurrent state for the row this match's opponent runs on. */
         *env->terminal_ptr[1+env->active_bank]=1;
@@ -1554,6 +1655,9 @@ static void c_reset(BoplPuffer *env) {
                 env->bot_rng=env->bot_rng*747796405u+2891336453u;
                 if ((float)(env->bot_rng>>8)*(1.0f/16777216.0f)>=share) kind=0;
             }
+            /* Kit pinning decided it with the setup (bopl_pin_bot), which
+             * dealt the kits; the share may have moved since. */
+            if (env->bank_kits && env->players==2) kind=env->pin_config.bot?(env->scripted_kinds>>(4*env->active_bank))&15u:0;
         }
         if (kind) {
             int pick=bopl_draw_roster(&env->bot_rng);

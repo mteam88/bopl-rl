@@ -215,6 +215,61 @@ wants to train against them to their shape (`--encoder v4 --hidden 256
 `--opponents self` and joins the league by being rated against it afterwards,
 which is what conditions are for.
 
+## Kit pinning: frozen opponents on their own kits
+
+A frozen bank normally plays whatever kit the run deals its seat. An exploiter or
+specialist built for a handful of kits (`anticamp-camper-1000m`: four Dash/Platform
+kits) is then handed the learner's draw from `--loadout-pool all` and plays
+off-kit, so main never meets the thing it was built to punish. With
+
+```
+--pinned-opponents anticamp-camper-1000m,anticamp-punisher-4000m
+--bank-groups all,all,all,pinned
+```
+
+a bank that loads one of those members deals its frozen seat one of the member's
+`league.json` kits (`registry.kits`, i.e. its `loadouts`: a `fixed` kit or a
+`set`'s kits) in every match, on both sides. The learner keeps its own draw (the
+pool, a set's learner half, or the fixed kit): the point is to test main's
+general play against the specialty, and pinning the learner too would turn the
+matchup into a fixed lineup main does not otherwise train on. The C side
+(`bopl_bank_kit_rows`, `train/bopl_puffer.h`) keeps a row table per bank,
+`[member kit | learner kit]` with a learner half of `0,0,0` meaning "the run's own
+draw"; a nonzero learner half is supported in C but nothing sets one yet. Rows
+are installed between rollouts by `bank_kits.PinnedBackend.load_frozen_bank`
+just before the weights, under a generation counter, so a setup drawn before a
+swap (the spare world deals one episode ahead) is re-dealt at reset rather than
+played with the previous member's kit.
+
+The `pinned` bank group draws only pinned members, and while a run has a
+`pinned` bank no other group draws them, so their share of games is that bank's
+share: one bank of four at `--historical-every 2` is 12.5% of all games, close to
+AlphaStar's 15% for main exploiters. PFSP inside the bank is the run's own
+(`--pfsp-p`).
+
+**A scripted bot can share the bank.** `--scripted-roster rusher-hard
+--scripted-banks 1` puts the bot on the last bank; at a fixed
+`--scripted-share-min = --scripted-share-max` it takes that fraction of the
+bank's matches and the pinned members take the rest. Under pinning the bot plays
+its own kit (2,4,14, the only one `bopl_bots.h` understands) whatever the run
+deals, and never a space map: a space-map match goes to the bank's frozen
+member, decided with the setup. `rusher-hard` has no payoff rows, so no league
+rating; `--scripted-elo rusher-hard=0` supplies the starting Elo the roster
+needs (with one entry at a fixed share the number only labels telemetry).
+
+Proof: `make check-bank-kits` (train/check_bank_kits.py) steps the real binding
+on both reset paths and asserts that every pinned match held one of its member's
+kits on both sides, across a mid-run swap; that bot matches hold 2,4,14 and no
+space map; and that without the flag, or with it and no rows installed, every
+match is dealt exactly as before (also checked once against a binding built
+before this feature, `--golden`). In training, `metrics.jsonl` carries
+`bank_kits` per bank (member, pinned matches, bot matches, matches from before
+the last swap, `off_kit`, which must stay 0) and the console prints it.
+
+To add an exploiter later: `league add` it with its kits in `loadouts` (a run
+trained with `--loadout-set ... --loadout-learner-first` declares the learner
+halves), then name it in `--pinned-opponents`; a `--resume` picks it up.
+
 ## Why both Elo and Nash
 
 Elo assumes strength is one number, which is only true when the payoff is

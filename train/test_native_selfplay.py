@@ -390,6 +390,19 @@ class BankGroups(PoolHarness):
         exploiter = self.add_member('exploiter.bin', permanent=True, kind='exploiter')
         self.assertIn(exploiter, [e['path'] for e in native_selfplay.candidates(self.pool, 'all')])
 
+    def test_a_pinned_bank_draws_only_pinned_members_and_no_other_bank_does(self):
+        native_selfplay.groups(self.pool, ['all', 'all', 'league', 'pinned'])
+        pinned = self.add_member('camper.bin', games=10, wins=1, permanent=True, kind='exploiter')
+        self.pool['pool'][-1]['pinned'] = True
+        main = self.add_member('main.bin', games=10, wins=9, permanent=True, kind='main')
+        for epoch in range(20):
+            self.assertEqual(self.settle_bank(3, epoch), pinned)
+            self.pool['banks'][3]['pending_opp_path'] = None
+            self.assertEqual(self.settle_bank(2, epoch), main, 'a pinned member is not in the league group')
+            self.pool['banks'][2]['pending_opp_path'] = None
+        for group in ('all', 'league', 'exploiters'):
+            self.assertNotIn(pinned, [e['path'] for e in native_selfplay.candidates(self.pool, group)])
+
     def test_a_malformed_spec_is_refused(self):
         for spec in (['all'] * 3, ['all', 'all', 'all', 'mains']):
             with self.assertRaises(ValueError):

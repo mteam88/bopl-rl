@@ -23,6 +23,7 @@ import layout
 from native_metrics import empty_counters, update
 import native_selfplay
 from native_vector import NativeVector
+import bank_kits
 import reference
 import scripted_roster
 sys.path[:0] = [str(ROOT)]
@@ -426,7 +427,13 @@ def arguments():
                    help="Comma list, one per policy bank, of the candidates each bank draws from: "
                         "all (own snapshots and league members), league (league members only: an "
                         "exploiter), exploiters (league exploiters only: AlphaStar's main-agent "
-                        "branch). Empty is all everywhere. See native_selfplay.groups. May change on --resume")
+                        "branch), pinned (--pinned-opponents only). Empty is all everywhere. See "
+                        "native_selfplay.groups. May change on --resume")
+    p.add_argument('--pinned-opponents', default='',
+                   help='Comma list of league members that play their own declared kits (league.json '
+                        '`loadouts`) from the frozen seat, drawn only by banks of group `pinned` '
+                        '(docs/LEAGUE.md "Kit pinning"). The learner keeps its own kit draw in those '
+                        'games. Their share of the games is the pinned banks\' share. May change on --resume')
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
                    help='Comma-separated bot kinds that take over the last banks. Without '
                         '--scripted-roster each kind is a one-entry roster at --scripted-level; '
@@ -446,6 +453,9 @@ def arguments():
     p.add_argument('--scripted-share-min', type=float, default=0.0,
                    help='Lower clamp on the scripted bank\'s bot-match share (0 = drop the bot '
                         'once every roster entry is beaten or hopeless)')
+    p.add_argument('--scripted-elo', default='',
+                   help="Comma list name=elo: the starting roster Elo of scripted entries the league has "
+                        "not rated yet (e.g. rusher-hard=450). Rated entries keep their league rating")
     p.add_argument('--scripted-opponents', default=DEFAULT_EVAL_SCRIPTED,
                    help='Comma-separated kind-level scripted opponents for the periodic evaluations (evaluate.py); empty disables')
     p.add_argument('--cudagraphs', type=int, default=1, help='Warmup updates before capture; -1 disables capture; 0 is unsupported')
@@ -552,18 +562,37 @@ def arguments():
         if a.loadouts['mode'] != 'pool' or set(a.loadout_weights) - set(a.loadouts['pool']):
             p.error('--loadout-weights needs --loadout-pool containing every weighted ability')
         a.loadouts=dict(a.loadouts, weights=[[ability, a.loadout_weights.get(ability, 1)] for ability in a.loadouts['pool']])
+    a.pinned_opponents = [s for s in a.pinned_opponents.split(',') if s]
+    if len(set(a.pinned_opponents)) != len(a.pinned_opponents):
+        p.error('--pinned-opponents names a member twice')
+    try:
+        a.scripted_elo = {name: float(elo) for name, _, elo in
+                          (item.partition('=') for item in a.scripted_elo.split(',') if item)}
+    except ValueError:
+        p.error('--scripted-elo expects name=elo pairs')
+    # Kit pinning (bank_kits.py) is on with pinned members, or when a scripted
+    # bank cannot play this run's kits or maps (below).
+    a.bank_kits = bool(a.pinned_opponents)
+    a.bot_kit = None
     if a.n_scripted and not all(scripted_roster.split_name(name)[0] == 'uniform' for name in roster_names):
         # A scripted bot only plays the kit and the maps it was written for, the ones
         # its league member declares (registry.kits, registry.plays_map); anywhere
         # else it presses whatever sits in the slot it wants. The uniform kind plays
-        # any kit on any map: it presses nothing on purpose.
-        bot = registry.by_name(registry.load(verify=False))[roster_names[0]]
+        # any kit on any map: it presses nothing on purpose. With kit pinning the bot
+        # plays its own kit whatever the run deals and leaves space maps to the bank's
+        # frozen weights, so any run can face it.
+        members = registry.by_name(registry.load(verify=False))
+        bot_kits = {tuple(map(tuple, registry.kits(members[name]) or [])) for name in roster_names}
+        if len(bot_kits) != 1 or len(next(iter(bot_kits))) != 1:
+            p.error(f'scripted roster entries must share one kit to be dealt it, got {bot_kits}')
+        bot = members[roster_names[0]]
         dealt = (registry.trained_loadouts(dict(loadouts=a.loadouts)) if a.loadouts['mode'] != 'pool'
                  else dict(mode='pool'))
-        if dealt['mode'] == 'pool' or registry.kits(dict(loadouts=dealt)) != registry.kits(bot):
-            p.error(f"scripted training banks need every kit dealt to be {registry.kits(bot)}; this run deals {dealt}")
-        if not all(registry.plays_map(bot, m) for m in a.training_maps):
-            p.error('scripted training banks cannot play space maps; drop them from --training-maps')
+        if (dealt['mode'] == 'pool' or registry.kits(dict(loadouts=dealt)) != registry.kits(bot)
+                or not all(registry.plays_map(bot, m) for m in a.training_maps)):
+            a.bank_kits = True
+        if a.bank_kits:
+            a.bot_kit = list(registry.kits(bot)[0])
     return a
 
 
@@ -689,6 +718,9 @@ def main():
         raise RuntimeError('Native training requires the CUDA build')
     install_loadout_set(_C,a.loadouts['lineups'])
     install_loadout_weights(_C,a.loadouts.get('weights',[]))
+    kit_lib = bank_kits.library(_C) if a.bank_kits else None
+    if a.bank_kits:
+        bank_kits.install_bot_kit(kit_lib, a.bot_kit or [0, 0, 0])
     style = install_style(_C, a.style_program)
     if a.style_program is not None:
         (output/'style.bin').write_bytes(a.style_program.data)
@@ -744,11 +776,15 @@ def main():
     # happens and the pool skips those banks, as in the old no-decay path --
     # unless every bank is scripted, where the pool keeps one (idle) bank
     # because the pool state is defined over at least one.
-    policy_banks = a.banks if (a.n_scripted and a.scripted_share_min < 1.0) else a.banks - a.n_scripted
+    # With kit pinning a scripted bank's matches on space maps go to its frozen
+    # weights too, so the pool manages it whatever the share.
+    policy_banks = a.banks if (a.n_scripted and (a.scripted_share_min < 1.0 or a.bank_kits)) else a.banks - a.n_scripted
     policy_banks = max(1, policy_banks)
     bank_groups = [g for g in a.bank_groups.split(',') if g] or ['all'] * policy_banks
     if len(bank_groups) != policy_banks or any(g not in native_selfplay.GROUPS for g in bank_groups):
         raise SystemExit(f'--bank-groups needs {policy_banks} of {native_selfplay.GROUPS}, got {a.bank_groups!r}')
+    if ('pinned' in bank_groups) != bool(a.pinned_opponents):
+        raise SystemExit('--pinned-opponents and a `pinned` entry in --bank-groups go together')
     scripted_first_bank = a.banks - a.n_scripted
     scripted_kinds = 0
     for i in range(a.n_scripted):
@@ -769,6 +805,7 @@ def main():
                        loadout_pool=pool_mask&0x7fffffff, loadout_pool_hi=(pool_mask>>31)&0x7fffffff,
                        loadout_no_dup=int(a.loadouts['no_dup']),
                        **(dict(loadout_learner_first=1) if a.loadouts.get('learner_first') else {}),
+                       **(dict(bank_kits=1) if a.bank_kits else {}),
                        mirror_share_ppm=round(a.loadouts['mirror_share']*1_000_000),
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
                        reward_self_death_milli=round(a.reward_self_death*1000),
@@ -799,6 +836,8 @@ def main():
                   scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,
                   scripted_share_min=a.scripted_share_min, scripted_share_max=a.scripted_share_max,
                   scripted_banks=a.n_scripted,
+                  **(dict(bank_kits=dict(pinned_opponents=a.pinned_opponents, bot_kit=a.bot_kit,
+                                         scripted_elo=a.scripted_elo)) if a.bank_kits else {}),
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   loadouts=a.loadouts,
@@ -857,23 +896,38 @@ def main():
             atomic_json(output/'result.json', record)
     status('starting')
     saved = {}
-    # An all-uniform roster needs no league games: the uniform bot is the random anchor, at 0.
-    uniform_only = all(scripted_roster.split_name(name)[0] == 'uniform' for name in a.scripted_roster)
+    # An all-uniform roster needs no league games: the uniform bot is the random anchor, at 0;
+    # nor does one whose every entry has a --scripted-elo (rusher-hard has no league rating).
+    uniform_only = all(scripted_roster.split_name(name)[0] == 'uniform' or name in a.scripted_elo
+                       for name in a.scripted_roster)
     roster_entries = (scripted_roster.entries_from_names(
-        a.scripted_roster, {} if uniform_only else scripted_roster.league_ratings())
+        a.scripted_roster, {**({} if uniform_only else scripted_roster.league_ratings()), **a.scripted_elo})
         if a.scripted_roster else [])
     # Resolved before the trainer exists so a typo'd member name, a missing
     # checkpoint or a member from another policy architecture fails here rather
     # than a minute into a run - or, for the architecture, never.
+    run_policy = dict(architecture=architecture, obs_size=obs_size, hidden=a.hidden,
+                      num_layers=a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, v4_shape=v4_shape)
     if a.opponents == 'self':
         league_opponents = []
     else:
         names = None if a.opponents == 'league' else [s for s in a.opponents.split(',') if s]
-        league_opponents = registry.opponents(
-            registry.load(), names,
-            policy=dict(architecture=architecture, obs_size=obs_size, hidden=a.hidden,
-                        num_layers=a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
-                        v4_shape=v4_shape))
+        league_opponents = registry.opponents(registry.load(), names, policy=run_policy)
+    # Pinned members (bank_kits.py): drawn only by `pinned` banks, on their own kits.
+    pinned_rows, pinned_kits = {}, {}
+    if a.pinned_opponents:
+        league_table = registry.load()
+        by_name = registry.by_name(league_table)
+        pinned = registry.opponents(league_table, a.pinned_opponents, policy=run_policy)
+        for member in pinned:
+            kits = registry.kits(by_name[member['name']])
+            if not kits:
+                raise SystemExit(f"--pinned-opponents: {member['name']} declares no kits of its own to pin")
+            pinned_kits[member['path']] = kits
+            pinned_rows[member['path']] = bank_kits.member_rows(kits)
+        pinned_paths = {member['path'] for member in pinned}
+        league_opponents = [o for o in league_opponents if o['path'] not in pinned_paths] + \
+                           [dict(member, pinned=True) for member in pinned]
     if a.init_weights and not resume:
         # The same flat-array hazard registry.opponents guards a bank against: a
         # mismatched checkpoint loads without error and trains from garbage.
@@ -886,12 +940,24 @@ def main():
         if differs:
             raise SystemExit(f'--init-weights {a.init_weights}: architecture differs from the run: {differs}')
     print(f'league opponents: {len(league_opponents)}'
-          + (' (' + ', '.join(o['name'] for o in league_opponents) + ')' if league_opponents else ''),
+          + (' (' + ', '.join(o['name'] + ('[pinned]' if o.get('pinned') else '') for o in league_opponents) + ')'
+             if league_opponents else ''),
           flush=True)
+    if a.bank_kits:
+        print('kit pinning: ' + json.dumps(dict(bank_groups=bank_groups, bot_kit=a.bot_kit,
+                                                 pinned={o['name']: pinned_kits[o['path']] for o in league_opponents
+                                                         if o.get('pinned')}), separators=(',', ':')), flush=True)
     share = 0.0
     try:
         trainer = _C.create_pufferl(args)
         vector.attach(trainer)
+        # Bank swaps go through the backend: with kit pinning it installs the
+        # bank's kit rows for the member it loads (bank_kits.PinnedBackend).
+        backend = bank_kits.PinnedBackend(_C, kit_lib, pinned_rows) if a.bank_kits else _C
+        kit_audit = (bank_kits.Audit(kit_lib, vector.gpu_obs_ptr, a.workers, backend, pinned_kits,
+                                     {o['path']: o['name'] for o in league_opponents}, a.bot_kit,
+                                     registry._space_maps())
+                     if a.bank_kits else None)
         pool = ledger = None
         update_index = 0
         elapsed_before = 0.
@@ -949,7 +1015,7 @@ def main():
                 raise SystemExit(f"--resume: the pool manages {len(pool['banks'])} banks but "
                                  f'--banks/--scripted-bots now leave {policy_banks} policy banks')
             for bank, state in enumerate(pool['banks']):
-                _C.load_frozen_bank(trainer, bank, state['cur_opp_path'])
+                backend.load_frozen_bank(trainer, bank, state['cur_opp_path'])
             native_selfplay.groups(pool, bank_groups)
             joined, left = native_selfplay.reconcile(pool, ledger, league_opponents)
             config['resumed'][-1].update(opponents=[o['name'] for o in league_opponents],
@@ -958,7 +1024,7 @@ def main():
             # Scripted banks never swap: their GPU rows run the initial policy
             # (actions unread; the C environment drives those players).
             for bank in range(policy_banks, a.banks):
-                _C.load_frozen_bank(trainer, bank, str(initial))
+                backend.load_frozen_bank(trainer, bank, str(initial))
             update_index = resume['update_index']
             elapsed_before = resume['elapsed']
             if roster_entries:
@@ -973,7 +1039,7 @@ def main():
             # Every bank starts from the initial policy; PFSP retires and
             # redraws them independently as each matchup settles.
             for bank in range(a.banks):
-                _C.load_frozen_bank(trainer, bank, str(initial))
+                backend.load_frozen_bank(trainer, bank, str(initial))
             (output/'pool').mkdir()
             pool = native_selfplay.state(output/'pool', str(initial), policy_banks, vector.historical_per_bank, trainer.global_step,
                                          max_size=a.pool_size, min_games=a.min_games,
@@ -1150,6 +1216,9 @@ def main():
                 for name, term in p['style']['terms'].items():
                     record['style/' + name] = p['style']['scale'] * term['pay_per_decision']
             record['entropy_head_scale_applied'] = p['applied_scale']
+            if p['bank_kits'] is not None:
+                # What each bank's frozen seat holds, read between rollouts (bank_kits.Audit).
+                record['bank_kits'] = p['bank_kits']
             # The native trainer's own per-update timers (seconds, averaged
             # over buffers): eval_gpu = inference graph + action copy-back,
             # eval_env = OpenMP game stepping, rollout = whole barrier.
@@ -1178,6 +1247,11 @@ def main():
                                      played_entropy=digits(saturation['entropy']['played']),
                                      intended_entropy=digits(saturation['entropy']['intended']),
                                      divergence=digits(saturation['divergence'])))
+            if p['bank_kits'] is not None:
+                console['bank_kits'] = {bank: dict(member=row['member'], pinned=row['member_matches'],
+                                                   bot=row['bot'], earlier=row['earlier'], off_kit=row['off_kit'])
+                                        for bank, row in p['bank_kits']['banks'].items()
+                                        if row['pinned'] or row['bot'] or row['off_kit']}
             if p['scripted'] is not None:
                 console['scripted'] = dict(
                     share=round(p['share'], 3),
@@ -1250,6 +1324,7 @@ def main():
                     rollout_seconds = _C.rollouts_finish(trainer)
                 native = _C.log(trainer)
                 style_record = style.read(vector)   # no rollout in flight here
+                kit_record = kit_audit() if kit_audit else None   # nor here: what each frozen seat holds
                 free = free_fraction(native['env']) if a.entropy_free_rows else None
                 if overlap:
                     counts = ready
@@ -1265,7 +1340,7 @@ def main():
                 before_pool = native_selfplay.summary(pool, ledger, saturation=False)  # feeds events() only
                 flat = {'env/'+key: value for key, value in native['env'].items()}
                 native_selfplay.credit(pool, flat, ledger)
-                native_selfplay.step(trainer, _C, pool, ledger, update_index)
+                native_selfplay.step(trainer, backend, pool, ledger, update_index)
                 update_index += 1
                 scripted = None
                 if roster_entries:
@@ -1306,7 +1381,7 @@ def main():
                                 train_seconds=trained-rolled, before_pool=before_pool, scripted=scripted,
                                 share=share, free=free, applied_scale=applied_scale,
                                 packing=list(_C.bopl_v4_overflow()) if a.encoder == 'v4' else None,
-                                style=style_record)
+                                style=style_record, bank_kits=kit_record)
                 previous, previous_elapsed = counts, elapsed
                 if defer_ab and (update_index // defer_ab) & 1:
                     flush_deferred()   # BOPL_TRAIN_AB_DEFER's arm 1: the serial order

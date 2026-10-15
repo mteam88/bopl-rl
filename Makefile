@@ -420,7 +420,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: shim-search-check divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac agent-shadow-lib agent-shadow-lib-mac shadow-replay check-reward check-routing check-learner-first style-check style-score style-rates style-rates-check
+.PHONY: shim-search-check divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac agent-shadow-lib agent-shadow-lib-mac shadow-replay check-reward check-routing check-learner-first check-bank-kits style-check style-score style-rates style-rates-check
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
@@ -492,6 +492,15 @@ check-routing: $(RUST_ROLLOUT)
 check-learner-first:
 	PYTHONPATH=$(abspath native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9) \
 	  native/artifacts/rl/venv/bin/python train/check_learner_first.py
+
+# Kit pinning (train.py --pinned-opponents, docs/LEAGUE.md "Kit pinning"): a
+# pinned bank's frozen seat always holds one of its member's league.json kits,
+# on both sides and across a mid-run swap; a scripted bank's bot holds its own
+# kit and never a space map; without the flag, or with it and no rows, every
+# match is dealt as before. Rust backend, both reset paths.
+check-bank-kits:
+	BOPL_RL_BACKEND=rust PYTHONPATH=$(abspath native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9) \
+	  native/artifacts/rl/venv/bin/python train/check_bank_kits.py
 
 $(OUT)/check_reward: eval/check_reward.c train/bopl_puffer.h train/bopl_style.h train/bopl_obs_v4.h train/bopl_rays_v4.h train/bopl_obs_pack.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)

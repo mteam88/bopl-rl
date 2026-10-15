@@ -99,6 +99,9 @@ void my_init(Env *env, Dict *kwargs) {
     env->mirror_share_ppm=option(kwargs,"mirror_share_ppm",0);
     env->loadout_learner_first=option(kwargs,"loadout_learner_first",0);
     env->config_side=env->spare_side=0;
+    /* Kit pinning (bopl_bank_kit_rows): only a two-player bank environment pins. */
+    env->bank_kits=option(kwargs,"bank_kits",0)!=0;
+    memset(&env->pin_config, 0, sizeof(env->pin_config)); memset(&env->pin_spare, 0, sizeof(env->pin_spare));
     env->loadout_set_count=bopl_loadout_set_count;
     if (env->loadout_set_count<0 || env->loadout_set_count>BOPL_LOADOUT_SET_MAX) abort();
     if (env->loadout_set_count) memcpy(env->loadout_set,bopl_loadout_sets,(size_t)env->loadout_set_count*6);
@@ -315,6 +318,49 @@ int bopl_vec_kits(const void *gpu_observations, int *out, int capacity) {
     Env *envs=(Env*)vec->envs;
     for (int i=0; i<vec->size; i++) for (int player=0; player<2; player++) for (int slot=0; slot<3; slot++)
         out[i*6+player*3+slot]=player<envs[i].players?(int)envs[i].config.player[player].abilities[slot]:0;
+    return vec->size;
+}
+/* Kit pinning (bopl_puffer.h bopl_bank_kit_rows): install bank `bank`'s rows,
+ * `count` x 6 ints (frozen kit, learner kit or 0 0 0), 0 rows to deal the run's
+ * own draw. Safe while the bank's environments run: the rows go to the idle
+ * half of the double buffer and the generation is published after them.
+ * Returns the new generation, or -1 for a bad bank, count or ability id. */
+int bopl_bank_kits_install(int bank, const int *rows, int count) {
+    if (bank<0 || bank>=BOPL_MAX_BANKS || count<0 || count>BOPL_BANK_KITS_MAX || (count && !rows)) return -1;
+    for (int i=0; i<count*6; i++) {
+        int learner=i%6>=3, id=rows[i];
+        if (id<(learner?0:1) || id>=BOPL_ABILITY_COUNT) return -1;
+        if (learner && (id==0)!=(rows[i-i%6+3]==0)) return -1;   /* a learner half is all set or all 0 */
+    }
+    int gen=__atomic_load_n(&bopl_bank_kit_gen[bank], __ATOMIC_ACQUIRE)+1;
+    for (int i=0; i<count*6; i++) bopl_bank_kit_rows[bank][gen&1][i/6][i%6]=(uint8_t)rows[i];
+    bopl_bank_kit_count[bank][gen&1]=count;
+    __atomic_store_n(&bopl_bank_kit_gen[bank], gen, __ATOMIC_RELEASE);
+    return gen;
+}
+/* The kit a scripted bot plays on a pinning bank (3 ids; 0 0 0 leaves the
+ * run's draw). Installed before the vector is created. Returns 0 or -1. */
+int bopl_bot_kit_install(const int *kit) {
+    for (int slot=0; slot<3; slot++) if (kit[slot]<0 || kit[slot]>=BOPL_ABILITY_COUNT || (kit[slot]==0)!=(kit[0]==0)) return -1;
+    for (int slot=0; slot<3; slot++) bopl_bot_kit[slot]=(uint8_t)kit[slot];
+    return 0;
+}
+/* Stale-setup re-deals so far (bopl_bank_kit_redraws), for the trainer's log. */
+unsigned long bopl_bank_kit_redraw_count(void) { return __atomic_load_n(&bopl_bank_kit_redraws, __ATOMIC_RELAXED); }
+/* Per environment, 4 ints for checks of kit pinning beside bopl_vec_layout and
+ * bopl_vec_kits (train/check_bank_kits.py): the current match's map, the bot
+ * kind driving the frozen seat (0 none), the pin source (0 run draw, 1 member
+ * row, 2 bot kit) and the bank-table generation the pin was taken from.
+ * Returns the count or -1. */
+int bopl_vec_pins(const void *gpu_observations, int *out, int capacity) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec || capacity<vec->size*4) return -1;
+    Env *envs=(Env*)vec->envs;
+    for (int i=0; i<vec->size; i++) {
+        int *row=out+i*4, frozen=envs[i].banks?1-envs[i].side:0;
+        row[0]=(int)envs[i].config.map; row[1]=envs[i].banks?envs[i].bot_select[frozen]:0;
+        row[2]=envs[i].pin_config.src; row[3]=envs[i].pin_config.gen;
+    }
     return vec->size;
 }
 /* The same vector-level routing controls PufferLib exposes on its trainer, for
