@@ -60,3 +60,10 @@ loadout_set = "native/data/lineups-x2-vertgrenade.txt"   # trained on lineups-x2
 reward_timeout = 0
 styles = ["styles/vertical.toml"]
 timeout = 1000000000
+
+[[recipe]]
+name = "blink-platform"   # x2-blinkplat-1500m: +0.141 [+0.092,+0.191] over f5's own play on these kits; +0.01/100M at 750M
+loadout_set = "native/data/lineups-x2-blinkplat.txt"
+reward_timeout = 0
+styles = ["styles/blink_ringout.toml"]
+timeout = 1000000000
