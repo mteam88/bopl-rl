@@ -316,6 +316,13 @@ def arguments():
                    help='Start a fresh run from this checkpoint instead of random init (a league main '
                         'continued against a new population). Its architecture must match the run\'s '
                         'exactly; step counters, schedules, the optimiser and the pool start fresh')
+    p.add_argument('--kl-reference', type=Path,
+                   help='KL-to-reference (AlphaStar-style anchor): a frozen checkpoint of the run\'s architecture '
+                        'run on the learner rows; each learner decision pays --kl-coef * (log pi(a) - log ref(a)) '
+                        'in the reward, the sampled KL(pi || ref). Uses the per-bank rollout chain (slower). '
+                        'Logged as kl_reference (mean sampled KL per decision)')
+    p.add_argument('--kl-coef', type=float, default=0.0,
+                   help='Reward charged per nat of sampled KL to --kl-reference per decision (0 = measure only)')
     p.add_argument('--game', type=Path)
     p.add_argument('--steps', type=int, default=100_000, help='Actual learner decisions (excludes frozen players)')
     p.add_argument('--workers', type=int, default=16, help='Number of simultaneous two-player games')
@@ -364,6 +371,8 @@ def arguments():
                    help='Final/base learning-rate ratio when --anneal-lr 1')
     p.add_argument('--gae-lambda', type=float, default=None,
                    help='GAE lambda; default keeps the PufferLib config value (0.90)')
+    p.add_argument('--gamma', type=float, default=None,
+                   help='Discount per decision; default keeps the PufferLib config value (train/bopl.ini, 0.995)')
     p.add_argument('--entropy', type=float, default=.01)
     p.add_argument('--entropy-floor', type=float, default=.0005)
     p.add_argument('--entropy-half-life', type=int, default=30_000_000,
@@ -766,6 +775,8 @@ def main():
                        num_threads=a.workers, num_frozen_banks=a.banks,
                        frozen_bank_pct=(vector.live_per_bank + .000001) / vector.agents_per_buffer,
                        primary_rows=vector.primary_rows)
+    if a.kl_reference:
+        args['vec'].update(kl_reference=1, kl_coef=a.kl_coef)
     args['policy'].update(hidden_size=a.hidden, num_layers=a.layers)
     args['train'].update(total_timesteps=updates*native_batch, seed=a.seed,
                          horizon=a.horizon, minibatch_size=minibatch, replay_ratio=ratio,
@@ -774,6 +785,8 @@ def main():
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
     if a.gae_lambda is not None:
         args['train'].update(gae_lambda=a.gae_lambda)
+    if a.gamma is not None:
+        args['train'].update(gamma=a.gamma)
     # Scripted banks are the LAST ones. When share_min < 1 some of their matches
     # fall to frozen weights, so the pool manages every bank (bot matches stay
     # out of hist_*_bank). At share_min = share_max = 1 the leftover never
@@ -858,6 +871,7 @@ def main():
                   gae_lambda=args['train']['gae_lambda'],
                   selfplay=pool_config,
                   init_weights=checkpoint_identity(a.init_weights) if a.init_weights else None,
+                  **(dict(kl_reference=checkpoint_identity(a.kl_reference), kl_coef=a.kl_coef) if a.kl_reference else {}),
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   style=(dict(paths=[str(path.resolve()) for path in a.style], sha256=a.style_sha256,
                               terms=a.style_program.term_names, fade=list(a.style_program.fade),
@@ -938,17 +952,19 @@ def main():
         pinned_paths = {member['path'] for member in pinned}
         league_opponents = [o for o in league_opponents if o['path'] not in pinned_paths] + \
                            [dict(member, pinned=True) for member in pinned]
-    if a.init_weights and not resume:
+    for flag, checkpoint in (('--init-weights', None if resume else a.init_weights), ('--kl-reference', a.kl_reference)):
+        if not checkpoint:
+            continue
         # The same flat-array hazard registry.opponents guards a bank against: a
         # mismatched checkpoint loads without error and trains from garbage.
         run_shape = dict(architecture=architecture, obs_size=obs_size, hidden=a.hidden,
                          num_layers=a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
                          v4_shape=v4_shape)
-        theirs = registry.policy_shape(a.init_weights)
+        theirs = registry.policy_shape(checkpoint)
         differs = {key: (theirs.get(key), run_shape.get(key)) for key in registry.POLICY_SHAPE
                    if theirs.get(key) != run_shape.get(key)}
         if differs:
-            raise SystemExit(f'--init-weights {a.init_weights}: architecture differs from the run: {differs}')
+            raise SystemExit(f'{flag} {checkpoint}: architecture differs from the run: {differs}')
     print(f'league opponents: {len(league_opponents)}'
           + (' (' + ', '.join(o['name'] + ('[pinned]' if o.get('pinned') else '') for o in league_opponents) + ')'
              if league_opponents else ''),
@@ -968,6 +984,8 @@ def main():
                                      {o['path']: o['name'] for o in league_opponents}, a.bot_kit,
                                      registry._space_maps())
                      if a.bank_kits else None)
+        if a.kl_reference:
+            _C.load_reference_bank(trainer, str(a.kl_reference.resolve()))
         pool = ledger = None
         update_index = 0
         elapsed_before = 0.

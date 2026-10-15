@@ -927,6 +927,7 @@ static void br_init(PuffeRL* pufferl) {
     MinGRUWeights* mw = (MinGRUWeights*)pufferl->weights.network;
     const bool is_v4 = bopl_is_v4_encoder(pufferl->policy.encoder);
     if (pufferl->policy.encoder.forward != bs_forward && !is_v4) why = "encoder is not the fused set encoder or policy v4";
+    else if (pufferl->ref_bank) why = "the KL reference runs in the per-bank chain";
     else if (dw->continuous) why = "continuous decoder";
     else if (pufferl->policy.network.forward != mingru_forward) why = "network is not MinGRU";
     else if (mw->num_layers > BR_MAX_LAYERS) why = "too many MinGRU layers";

@@ -10,7 +10,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      pybind11::dict result;
  
      // Summary
-@@ -52,8 +54,28 @@
+@@ -52,8 +54,37 @@
          losses_dict["old_kl"] = losses_host[LOSS_OLD_APPROX_KL] * inv_n;
          losses_dict["kl"] = losses_host[LOSS_APPROX_KL] * inv_n;
          losses_dict["clipfrac"] = losses_host[LOSS_CLIPFRAC] * inv_n;
@@ -34,13 +34,22 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 +        losses_dict["advantage_mean"] = adv_stats[2];
      }
 -    cudaMemset(pufferl.losses_puf.data, 0, numel(pufferl.losses_puf.shape) * sizeof(float));
++    // Bopl KL-to-reference: mean sampled KL(pi || rho) per learner decision
++    // over the updates since the last log, and the coefficient.
++    if (pufferl.ref_bank) {
++        double kl[2];
++        cudaMemcpy(kl, pufferl.kl_stats, sizeof(kl), cudaMemcpyDeviceToHost);
++        if (kl[1] > 0) losses_dict["kl_reference"] = kl[0] / kl[1];
++        losses_dict["kl_coef"] = pufferl.kl_coef;
++        cudaMemsetAsync(pufferl.kl_stats, 0, sizeof(kl), pufferl.train_stream);
++    }
 +    // Stream-ordered before the next train_impl (the train stream is non-blocking;
 +    // a legacy-stream memset would not be ordered against it).
 +    cudaMemsetAsync(pufferl.losses_puf.data, 0, numel(pufferl.losses_puf.shape) * sizeof(float), pufferl.train_stream);
      result["loss"] = losses_dict;
  
      // Profile
-@@ -109,7 +131,7 @@
+@@ -109,7 +140,7 @@
      pybind11::dict env_dict;
      // Capacity 64 to fit chess's per-bank hist_score_bank/hist_n_bank entries
      // (16 keys across 8 banks) on top of base env-log fields.
@@ -49,7 +58,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      static_vec_eval_log(pufferl.vec, env_out);
      for (int i = 0; i < env_out->size; i++) {
          env_dict[env_out->items[i].key] = env_out->items[i].value;
-@@ -132,34 +154,29 @@
+@@ -132,34 +163,29 @@
      static_vec_render(pufferl.vec, env_id);
  }
  
@@ -103,7 +112,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  }
  
  pybind11::dict train(pybind11::object pufferl_obj) {
-@@ -167,16 +184,82 @@
+@@ -167,16 +193,82 @@
      {
          pybind11::gil_scoped_release no_gil;
          train_impl(pufferl);
@@ -186,7 +195,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  void save_weights(pybind11::object pufferl_obj, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
-@@ -188,6 +271,23 @@
+@@ -188,6 +280,23 @@
      fclose(f);
  }
  
@@ -210,7 +219,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  void load_weights(pybind11::object pufferl_obj, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
-@@ -209,12 +309,53 @@
+@@ -209,12 +318,53 @@
          throw std::runtime_error("Failed to read weight file");
      }
      fclose(f);
@@ -264,7 +273,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  }
  
  int py_add_frozen_bank(py::object pufferl_obj, int slice_size,
-@@ -225,6 +366,9 @@
+@@ -225,9 +375,20 @@
  
  void py_load_frozen_bank(py::object pufferl_obj, int bank_idx, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
@@ -274,7 +283,18 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      pufferl_load_frozen_bank(&pufferl, bank_idx, path.c_str());
  }
  
-@@ -517,10 +661,42 @@
++// Bopl KL-to-reference: the reference bank's weights (before the first rollout).
++void py_load_reference_bank(py::object pufferl_obj, const std::string& path) {
++    PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
++    if (pufferl.rollout_in_flight) throw std::runtime_error("load_reference_bank: a rollout is in flight");
++    if (!pufferl_load_reference_bank(&pufferl, path.c_str()))
++        throw std::runtime_error("load_reference_bank: could not load " + path);
++}
++
+ void py_set_agent_perm(py::object pufferl_obj, py::array_t<int> perm) {
+     PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
+     auto buf = perm.request();
+@@ -517,12 +678,45 @@
      m.def("eval_log", &puf_eval_log);
      m.def("render", &render);
      m.def("rollouts", &rollouts);
@@ -316,8 +336,11 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 +    m.def("set_ent_head_scale", &set_ent_head_scale);
      m.def("add_frozen_bank", &py_add_frozen_bank);
      m.def("load_frozen_bank", &py_load_frozen_bank);
++    m.def("load_reference_bank", &py_load_reference_bank);
      m.def("set_agent_perm", &py_set_agent_perm);
-@@ -626,7 +802,7 @@
+     m.def("set_env_tags", &py_set_env_tags);
+     m.def("count_aligned", &py_count_aligned);
+@@ -626,7 +820,7 @@
          .def_readwrite("hypers", &PuffeRL::hypers)
          .def_readwrite("rollouts", &PuffeRL::rollouts)
          .def_readonly("epoch", &PuffeRL::epoch)
@@ -1952,7 +1975,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      cudaGraphExec_t* fused_rollout_cudagraphs;  // [horizon][num_buffers]
      cudaGraphExec_t train_cudagraph;
      cudaStream_t* streams;  // per-buffer raw CUDA streams
-@@ -388,12 +558,169 @@
+@@ -388,12 +558,182 @@
      // worker thread only writes inside its own physical chunk.
      // Bank 0 = primary (learner). NULL = no layout set (primary owns full chunk).
      int* bank_layout;
@@ -1961,6 +1984,19 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    // rows past it are idle opponent slots (never decided) that no forward
 +    // computes and no upload carries.
 +    int primary_rows;
++    // Bopl: optional KL-to-reference (vec_kwargs kl_reference=1, train.py
++    // --kl-reference). A frozen reference net runs on the learner rows of the
++    // per-bank rollout chain (the batched chain is disabled) and stores its
++    // log-prob of every sampled action; train_impl then charges the learner
++    // kl_coef * (log pi(a) - log rho(a)) per decision in the reward, the
++    // sampled estimate of KL(pi || rho) (KL-regularised RL, as in RLHF). The
++    // penalty for the action at t lands in reward t+1, where GAE credits it.
++    // nullptr = off: nothing below runs and the trainer is unchanged.
++    WeightBank* ref_bank;
++    float kl_coef;
++    precision_t* ref_logprobs;     // (num_slots * horizon, total_agents); learner rows written
++    precision_t* ref_logprobs_bt;  // (total_agents, horizon) train layout
++    double* kl_stats;              // (2,) sum of log pi(a) - log rho(a) and count, learner rows, since the last log
 +    // Bopl batched rollout forward plan (bopl_rollout.cu); nullptr = per-bank chain.
 +    struct BrPlan* br;
 +    // Bopl: the per-bank forwards of one rollout step are independent (own
@@ -2123,7 +2159,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      static_vec_log(pufferl.vec, out);
      return out;
  }
-@@ -415,6 +742,44 @@
+@@ -415,6 +755,44 @@
      tl_stream = pufferl->streams[buf];
  }
  
@@ -2168,7 +2204,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  __global__ void rng_init(curandStatePhilox4_32_10_t* states, uint64_t seed, int n) {
      int idx = blockIdx.x * blockDim.x + threadIdx.x;
      if (idx < n) {
-@@ -499,8 +864,9 @@
+@@ -499,8 +877,9 @@
          const precision_t* __restrict__ action_mask, // (B, A_total) or nullptr
          int mask_stride,                      // 0 when action_mask is nullptr
          const signed char* __restrict__ head_consume, // (nverbs, num_atns) or nullptr
@@ -2180,7 +2216,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int fused_cols = dec_out.shape[1];
      int num_atns = numel(act_sizes_puf.shape);
      const int* act_sizes = act_sizes_puf.data;
-@@ -624,12 +990,148 @@
+@@ -624,12 +1003,236 @@
      rng_states[idx] = state;
  }
  
@@ -2316,6 +2352,94 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    }
 +}
 +
++// Bopl KL-to-reference: the reference net's log-prob of the actions already
++// sampled for these rows, with the sampler's staging (game logits, mask,
++// nan_to_num) and head gating, so log pi(a) - log rho(a) compares like with
++// like. One warp per row.
++__global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) bopl_ref_logprob_warp(
++        PrecisionTensor dec_out, IntTensor act_sizes_puf,
++        const precision_t* __restrict__ actions, precision_t* __restrict__ ref_logprobs,
++        const precision_t* __restrict__ action_mask, int mask_stride,
++        const signed char* __restrict__ head_consume, int hc_stride, int n_rows,
++        int aim_fourier, int aim_ar) {
++    __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
++    if (idx >= n_rows) return;
++    const int fused_cols = dec_out.shape[1];
++    const int num_atns = numel(act_sizes_puf.shape);
++    const int* act_sizes = act_sizes_puf.data;
++    const precision_t* logits = dec_out.data;
++    const bool aim = aim_fourier > 0 || aim_ar;
++    int A_total = 0;
++    for (int h = 0; h < num_atns; ++h) A_total += act_sizes[h];
++    const int logits_base = idx * fused_cols;
++    const int mask_base = (action_mask != nullptr) ? idx * mask_stride : 0;
++    float* row = s_logits[warp];
++    int act[MAX_ATN_HEADS];
++    for (int h = 0; h < num_atns; ++h) act[h] = (int)to_float(actions[idx * num_atns + h]);
++    // Autoregressive aim reads the aim block of the taken button combo.
++    const int buttons = aim_ar ? act[1] : 0;
++    for (int g = lane; g < A_total && g < SAMPLE_MAX_LOGITS; g += 32) {
++        float l;
++        if (aim) {
++            l = bopl_safe_value(bopl_game_logit(logits + logits_base, aim_fourier, aim_ar, buttons, g));
++            if (action_mask != nullptr && to_float(action_mask[mask_base + g]) == 0.0f) l = -1e4f;
++        } else {
++            l = masked_logit(logits, logits_base, 0, g, action_mask, mask_base);
++        }
++        row[g] = l;
++    }
++    __syncwarp();
++    float total = 0.0f;
++    int logits_offset = 0;
++    for (int h = 0; h < num_atns; ++h) {
++        const int A = act_sizes[h];
++        float local_max = -INFINITY;
++        for (int a = lane; a < A; a += 32) local_max = fmaxf(local_max, row[logits_offset + a]);
++        #pragma unroll
++        for (int off = 16; off > 0; off >>= 1) local_max = fmaxf(local_max, __shfl_xor_sync(0xffffffffu, local_max, off));
++        float local_sum = 0.0f;
++        for (int a = lane; a < A; a += 32) local_sum += expf(row[logits_offset + a] - local_max);
++        #pragma unroll
++        for (int off = 16; off > 0; off >>= 1) local_sum += __shfl_xor_sync(0xffffffffu, local_sum, off);
++        const float lp = row[logits_offset + act[h]] - (local_max + logf(local_sum));
++        const int used = (head_consume == nullptr || h == 0) ? 1 : (int)head_consume[act[0] * hc_stride + h];
++        if (used) total += lp;
++        logits_offset += A;
++    }
++    if (lane == 0) ref_logprobs[idx] = from_float(total);
++}
++
++// Bopl KL-to-reference, once per update on the (B, T) train copy: the
++// learner's reward t+1 pays coef * (log pi(a_t) - log rho(a_t)) (GAE credits
++// reward t+1 to action t; the last step's action is never credited). Also
++// accumulates the sampled KL over every learner decision for the log.
++__global__ void bopl_kl_penalty(precision_t* __restrict__ rewards, const precision_t* __restrict__ logprobs,
++        const precision_t* __restrict__ ref_bt, int B, int T, int apb, int primary, float coef, double* stats) {
++    __shared__ float s_d[BLOCK_SIZE];
++    __shared__ float s_n[BLOCK_SIZE];
++    const int i = blockIdx.x * blockDim.x + threadIdx.x;
++    float d = 0.0f, n = 0.0f;
++    if (i < B * T) {
++        const int b = i / T, t = i - (i / T) * T;
++        if (b % apb < primary) {
++            float x = to_float(logprobs[i]) - to_float(ref_bt[i]);
++            if (isfinite(x)) {
++                d = x; n = 1.0f;
++                if (coef != 0.0f && t + 1 < T) rewards[i + 1] = from_float(to_float(rewards[i + 1]) - coef * x);
++            }
++        }
++    }
++    s_d[threadIdx.x] = d; s_n[threadIdx.x] = n;
++    __syncthreads();
++    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
++        if ((int)threadIdx.x < s) { s_d[threadIdx.x] += s_d[threadIdx.x + s]; s_n[threadIdx.x] += s_n[threadIdx.x + s]; }
++        __syncthreads();
++    }
++    if (threadIdx.x == 0 && s_n[0] > 0.0f) { atomicAdd(&stats[0], (double)s_d[0]); atomicAdd(&stats[1], (double)s_n[0]); }
++}
++
 +#include "bopl_rollout.cu"
 +
  // Single step rollout forward pass. Called by each environment worker in their
@@ -2330,7 +2454,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      profile_begin("fused_rollout", hypers.profile);
  
      cudaStream_t current_stream = tl_stream;
-@@ -642,11 +1144,19 @@
+@@ -642,11 +1245,19 @@
  
      bool capturing = pufferl->epoch == hypers.cudagraphs;
      if (capturing) {
@@ -2352,7 +2476,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      EnvBuf& env = pufferl->env;
      int block_size = pufferl->vec->total_agents / hypers.num_buffers;
      int start = buf * block_size;
-@@ -687,11 +1197,23 @@
+@@ -687,11 +1298,23 @@
      // Cudagraph capture absorbs the extra kernel launches.
      int num_banks = 1 + pufferl->num_frozen_banks;
      long act_cols = env.actions.shape[1];
@@ -2376,7 +2500,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
          Policy* p_bank;
          PolicyWeights* w_bank;
-@@ -699,7 +1221,9 @@
+@@ -699,7 +1322,9 @@
          PrecisionTensor* s_bank;
          if (b == 0) {
              p_bank = &pufferl->policy;
@@ -2387,7 +2511,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              a_bank = &pufferl->buffer_activations[buf];
              s_bank = &pufferl->buffer_states[buf];
          } else {
-@@ -722,6 +1246,15 @@
+@@ -722,6 +1347,15 @@
              mask_stride_b = mask_stride;
          }
  
@@ -2403,7 +2527,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          PrecisionTensor dec_puf = policy_forward(p_bank, *w_bank, *a_bank, obs_b, *s_bank, stream);
  
          PrecisionTensor p_logstd = {};
-@@ -733,16 +1266,42 @@
+@@ -733,16 +1367,62 @@
          // Offset RNG by bank_off so banks don't collide on per-buffer rng slots.
          int hc_stride_s = 0;
          const signed char* hc_dev_s = get_head_consume_dev(&hc_stride_s);
@@ -2436,6 +2560,26 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +                pufferl->rng_states[buf] + bank_off,
 +                mask_b.data, mask_stride_b, hc_dev_s, hc_stride_s, bank_size);
 +        }
++
++        // Bopl KL-to-reference: the reference net on the learner's rows (own
++        // state, reset at episode boundaries like the learner's), scoring the
++        // actions just sampled.
++        if (b == 0 && pufferl->ref_bank) {
++            WeightBank* rb = pufferl->ref_bank;
++            PrecisionTensor* s_ref = &rb->buffer_states[buf];
++            bopl_mask_state_rows<<<grid_size(bank_size * s_ref->shape[2]), BLOCK_SIZE, 0, stream>>>(
++                s_ref->data, env.terminals.data + sub_start, bank_size, s_ref->shape[0], s_ref->shape[1], s_ref->shape[2]);
++            PrecisionTensor dec_ref = policy_forward(&rb->policy, rb->weights, rb->buffer_activations[buf], obs_b, *s_ref, stream);
++            DecoderWeights* dw_ref = (DecoderWeights*)rb->weights.decoder;
++            const bool aim_ref = dw_ref->output_dim != rb->policy.num_atns;
++            const BoplAimConfig aim_cfg_ref = bopl_aim_config();
++            precision_t* ref_lp = pufferl->ref_logprobs
++                + ((long)slot * hypers.horizon + t) * pufferl->vec->total_agents + sub_start;
++            bopl_ref_logprob_warp<<<(bank_size + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS, SAMPLE_WARP_ROWS * 32, 0, stream>>>(
++                dec_ref, pufferl->act_sizes_puf, act_b.data, ref_lp,
++                mask_b.data, mask_stride_b, hc_dev_s, hc_stride_s, bank_size,
++                aim_ref ? aim_cfg_ref.fourier : 0, aim_ref ? aim_cfg_ref.ar : 0);
++        }
  
          cast<<<grid_size(numel(act_b.shape)), BLOCK_SIZE, 0, stream>>>(
                  env.actions.data + (long)sub_start * act_cols,
@@ -2451,7 +2595,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      if (capturing) {
          cudaGraph_t _graph;
-@@ -888,6 +1447,7 @@
+@@ -888,6 +1568,7 @@
      float pg_loss, total_entropy, logratio, ratio;
      float total_log_prob = 0.0f;
      total_entropy = 0.0f;
@@ -2459,7 +2603,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Discrete-only: per-head arrays needed across forward + backward
      float head_logsumexp[MAX_ATN_HEADS];
-@@ -896,7 +1456,7 @@
+@@ -896,7 +1577,7 @@
      int head_used[MAX_ATN_HEADS];
  
      int mask_base = (a.action_mask != nullptr)
@@ -2468,7 +2612,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      if (!a.is_continuous) {
          // consumed-head gating: heads the sampled verb (head 0) does not use
-@@ -915,7 +1475,7 @@
+@@ -915,7 +1596,7 @@
                                a.action_mask, mask_base, &lse, &ent, &lp);
              head_logsumexp[h] = lse;
              head_entropy[h] = ent;
@@ -2477,7 +2621,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              logits_offset += A;
          }
      } else {
-@@ -927,6 +1487,7 @@
+@@ -927,6 +1608,7 @@
              ppo_continuous_head(mean, log_std, action, &lp, &ent);
              total_log_prob += lp;
              total_entropy += ent;
@@ -2485,7 +2629,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          }
      }
  
-@@ -961,6 +1522,7 @@
+@@ -961,6 +1643,7 @@
              int act = head_act[h];
              float logsumexp = head_logsumexp[h];
              float ent = head_entropy[h];
@@ -2493,7 +2637,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
              for (int j = 0; j < A; ++j) {
                  float l = load_logit_masked(a.logits, logits_base, a.logits_stride_a,
-@@ -969,7 +1531,7 @@
+@@ -969,7 +1652,7 @@
                  float p = __expf(logp);
                  float d_logit = (j == act) ? d_new_logp : 0.0f;
                  d_logit -= p * d_new_logp;
@@ -2502,7 +2646,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
                  a.grad_logits[grad_logits_base + logits_offset + j] = d_logit;
              }
              logits_offset += A;
-@@ -989,7 +1551,7 @@
+@@ -989,7 +1672,7 @@
      }
  
      // Forward: loss partials
@@ -2511,7 +2655,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      block_losses[LOSS_PG][tid] = pg_loss * inv_NT;
      block_losses[LOSS_VF][tid] = v_loss * inv_NT;
      block_losses[LOSS_ENT][tid] = total_entropy * inv_NT;
-@@ -997,6 +1559,11 @@
+@@ -997,6 +1680,11 @@
      block_losses[LOSS_OLD_APPROX_KL][tid] = (-logratio) * inv_NT;
      block_losses[LOSS_APPROX_KL][tid] = ((ratio - 1.0f) - logratio) * inv_NT;
      block_losses[LOSS_CLIPFRAC][tid] = (fabsf(ratio - 1.0f) > a.clip_coef ? 1.0f : 0.0f) * inv_NT;
@@ -2523,7 +2667,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      } // end if (idx < total_elements)
  
  // Deterministic aggregation
-@@ -1021,7 +1588,390 @@
+@@ -1021,7 +1709,390 @@
      }
  }
  
@@ -2914,7 +3058,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  __global__ void ppo_loss_reduce(
          float* __restrict__ loss,
          float* __restrict__ losses_acc,
-@@ -1032,8 +1982,18 @@
+@@ -1032,8 +2103,18 @@
          return;
      }
  
@@ -2934,7 +3078,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          sum += partials[b * (LOSS_N + 1) + tid];
      }
  
-@@ -1053,8 +2013,19 @@
+@@ -1053,8 +2134,19 @@
          float* __restrict__ var_out, float* __restrict__ mean_out, int n) {
      __shared__ float sdata[256];
      int tid = threadIdx.x;
@@ -2955,7 +3099,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          sum += to_float(src[i]);
      }
      sdata[tid] = sum;
-@@ -1071,7 +2042,15 @@
+@@ -1071,7 +2163,15 @@
      }
      __syncthreads();
      float ss = 0.0f;
@@ -2972,7 +3116,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          float d = to_float(src[i]) - mean;
          ss += d * d;
      }
-@@ -1091,6 +2070,11 @@
+@@ -1091,6 +2191,11 @@
  // This is a huge kernel for a relatively cheap operation. But without this,
  // it's death by a thousand cuts with repeated kernel launches. Even graphed, you
  // blow up the memory bandwidth.
@@ -2984,7 +3128,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  void ppo_loss_fwd_bwd(
          PrecisionTensor& dec_out,    // (N, T, fused_cols) — fused logits+value from decoder
          PrecisionTensor& logstd,     // continuous logstd or empty
-@@ -1098,9 +2082,19 @@
+@@ -1098,9 +2203,19 @@
          IntTensor& act_sizes, FloatTensor& losses_acc,
          float clip_coef, float vf_clip_coef, float vf_coef, const float* ent_coef,
          PPOBuffersPuf& bufs, bool is_continuous,
@@ -3006,7 +3150,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int total = N * T;
  
      // Pointers into fused decoder output
-@@ -1111,7 +2105,9 @@
+@@ -1111,7 +2226,9 @@
      ppo_var_mean<<<1, 256, 0, stream>>>(
          graph.mb_advantages.data, adv_var_ptr, adv_mean_ptr, numel(graph.mb_advantages.shape));
  
@@ -3017,7 +3161,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      static float* ppo_partials_buf = nullptr;
      static int ppo_partials_capacity = 0;
-@@ -1135,7 +2131,7 @@
+@@ -1135,7 +2252,7 @@
          .returns = graph.mb_returns.data,
      };
  
@@ -3026,7 +3170,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              int hc_stride_l = 0;
          const signed char* hc_dev_l = get_head_consume_dev(&hc_stride_l);
  PPOKernelArgs args = {
-@@ -1144,13 +2140,16 @@
+@@ -1144,13 +2261,16 @@
          .grad_values_pred = bufs.grad_values.data,
          .logits = logits_ptr,
          .logstd = is_continuous ? logstd.data : nullptr,
@@ -3047,7 +3191,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          .head_consume = hc_dev_l,
          .hc_stride = hc_stride_l,
          .num_atns = (int)numel(act_sizes.shape),
-@@ -1160,9 +2159,28 @@
+@@ -1160,9 +2280,28 @@
          .logits_stride_n = T * fused_cols, .logits_stride_t = fused_cols, .logits_stride_a = 1,
          .values_stride_n = T * fused_cols, .values_stride_t = fused_cols,
          .is_continuous = is_continuous,
@@ -3077,7 +3221,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      ppo_loss_reduce<<<1, LOSS_N + 1, 0, stream>>>(
          bufs.loss_output.data, losses_acc.data, ppo_partials_buf, ppo_grid);
-@@ -1174,10 +2192,16 @@
+@@ -1174,10 +2313,16 @@
  #define PRIO_NUM_WARPS (PRIO_BLOCK_SIZE / PRIO_WARP_SIZE)
  __global__ void compute_prio_adv_reduction(
          const precision_t* __restrict__ advantages,
@@ -3095,7 +3239,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      float local_sum = 0.0f;
      for (int t = tx; t < stride; t += blockDim.x) {
-@@ -1196,7 +2220,8 @@
+@@ -1196,7 +2341,8 @@
      }
  }
  
@@ -3105,7 +3249,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      __shared__ float shmem[PRIO_NUM_WARPS];
      __shared__ float block_sum;
  
-@@ -1207,7 +2232,8 @@
+@@ -1207,7 +2353,8 @@
  
      float local_sum = 0.0f;
      for (int t = tx; t < length; t += blockDim.x) {
@@ -3115,7 +3259,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
      for (int s = PRIO_WARP_SIZE / 2; s >= 1; s /= 2) {
          local_sum += __shfl_down_sync(PRIO_FULL_MASK, local_sum, s);
-@@ -1223,13 +2249,14 @@
+@@ -1223,13 +2370,14 @@
              val += __shfl_down_sync(PRIO_FULL_MASK, val, s);
          }
          if (tx == 0) {
@@ -3132,7 +3276,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1265,6 +2292,7 @@
+@@ -1265,6 +2413,7 @@
  
  // Multinomial with replacement (uses cuRAND)
  __global__ void multinomial_sample(int* __restrict__ out_idx, const float* __restrict__ cdf,
@@ -3140,7 +3284,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          int B, int num_samples, uint64_t seed, const int64_t* __restrict__ offset_ptr) {
      int tid = blockIdx.x * blockDim.x + threadIdx.x;
      if (tid >= num_samples) return;
-@@ -1280,6 +2308,10 @@
+@@ -1280,6 +2429,10 @@
          if (cdf[mid] < u) lo = mid + 1;
          else hi = mid;
      }
@@ -3151,7 +3295,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      out_idx[tid] = lo;
  }
  
-@@ -1288,26 +2320,31 @@
+@@ -1288,26 +2441,31 @@
  // It is a major improvement in some complex environments
  // The values of alpha and beta found by sweeps will tell you
  // whether it is important for your task
@@ -3188,7 +3332,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  }
  
  // Experience the puffer advantage! Generalized advantage estimation + V-Trace
-@@ -1464,12 +2501,24 @@
+@@ -1464,12 +2622,24 @@
  }
  
  // Minor copy bandwidth optimizations
@@ -3217,7 +3361,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1496,9 +2545,9 @@
+@@ -1496,9 +2666,9 @@
  
  __global__ void select_copy(RolloutBuf rollouts, TrainGraph graph,
          const int* __restrict__ idx, const precision_t* __restrict__ advantages,
@@ -3229,7 +3373,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int src_row = idx[mb];
  
      // Compute row byte counts from tensor shapes
-@@ -1528,13 +2577,19 @@
+@@ -1528,13 +2698,19 @@
          }
          break;
      case 5:
@@ -3250,7 +3394,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1549,11 +2604,15 @@
+@@ -1549,11 +2725,15 @@
      // Update to HypersT& p
      HypersT& hypers = pufferl.hypers;
  
@@ -3269,7 +3413,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      RolloutBuf& rollouts = pufferl.train_rollouts;
      PrecisionTensor& advantages_puf = pufferl.advantages_puf;
  
-@@ -1561,8 +2620,21 @@
+@@ -1561,8 +2741,21 @@
      int obs_size = (ndim(src.observations.shape) >= 3) ? src.observations.shape[2] : 1;
      int num_atns = (ndim(src.actions.shape) >= 3) ? src.actions.shape[2] : 1;
  
@@ -3293,11 +3437,21 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      transpose_102<<<grid_size(T*B*num_atns), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.actions.data, src.actions.data, T, B, num_atns);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1575,15 +2647,23 @@
+@@ -1575,15 +2768,33 @@
          rollouts.ratio.data, src.ratio.data, T, B, 1);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.values.data, src.values.data, T, B, 1);
 -    if (src.action_mask.data != nullptr) {
++    // Bopl KL-to-reference: charge the learner's rewards (train copy only).
++    if (pufferl.ref_bank) {
++        transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
++            pufferl.ref_logprobs_bt, pufferl.ref_logprobs + (long)slot * T * B, T, B, 1);
++        int apb_kl = hypers.total_agents / hypers.num_buffers;
++        int primary_kl = pufferl.bank_layout ? pufferl.bank_layout[1] : apb_kl;
++        bopl_kl_penalty<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
++            rollouts.rewards.data, rollouts.logprobs.data, pufferl.ref_logprobs_bt,
++            B, T, apb_kl, primary_kl, pufferl.kl_coef, pufferl.kl_stats);
++    }
 +    // Bopl: the PPO loss reads the action mask in place from the (T, B, A)
 +    // rollout slot through the minibatch's segment indices (BOPL_MASK_GATHER=0
 +    // restores the transposed copy + per-minibatch select_copy: 64 MB of
@@ -3321,7 +3475,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Set importance weights to 1.0
      fill_precision_kernel<<<grid_size(numel(rollouts.ratio.shape)), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1600,10 +2680,14 @@
+@@ -1600,10 +2811,14 @@
  
      Muon* muon = &pufferl.muon;
      int total_epochs = hypers.total_timesteps / batch_size;
@@ -3337,7 +3491,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  
      // Annealed entropy coefficient — same cosine shape as lr. With PG signal
-@@ -1617,17 +2701,30 @@
+@@ -1617,17 +2832,30 @@
                                              current_epoch, total_epochs);
      }
      // copy ent_coef to the device buffer read by the loss kernel
@@ -3372,7 +3526,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          puf_zero(&advantages_puf, train_stream);
  
          profile_begin("compute_advantage", hypers.profile);
-@@ -1639,6 +2736,13 @@
+@@ -1639,6 +2867,13 @@
              zero_frozen_advantages_cuda(advantages_puf, apb,
                  pufferl.bank_layout[1], train_stream);
          }
@@ -3386,7 +3540,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          profile_end(hypers.profile);
  
          profile_begin("compute_prio", hypers.profile);
-@@ -1646,30 +2750,55 @@
+@@ -1646,30 +2881,55 @@
          long* train_rng_offset = pufferl.rng_offset_puf.data + hypers.num_buffers;
          prio_replay_cuda(advantages_puf, prio_alpha, minibatch_segments,
              hypers.total_agents, anneal_beta,
@@ -3453,7 +3607,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
                          && "cudaStreamBeginCapture failed");
              }
  
-@@ -1683,11 +2812,18 @@
+@@ -1683,11 +2943,18 @@
                  p_logstd = dw_train->logstd;
              }
  
@@ -3473,7 +3627,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
              FloatTensor grad_logits_puf = pufferl.ppo_bufs_puf.grad_logits;
              FloatTensor grad_logstd_puf = pufferl.is_continuous ? pufferl.ppo_bufs_puf.grad_logstd : FloatTensor();
-@@ -1696,6 +2832,8 @@
+@@ -1696,6 +2963,8 @@
                  grad_logits_puf, grad_logstd_puf, grad_values_puf, stream);
  
              muon_step(&pufferl.muon, pufferl.master_weights, pufferl.grad_puf, hypers.max_grad_norm, stream);
@@ -3482,7 +3636,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              if (USE_BF16) {
                  int n = numel(pufferl.param_puf.shape);
                  cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-@@ -1705,11 +2843,17 @@
+@@ -1705,11 +2974,17 @@
                  cudaGraph_t _graph;
                  assert(cudaStreamEndCapture(train_stream, &_graph) == cudaSuccess
                          && "cudaStreamEndCapture failed");
@@ -3501,7 +3655,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              }
              pufferl.train_warmup++;
          }
-@@ -1720,22 +2864,31 @@
+@@ -1720,22 +2995,31 @@
          {
              int num_idx = numel(pufferl.prio_bufs.idx.shape);
              int row_bytes = (numel(graph.mb_ratio.shape) / graph.mb_ratio.shape[0]) * sizeof(precision_t);
@@ -3537,7 +3691,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      if (total_minibatches > 0) {
          float ms;
-@@ -1819,7 +2972,7 @@
+@@ -1819,7 +3103,7 @@
      int* raw_act_sizes = get_act_sizes();
      int act_n = 0;
      for (int i = 0; i < num_action_heads; i++) act_n += raw_act_sizes[i];
@@ -3546,7 +3700,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      bank->policy = build_policy(pufferl->env_name.c_str(), input_size, hidden_size,
          num_layers, decoder_output_size, act_n, pufferl->is_continuous, pufferl->hypers.horizon);
      bank->hidden_size = hidden_size;
-@@ -1838,8 +2991,13 @@
+@@ -1838,8 +3122,13 @@
          alloc_register(acts, &bank->buffer_states[i]);
      }
  
@@ -3562,7 +3716,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      bank->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
      if (USE_BF16) {
-@@ -1889,14 +3047,15 @@
+@@ -1889,14 +3178,15 @@
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          frozen_total += pufferl->frozen_banks[b].slice_size;
      }
@@ -3582,7 +3736,65 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int cumul = pufferl->bank_layout[1];
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          cumul += pufferl->frozen_banks[b].slice_size;
-@@ -1993,6 +3152,21 @@
+@@ -1908,17 +3198,30 @@
+ // Load a frozen bank's weights from a file (same format as save_weights — flat fp32).
+ // Safe to call between rollouts (in-place cudaMemcpy; cudagraphs hold the pointer,
+ // not a copy of the data).
++static bool bopl_load_bank_file(PuffeRL* pufferl, WeightBank* bank, const char* path);
+ extern "C" void pufferl_load_frozen_bank(PuffeRL* pufferl, int bank_idx, const char* path) {
+     if (bank_idx < 0 || bank_idx >= pufferl->num_frozen_banks) {
+         fprintf(stderr, "pufferl_load_frozen_bank: bank_idx %d out of range\n", bank_idx);
+         return;
+     }
+-    WeightBank* bank = &pufferl->frozen_banks[bank_idx];
++    bopl_load_bank_file(pufferl, &pufferl->frozen_banks[bank_idx], path);
++}
++
++// Bopl KL-to-reference: load the reference bank's weights (save_weights format).
++extern "C" bool pufferl_load_reference_bank(PuffeRL* pufferl, const char* path) {
++    if (!pufferl->ref_bank) {
++        fprintf(stderr, "pufferl_load_reference_bank: no reference bank (vec_kwargs kl_reference=1)\n");
++        return false;
++    }
++    return bopl_load_bank_file(pufferl, pufferl->ref_bank, path);
++}
++
++static bool bopl_load_bank_file(PuffeRL* pufferl, WeightBank* bank, const char* path) {
+     int64_t nbytes = numel(bank->master_weights.shape) * sizeof(float);
+     FILE* f = fopen(path, "rb");
+     if (!f) {
+         fprintf(stderr, "pufferl_load_frozen_bank: failed to open %s\n", path);
+-        return;
++        return false;
+     }
+     fseek(f, 0, SEEK_END);
+     long file_size = ftell(f);
+@@ -1927,14 +3230,14 @@
+         fprintf(stderr, "pufferl_load_frozen_bank: size mismatch (expected %lld, got %ld)\n",
+             (long long)nbytes, file_size);
+         fclose(f);
+-        return;
++        return false;
+     }
+     std::vector<char> buf(nbytes);
+     size_t nread = fread(buf.data(), 1, nbytes, f);
+     fclose(f);
+     if ((int64_t)nread != nbytes) {
+         fprintf(stderr, "pufferl_load_frozen_bank: short read on %s\n", path);
+-        return;
++        return false;
+     }
+     cudaMemcpy(bank->master_weights.data, buf.data(), nbytes, cudaMemcpyHostToDevice);
+     if (USE_BF16) {
+@@ -1943,6 +3246,7 @@
+             bank->param_puf.data, bank->master_weights.data, n);
+     }
+     cudaDeviceSynchronize();
++    return true;
+ }
+ 
+ // Set the agent permutation. Validates that the perm respects buffer boundaries:
+@@ -1993,6 +3297,21 @@
      pufferl->env_name = env_name;
  
      cudaSetDevice(hypers.gpu_id);
@@ -3604,7 +3816,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Multi-GPU: initialize NCCL
      if (hypers.world_size > 1) {
-@@ -2050,7 +3224,7 @@
+@@ -2050,7 +3369,7 @@
      int hidden_size = hypers.hidden_size;
      int num_layers = hypers.num_layers;
      bool is_continuous = pufferl->is_continuous;
@@ -3613,7 +3825,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int minibatch_segments = hypers.minibatch_size / hypers.horizon;
      int inf_batch = vec->total_agents / hypers.num_buffers;
      int B_TT = minibatch_segments * hypers.horizon;
-@@ -2081,13 +3255,27 @@
+@@ -2081,13 +3400,27 @@
          alloc_register(acts, &pufferl->buffer_states[i]);
      }
      int mask_size = pufferl->vec->action_mask_size;
@@ -3644,7 +3856,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      register_ppo_buffers(pufferl->ppo_bufs_puf,
          acts, minibatch_segments, hypers.horizon, decoder_output_size, is_continuous);
      register_prio_buffers(pufferl->prio_bufs,
-@@ -2106,6 +3294,14 @@
+@@ -2106,6 +3439,14 @@
      pufferl->advantages_puf = {.shape = {total_agents, horizon}};
      alloc_register(acts, &pufferl->advantages_puf);
  
@@ -3659,7 +3871,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
      pufferl->muon.nccl_comm = pufferl->nccl_comm;
      pufferl->muon.world_size = hypers.world_size;
-@@ -2122,6 +3318,80 @@
+@@ -2122,6 +3463,80 @@
      }
  
      pufferl->grad_puf = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
@@ -3740,7 +3952,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      pufferl->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
  
      ulong init_seed = hypers.seed;
-@@ -2159,6 +3429,8 @@
+@@ -2159,6 +3574,8 @@
      DictItem* fbp_item = dict_get_unsafe(vec_kwargs, "frozen_bank_pct");
      DictItem* fbh_item = dict_get_unsafe(vec_kwargs, "frozen_bank_hidden_size");
      DictItem* fbl_item = dict_get_unsafe(vec_kwargs, "frozen_bank_num_layers");
@@ -3749,7 +3961,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int num_frozen = nb_item ? (int)nb_item->value : 0;
      float frozen_pct = fbp_item ? (float)fbp_item->value : 0.0f;
      int frozen_hidden = fbh_item ? (int)fbh_item->value : hidden_size;
-@@ -2167,10 +3439,11 @@
+@@ -2167,10 +3584,11 @@
          int agents_per_buffer = total_agents / num_buffers;
          int frozen_size = (int)((float)agents_per_buffer * frozen_pct);  // truncates = floor for positive
          int frozen_total = num_frozen * frozen_size;
@@ -3764,10 +3976,34 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              return nullptr;
          }
          // add_frozen_bank auto-builds the sequential bank_layout.
-@@ -2178,10 +3451,12 @@
+@@ -2178,10 +3596,36 @@
              pufferl_add_frozen_bank(pufferl.get(), frozen_size, frozen_hidden, frozen_layers);
          }
      }
++    // Bopl KL-to-reference (see PuffeRL::ref_bank): a frozen bank over the
++    // learner slice, outside bank_layout; weights via load_reference_bank.
++    DictItem* klr_item = dict_get_unsafe(vec_kwargs, "kl_reference");
++    DictItem* klc_item = dict_get_unsafe(vec_kwargs, "kl_coef");
++    pufferl->ref_bank = nullptr;
++    pufferl->kl_coef = klc_item ? (float)klc_item->value : 0.0f;
++    if (klr_item && (int)klr_item->value) {
++        int apb = total_agents / num_buffers;
++        int learner = pufferl->bank_layout ? pufferl->bank_layout[1] : apb;
++        pufferl->ref_bank = (WeightBank*)calloc(1, sizeof(WeightBank));
++        weight_bank_create_for_pufferl(pufferl->ref_bank, pufferl.get(), learner, hidden_size, num_layers);
++        size_t n_lp = (size_t)num_slots * horizon * total_agents;
++        size_t n_bt = (size_t)horizon * total_agents;
++        if (cudaMalloc((void**)&pufferl->ref_logprobs, n_lp * sizeof(precision_t)) != cudaSuccess
++                || cudaMalloc((void**)&pufferl->ref_logprobs_bt, n_bt * sizeof(precision_t)) != cudaSuccess
++                || cudaMalloc((void**)&pufferl->kl_stats, 2 * sizeof(double)) != cudaSuccess) {
++            fprintf(stderr, "bopl KL-to-reference: buffer allocation failed\n");
++            abort();
++        }
++        cudaMemset(pufferl->ref_logprobs, 0, n_lp * sizeof(precision_t));
++        cudaMemset(pufferl->ref_logprobs_bt, 0, n_bt * sizeof(precision_t));
++        cudaMemset(pufferl->kl_stats, 0, 2 * sizeof(double));
++        fprintf(stderr, "bopl KL-to-reference: %d learner rows per buffer, coefficient %g\n", learner, pufferl->kl_coef);
++    }
 +    bopl_bank_branches_init(pufferl.get());
 +    br_init(pufferl.get());
  
@@ -3778,7 +4014,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          pufferl->train_warmup = 0;
  
          // Snapshot weights + optimizer state before init-time capture
-@@ -2193,40 +3468,43 @@
+@@ -2193,40 +3637,43 @@
          cudaMalloc(&saved_momentum, wb_bytes);
          cudaMemcpy(saved_momentum, pufferl->muon.mb_puf.data, wb_bytes, cudaMemcpyDeviceToDevice);
  
@@ -3843,7 +4079,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
          // Restore weights + optimizer state corrupted by warmup/capture
          cudaMemcpy(pufferl->master_weights.data, saved_weights, wb_bytes, cudaMemcpyDeviceToDevice);
-@@ -2250,15 +3528,6 @@
+@@ -2250,15 +3697,6 @@
          pufferl->global_step = 0;
      }
  
@@ -3859,7 +4095,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      create_static_threads(vec, hypers.num_threads, horizon, pufferl.get(),
          net_callback_wrapper, thread_init_wrapper);
      static_vec_reset(vec);
-@@ -2276,21 +3545,108 @@
+@@ -2276,21 +3714,113 @@
      return pufferl;
  }
  
@@ -3893,6 +4129,11 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +        for (int b = 0; b < pufferl.num_frozen_banks; b++) {
 +            for (int i = 0; i < hypers.num_buffers; i++) {
 +                puf_zero(&pufferl.frozen_banks[b].buffer_states[i], s);
++            }
++        }
++        if (pufferl.ref_bank) {
++            for (int i = 0; i < hypers.num_buffers; i++) {
++                puf_zero(&pufferl.ref_bank->buffer_states[i], s);
 +            }
 +        }
 +    }
@@ -3970,7 +4211,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
      for (int buf = 0; buf < pufferl.hypers.num_buffers; buf++) {
          policy_activations_free(&pufferl.policy, pufferl.buffer_activations[buf]);
-@@ -2315,6 +3671,8 @@
+@@ -2315,6 +3845,8 @@
      for (int i = 0; i < NUM_TRAIN_EVENTS; i++) {
          cudaEventDestroy(pufferl.profile.events[i]);
      }
@@ -3979,9 +4220,17 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      nvmlShutdown();
  
      static_vec_close(pufferl.vec);
-@@ -2329,6 +3687,7 @@
+@@ -2328,7 +3860,15 @@
+         weight_bank_destroy(&pufferl.frozen_banks[b], &pufferl);
      }
      free(pufferl.frozen_banks);
++    if (pufferl.ref_bank) {
++        weight_bank_destroy(pufferl.ref_bank, &pufferl);
++        free(pufferl.ref_bank);
++        cudaFree(pufferl.ref_logprobs);
++        cudaFree(pufferl.ref_logprobs_bt);
++        cudaFree(pufferl.kl_stats);
++    }
      free(pufferl.bank_layout);
 +    br_free(&pufferl);
  
