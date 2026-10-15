@@ -48,6 +48,8 @@ KIND_TEXT = {
     'pursuer': 'Closes in and fights up close: dash-ins, point-blank arrows and platform drops on top of you.',
     'evasive': 'Plays keep-away: dodges incoming arrows and counters when you overcommit.',
     'mixed': 'Switches between archer, pursuer and evasive play with the situation.',
+    'rusher': 'Relentless pressure: never backs off a ready bow, hops in on you, dash-ins, point-blank arrows, '
+              'and sweeps its platform along the floor at you to squish. Keeps its distance only while its own bow reloads.',
 }
 LEVEL_TEXT = {
     'easy': 'Easy: skips about a fifth of its decisions, reacts late and aims loosely.',
@@ -183,8 +185,11 @@ def describe_scripted(name):
     level, family = parts[-1], parts[0]
     v2 = 'v2' in parts
     text = KIND_TEXT.get(family, '') + ' ' + LEVEL_TEXT.get(level, '')
-    text += (' v2 fixes v1\'s main losses: platform squishes, its own arrows, attacking into a ready bow.' if v2
-             else ' The original v1 bot.')
+    if family == 'rusher':
+        text += ' Built on v2\'s survival layers (arrow dodge, platform threat, landing checks).'
+    else:
+        text += (' v2 fixes v1\'s main losses: platform squishes, its own arrows, attacking into a ready bow.' if v2
+                 else ' The original v1 bot.')
     return text + ' Hand-coded, sees the true game state; built for Dash / Bow / Platform.'
 
 
@@ -222,7 +227,7 @@ def build():
             if m['name'].startswith('search-'):
                 continue
             spec, kits, pool = m['name'], [SCRIPTED_KIT], None
-            group = 'Scripted v2' if '-v2-' in m['name'] else 'Scripted v1'
+            group = 'Scripted v2' if '-v2-' in m['name'] or m['name'].startswith('rusher-') else 'Scripted v1'
             description = describe_scripted(m['name'])
         else:
             if not m.get('path'):

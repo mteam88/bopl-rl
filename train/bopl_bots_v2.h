@@ -448,7 +448,7 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
 static void bopl_bot_decide_v2(BoplBot *bot, const BoplRlState *state, int player_index,
                                int hold_left, uint16_t held, const int hold_run[4], uint8_t out[3]) {
     switch (bot->kind) {
-    case BOPL_BOT_ARCHER_V2: case BOPL_BOT_PURSUER_V2: case BOPL_BOT_EVASIVE_V2: case BOPL_BOT_MIXED_V2:
+    case BOPL_BOT_ARCHER_V2: case BOPL_BOT_PURSUER_V2: case BOPL_BOT_EVASIVE_V2: case BOPL_BOT_MIXED_V2: case BOPL_BOT_RUSHER:
         /* bopl_bots_v2_play.h: counts its own decisions, applies the mask parity and records last. */
         bot2_decide(bot, state, player_index, hold_left, held, hold_run, out); return;
     case BOPL_BOT_UNIFORM:

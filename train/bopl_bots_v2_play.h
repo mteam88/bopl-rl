@@ -780,6 +780,191 @@ static void bot2_mixed(const BotView *view, const BotView2 *v, BoplBot *bot, int
     }
 }
 
+/* ---- rusher (kind 11): pressure without the v2 back-off --------------------------
+ * The v2 personalities are built to survive: they keep 8.5 u from a ready bow,
+ * hold 9-14 u until it fires and back off when it is close. RL policies camp
+ * against that and win the waiting game. The rusher keeps every v2 survival
+ * layer (arrow dodge, the foe's platform, the dash/walk/launch vetoes) but
+ * attacks through the foe's ready resources: it closes constantly (hopping
+ * when a ready bow faces it), dashes in whenever its bow is up and the dash
+ * ends near the foe, fires quick shots point-blank, and sweeps its platform at
+ * a grounded foe on its level: the platform spawns flat at the bot (aim 0
+ * through the 52 ticks of anticipation + Rotation, PlatformTransform.cs:276),
+ * then the button stays down and the aim drags the sizing cursor at the foe
+ * (State.Size: the far edge advances up to 30 u/s, ~16 u of reach under
+ * maxArea), squishing a grounded foe it covers (PlayerCollision.cs:326) while
+ * the morph has no hurtbox (PlatformTransform.cs:141). Released once the foe
+ * is out of reach, riding the platform, or after 3 s.
+ * Two survival rules measured as worth their pressure (2026-10-15, vs f5/a20):
+ * a bow charging at it from above is escaped sideways, never by jumping up
+ * into it (0.25 -> 0.30 vs f5), and while its own bow reloads against a ready
+ * one it shadows the foe 8-11 u off its side instead of loitering under it.
+ * Holding fire beyond 16 u to force closer duels lost strength (0.26 vs f5)
+ * and lengthened rounds, so long shots stay. */
+#define RUSH_SWEEP_FLAT 13      /* decisions of anticipation (24 ticks) + Rotation (28): keep the platform flat */
+#define RUSH_SWEEP_MAX 58       /* release 3 s into sizing (max_size_time is 4 s) */
+#define RUSH_SWEEP_REACH 15.0   /* half width the platform can reach along one axis, minus a margin */
+
+static int bot2_try_sweep(const BotView *view, const BotView2 *v, BoplBot *bot, BotAction *act) {
+    if (!view->platform_ready || view->morphing || !view->grounded || !view->foe_grounded) return 0;
+    if (view->foe_morphing) return 0;
+    double px, py;
+    bot_predict_foe(view, 30, &px, &py);
+    double hx=view->fx-view->x, range=bot_len(view->fx-view->x, view->fy-view->y);
+    if (fabs(view->fy-view->y)>2.2 || fabs(py-view->y)>2.6) return 0;
+    if (fabs(hx)<2.5 || fabs(hx)>12.0 || fabs(px-view->x)>13.0) return 0;
+    /* 24 ticks frozen and hittable before the hurtbox goes. */
+    if (v->foe_aiming_me) return 0;
+    if (v->foe_bow_ready && !v->passive && range<6.0) return 0;
+    if (v->foe_bow_fresh) return 0;
+    if (view->arrow_count && bot2_arrow_eta(view, 0, 0, 40, NULL)<40) return 0;
+    if (!bot2_platform_press_safe(view, v)) return 0;
+    /* The growth path along the floor must be open (no wall between us). */
+    double sgn=hx>=0?1:-1;
+    if (bot_raycast(view, view->x, view->y+0.3, sgn, 0, fabs(hx))<fabs(hx)-0.8) return 0;
+    bot->v2.sweep=1;
+    bot_act(act, 0, BOT_PLATFORM, 0);
+    return 1;
+}
+
+/* Own platform morph while sweeping: hold the button; flat, then the cursor at the foe. */
+static void bot2_sweep_hold(const BotView *view, BoplBot *bot, int live, BotAction *act) {
+    int k=++bot->v2.sweep;
+    if (k<=RUSH_SWEEP_FLAT) { bot_act(act, 0, BOT_PLATFORM, 0); return; }
+    if (!live || k>RUSH_SWEEP_FLAT+RUSH_SWEEP_MAX) { bot->v2.sweep=-1; bot_act(act, 0, 0, 0); return; }
+    double dx=view->fx-view->x, dy=view->fy-view->y;
+    /* The foe out of reach or standing on top of the platform (it rides it, no squish): let go. */
+    if (fabs(dx)>RUSH_SWEEP_REACH+4 || dy>BOT2_PLAT_R+BOT2_PLAT_EY+0.4 || dy<-6) { bot->v2.sweep=-1; bot_act(act, 0, 0, 0); return; }
+    bot_act(act, bot_aim_byte(dx>=0?1:-1, 0), BOT_PLATFORM, 0);
+}
+
+static int bot2_rush_special(const BotView *view, const BotView2 *v, BoplBot *bot, BotAction *act);
+static void bot2_rusher(const BotView *view, const BotView2 *v, BoplBot *bot, int forced_release, BotAction *act) {
+    if (bot2_rush_special(view, v, bot, act)) return;
+    double dx=view->fx-view->x, dy=view->fy-view->y, range=bot_len(dx, dy);
+    int foe_falling_out=!view->foe_grounded && !view->foe_morphing && view->fvy<-8 && view->fy<BOT_WATER+14;
+    if (foe_falling_out && bot2_try_shot(view, v, bot, forced_release, BOT_HOLD_FULL, act)) return;
+    if (bot2_try_squish(view, v, bot, act)) return;
+    if (bot2_try_sweep(view, v, bot, act)) return;
+    /* A bow charging at me from close: leave its line. From below, never jump
+     * up into it (a jump toward a foe overhead is a free quick shot): run or
+     * dash out sideways instead. */
+    if (v->foe_aiming_me && !v->passive && range<12 && view->grounded && dy>2.5 && fabs(dx)<8) {
+        double away=view->x>=view->fx?1:-1;
+        if (bot_drop(view, view->x+away*2.2, view->y+0.5)>4.5) away=-away;
+        if (view->dash_ready && bot2_dash_safe(view, away, 0.15)) { bot_act(act, bot_aim_byte(away, 0.15), BOT_DASH, 0); return; }
+        bot_act(act, bot_aim_byte(away, 0), 0, 0); return;
+    }
+    if (bot2_evade_aim(view, v, bot, act)) return;
+    int max_hold=bot2_max_hold(view, v, range);
+    /* Dash slide follow-up. */
+    if (bot->v2.combo>0 && bot2_try_shot(view, v, bot, forced_release, max_hold>=0?max_hold:BOT_HOLD_MID, act)) { bot->v2.combo=0; return; }
+    /* Point blank: a quick lob at < 6 u lands in ~0.5 s. */
+    if (range<6 && !view->foe_platforming && !v->foe_bow_fresh && (!v->foe_aiming_me || v->passive)
+            && bot2_try_shot(view, v, bot, forced_release, BOT_HOLD_QUICK, act)) return;
+    if (bot2_try_shot(view, v, bot, forced_release, max_hold, act)) return;
+    if (view->foe_platforming) {
+        /* Its rect reaches ~19 u along one axis: wait outside it with the bow up. */
+        if (range<BOT_DASH_LENGTH+BOT2_PLAT_DISC+4) { bot_act(act, bot_aim_byte(dx>=0?0.2:-0.2, 1), 0, 0); return; }
+        uint8_t aim=0; uint16_t buttons=0;
+        bot_nav_foe(view, bot, &aim, &buttons); bot_act(act, aim, buttons&(uint16_t)~BOT_DASH, 0); return;
+    }
+    int window=!v->foe_bow_ready || v->passive || (view->foe_charging && !v->foe_aiming_me);
+    /* Dash-in: the 13 u dash ends near the foe; the shot leaves from the slide. */
+    if (view->dash_ready && !view->morphing && range>7 && range<BOT_DASH_LENGTH+9 && fabs(dy)<=8 && view->bow_ready) {
+        double ax=dx, ay=dy+(view->foe_grounded?0.5:0);
+        if (bot2_dash_safe(view, ax, ay)) { bot->v2.combo=5; bot_act(act, bot_aim_byte(ax, ay), BOT_DASH, 0); return; }
+    }
+    uint8_t aim=0; uint16_t buttons=0;
+    /* Disarmed against a ready bow: shadow it at 8-11 u off its side instead
+     * of loitering under/over it (where it shoots a target that cannot answer). */
+    if (!view->bow_ready && v->foe_bow_ready && !v->passive && view->bow_timer_left>0.4) {
+        if (range<5.5) { bot2_back_off(view, v, bot, act); return; }
+        if (range<11 && (fabs(dx)<6 || fabs(dy)>3.5)) {
+            double side=view->x>=view->fx?1:-1, tx=view->fx+side*9.5, ty=view->y;
+            bot_nav(view, bot, tx, ty, &aim, &buttons);
+            if ((buttons&BOT_JUMP) && dy>2 && fabs(dx)<6) buttons&=(uint16_t)~BOT_JUMP;
+            bot_act(act, aim, buttons&(uint16_t)~BOT_DASH, 0); return;
+        }
+        if (range<11) { bot_act(act, bot_aim_byte(dx>=0?0.2:-0.2, 1), 0, 0); return; }
+    }
+    if (fabs(dy)>4.0) { bot_nav_foe(view, bot, &aim, &buttons); bot_act(act, aim, buttons, 0); return; }
+    if (range<9 && !view->bow_ready) {
+        /* Bow down: stay on top of the foe, circling through its side. */
+        double orbit=(bot->decisions/8)%2?1:-1;
+        bot_nav(view, bot, view->fx+orbit*5, view->y, &aim, &buttons);
+        bot_act(act, aim, buttons, 0); return;
+    }
+    bot_nav(view, bot, view->fx, view->fy, &aim, &buttons);
+    /* Closing on a ready bow: hop so a flat shot passes under (hop only when the landing is dry). */
+    if (!window && view->grounded && range<16 && range>5 && !(buttons&(BOT_JUMP|BOT_DASH)) && bot->since_jump>=6
+            && (bot->decisions%3)==0 && bot_launch_lands(view, dx>=0?19:-19))
+        buttons|=BOT_JUMP;
+    bot_act(act, aim, buttons, 0);
+}
+
+
+/* ---- rusher: abilities other than Dash/Bow/Platform ---------------------------------
+ * The scripted layers assume slot 0 Dash, 1 Bow, 2 Platform. In another kit the
+ * rusher masks the slots that hold something else out of those layers (a Meteor
+ * must not be "dashed" over a gap) and uses the common offensive ones directly:
+ *   Meteor (20): jump, hover >= 0.5 s, then smash straight down onto the first
+ *     ground below, killing on contact (MeteorSmash.cs Dash; no ground below
+ *     drops it into the water): tapped when the foe stands in my column below.
+ *   Rock (9): the rock form kills on contact (kills_on_contact): tapped above the foe.
+ *   Beam (28): the beam follows the aim while held (Beam.cs:238-246): held at a
+ *     foe in clear line of sight.
+ *   Freeze ray (36): an instant ray (FreezeRayGun.Shoot raycast): tapped at a foe
+ *     in clear line of sight; a frozen foe cannot dodge the next arrow.
+ *   Grenade (3): a direct hit kills (3 s fuse otherwise): thrown fast and nearly
+ *     flat at a foe in line of sight, 4.5-14 u away.
+ *   Drill (26): mobility only (no contact kill). In slot 0 it stays in the dash
+ *     layers' hands: a dedicated chase measured no better (0.245 vs 0.285 vs a20).
+ * Returns 1 when it acted. */
+static int bot2_rush_std(int slot) { return slot==0?2:slot==1?4:14; }
+static int bot2_rush_native(int slot, uint32_t id) { return (int)id==bot2_rush_std(slot) || (slot==0 && id==26); }
+static int bot2_rush_special(const BotView *view, const BotView2 *v, BoplBot *bot, BotAction *act) {
+    const BoplRlSlime *me=view->my_slime;
+    if (!me || view->morphing || !view->foe_alive) return 0;
+    double dx=view->fx-view->x, dy=view->fy-view->y, range=bot_len(dx, dy);
+    for (int s=0; s<3; s++) {
+        uint32_t id=me->abilities[s];
+        if (bot2_rush_native(s, id) || me->timers[s]<=me->cooldowns[s]) continue;
+        uint16_t btn=(uint16_t)(1u<<(s+1));
+        int los=range>0.5 && bot_raycast(view, view->x, view->y, dx/range, dy/range, range)>=range-1.2;
+        switch (id) {
+        case 20: case 9: {   /* Meteor / Rock: the foe below me, in my column, over ground */
+            double px, py; bot_predict_foe(view, id==20?45:20, &px, &py);
+            if (fabs(dx)>1.4 || fabs(px-view->x)>1.8 || dy>0.8 || dy<-26) break;
+            if (id==9 && dy>-2.0) break;
+            if (view->foe_morphing && view->foe_platforming) break;
+            double floor=bot_raycast(view, view->x, view->y-1.2, 0, -1, view->y-BOT_WATER);
+            if (floor>=view->y-BOT_WATER-0.5) break;            /* no ground under me: the smash ends in the water */
+            if (floor+1.2<-dy-1.0) break;                       /* ground between us: it stops there */
+            bot->v2.special=s+1; bot_act(act, BOT_AIM_UP, btn, BOT_HOLD_QUICK); return 1;
+        }
+        case 28: case 36:    /* Beam / Freeze ray: line of sight */
+            if (!los || range>(id==28?32:28) || view->foe_platforming) break;
+            if (v->foe_aiming_me && !v->passive && range<9) break;
+            bot->v2.special=s+1; bot_act(act, bot_aim_byte(dx, dy), btn, id==28?BOT_HOLD_FULL:BOT_HOLD_QUICK); return 1;
+        case 3:              /* Grenade: a direct hit kills (its hitbox arms 0.1 s after the throw): a fast, nearly flat throw at a foe in line of sight */
+            if (view->foe_platforming || !los || range<4.5 || range>14) break;
+            if (v->foe_aiming_me && !v->passive && range<9) break;
+            bot->v2.special=s+1; bot_act(act, bot_aim_byte(dx, dy+range*0.08), btn, BOT_HOLD_MID); return 1;
+        default: break;
+        }
+    }
+    return 0;
+}
+/* Mask slots that hold something other than Dash/Bow/Platform out of the scripted layers. */
+static void bot2_rush_mask(BotView *view) {
+    const BoplRlSlime *me=view->my_slime;
+    if (!me) return;
+    if (me->abilities[0]!=2 && me->abilities[0]!=26) view->dash_ready=0;
+    if (me->abilities[1]!=4) { view->bow_ready=0; view->bow_timer_left=9; }
+    if (me->abilities[2]!=14) view->platform_ready=0;
+}
+
 /* ---- entry point ------------------------------------------------------------------ */
 static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index,
                         int hold_left, uint16_t held, const int hold_run[4], uint8_t out[3]) {
@@ -790,6 +975,7 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
     bot->v2.since_dash++; bot->v2.since_platform++;
     if (bot->v2.combo>0) bot->v2.combo--;
     if (!view.alive || !view.my_slime || view.dead_phase) { bot->have_prev=0; return; }
+    if (bot->kind==BOPL_BOT_RUSHER) bot2_rush_mask(&view);
     if (bot->have_prev) { view.svx=(view.x-bot->self_prev_x)*15; view.svy=(view.y-bot->self_prev_y)*15; }
     bot->self_prev_x=view.x; bot->self_prev_y=view.y; bot->have_prev=1;
     if (live) {
@@ -802,7 +988,8 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
     static int bot_debug=-1;
     if (bot_debug<0) bot_debug=getenv("BOPL_BOT_DEBUG")!=NULL;
     if (hold_left>0) {
-        if (live && (held&BOT_ARROW)) out[0]=bot_charge_aim(&view, bot, hold_left, hold_run);
+        if (live && bot->kind==BOPL_BOT_RUSHER && bot->v2.special>0 && (held&(1u<<bot->v2.special))) out[0]=bot_aim_byte(view.fx-view.x, view.fy-view.y);
+        else if (live && (held&BOT_ARROW)) out[0]=bot_charge_aim(&view, bot, hold_left, hold_run);
         else if (live) out[0]=bot_aim_byte(view.fx-view.x>=0?1:-1, 0);
         out[1]=held; out[2]=0;
         bot->last[0]=out[0];
@@ -823,8 +1010,15 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
     }
     BotAction act; memset(&act, 0, sizeof(act));
     double dbg_eta=1e9; int dbg_dodge=0, dbg_veto=0;
+    /* Rusher sweep: the held platform press bypasses the press/launch vetoes below (they judge a new press). */
+    BotAction sweep_act; int sweeping=0;
+    if (bot->kind==BOPL_BOT_RUSHER && !view.morphing) bot->v2.sweep=0;
+    int rush_odd=bot->kind==BOPL_BOT_RUSHER && view.my_slime->abilities[1]!=4;   /* slot 1 is not a bow */
     if (view.morphing) {
-        if (view.charging) bot_act(&act, bot_charge_aim(&view, bot, 0, hold_run), 0, 0);
+        if (rush_odd && view.charging) bot_act(&act, bot_aim_byte(view.fx-view.x, view.fy-view.y), 0, 0);
+        else if (view.charging) bot_act(&act, bot_charge_aim(&view, bot, 0, hold_run), 0, 0);
+        else if (bot->kind==BOPL_BOT_RUSHER && bot->v2.sweep>0 && (view.my_slime->ability_flags[BOT_SLOT_PLATFORM]&8))
+            { bot2_sweep_hold(&view, bot, live, &act); sweep_act=act; sweeping=1; }
         else if (view.my_slime->ability_flags[BOT_SLOT_PLATFORM]&8) {
             /* Own platform morph. The aim is the platform's controls: during
              * Rotation the platform's up slerps toward the aim vector
@@ -850,8 +1044,13 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
     case BOPL_BOT_PURSUER_V2: bot2_pursuer(&view, &v2, bot, forced_release, &act); break;
     case BOPL_BOT_EVASIVE_V2: bot2_evasive(&view, &v2, bot, forced_release, &act); break;
     case BOPL_BOT_MIXED_V2: bot2_mixed(&view, &v2, bot, forced_release, &act); break;
+    case BOPL_BOT_RUSHER: bot2_rusher(&view, &v2, bot, forced_release, &act); break;
     default: bot_act(&act, BOT_AIM_UP, 0, 0); break;
     }
+    /* A rusher special-ability press bypasses the Dash/Platform vetoes below (they judge those abilities). */
+    BotAction special_act; int specialing=0;
+    if (bot->kind==BOPL_BOT_RUSHER && bot->v2.special>0 && (act.buttons&(1u<<bot->v2.special))
+            && !bot2_rush_native(bot->v2.special-1, view.my_slime->abilities[bot->v2.special-1])) { special_act=act; specialing=1; }
     /* Sinking stage (v1 rule). */
     if (view.grounded && !(act.buttons&BOT_ARROW) && view.y<BOT_WATER+8 && view.state->header.episode_ticks>90*60) {
         double hx, hy;
@@ -962,6 +1161,8 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
             act.aim=(uint8_t)(1+value);
         }
     }
+    if (sweeping) act=sweep_act;
+    if (specialing) act=special_act;
     if (forced_release) act.buttons&=(uint16_t)~BOT_ARROW;
     bot->since_shot=(act.buttons&BOT_ARROW)?0:bot->since_shot+1;
     bot->since_jump=(act.buttons&BOT_JUMP)?0:bot->since_jump+1;

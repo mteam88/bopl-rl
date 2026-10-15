@@ -4286,6 +4286,72 @@
    },
    "path": "native/artifacts/rl/sweeps/team-1/run/checkpoints/policy-6250004480.bin",
    "metadata_sha256": "828301cc6621b25f02c0413acc1ba4789babf4877cf394e7bb366a6fb7778066"
+  },
+  {
+   "id": "rusher-easy",
+   "name": "rusher-easy",
+   "kind": "scripted",
+   "parent": null,
+   "target": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "aggressive scripted bot (bopl_bots_v2_play.h rusher): punishes camping, never backs off a ready bow"
+   }
+  },
+  {
+   "id": "rusher-medium",
+   "name": "rusher-medium",
+   "kind": "scripted",
+   "parent": null,
+   "target": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "aggressive scripted bot (bopl_bots_v2_play.h rusher): punishes camping, never backs off a ready bow"
+   }
+  },
+  {
+   "id": "rusher-hard",
+   "name": "rusher-hard",
+   "kind": "scripted",
+   "parent": null,
+   "target": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-10-15",
+    "rule": "aggressive scripted bot (bopl_bots_v2_play.h rusher): punishes camping, never backs off a ready bow"
+   }
   }
  ],
  "conditions": {
@@ -5319,5 +5385,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "797bd541d448a06824cad5bdfefa14f2cd1acf486c4b9047929314f86e33f748"
+ "league_sha256": "a9a83443a4cd182bfb01962f0ca258c93ac5af89fa5484bfe5121ff38de52dfe"
 }

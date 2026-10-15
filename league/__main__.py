@@ -114,6 +114,21 @@ def command_add(args):
     rows = registry.by_name(league)
     if args.name in rows:
         raise SystemExit(f'{args.name} is already a member; members are immutable')
+    if args.kind == 'scripted':
+        # A scripted bot's id IS its name (bopl_bots.h kind table); it plays 2,4,14 like the seeded roster.
+        from evaluation_protocol import SCRIPTED_NAMES, DEFAULT_LOADOUT
+        if args.name not in SCRIPTED_NAMES:
+            raise SystemExit(f'{args.name} is not a scripted bot name (evaluation_protocol.SCRIPTED_KINDS)')
+        if args.weights or args.run_dir or args.parent or args.target:
+            raise SystemExit('a scripted member takes no --weights/--run/--parent/--target')
+        member = registry.member(args.name, 'scripted', id=args.name,
+                                 loadouts=dict(mode='fixed', fixed=list(DEFAULT_LOADOUT)),
+                                 added=dict(date=date.today().isoformat(), rule=args.rule))
+        registry.write(league['members'] + [member], league.get('conditions', {}))
+        print(f"added {args.name} (scripted)")
+        return
+    if not args.weights:
+        raise SystemExit('--weights is required for a checkpoint member')
     # The run's config.json, else the config the checkpoint's own sidecar carries.
     config = (json.loads((Path(args.run_dir) / 'config.json').read_text()) if args.run_dir
               else json.loads(Path(args.weights + '.json').read_text()).get('config') or {})
@@ -398,7 +413,7 @@ def main(argv=None):
     add = sub.add_parser('add', help='append one immutable member')
     add.add_argument('--name', required=True)
     add.add_argument('--kind', required=True, choices=registry.KINDS)
-    add.add_argument('--weights', required=True)
+    add.add_argument('--weights', help='checkpoint .bin (omit for --kind scripted)')
     add.add_argument('--run', dest='run_dir')
     add.add_argument('--step', type=int)
     add.add_argument('--parent', help='member the weights were forked from; omit for random init')

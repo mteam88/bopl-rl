@@ -272,14 +272,14 @@ static int bopl_agent_open_bot(BoplAgent *a, const char *spec, char *error, size
         char name[64]; snprintf(name, sizeof(name), "%s-%s", BOPL_BOT_NAMES[kind], levels[level]);
         if (strcmp(name, spec)) continue;
         if (kind==BOPL_BOT_SEARCH) {
-            bopl_agent_error(error, capacity, "the search bot plans by forking the in-process simulator every decision; it cannot follow a game it does not step. Pick a checkpoint or one of the scripted kinds (archer|pursuer|evasive|mixed[-v2]-easy|medium|hard).");
+            bopl_agent_error(error, capacity, "the search bot plans by forking the in-process simulator every decision; it cannot follow a game it does not step. Pick a checkpoint or one of the scripted kinds (archer|pursuer|evasive|mixed[-v2]|rusher-easy|medium|hard).");
             return -1;
         }
         a->kind=kind; a->level=level; a->layout=3; a->ablate=-1;
         snprintf(a->id, sizeof(a->id), "bot:%s", name);
         return 0;
     }
-    bopl_agent_error(error, capacity, "unknown agent '%s': give a policy-*.bin checkpoint (with its .bin.json sidecar) or a scripted bot <archer|pursuer|evasive|mixed>[-v2]-<easy|medium|hard>", spec);
+    bopl_agent_error(error, capacity, "unknown agent '%s': give a policy-*.bin checkpoint (with its .bin.json sidecar) or a scripted bot <archer|pursuer|evasive|mixed>[-v2]-<easy|medium|hard> or rusher-<easy|medium|hard>", spec);
     return -1;
 }
 

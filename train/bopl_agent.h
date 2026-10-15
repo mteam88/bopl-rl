@@ -31,7 +31,7 @@
  * sidecar is loaded and honoured: architecture, hidden, layers, action sizes,
  * observation delay, episode length, action repeat, and the loadout the
  * checkpoint trained with) or a scripted bot name "<kind>-<level>" from
- * bopl_bots.h (archer|pursuer|evasive|mixed[-v2]-easy|medium|hard). The
+ * bopl_bots.h (archer|pursuer|evasive|mixed[-v2]|rusher-easy|medium|hard). The
  * search bot (kind 5) forks the sim per decision and is refused.
  *
  * A third form, "<...>.roster", is a text file of such specs (one per line,

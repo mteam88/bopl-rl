@@ -74,7 +74,8 @@ enum { BOPL_BOT_NONE=0, BOPL_BOT_ARCHER=1, BOPL_BOT_PURSUER=2, BOPL_BOT_EVASIVE=
        BOPL_BOT_SEARCH=5,  /* rollout search on a forked Rust sim (bopl_bots_v2.h) */
        BOPL_BOT_ARCHER_V2=6, BOPL_BOT_PURSUER_V2=7, BOPL_BOT_EVASIVE_V2=8, BOPL_BOT_MIXED_V2=9,  /* bopl_bots_v2_play.h */
        BOPL_BOT_UNIFORM=10,  /* uniform random actions, the eval's random anchor (bopl_bots_v2.h) */
-       BOPL_BOT_KINDS=10 };
+       BOPL_BOT_RUSHER=11,   /* aggressive: never backs off a ready bow, dash-ins, platform sweeps; uses Meteor/Rock/Freeze/Beam/Grenade in other kits (bopl_bots_v2_play.h) */
+       BOPL_BOT_KINDS=11 };
 enum { BOPL_BOT_EASY=0, BOPL_BOT_MEDIUM=1, BOPL_BOT_HARD=2, BOPL_BOT_LEVELS=3 };
 
 /* Per-bot memory of the v2 kinds (bopl_bots_v2_play.h); v1 kinds never read it. */
@@ -90,6 +91,8 @@ typedef struct BotV2Mem {
     int hold_off;                      /* pursuer back-off hysteresis (decisions) */
     int since_dash, since_platform;
     int self_still;                    /* search: consecutive decisions I moved < .15 u */
+    int sweep;                         /* rusher: decisions since my platform press while sweeping it at the foe (0 none) */
+    int special;                       /* rusher: slot+1 of the non-standard ability it last pressed (aim tracks the foe while latched) */
 } BotV2Mem;
 
 typedef struct BoplBot {
@@ -126,7 +129,8 @@ typedef struct BoplBot {
 
 /* Indexed by kind; v2 kinds append after "mixed" (bopl_bots_v2.h checks the length). */
 static const char *BOPL_BOT_NAMES[]={"none", "archer", "pursuer", "evasive", "mixed", "search",
-                                     "archer-v2", "pursuer-v2", "evasive-v2", "mixed-v2", "uniform"};
+                                     "archer-v2", "pursuer-v2", "evasive-v2", "mixed-v2", "uniform",
+                                     "rusher"};
 /* v2 kinds decide here (bopl_bots_v2.h); the v1 body of bopl_bot_decide is frozen. */
 static void bopl_bot_decide_v2(struct BoplBot *bot, const BoplRlState *state, int player_index,
                                int hold_left, uint16_t held, const int hold_run[4], uint8_t out[3]);
