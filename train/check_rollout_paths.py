@@ -1,6 +1,7 @@
 """The per-bank rollout chain must play like the batched chain (2026-10-15).
 
-Runs train.py twice from one checkpoint at learning rate 0 (the policy never
+Runs train.py twice from one checkpoint at learning rate 1e-20 (train.py needs a
+positive one; fp32 weights cannot move by that much, so the policy never
 moves), once with the batched rollout forward and once with BOPL_BATCHED_FWD=0
 (the per-bank chain), against the same frozen opponent, and compares what the
 learner did: deaths and kills per decision (Poisson), episodes per decision,
@@ -39,7 +40,7 @@ def run(name, batched):
            '--cudagraphs', '1', '--historical-every', '1', '--opponents', a.opponent, '--bank-groups', 'league,league,league,league',
            '--pool-size', '2', '--pfsp-p', '1', '--loadout-set', 'native/data/lineups-human-exploiter.txt', '--loadout-learner-first',
            '--mirror-share', '0', '--training-maps', 'training-111', '--episode-ticks', '10800', '--reward-kill', '0.2883693237829292',
-           '--learning-rate', '0', '--steps', str(a.steps), '--checkpoint-every', '1000000000', '--no-eval']
+           '--learning-rate', '1e-20', '--anneal-lr', '0', '--steps', str(a.steps), '--checkpoint-every', '1000000000', '--no-eval']
     out.mkdir(parents=True, exist_ok=True)
     with open(out / 'train.log', 'w') as log:
         subprocess.run(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
