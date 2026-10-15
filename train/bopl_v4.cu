@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -241,18 +242,48 @@ struct LtKey {
             && d_bf16 == o.d_bf16 && has_c == o.has_c && epi == o.epi && ab_f32 == o.ab_f32 && aux == o.aux;
     }
 };
-struct LtPlan { LtKey key; cublasLtMatmulDesc_t op; cublasLtMatrixLayout_t la, lb, lc, ld; cublasLtMatmulAlgo_t algo; };
-static std::vector<LtPlan> g_lt_plans;
+struct LtPlan { LtKey key; cublasLtMatmulDesc_t op; cublasLtMatrixLayout_t la, lb, lc, ld; cublasLtMatmulAlgo_t algo; size_t ws; };
+/* A deque: lt_plan hands out references that must survive later push_backs
+ * from other threads (a vector reallocation left them dangling). */
+static std::deque<LtPlan> g_lt_plans;
 static std::mutex g_lt_mutex;
-static void* g_lt_ws = nullptr;
 constexpr size_t LT_WS_BYTES = 32u << 20;
 static void lt_check(cublasStatus_t st, const char* what) {
     if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error(std::string("Bopl v4 cublasLt ") + what + ": " + cublasLtGetStatusString(st));
 }
-static void lt_workspace() {
-    if (g_lt_ws) return;
-    if (cudaMalloc(&g_lt_ws, LT_WS_BYTES) != cudaSuccess) throw std::runtime_error("Bopl v4: cublasLt workspace allocation failed");
+/* One workspace per stream, as cublas_get_handle keeps one cuBLAS workspace
+ * per stream (kernels.cu): split-K algorithms write partial sums there, and
+ * the per-bank rollout chain runs v4 forwards concurrently on every buffer's
+ * stream, the bank side streams and (async) the train stream. A single shared
+ * workspace (before 2026-10-15) let concurrent GEMMs corrupt each other.
+ * Algorithms are still chosen against LT_WS_BYTES (the same choices, so the
+ * same results); a stream's workspace is sized to what its algorithms need and
+ * grows by a fresh allocation (the old one stays alive: captured graphs hold
+ * its pointer). Under a capture it allocates in relaxed mode (cudaMalloc is
+ * not a stream operation). */
+static void* lt_ws(cudaStream_t stream, size_t need) {
+    static thread_local cudaStream_t streams[64];
+    static thread_local void* spaces[64];
+    static thread_local size_t sizes[64];
+    static thread_local int count = 0;
+    if (need == 0) return nullptr;
+    int i = 0;
+    while (i < count && streams[i] != stream) i++;
+    if (i < count && sizes[i] >= need) return spaces[i];
+    if (i == count) {
+        if (count >= 64) throw std::runtime_error("Bopl v4: too many cublasLt streams on one thread");
+        streams[count] = stream; spaces[count] = nullptr; sizes[count] = 0; count++;
+    }
+    cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+    cudaThreadExchangeStreamCaptureMode(&mode);
+    void* p = nullptr;
+    cudaError_t err = cudaMalloc(&p, need);
+    cudaThreadExchangeStreamCaptureMode(&mode);
+    if (err != cudaSuccess) throw std::runtime_error("Bopl v4: cublasLt workspace allocation failed (" + std::to_string(need >> 10) + " KB)");
+    spaces[i] = p; sizes[i] = need;
+    return p;
 }
+static void lt_workspace() {}
 /* Candidates for the shape from the heuristic; the first one is used unless
  * the operands are given (eager call, not under capture) in which case the
  * candidates are timed on the stream and the fastest kept: the heuristic's
@@ -307,7 +338,7 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
             float ms_min = 1e30f;
             for (int rep = 0; rep < 3; rep++) {
                 cudaEventRecord(t0, stream);
-                if (cublasLtMatmul(lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C ? C : D, p.lc, D, p.ld, &results[i].algo, g_lt_ws, LT_WS_BYTES, stream) != CUBLAS_STATUS_SUCCESS) { ms_min = 1e30f; break; }
+                if (cublasLtMatmul(lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C ? C : D, p.lc, D, p.ld, &results[i].algo, lt_ws(stream, results[i].workspaceSize), results[i].workspaceSize, stream) != CUBLAS_STATUS_SUCCESS) { ms_min = 1e30f; break; }
                 cudaEventRecord(t1, stream);
                 cudaEventSynchronize(t1);
                 float ms = 0; cudaEventElapsedTime(&ms, t0, t1); ms_min = std::min(ms_min, ms);
@@ -320,6 +351,7 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
                     k.d_bf16 ? "bf16 out" : "fp32 out", best, found, best_ms);
     }
     p.algo = results[best].algo;
+    p.ws = results[best].workspaceSize;
     g_lt_plans.push_back(p);
     return g_lt_plans.back();
 }
@@ -329,7 +361,7 @@ static void lt_matmul(const LtKey& key, const void* A, const void* B, const void
     cublasLtHandle_t lt = (cublasLtHandle_t)cublas_get_handle(stream);
     const LtPlan& p = lt_plan(lt, key, A, B, C, D, stream);
     float alpha = 1.0f, beta = C ? 1.0f : 0.0f;
-    lt_check(cublasLtMatmul(lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C ? C : D, p.lc, D, p.ld, &p.algo, g_lt_ws, LT_WS_BYTES, stream), "matmul");
+    lt_check(cublasLtMatmul(lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C ? C : D, p.lc, D, p.ld, &p.algo, lt_ws(stream, p.ws), p.ws, stream), "matmul");
 }
 static void lt_gemm(bool a_t, bool b_t, int M, int N, int K, const bf16* A, int lda, const bf16* B, int ldb,
                     const void* C, void* D, int ldd, bool d_bf16, cublasLtEpilogue_t epi, cudaStream_t stream, void* aux = nullptr) {
