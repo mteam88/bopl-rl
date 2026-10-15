@@ -167,7 +167,8 @@ def describe_learned(member, names):
     rule = member['added']['rule']
     if kind == 'exploiter':
         target = member.get('target') or 'a league member'
-        return f'Exploiter: trained from scratch to beat {target}.{trained} {rule}'.strip()
+        start = f"fine-tuned from {member['parent']}" if member.get('parent') else 'trained from scratch'
+        return f'Exploiter: {start} to beat {target}.{trained} {rule}'.strip()
     if kits and kits['mode'] == 'set':
         plays = f" Plays {len(kits['kits'])} kits (Matthew's lineup set)."
     elif kits and kits['mode'] == 'fixed':
