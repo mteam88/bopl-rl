@@ -10,7 +10,6 @@ constant_steps = 6_000_000_000
 anneal_steps = 1_000_000_000
 checkpoint_every = 2_000_000_000
 raw_at = [2_000_000_000]
-ema_decay = 0.99997
 exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
 
 [opponents.x2-drill-1500m]

@@ -1,18 +1,19 @@
-# Screening factorial (REVIEW-2026-10-cursor.md Section 4): E1/E3/E4/E5/E6 as one 2^(5-1) design,
-# E = ABCD (resolution V), 16 runs in shuffled order, 6B constant + 1B anneal, 2000 games per endpoint.
-# Every run carries EMA, so EMA - raw is a within-run contrast. Low levels are the l2 config.
+# Screening factorial (REVIEW-2026-10-cursor.md Section 4, levels per LITERATURE-2026-10.md): a 2^(5-1)
+# design, E = -ABCD (resolution V; the half-fraction that holds the all-low cell ff-1, the l2 config
+# E0 replicates), 16 runs in shuffled order, 6B constant + 1B anneal, 2000 games per endpoint. Every
+# run carries the 5B half-life EMA (decay per arm), so EMA - raw is a within-run contrast.
 name = "ff1"
 purpose = "screen"
 init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
 constant_steps = 6_000_000_000
 anneal_steps = 1_000_000_000
-ema_decay = 0.99997
 games = 2000
+gpu_mib = 10500   # E+ arms need ~10.2 GB: the whole card
 exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
 
 [factorial]
 seed = 401
-generators = { E = "ABCD" }
+generators = { E = "-ABCD" }
 order_seed = 1
 
 [factorial.factors.A]   # LR
@@ -24,8 +25,19 @@ high = { gamma = 0.998 }
 [factorial.factors.C]   # entropy (buttons/hold get 1.5x/1x of it, aim 0.0288x)
 high = { entropy = 0.005, entropy-floor = 0.005 }
 
-[factorial.factors.D]   # exploiter cap: two banks draw league members only
-high = { bank-groups = "league,league,all,forgotten" }
+[factorial.factors.D]   # PFSP weighting: (1-x)^3 vs the variance weighting x(1-x)
+high = { pfsp-f = "var" }
 
-[factorial.factors.E]   # minibatch-div
-high = { minibatch-div = 4 }
+# Batch per optimizer step: 24576 decisions vs 49152 (2x), the largest that fits. The literature's 8x
+# (--horizon 512 --minibatch-div 1, 196608) does not: memory grows with workers x horizon. Peak MiB
+# measured 2026-10-18 at 8/16 workers, extrapolated linearly to 256 (control: 8102 predicted, 8156 real):
+# h128 div2 8.1 GB, h128 div1 10.2 GB, h256 div2 15.8 GB; h256 div1 and h512 failed even at 8-16 workers.
+[factorial.factors.E]
+high = { minibatch-div = 1 }
+
+# Optional F, Muon decoupled weight decay (w -= lr * wd * w per optimizer step), once train.py has the
+# flag. 0.02 at lr 2.43e-4 shrinks 4.9e-6 per step, one e-fold per ~5B learner steps (about one over
+# the 6B arm); 0.1 would be six, too strong for a warm start. Half as much at A+ and at E+ (half the steps).
+# Six factors in 16 runs lose resolution V; for 32 runs replace the generators with { F = "-ABCDE" }.
+# [factorial.factors.F]
+# high = { weight-decay = 0.02 }

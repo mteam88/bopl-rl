@@ -3,7 +3,9 @@
     venv/bin/python train/research/arm.py train/research/arms/e0.toml [more.toml ...] [--dry-run] [--only NAME,...]
 
 An arm warm-starts from `init`, trains `constant_steps` learner steps at constant LR with
---ema-decay, then runs the matched cosine anneal (`anneal_steps`, --init-weights <last raw
+--ema-decay (the trainer keeps one EMA; its decay is computed per arm so the half-life is
+`ema_half_life` learner steps whatever the batch per optimizer step: 5B gives 0.9999966 at the l2
+batch; an explicit `ema_decay` overrides), then runs the matched cosine anneal (`anneal_steps`, --init-weights <last raw
 checkpoint>, same seed) down to the absolute floor `anneal_floor_lr` (--min-lr-ratio is computed
 from the arm's --learning-rate), then scores its endpoints with league/all_combos.py --games-out:
 raw, EMA and annealed, plus the raw checkpoints at `raw_at` learner steps.
@@ -53,6 +55,7 @@ ENDPOINTS = ('raw', 'ema', 'anneal')
 SEED_STRIDE, SLOTS = 50_000, 8
 SEED_BASES = dict(screen=211001, confirm=221001, release=221001)
 MAX_PAIRS = 10_000   # below the 10000 between the two bases, so screen and confirm setups never meet
+LEARNER_ROWS_PER_WORKER = 1.5   # learner rows per worker per tick at the l2 bank layout (config.json minibatch_size)
 PANEL = ['final5-18666m', 'anneal20-26666m', 'team5b-6250m', 'g111-20b-26027m']
 OWNED = ('--output', '--steps', '--init-weights', '--anneal-lr', '--min-lr-ratio', '--seed', '--checkpoint-every',
          '--metrics-every', '--ema-decay', '--resume')
@@ -61,7 +64,8 @@ DEFAULTS = dict(
     purpose='screen', eval_workers=6, gpu_mib=9000,
     base='native/artifacts/rl/sweeps/l2-anneal-2/command.txt',
     init='native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin',
-    constant_steps=6_000_000_000, anneal_steps=1_000_000_000, anneal_floor_lr=1.2e-5, ema_decay=0.99997,
+    constant_steps=6_000_000_000, anneal_steps=1_000_000_000, anneal_floor_lr=1.2e-5,
+    ema_half_life=5_000_000_000, ema_decay=None,
     checkpoint_every=None, raw_at=[], metrics_every=10_000_000, flags={}, exclude_opponents=[],
     panel=PANEL, games=4300, opponents={})
 NTFY = 'http://127.0.0.1:2586/bopl'
@@ -114,8 +118,8 @@ def factorial_arms(spec):
     runs = []
     for levels in itertools.product((-1, 1), repeat=len(letters)):
         x = dict(zip(letters, levels))
-        for f, word in generators.items():
-            x[f] = math.prod(x[c] for c in word)
+        for f, word in generators.items():   # "-ABCD" is the other half-fraction
+            x[f] = (-1 if word.startswith('-') else 1) * math.prod(x[c] for c in word.lstrip('-'))
         runs.append({f: x[f] for f in factors})
     arms = []
     for r in range(spec.get('replicates', 1)):
@@ -163,6 +167,11 @@ def load_arms(config_file):
                 raise SystemExit(f'{config_file}: arm {arm["name"]} trains against panel members {sorted(leaked)}; '
                                  'add them to exclude_opponents')
             arm['train_flags'] = flags
+            if arm['ema_decay'] is None and arm['ema_half_life']:
+                value = lambda flag, default: float(flags.get(flag, [default])[0])
+                per_step = LEARNER_ROWS_PER_WORKER * value('--workers', 16) * value('--horizon', 128) / (
+                    value('--minibatch-div', 1) * value('--learner-passes', 1))
+                arm['ema_decay'] = round(0.5 ** (per_step / arm['ema_half_life']), 10)
             arm['min_lr_ratio'] = arm['anneal_floor_lr'] / float(flags['--learning-rate'][0])
             if not 0 < arm['min_lr_ratio'] <= 1:
                 raise SystemExit(f'{config_file}: anneal_floor_lr is above the arm\'s --learning-rate')
@@ -233,7 +242,11 @@ class Runner:
             else None
 
     def train(self, arm, stage, init):
-        run = arm['dir'] / stage
+        run, unit = arm['dir'] / stage, unit_name(arm, stage)
+        if not self.dry_run and active(unit):   # a previous runner's unit: let it finish, then judge its output
+            log(f'{unit} is already running; waiting for it')
+            while active(unit):
+                time.sleep(30)
         if done := self.finished(run):
             return done
         owned = {'--output': [run], '--init-weights': [init], '--seed': [arm['seed']],
@@ -252,7 +265,6 @@ class Runner:
         argv = [PY, ROOT / 'train/train.py']
         for flag, values in [*owned.items(), *arm['train_flags'].items()]:
             argv += [flag, *values]
-        unit = unit_name(arm, stage)
         if not self.dry_run:
             arm['dir'].mkdir(parents=True, exist_ok=True)
             self.wait_gpu(arm['gpu_mib'], unit)
@@ -291,7 +303,7 @@ class Runner:
         results = dict(arm=arm['name'], group=arm['group'], program=arm['program'], seed=arm['seed'],
                        purpose=arm['purpose'], init=str(path(arm['init'])), constant_steps=arm['constant_steps'],
                        anneal_steps=arm['anneal_steps'], anneal_floor_lr=arm['anneal_floor_lr'],
-                       ema_decay=arm['ema_decay'], flags=arm['flags'], factors=arm.get('factors'),
+                       ema_decay=arm['ema_decay'], ema_half_life=arm['ema_half_life'], flags=arm['flags'], factors=arm.get('factors'),
                        panel=arm['panel'], endpoints={})
         for o, (opponent, spec) in enumerate(arm['evals']):
             games = spec.get('games', arm['games'])

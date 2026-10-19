@@ -258,9 +258,9 @@ def scores(pool, ledger):
 
 def intent(pool, table):
     """(weights, f, used_f_var) for the current candidate set."""
-    hopeless = bool(table) and max(table.values()) < HOPELESS
-    f = pfsp.f_var if hopeless else (lambda x, p=pool['pfsp_p']: pfsp.f_hard(x, p))
-    return pfsp.weights(table, f), f, hopeless
+    var = pool.get('pfsp_f') == 'var' or (bool(table) and max(table.values()) < HOPELESS)
+    f = pfsp.f_var if var else (lambda x, p=pool['pfsp_p']: pfsp.f_hard(x, p))
+    return pfsp.weights(table, f), f, var
 
 
 def _snapshot(trainer, backend, pool):

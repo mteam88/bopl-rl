@@ -430,6 +430,9 @@ def arguments():
     p.add_argument('--pfsp-p', type=float, default=1.,
                    help='PFSP hardness exponent: opponent weight is (1-our score)^p. 0 is uniform, '
                         'larger concentrates harder on opponents that beat us (league/pfsp.py)')
+    p.add_argument('--pfsp-f', choices=('hard', 'var'), default='hard',
+                   help='PFSP weighting: hard is (1-x)^p (--pfsp-p), var is x(1-x), peaking at even matchups '
+                        '(--pfsp-p unused). May change on --resume')
     p.add_argument('--min-games', type=int, default=256, help='Completed games per bank before the band gate can retire the opponent')
     p.add_argument('--snapshot-interval', type=int, default=10_000_000, help='Learner decisions between pool snapshots taken regardless of win rate')
     p.add_argument('--opponent-timeout', type=int, default=50_000_000, help='Learner decisions a bank keeps one opponent before a forced swap')
@@ -857,6 +860,7 @@ def main():
                     max_size=a.pool_size, pfsp_p=a.pfsp_p, min_games=a.min_games,
                     snapshot_interval=a.snapshot_interval, opponent_timeout=a.opponent_timeout,
                     seed=a.pool_seed, step_unit='learner_decisions', bank_groups=bank_groups,
+                    **({'pfsp_f': a.pfsp_f} if a.pfsp_f != 'hard' else {}),
                     native_steps_per_learner_decision=native_per_learner, mid_match_swaps='counted in neither bank statistic')
     obs_layout_version = layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3
     obs_size = layout.obs_size_of(obs_layout_version)
@@ -1120,6 +1124,7 @@ def main():
                                          pfsp_p=a.pfsp_p, seed=a.pool_seed, league=league_opponents,
                                          bank_groups=bank_groups)
             ledger = native_selfplay.members(str(initial), league_opponents)
+        pool['pfsp_f'] = a.pfsp_f
         if roster_entries:
             sync_scripted()
         style.scale(counts['learner_steps'], a.style_fade_steps or a.steps)
