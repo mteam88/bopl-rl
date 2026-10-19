@@ -1,0 +1,31 @@
+# Screening factorial (REVIEW-2026-10-cursor.md Section 4): E1/E3/E4/E5/E6 as one 2^(5-1) design,
+# E = ABCD (resolution V), 16 runs in shuffled order, 6B constant + 1B anneal, 2000 games per endpoint.
+# Every run carries EMA, so EMA - raw is a within-run contrast. Low levels are the l2 config.
+name = "ff1"
+purpose = "screen"
+init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
+constant_steps = 6_000_000_000
+anneal_steps = 1_000_000_000
+ema_decay = 0.99997
+games = 2000
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+[factorial]
+seed = 401
+generators = { E = "ABCD" }
+order_seed = 1
+
+[factorial.factors.A]   # LR
+high = { learning-rate = 1.21e-4 }
+
+[factorial.factors.B]   # gamma
+high = { gamma = 0.998 }
+
+[factorial.factors.C]   # entropy (buttons/hold get 1.5x/1x of it, aim 0.0288x)
+high = { entropy = 0.005, entropy-floor = 0.005 }
+
+[factorial.factors.D]   # exploiter cap: two banks draw league members only
+high = { bank-groups = "league,league,all,forgotten" }
+
+[factorial.factors.E]   # minibatch-div
+high = { minibatch-div = 4 }

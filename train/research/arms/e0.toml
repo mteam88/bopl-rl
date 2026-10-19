@@ -1,0 +1,37 @@
+# E0: training-seed variance (PLAN-2026-10 Section 3, sized per REVIEW-2026-10-cursor.md). Six control
+# seeds of the l2 config from the l2 main at 136.0B, at the screen length: 6B constant LR with EMA,
+# then the matched 1B anneal to 1.2e-5. Raw, EMA and annealed endpoints and the raw 2B checkpoint
+# (s_seed growth) vs the held-out panel, 4300 games per endpoint; the exploit panel on the annealed
+# endpoint (report only). These six double as the control replicates of the screens.
+name = "e0"
+purpose = "screen"
+init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
+constant_steps = 6_000_000_000
+anneal_steps = 1_000_000_000
+checkpoint_every = 2_000_000_000
+raw_at = [2_000_000_000]
+ema_decay = 0.99997
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+[opponents.x2-drill-1500m]
+path = "x2-drill-1500m"
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-1500m]
+path = "x2-missile-1500m"
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-1500m]
+path = "x2-blinkplat-1500m"
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-2000m]
+path = "l2-me32-trap-2000m"
+games = 400
+endpoints = ["anneal"]
+
+[arm.l2]
+seeds = [301, 302, 303, 304, 305, 306]

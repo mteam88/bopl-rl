@@ -422,6 +422,10 @@ def arguments():
     p.add_argument('--mirror-share', type=float, default=0.,
                    help='probability both players receive player 0\'s loadout')
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
+    p.add_argument('--metrics-every', type=int, default=0,
+                   help='Learner decisions between metrics.jsonl rows and console lines (0 = every update; '
+                        'the last update is always written). Each row is one update\'s record, not an average '
+                        'over the interval. A row per update reached 70 GB over 100B steps')
     p.add_argument('--pool-size', type=int, default=16, help='Historical snapshots kept by the self-play pool')
     p.add_argument('--pfsp-p', type=float, default=1.,
                    help='PFSP hardness exponent: opponent weight is (1-our score)^p. 0 is uniform, '
@@ -513,6 +517,8 @@ def arguments():
                  'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout'):
         if getattr(a, name) < 1:
             p.error(f'{name.replace("_", "-")} must be positive')
+    if a.metrics_every < 0:
+        p.error('metrics-every must be non-negative')
     if not math.isfinite(a.pfsp_p) or a.pfsp_p < 0:
         p.error('Expected a finite, non-negative pfsp-p')
     if not math.isfinite(a.reward_self_death) or a.reward_self_death < 0:
@@ -1185,6 +1191,7 @@ def main():
             rating.clear()
         next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
+        next_metrics = 0
         previous, previous_elapsed = counts, elapsed_before
         free, applied_scale = None, list(a.head_scale)
         # Overlap (BOPL_ASYNC=1 default; 0 restores the
@@ -1252,8 +1259,11 @@ def main():
         # are the same either way, the arms' wall_seconds are the A/B.
         defer_ab = int(os.environ.get('BOPL_TRAIN_AB_DEFER', '0'))
         def bookkeep(p, evaluate_due=True):
-            nonlocal next_checkpoint, next_eval
+            nonlocal next_checkpoint, next_eval, next_metrics
             done = p['counts']   # == counts: the next rollout is not collected yet
+            logged = done['learner_steps'] >= min(next_metrics, a.steps) or stop
+            if logged and a.metrics_every:
+                next_metrics = (done['learner_steps']//a.metrics_every+1)*a.metrics_every
             native_selfplay.register(pool, ledger, done['game_steps'], done['learner_steps'])
             after_pool = native_selfplay.summary(pool, ledger)
             native = p['native']
@@ -1296,7 +1306,8 @@ def main():
                 record['set_overflow'] = packing[:4]
                 if len(packing) == 9 and packing[8]:
                     record['set_rows'] = [round(n / packing[8], 3) for n in packing[4:8]]
-            metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
+            if logged:
+                metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
             for event in native_selfplay.events(p['before_pool'], after_pool, ledger, done['learner_steps']):
                 events.write(json.dumps(event, allow_nan=False)+'\n')
             events.flush()
@@ -1323,7 +1334,8 @@ def main():
                     share=round(p['share'], 3),
                     **{name: (None if row['score_rate'] is None else round(row['score_rate'], 3))
                        for name, row in record['scripted'].items()})
-            print(json.dumps(console), flush=True)
+            if logged:
+                print(json.dumps(console), flush=True)
             if done['learner_steps'] >= next_checkpoint:
                 save()
                 next_checkpoint = (done['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every

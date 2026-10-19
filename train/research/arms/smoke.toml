@@ -1,0 +1,20 @@
+# Pipeline smoke test: two replicate seeds, 20M constant + 10M anneal at 32 workers, about 50 games per
+# endpoint over the panel, the raw 10M checkpoint as an extra endpoint, one secondary opponent.
+name = "smoke"
+constant_steps = 20_000_000
+anneal_steps = 10_000_000
+checkpoint_every = 10_000_000
+raw_at = [10_000_000]
+metrics_every = 5_000_000
+games = 48
+gpu_mib = 2500
+flags = { workers = 32 }
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+[opponents.x2-drill-1500m]
+path = "x2-drill-1500m"
+games = 10
+endpoints = ["anneal"]
+
+[arm.l2]
+seeds = [1, 2]
