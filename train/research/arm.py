@@ -13,7 +13,9 @@ raw, EMA and annealed, plus the raw checkpoints at `raw_at` learner steps.
 Training flags are the l2 main's turn-100 command (`base`, a command.txt) minus the flags an arm
 owns (OWNED) and minus the `exclude_opponents` members; `flags` adds or overrides (true = bare flag,
 false = removed). Top-level keys are defaults, [arm.<name>] tables override them (`flags` merges);
-`seeds = [...]` expands an arm into replicate arms <name>-s<seed> of group <name>. A [factorial]
+`seeds = [...]` expands an arm into replicate arms <name>-s<seed> of group <name>; `compare = "<group>"` names the control group the
+report tests it against on their common seeds; top-level `order = "interleave"` trains one arm of
+each group in turn (control s301, treatment s301, control s302, ...). A [factorial]
 table adds one arm per run of a two-level (fractional) factorial: [factorial.factors.<letter>] with
 `low`/`high` flag tables, `generators = { E = "ABCD" }` for the aliased factors, `seed` (run i gets
 seed + i), `replicates`, and `order_seed` (runs are trained in a shuffled order).
@@ -59,7 +61,7 @@ LEARNER_ROWS_PER_WORKER = 1.5   # learner rows per worker per tick at the l2 ban
 PANEL = ['final5-18666m', 'anneal20-26666m', 'team5b-6250m', 'g111-20b-26027m']
 OWNED = ('--output', '--steps', '--init-weights', '--anneal-lr', '--min-lr-ratio', '--seed', '--checkpoint-every',
          '--metrics-every', '--ema-decay', '--resume')
-PROGRAM_KEYS = ('name', 'out', 'purpose', 'seed_base', 'eval_workers', 'factorial')
+PROGRAM_KEYS = ('name', 'out', 'purpose', 'seed_base', 'eval_workers', 'factorial', 'order')
 DEFAULTS = dict(
     purpose='screen', eval_workers=6, gpu_mib=9000,
     base='native/artifacts/rl/sweeps/l2-anneal-2/command.txt',
@@ -187,6 +189,11 @@ def load_arms(config_file):
                 if games % 2 or not 0 < games // 2 <= MAX_PAIRS:
                     raise SystemExit(f'{config_file}: {opponent} games must be even and at most {2 * MAX_PAIRS}')
             arms.append(arm)
+    if top.get('order') == 'interleave':   # one arm of each group in turn, so drift hits every group alike
+        groups = {}
+        for arm in arms:
+            groups.setdefault(arm['group'], []).append(arm)
+        arms = [g[i] for i in range(max(map(len, groups.values()))) for g in groups.values() if i < len(g)]
     return out, arms
 
 
@@ -304,7 +311,7 @@ class Runner:
                        purpose=arm['purpose'], init=str(path(arm['init'])), constant_steps=arm['constant_steps'],
                        anneal_steps=arm['anneal_steps'], anneal_floor_lr=arm['anneal_floor_lr'],
                        ema_decay=arm['ema_decay'], ema_half_life=arm['ema_half_life'], flags=arm['flags'], factors=arm.get('factors'),
-                       panel=arm['panel'], endpoints={})
+                       compare=arm.get('compare'), panel=arm['panel'], endpoints={})
         for o, (opponent, spec) in enumerate(arm['evals']):
             games = spec.get('games', arm['games'])
             for e, endpoint in enumerate(arm['endpoint_names']):

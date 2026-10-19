@@ -1,6 +1,8 @@
-# Pipeline smoke test: two replicate seeds, 20M constant + 10M anneal at 32 workers, about 50 games per
-# endpoint over the panel, the raw 10M checkpoint as an extra endpoint, one secondary opponent.
+# Pipeline smoke test: control and obsfix (writer bit 16) interleaved, 20M constant + 10M anneal at
+# 32 workers, about 50 games per endpoint over the panel, the raw 10M checkpoint as an extra endpoint,
+# one secondary opponent.
 name = "smoke"
+order = "interleave"
 constant_steps = 20_000_000
 anneal_steps = 10_000_000
 checkpoint_every = 10_000_000
@@ -17,4 +19,9 @@ games = 10
 endpoints = ["anneal"]
 
 [arm.l2]
-seeds = [1, 2]
+seeds = [1]
+
+[arm.obsfix]
+seeds = [1]
+flags = { v4-ablate = 16 }
+compare = "l2"

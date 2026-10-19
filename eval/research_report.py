@@ -10,7 +10,8 @@ Seed variance, for each group of >= 2 replicate seeds and each endpoint: the obs
 and s_seed = sqrt(max(0, sd_obs^2 - mean eval variance)). Its 95% interval applies the chi-square
 interval with k-1 df to sd_obs^2 and subtracts the eval variance from both ends; the 80% upper bound
 is what later designs should be sized from. Within-group contrasts (EMA - raw, anneal - raw,
-anneal - EMA) are paired across seeds.
+anneal - EMA) are paired across seeds. A group whose arms name `compare = "<group>"` is tested
+against that group on their common seeds (difference of seed means, Welch).
 
 Factorial (arms with `factors`): at --endpoint, each main effect and two-factor interaction is
 mean(y | +) - mean(y | -), aliased columns reported once. Its se is 2 sigma / sqrt(N) with sigma the
@@ -66,6 +67,27 @@ def paired(rows, x, y):
     se = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (len(diffs) - 1) / len(diffs))
     p = 2 * stats.t.sf(abs(mean) / se, len(diffs) - 1) if se else 0.0
     return dict(effect=f'{x} - {y}', k=len(diffs), estimate=mean, se=se, p=p, df=len(diffs) - 1)
+
+
+def compare(treated, control, endpoint):
+    """Treatment group minus its control group on their common seeds: Welch over the between-seed sds
+    (eval noise included); with one seed a side, the eval se alone (seed variance missing)."""
+    seeds = {r['seed'] for r in treated} & {r['seed'] for r in control}
+    sides = [[c for r in rows if r['seed'] in seeds and (c := panel(r, endpoint))] for rows in (treated, control)]
+    if not all(sides):
+        return None
+    means = [sum(c['score'] for c in s) / len(s) for s in sides]
+    if min(map(len, sides)) >= 2:
+        v = [sum((c['score'] - m) ** 2 for c in s) / (len(s) - 1) / len(s) for s, m in zip(sides, means)]
+        df = sum(v) ** 2 / sum(x ** 2 / (len(s) - 1) for x, s in zip(v, sides))
+        basis = 'Welch over seeds'
+    else:
+        v = [sum(c['se'] ** 2 for c in s) / len(s) ** 2 for s in sides]
+        df, basis = math.inf, 'eval se only: needs >= 2 seeds a side for seed variance'
+    se, diff = math.sqrt(sum(v)), means[0] - means[1]
+    t = stats.t.ppf(0.975, df)
+    return dict(endpoint=endpoint, seeds=sorted(seeds), estimate=diff, se=se, ci=[diff - t * se, diff + t * se],
+                p=2 * stats.t.sf(abs(diff) / se, df) if se else 0.0, basis=basis)
 
 
 def bh(ps, q=Q):
@@ -130,6 +152,10 @@ def main(argv=None):
                 for (prog, group), rows in groups.items()}
     contrasts = {f'{prog}/{group}': [c for x, y in (('ema', 'raw'), ('anneal', 'raw'), ('anneal', 'ema'))
                                      if (c := paired(rows, x, y))] for (prog, group), rows in groups.items()}
+    versus = {f"{prog}/{group} vs {rows[0]['compare']}": [c for e in endpoints(rows)
+                                                          if (c := compare(rows, groups[(prog, rows[0]['compare'])], e))]
+              for (prog, group), rows in groups.items()
+              if rows[0].get('compare') and (prog, rows[0]['compare']) in groups}
     sigma = None
     if a.sigma:
         sigma = next((dict(v, group=a.sigma) for v in variance.get(a.sigma, []) if v['endpoint'] == a.endpoint), None)
@@ -137,7 +163,8 @@ def main(argv=None):
             raise SystemExit(f'--sigma {a.sigma}: no replicate group with >= 2 seeds at {a.endpoint}')
     designs = {prog: d for prog, rows in programs.items() if (d := factorial(rows, a.endpoint, sigma))}
     if a.json:
-        print(json.dumps(dict(arms=results, seed_variance=variance, contrasts=contrasts, factorial=designs), indent=1))
+        print(json.dumps(dict(arms=results, seed_variance=variance, contrasts=contrasts, compare=versus,
+                              factorial=designs), indent=1))
         return 0
 
     print(f"{'program':<8} {'arm':<16} {'seed':>5} {'endpoint':<9} {'panel':>6}  {'95% CI':<15} {'n':>6}  per opponent (score/n)")
@@ -157,6 +184,10 @@ def main(argv=None):
                   f"  80% upper {v['s_seed_up80']:.4f}")
         for c in contrasts[name]:
             print(f"  {c['effect']:<15} {c['estimate']:+.4f} +/- {c['se']:.4f} (se, {c['k']} paired seeds)")
+    for name, rows in versus.items():
+        print(f"\n{name}: panel score difference on seeds {rows[0]['seeds']} ({rows[0]['basis']})")
+        for c in rows:
+            print(f"  {c['endpoint']:<9} {c['estimate']:+.4f} [{c['ci'][0]:+.4f}, {c['ci'][1]:+.4f}]  p {c['p']:.3f}")
     for prog, d in designs.items():
         print(f"\n{prog}: factorial effects at {d['endpoint']} ({d['runs']} runs; se from {d['se_source']}; "
               f"BH q {Q} over the main effects and EMA - raw)")

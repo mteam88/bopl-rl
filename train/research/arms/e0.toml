@@ -2,9 +2,11 @@
 # seeds of the l2 config from the l2 main at 136.0B, at the screen length: 6B constant LR with EMA,
 # then the matched 1B anneal to 1.2e-5. Raw, EMA and annealed endpoints and the raw 2B checkpoint
 # (s_seed growth) vs the held-out panel, 4300 games per endpoint; the exploit panel on the annealed
-# endpoint (report only). These six double as the control replicates of the screens.
+# endpoint (report only). These six double as the control replicates of the screens. The obsfix arm
+# (4 seeds) is judged against control seeds 301-304; the two alternate per seed.
 name = "e0"
 purpose = "screen"
+order = "interleave"
 init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
 constant_steps = 6_000_000_000
 anneal_steps = 1_000_000_000
@@ -34,3 +36,9 @@ endpoints = ["anneal"]
 
 [arm.l2]
 seeds = [301, 302, 303, 304, 305, 306]
+
+# Observation layout v4.2 (03c66236, writer bit 16) on the v4.1 init, otherwise the control.
+[arm.obsfix]
+seeds = [301, 302, 303, 304]
+flags = { v4-ablate = 16 }
+compare = "l2"
