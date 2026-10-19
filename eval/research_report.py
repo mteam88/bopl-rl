@@ -10,8 +10,11 @@ Seed variance, for each group of >= 2 replicate seeds and each endpoint: the obs
 and s_seed = sqrt(max(0, sd_obs^2 - mean eval variance)). Its 95% interval applies the chi-square
 interval with k-1 df to sd_obs^2 and subtracts the eval variance from both ends; the 80% upper bound
 is what later designs should be sized from. Within-group contrasts (EMA - raw, anneal - raw,
-anneal - EMA) are paired across seeds. A group whose arms name `compare = "<group>"` is tested
-against that group on their common seeds (difference of seed means, Welch). Arms whose training
+anneal - EMA) are paired across seeds. A group whose arms name `compare = "<group>"` (or
+"<program>/<group>" for a control trained by another program, e.g. "e0/obsfix") is tested against that
+group on their common seeds (difference of seed means, Welch), and on the offense arms' pre-registered
+kill-rate rule (eval/kill_rate.py: KH_PRE ratio and panel non-inferiority at --endpoint, Holm across the
+groups sharing a control). Arms whose training
 resumed mid-run are starred and listed as tainted; they stay in the statistics.
 
 Factorial (arms with `factors`): at --endpoint, each main effect and two-factor interaction is
@@ -27,6 +30,8 @@ import math
 from pathlib import Path
 
 from scipy import stats
+
+import kill_rate
 
 ROOT = Path(__file__).resolve().parents[1]
 Q = 0.10
@@ -153,10 +158,17 @@ def main(argv=None):
                 for (prog, group), rows in groups.items()}
     contrasts = {f'{prog}/{group}': [c for x, y in (('ema', 'raw'), ('anneal', 'raw'), ('anneal', 'ema'))
                                      if (c := paired(rows, x, y))] for (prog, group), rows in groups.items()}
-    versus = {f"{prog}/{group} vs {rows[0]['compare']}": [c for e in endpoints(rows)
-                                                          if (c := compare(rows, groups[(prog, rows[0]['compare'])], e))]
-              for (prog, group), rows in groups.items()
-              if rows[0].get('compare') and (prog, rows[0]['compare']) in groups}
+    control_of = lambda prog, rows: tuple(rows[0]['compare'].split('/', 1)) if '/' in rows[0]['compare'] \
+        else (prog, rows[0]['compare'])
+    treated = {(prog, group): control_of(prog, rows) for (prog, group), rows in groups.items()
+               if rows[0].get('compare') and control_of(prog, rows) in groups}
+    versus = {f"{prog}/{group} vs {'/'.join(ctl)}": [c for e in endpoints(groups[(prog, group)])
+                                                   if (c := compare(groups[(prog, group)], groups[ctl], e))]
+              for (prog, group), ctl in treated.items()}
+    offense = {}
+    for ctl in dict.fromkeys(treated.values()):
+        arms = {f'{prog}/{group}': groups[(prog, group)] for (prog, group), c in treated.items() if c == ctl}
+        offense['/'.join(ctl)] = kill_rate.rule(arms, groups[ctl], a.endpoint)
     sigma = None
     if a.sigma:
         sigma = next((dict(v, group=a.sigma) for v in variance.get(a.sigma, []) if v['endpoint'] == a.endpoint), None)
@@ -165,7 +177,7 @@ def main(argv=None):
     designs = {prog: d for prog, rows in programs.items() if (d := factorial(rows, a.endpoint, sigma))}
     if a.json:
         print(json.dumps(dict(arms=results, seed_variance=variance, contrasts=contrasts, compare=versus,
-                              factorial=designs), indent=1))
+                              offense_rule=offense, factorial=designs), indent=1, default=float))
         return 0
 
     print(f"{'program':<8} {'arm':<17} {'seed':>5} {'endpoint':<9} {'panel':>6}  {'95% CI':<15} {'n':>6}  per opponent (score/n)")
@@ -193,6 +205,9 @@ def main(argv=None):
         print(f"\n{name}: panel score difference on seeds {rows[0]['seeds']} ({rows[0]['basis']})")
         for c in rows:
             print(f"  {c['endpoint']:<9} {c['estimate']:+.4f} [{c['ci'][0]:+.4f}, {c['ci'][1]:+.4f}]  p {c['p']:.3f}")
+    for ctl, verdicts in offense.items():
+        print(f'\noffense rule (eval/kill_rate.py) against {ctl}:')
+        print(kill_rate.report(verdicts, ctl))
     for prog, d in designs.items():
         print(f"\n{prog}: factorial effects at {d['endpoint']} ({d['runs']} runs; se from {d['se_source']}; "
               f"BH q {Q} over the main effects and EMA - raw)")

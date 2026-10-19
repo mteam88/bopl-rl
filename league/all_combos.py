@@ -100,7 +100,7 @@ def main(argv=None):
                 f.write(json.dumps(dict(a=str(a.a), b=str(a.b), seed_base=a.seed_base, pair=g['seed'] - a.seed_base,
                                         seed=g['seed'], map=g['map'], side=g['side'], kits=g['kits'], a_kit=g['a_kit'],
                                         outcome=g['outcome'], draw_kind=g.get('draw_kind'), ticks=g['ticks'],
-                                        deaths=g['deaths'])) + '\n')
+                                        deaths=g['deaths'], credited=g.get('credited'))) + '\n')
     search = None
     if a.search:
         built['A'].finish()

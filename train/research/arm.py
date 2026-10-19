@@ -26,7 +26,8 @@ Evaluation: every endpoint plays the held-out `panel` (league members, none of t
 opponents: the run refuses otherwise), `games` per endpoint split evenly over it; the primary metric
 is the equal-weight panel mean. [opponents.<name>] adds secondary opponents (`path`: a file or a
 league member, `games`, `endpoints`). Seeds: one seed base per purpose, screen 211001 and
-confirm/release 221001. Endpoint e against opponent o (panel first, then [opponents] in order)
+confirm/release 221001. Each opponent's row also carries `offense` (eval/kill_rate.py: KH_PRE, ckpm, ckpm_b,
+sd, len_s from its games); eval/research_report.py applies the offense arms' pass rule. Endpoint e against opponent o (panel first, then [opponents] in order)
 plays seed base + SEED_STRIDE*(SLOTS*o + e), so an arm's endpoints play fresh setups and every arm
 plays the same setups per endpoint; append new opponents and endpoints at the end.
 
@@ -395,6 +396,13 @@ class Runner:
         return bool(rows) and rows[-1]['games'] == games and games_out.exists()
 
 
+def kill_rate():
+    if str(ROOT / 'eval') not in sys.path:
+        sys.path.insert(0, str(ROOT / 'eval'))
+    import kill_rate
+    return kill_rate
+
+
 def summary(games_out, seed_base):
     """Score (wins + draws/2), Wilson 95% interval, and the side-swapped pair-clustered standard error."""
     pairs = {}
@@ -407,8 +415,12 @@ def summary(games_out, seed_base):
     means = [sum(v) / len(v) for v in pairs.values()]
     m = sum(means) / len(means)
     se = math.sqrt(sum((x - m) ** 2 for x in means) / (len(means) - 1) / len(means)) if len(means) > 1 else 0.0
+    rows = [json.loads(line) for line in Path(games_out).read_text().splitlines()]
+    offense = kill_rate().summarize(rows)   # the offense rule's kill rate (eval/kill_rate.py), game credit
+    if all(g.get('credited') is not None for g in rows):
+        offense['kh_pre_cast'] = kill_rate().summarize(rows, 'cast')['kh_pre']
     return dict(score=p, wilson=[centre - half, centre + half], n=n, draws=sum(x == 0.5 for x in points),
-                se_pairs=se, seed_base=seed_base, games_out=str(games_out))
+                se_pairs=se, seed_base=seed_base, games_out=str(games_out), offense=offense)
 
 
 def main(argv=None):

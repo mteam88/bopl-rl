@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 from evaluation_protocol import scripted_opponent
 import layout
+import kill_credit
 # environment.py loads the research library on import; it is imported where games
 # are played so the Bradley-Terry fits and participants stay importable without it
 # (league check).
@@ -445,9 +446,11 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
                     if attach: attach(env,side)
                 actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
                         1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
+                ids=[p.id for p in env.state.players[:2]]; credited=[0,0]
                 while not env.ended:
                     observation=env.rows.copy(); mask=env.mask.copy()
                     env.step(np.stack([actors[0](observation,mask),actors[1](observation,mask)]))
+                    for side,n in enumerate(kill_credit.credited_kills(env.events(),ids)): credited[side]+=n
                 final=env.frame()
                 timeout=bool(final['flags']&2)
                 a_won=bool(final['players'][task['side']]['flags']&2) and not timeout
@@ -461,6 +464,9 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
                 for seat in (task['side'],1-task['side']):
                     counts={k[7:]:final['telemetry'][seat][k] for k in DEATH_FIELDS}
                     result['deaths'].append(dict(counts,code=final['players'][seat]['cause_of_death'] if any(counts.values()) else None))
+                # Per participant [a, b]: kills credited as v4.2 training credits them (eval/kill_credit.py:
+                # the game's killer, or the caster of a Missile blast or cast Spike, which deaths_* miss).
+                result['credited']=[credited[task['side']],credited[1-task['side']]]
                 # A draw is either the episode limit or a trade; they mean opposite things
                 # about a policy, so say which without changing how a draw is scored.
                 if result['outcome']=='draw':

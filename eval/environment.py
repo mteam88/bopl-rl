@@ -26,6 +26,10 @@ class Header(C.Structure):
                 + [(name,C.c_uint32) for name in ('sudden_death','reserved')])
 class Telemetry(C.Structure):
     _fields_ = [(name,C.c_uint32) for name in EVENT_FIELDS]
+class Event(C.Structure):
+    """BoplRlEvent (sim/abi/bopl_rl.h): one game event of the last step."""
+    _fields_ = [(name,C.c_uint32) for name in ('kind','tick','subject','actor','entity','source_ability','cause','flags',
+                                              'related','related_actor','related_tick','creator')] + [(name,C.c_int64) for name in ('x','y','vx','vy','ax','ay','avx','avy')]
 class State(C.Structure):
     _fields_ = [('header',Header),('players',Player*6),('entities',C.POINTER(Entity)),('slimes',C.POINTER(Slime)),('telemetry',Telemetry*6)]
 
@@ -38,6 +42,8 @@ LIB.research_set_layout.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_se
 LIB.research_get_layout.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_layout.restype = C.c_int
 LIB.research_set_ablation.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_set_ablation.restype = C.c_int
 LIB.research_get_ablation.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_ablation.restype = C.c_int
+if hasattr(LIB,'research_events'):
+    LIB.research_events.argtypes = [C.c_void_p,C.POINTER(C.c_uint32),C.POINTER(C.c_int)]; LIB.research_events.restype = C.POINTER(Event)
 LIB.research_telemetry_size.restype = C.c_int
 LIB.research_num_atns.restype = C.c_int
 LIB.research_layout.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout.restype = C.c_int
@@ -243,6 +249,12 @@ class Environment:
         return dict(activations=[int(value) for value in activations],
                     entity_rows=[int(value) for value in rows],
                     entity_overflow=[int(value) for value in overflow])
+    def events(self):
+        """The last step's game events (Event structures, copied out); [] from a library without them."""
+        if not hasattr(LIB,'research_events'): return []
+        count=C.c_uint32(); support=C.c_int()
+        pointer=LIB.research_events(self.handle,C.byref(count),C.byref(support))
+        return [Event.from_buffer_copy(pointer[k]) for k in range(count.value)] if pointer else []
     @property
     def state(self): return LIB.research_state(self.handle).contents
     @property

@@ -35,6 +35,7 @@ sys.path[:0] = [str(ROOT / 'league'), str(HERE), str(ROOT / 'eval'), str(ROOT / 
 import registry  # noqa: E402
 import games as league_games  # noqa: E402
 import elo_ladder  # noqa: E402
+import kill_credit  # noqa: E402
 import map_catalogue  # noqa: E402
 
 POOL = [a for a in range(1, 39) if a not in (12, 15)]
@@ -44,12 +45,6 @@ ENT_DT = np.dtype([(n, '<u4') for n in ('id', 'kind', 'layer', 'owner', 'flags',
 WINDOW = 45  # decisions = 3 s at 15 Hz
 CLOSE = 12.0  # units: styles/pressure.toml's striking range
 THREAT = 3.0  # units: an entity of the player's within this of the living opponent = a threat (first hit proxy)
-
-
-class Event(C.Structure):
-    _fields_ = [(n, C.c_uint32) for n in ('kind', 'tick', 'subject', 'actor', 'entity', 'source_ability', 'cause',
-                                          'flags', 'related', 'related_actor', 'related_tick', 'reserved')] + \
-               [(n, C.c_int64) for n in ('x', 'y', 'vx', 'vy', 'ax', 'ay', 'avx', 'avy')]
 
 
 DEATH_CAUSE = {0: 'unknown', 1: 'contact', 2: 'projectile', 3: 'explosion', 4: 'beam', 5: 'squished', 6: 'eaten',
@@ -72,8 +67,6 @@ def play_games(by_name, tasks, limit, workers, seed_base, delay=9, on_result=Non
     from environment import Environment, LIB
     import environment
     assert C.sizeof(environment.Entity) == ENT_DT.itemsize
-    LIB.research_events.argtypes = [C.c_void_p, C.POINTER(C.c_uint32), C.POINTER(C.c_int)]
-    LIB.research_events.restype = C.POINTER(Event)
     rows = (loadouts or {}).get('lineups') or []
 
     def play(bucket):
@@ -164,19 +157,18 @@ def play_games(by_name, tasks, limit, workers, seed_base, delay=9, on_result=Non
                             ov_far_proj += int(proj.sum())
                             ov_far_oppproj += int((proj & (far['owner'] == pl[1 - i].id)).sum())
                         ov0 = ov
-                    count = C.c_uint32(); support = C.c_int()
-                    ev = LIB.research_events(env.handle, C.byref(count), C.byref(support))
-                    for k in range(count.value):
-                        e = ev[k]
+                    for e in env.events():
                         if e.kind != 1:
                             continue
                         victim = next((i for i in (0, 1) if pl[i].id == e.subject), None)
-                        rec = dict(tick=int(e.tick), victim=victim, actor=int(e.actor), cause=DEATH_CAUSE.get(e.cause, e.cause),
+                        rec = dict(tick=int(e.tick), victim=victim, actor=int(e.actor), creator=int(e.creator), cause=DEATH_CAUSE.get(e.cause, e.cause),
                                    source_ability=int(e.source_ability), flags=int(e.flags),
                                    x=round(e.x * FIX, 2), y=round(e.y * FIX, 2), vx=round(e.vx * FIX, 2), vy=round(e.vy * FIX, 2))
                         if victim is not None:
                             h = hist[victim]
-                            rec['actor_is'] = 'none' if e.actor == 0 else 'self' if e.actor == e.subject else 'opponent'
+                            # v4.2 credit (eval/kill_credit.py): a Missile/Spike kill is its caster's
+                            rec['actor_is'] = kill_credit.credit(e.actor, e.creator, e.subject)
+                            rec['game_actor_is'] = kill_credit.game_credit(e.actor, e.subject)
                             rec['dmin_opp_1s'] = round(min(r[3] for r in h[-15:]), 2)
                             rec['dmin_opp_3s'] = round(min(r[3] for r in h), 2)
                             rec['dmin_oppent_1s'] = round(min(r[4] for r in h[-15:]), 2)
