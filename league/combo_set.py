@@ -40,7 +40,7 @@ def tasks(kits, repeat, seed_base, maps):
     for pair, (x, y) in enumerate(combos):
         for side in (0, 1):
             out.append(dict(a='A', b='B', map=order[pair % len(order)], seed=seed_base + pair, side=side,
-                            kits=list(x + y) if side == 0 else list(y + x), a_kit=list(x) if side == 0 else list(y),
+                            kits=list(x + y) if side == 0 else list(y + x), a_kit=list(x),
                             pair_kits=(x, y)))
     return out
 

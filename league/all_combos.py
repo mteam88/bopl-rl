@@ -6,8 +6,10 @@ The league's rating condition plays each member on the kits it trained on (16 fo
 the generalist-111 lineage), so it cannot say how good a policy is on the other
 ~8,000 kits. Here seed pair i deals two random kits (three slots each, drawn with
 replacement from POOL, the any-3 pool: every ability but 12 and Revival) and plays
-them side-swapped, so A and B each play both kits and a strong kit favours neither.
-Maps, ticks and reaction delay are the rating condition's (league/games.py).
+them side-swapped: A keeps the first kit in both seats, B the second. B may also be a
+league member by name; one that declares kits (registry.kits) plays them in turn, and a
+scripted bot skips space maps (registry.plays_map). Maps default to the rating
+condition's (league/games.py); --maps narrows them, ticks and reaction delay are fixed.
 Deterministic in --seed-base: two runs with the same seed play the same kits and maps,
 so successive checkpoints are measured on the same games.
 
@@ -34,27 +36,31 @@ from evaluation_protocol import ability_names  # noqa: E402
 POOL = [a for a in range(1, 39) if a not in (12, 15)]
 
 
-def tasks(pairs, seed_base, maps):
+def tasks(pairs, seed_base, maps, b_kits=None):
     rng = np.random.default_rng(seed_base)
     order = league_games.map_order(maps, seed_base)
     out = []
     for pair in range(pairs):
         x, y = [int(v) for v in rng.choice(POOL, 3)], [int(v) for v in rng.choice(POOL, 3)]
+        if b_kits:
+            y = [int(v) for v in b_kits[pair % len(b_kits)]]
+        # kits are [seat 0 | seat 1] and A sits in seat `side`, so A plays x in both games.
         for side in (0, 1):
             out.append(dict(a='A', b='B', map=order[pair % len(order)], seed=seed_base + pair, side=side,
-                            kits=x + y if side == 0 else y + x, a_kit=x if side == 0 else y))
+                            kits=x + y if side == 0 else y + x, a_kit=x))
     return out
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('a', type=Path)
-    p.add_argument('b', help='checkpoint path, or "random" for the uniform random anchor')
+    p.add_argument('b', help='checkpoint path, "random" for the uniform random anchor, or a league member name')
     p.add_argument('--pairs', type=int, default=500)
     p.add_argument('--workers', type=int, default=6)
     p.add_argument('--seed-base', type=int, default=131001)
     p.add_argument('--label', help='name for the output row (default: the two paths)')
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--maps', default=registry.MAPS, help='map IDs, ranges or named sets (map_catalogue.parse_map_ids)')
     p.add_argument('--games-out', type=Path, help='write one JSON row per game here (overwritten)')
     p.add_argument('--search', help='play A through the decision-time search (eval/search_policy.py) with this '
                    'budget: k,n,depth[,h][,mix=M][,vs=V] (search_policy.parse_budget)')
@@ -67,12 +73,20 @@ def main(argv=None):
         built = {'A': search_policy.Search('A', a.a.resolve(), 'candidate', **search_policy.parse_budget(a.search))}
     else:
         built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate')}
-    built['B'] = elo_ladder.Random() if a.b == 'random' else elo_ladder.Model('B', Path(a.b).resolve(), 'candidate')
+    maps, b_kits = map_catalogue.parse_map_ids(a.maps), None
+    member = registry.by_name(registry.load()).get(a.b)
+    if member:
+        built['B'] = league_games.participant(member)
+        built['B'].name = 'B'
+        b_kits = registry.kits(member)
+        maps = [m for m in maps if registry.plays_map(member, m)]
+    else:
+        built['B'] = elo_ladder.Random() if a.b == 'random' else elo_ladder.Model('B', Path(a.b).resolve(), 'candidate')
     if a.temperature_a:
         t = [float(v) for v in a.temperature_a.split(',')]
         built['A'].temperature = tuple(t * 3 if len(t) == 1 else t)
     league_games.configure(a.out.parent / 'all-combos-workers')
-    todo = tasks(a.pairs, a.seed_base, map_catalogue.parse_map_ids(registry.MAPS))
+    todo = tasks(a.pairs, a.seed_base, maps, b_kits)
     kit_of = {(t['seed'], t['side']): t['a_kit'] for t in todo}
     played = league_games.play(built, todo, a.workers, a.seed_base)
     if a.games_out:
@@ -101,7 +115,7 @@ def main(argv=None):
     rng = np.random.default_rng(0)
     boot = [rng.choice(pairs, pairs.size).mean() for _ in range(2000)]
     names = ability_names()
-    row = dict(label=a.label or f'{a.a} vs {a.b}', a=str(a.a), b=str(a.b), seed_base=a.seed_base, search=search,
+    row = dict(label=a.label or f'{a.a} vs {a.b}', a=str(a.a), b=str(a.b), seed_base=a.seed_base, maps=a.maps, search=search,
                temperature_a=a.temperature_a,
                games=len(played), score=float(pairs.mean()),
                ci=[float(np.quantile(boot, .025)), float(np.quantile(boot, .975))],
