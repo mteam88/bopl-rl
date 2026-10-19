@@ -252,6 +252,8 @@ class SweepSpec:
             else:
                 merged[name] = round(value) if self.is_integer(name) and not isinstance(value, int) else value
         merged['entropy_head_scale'] = ','.join(_number(s) for s in head_scale)
+        # A row per update made final-3's metrics.jsonl 9.4 GB; 1M keeps time-matched scoring exact enough.
+        merged.setdefault('metrics_every', 1_000_000)
         if seed is not None:
             merged['seed'] = seed
         # train.py requires 0 < entropy_floor <= entropy; when entropy is swept

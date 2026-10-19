@@ -425,6 +425,9 @@ class Loop:
             flags[flags.index('--seed') + 1] = str(seed)
         else:
             flags += ['--seed', str(seed)]
+        # A row per update made l2 main's metrics.jsonl 65 GB, and every rift copied it.
+        if '--metrics-every' not in flags:
+            flags += ['--metrics-every', '10000000']
         memory = (['-p', f'MemoryMax={self.config.memory_max}'] if self.config.memory_max else []) + \
                  (['-p', f'MemoryHigh={self.config.memory_high}'] if self.config.memory_high else []) + \
                  [x for prop in self.config.unit_properties for x in ('-p', prop)]
