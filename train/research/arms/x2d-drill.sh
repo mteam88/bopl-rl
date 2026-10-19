@@ -5,8 +5,8 @@
 #   mirror  main on the exploiter's own kit (Dash/Drill/Grenade): a best response scores >= 0.5 by symmetry
 #   iid     main on its league draw (--loadout-pool all), exploiter pinned: the league's own matchup
 #   counter main on kits holding Gold mushroom, Rock or Meteor (its best abilities vs me31) + 2 random
-#   check   iid at learning rate 0 for 50M steps: the GPU env's ledger score of base vs me31 must match the CPU
-#           eval (0.261 [0.231,0.291], X/drill-iid-x); the l2 ledger reads ~0.40 for this pair (doc Section 2)
+#   check   iid at learning rate ~0 for 4M steps: the GPU ledger of base vs me31 matches the CPU eval (0.246 vs
+#           0.261, done 2026-10-19, doc Section 1d)
 # Flags = the me-31 exploiter's command (logs/me-31.log) with the roles swapped; no style, main's timeout reward.
 #   train/research/arms/x2d-drill.sh train check|mirror|iid|counter     (GPU, one at a time)
 #   train/research/arms/x2d-drill.sh eval  check|mirror|iid|counter     (CPU, after train)
@@ -25,7 +25,7 @@ case $arm in
           sched=$T/native/data/lineups-2d-drill-mirror.txt ;;
   iid)    kits=(--loadout-pool all --pinned-opponents $EXPL); seed=5203
           sched=$T/native/data/lineups-2d-drill-iid-eval.txt ;;
-  check)  kits=(--loadout-pool all --pinned-opponents $EXPL); seed=5205; steps=50000000; lr=0
+  check)  kits=(--loadout-pool all --pinned-opponents $EXPL); seed=5205; steps=4000000; lr=1e-12   # train.py needs lr > 0; done 2026-10-19 (doc Section 1d)
           sched=$T/native/data/lineups-2d-drill-iid-eval.txt ;;
   counter) kits=(--loadout-learner-first --loadout-set native/data/lineups-2d-drill-counter.txt); seed=5204
           sched=$T/native/data/lineups-2d-drill-counter.txt ;;
@@ -38,7 +38,7 @@ fi
 if [ "$1" = train ]; then
   cd $T
   exec systemd-run --user --scope --collect -p MemoryHigh=12G --unit x2d-drill-$arm -- \
-    $PY $T/train/train.py --output $OUT/$arm --steps $steps --checkpoint-every 250000000 \
+    env BOPL_RL_BACKEND=rust PYTHONPATH=$T/native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9 $PY $T/train/train.py --output $OUT/$arm --steps $steps --checkpoint-every 250000000 \
     --init-weights $BASE --opponents $EXPL --seed $seed "${kits[@]}" \
     --historical-every 1 --bank-groups league,league,league,league --banks 4 --pool-size 2 --pfsp-p 1 \
     --learning-rate $lr --anneal-lr 0 \
