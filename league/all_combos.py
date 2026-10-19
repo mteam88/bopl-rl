@@ -53,8 +53,10 @@ def tasks(pairs, seed_base, maps, b_kits=None):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('a', type=Path)
-    p.add_argument('b', help='checkpoint path, "random" for the uniform random anchor, or a league member name')
+    p.add_argument('a', help='checkpoint path, member:<league name>, or ensemble:<spec>+<spec>+... '
+                   '(elo_ladder.participant; an ensemble pools its members\' logits)')
+    p.add_argument('b', help='as A, "random" for the uniform random anchor, or a league member name '
+                   '(plays its own kits and maps)')
     p.add_argument('--pairs', type=int, default=500)
     p.add_argument('--workers', type=int, default=6)
     p.add_argument('--seed-base', type=int, default=131001)
@@ -70,9 +72,9 @@ def main(argv=None):
 
     if a.search:
         import search_policy
-        built = {'A': search_policy.Search('A', a.a.resolve(), 'candidate', **search_policy.parse_budget(a.search))}
+        built = {'A': search_policy.Search('A', Path(a.a).resolve(), 'candidate', **search_policy.parse_budget(a.search))}
     else:
-        built = {'A': elo_ladder.Model('A', a.a.resolve(), 'candidate')}
+        built = {'A': elo_ladder.participant('A', a.a)}
     maps, b_kits = map_catalogue.parse_map_ids(a.maps), None
     member = registry.by_name(registry.load()).get(a.b)
     if member:
@@ -81,7 +83,7 @@ def main(argv=None):
         b_kits = registry.kits(member)
         maps = [m for m in maps if registry.plays_map(member, m)]
     else:
-        built['B'] = elo_ladder.Random() if a.b == 'random' else elo_ladder.Model('B', Path(a.b).resolve(), 'candidate')
+        built['B'] = elo_ladder.participant('B', a.b)
     if a.temperature_a:
         t = [float(v) for v in a.temperature_a.split(',')]
         built['A'].temperature = tuple(t * 3 if len(t) == 1 else t)
@@ -102,6 +104,9 @@ def main(argv=None):
         search = built['A'].summary()
         print(f"search {a.search}: {search['ms_per_decision']:.1f} ms per decision, "
               f"{search['rollouts_per_searched']:.1f} rollouts per searched decision, {search['games']} games")
+    ensemble = {k: v.summary() for k, v in built.items() if isinstance(v, elo_ladder.Ensemble)} or None
+    for k, s in (ensemble or {}).items():
+        print(f"ensemble {k} of {len(s['members'])}: {s['ms_per_decision']:.2f} ms per decision over {s['decisions']} decisions")
 
     points = lambda g: 1.0 if g['outcome'] == 'a' else 0.5 if g['outcome'] == 'draw' else 0.0
     per_pair = {}
@@ -116,7 +121,7 @@ def main(argv=None):
     boot = [rng.choice(pairs, pairs.size).mean() for _ in range(2000)]
     names = ability_names()
     row = dict(label=a.label or f'{a.a} vs {a.b}', a=str(a.a), b=str(a.b), seed_base=a.seed_base, maps=a.maps, search=search,
-               temperature_a=a.temperature_a,
+               temperature_a=a.temperature_a, ensemble=ensemble,
                games=len(played), score=float(pairs.mean()),
                ci=[float(np.quantile(boot, .025)), float(np.quantile(boot, .975))],
                draws=sum(g['outcome'] == 'draw' for g in played),

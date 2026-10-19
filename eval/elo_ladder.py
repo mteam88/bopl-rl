@@ -75,6 +75,88 @@ class Model:
         return act
 
 
+class Ensemble:
+    """N native checkpoints playing one seat as one player. Each member keeps its own
+    recurrent state and reads the same observation row; every head is sampled from the
+    mean of the members' masked logits (a log-linear pool: the normalised geometric mean
+    of their distributions). The heads are independent given the row, so the pooled joint
+    still factorises per head, and it is exactly the product-of-experts of the members'
+    joint policies; averaging probabilities per head would not be their mixture.
+    With aim_ar members the buttons are drawn first, then the aim blocks of the drawn
+    combo are pooled. seconds/decisions time act() (all members) for the cost report."""
+    step=None; path=None
+
+    def __init__(self,name,paths,kind,library=None):
+        import threading
+        self.name=name; self.kind=kind
+        self.members=[Model(f'{name}[{i}]',p,kind,library=library) for i,p in enumerate(paths)]
+        first=self.members[0]
+        for m in self.members[1:]:
+            # One observation row per seat: every member must read the layout and writer family it is written in.
+            if (m.layout,m.ablate,m.policy.obs_size,m.policy.aim_ar)!=(first.layout,first.ablate,first.policy.obs_size,first.policy.aim_ar):
+                raise ValueError(f'ensemble members {first.path} and {m.path} read different observation rows or aim heads')
+        self.layout=first.layout; self.ablate=first.ablate
+        self.sha256=hashlib.sha256('+'.join(m.sha256 for m in self.members).encode()).hexdigest()
+        self.seconds=0.; self.decisions=0; self.lock=threading.Lock()
+
+    def attach(self,env,side):
+        env.set_layout(side,self.layout,ablate=self.ablate)
+
+    def start(self,task,side,rng):
+        import time,torch
+        policies=[m.policy for m in self.members]
+        # Only this seat's row is evaluated: rows are independent, and batch 1 gives bit-identical
+        # logits and state to Model's batch 2 at ~60% of its cost per member.
+        states=[p.initial(1,'cpu') for p in policies]
+        temperature=getattr(self,'temperature',None) or (1.0,1.0,1.0)
+        def head(row,index):
+            part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]/temperature[index]
+            weights=np.exp(part-part.max()); weights/=weights.sum()
+            return rng.choice(len(part),p=weights)
+        def act(observation,mask):
+            t0=time.perf_counter()
+            batch=torch.from_numpy(np.ascontiguousarray(observation[side:side+1,:policies[0].obs_size],dtype=np.float32))
+            allowed=np.asarray(mask[side])!=0
+            rows=[]
+            with torch.no_grad():
+                for i,p in enumerate(policies):
+                    r,states[i]=p.step_raw(batch,states[i]); rows.append(r)
+                pooled=lambda combos=None: np.mean([as_numpy(p.game_logits(r,combos)[0])[0] for p,r in zip(policies,rows)],axis=0)
+                row=np.where(allowed,pooled(),-np.inf)
+                action=[0,head(row,1),0]
+                if policies[0].aim_ar:
+                    row=np.where(allowed,pooled(np.asarray([action[1]],dtype=np.int32)),-np.inf)
+            action[0]=head(row,0); action[2]=head(row,2)
+            with self.lock:
+                self.seconds+=time.perf_counter()-t0; self.decisions+=1
+            return np.asarray(action,dtype=np.int64)
+        return act
+
+    def summary(self):
+        return dict(members=[str(m.path) for m in self.members],decisions=self.decisions,
+                    ms_per_decision=1000*self.seconds/max(self.decisions,1))
+
+
+def participant(name,spec,kind='candidate'):
+    """A player from a command-line spec: 'random', a checkpoint path, 'member:<league name>',
+    or 'ensemble:<spec>+<spec>+...' whose parts are checkpoint paths or member: names."""
+    def checkpoint(part):
+        if not part.startswith('member:'):
+            return Path(part).resolve()
+        import sys
+        sys.path.append(str(Path(__file__).resolve().parents[1]/'league'))
+        import registry
+        rows=registry.by_name(registry.load())
+        if part[7:] not in rows or not rows[part[7:]].get('path'):
+            raise ValueError(f'{part}: no checkpoint member of that name in the league')
+        return registry.ROOT/rows[part[7:]]['path']
+    if spec=='random':
+        return Random()
+    if spec.startswith('ensemble:'):
+        return Ensemble(name,[checkpoint(p) for p in spec[9:].split('+')],kind)
+    return Model(name,checkpoint(spec),kind)
+
+
 class Random:
     name='random'; kind='anchor'; step=None; sha256=None
 
