@@ -1,0 +1,74 @@
+# Offense factorial (PLAN-2026-10.md 2026-10-19 replan, step 4; pre-registered in its "off1 and
+# anneal-ctl" entry): a 2^(6-1) design, F = ABCDE (resolution VI: main effects and two-factor
+# interactions all clean; the half-fraction that holds the all-low cell ff-1). 32 runs in shuffled
+# order at E0's lengths: 6B constant LR with the 5B half-life EMA, then the matched 1B anneal to
+# 1.2e-5; the style rewards stay on through the anneal. Every run is on observation v4.2 (writer bit
+# 16), so ff-1 replicates e0/obsfix, the offense control. 4300 panel games per endpoint, as in E0, so
+# the panel plays E0's setups. Primary metric: KH_PRE (eval/kill_rate.py) at the annealed endpoint.
+name = "off1"
+purpose = "screen"
+init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
+constant_steps = 6_000_000_000
+anneal_steps = 1_000_000_000
+checkpoint_every = 2_000_000_000
+games = 4300
+flags = { v4-ablate = 16 }
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+# The exploiters on their declared kits, in e0.toml's slots, at the annealed endpoint (report only).
+[opponents.x2-drill-kit]
+path = "x2-drill-1500m"
+pinned = true
+slot = 8
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-kit]
+path = "x2-missile-1500m"
+pinned = true
+slot = 9
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-kit]
+path = "x2-blinkplat-1500m"
+pinned = true
+slot = 10
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-kit]
+path = "l2-me32-trap-2000m"
+pinned = true
+slot = 11
+games = 400
+endpoints = ["anneal"]
+
+[factorial]
+seed = 501
+generators = { F = "ABCDE" }
+order_seed = 1
+
+[factorial.factors.A]   # gamma: half-life 9 s -> 23 s of decisions
+high = { gamma = 0.998 }
+
+# Discrete-head entropy x10: buttons 1.5 -> 15, hold 1 -> 10 times the coefficient; aim unchanged
+# (OFFENSE-2026-10.md I4).
+[factorial.factors.B]
+high = { entropy-head-scale = "0.028821467398601395,15,10" }
+
+# Prioritized replay off (alpha 0.8 -> 0). The PER weight scales only the PG term, so this also
+# moves the effective entropy/value weight (TRAINER-BUGS-2026-10.md N3): partly aliased with B.
+[factorial.factors.C]
+high = { prio-alpha = 0 }
+
+[factorial.factors.D]   # I1: early-kill premium 0.5 (styles/offense_kill_05.toml)
+high = { style = "styles/offense_kill_05.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+[factorial.factors.E]   # I3: per-decision time cost while both live (styles/offense_time.toml)
+high = { style = "styles/offense_time.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+# I7: -0.5 to whoever wins at or after sudden death (styles/offense_sd_discount.toml,
+# HUMAN-GAP-2026-10.md B4). Same rule as I1/I3, but a pass goes to Matthew for sign-off.
+[factorial.factors.F]
+high = { style = "styles/offense_sd_discount.toml", style-fade-steps = 1_000_000_000_000_000_000 }

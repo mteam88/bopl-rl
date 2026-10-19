@@ -1,0 +1,60 @@
+# Anneal controls (PLAN-2026-10.md 2026-10-19 replan, step 3; pre-registered in its "off1 and
+# anneal-ctl" entry). Every cell restarts from E0 control seed s's 6B constant checkpoint
+# (e0/l2-s<seed>/constant) with the same seed and the l2 flags, as E0's own anneal did, so all cells
+# share the restart (fresh Muon momentum, prioritized-replay beta ramp 0.2 -> 0.84, fresh process)
+# and differ only in the LR schedule:
+#   const1b    1B at constant LR 2.43e-4 (floor = LR): the restart without the LR decay
+#   ann2b      2B cosine to 1.2e-5
+#   ann1b-f24  1B cosine to 2.4e-6
+# E0's anneal (1B cosine to 1.2e-5) is the reference cell. Only the annealed endpoint is scored, in
+# E0's anneal slot, so every cell plays the same panel setups as E0's anneal.
+name = "anneal-ctl"
+purpose = "screen"
+order = "interleave"
+init = "native/artifacts/rl/research/e0/l2-s{seed}/constant"
+constant_steps = 0
+games = 4300
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+[opponents.x2-drill-kit]
+path = "x2-drill-1500m"
+pinned = true
+slot = 8
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-kit]
+path = "x2-missile-1500m"
+pinned = true
+slot = 9
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-kit]
+path = "x2-blinkplat-1500m"
+pinned = true
+slot = 10
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-kit]
+path = "l2-me32-trap-2000m"
+pinned = true
+slot = 11
+games = 400
+endpoints = ["anneal"]
+
+[arm.const1b]
+anneal_steps = 1_000_000_000
+anneal_floor_lr = 0.000242609
+seeds = [301, 302, 303]
+
+[arm.ann2b]
+anneal_steps = 2_000_000_000
+anneal_floor_lr = 1.2e-5
+seeds = [301, 302, 303]
+
+[arm.ann1b-f24]
+anneal_steps = 1_000_000_000
+anneal_floor_lr = 2.4e-6
+seeds = [301, 302, 303]

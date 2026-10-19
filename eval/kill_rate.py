@@ -1,14 +1,15 @@
 """The kill rate the offense arms are adopted on, and their pre-registered pass rule.
 
     venv/bin/python eval/kill_rate.py TREATED_DIR [...] --control CONTROL_DIR [...] [--endpoint anneal]
-    venv/bin/python eval/kill_rate.py --factorial PROGRAM_DIR      (I1/I3 as factors: their main effects)
+    venv/bin/python eval/kill_rate.py --factorial PROGRAM_DIR      (I1/I3/I7 as factors: their main effects)
 
 Each DIR is an arm directory or results.json of train/research/arm.py; the panel's games come from
 the all_combos --games-out files results.json names. In a factorial (PLAN-2026-10.md 2026-10-19
-replan: I1 and I3 are factors of the offense 2^(5-1), "judged on its main effect"), a factor is I1 or
-I3 when its high level sets styles/offense_kill.toml or styles/offense_time.toml; its runs at the high
-level are the treated group and the runs at the low level the control (each run one unit, the other
-factors balanced across both sides).
+replan: I1 and I3 are factors of the offense factorial, "judged on its main effect"; off1 adds I7), a
+factor is I1, I3 or I7 when its high level sets styles/offense_kill*.toml, styles/offense_time.toml or
+styles/offense_sd_discount.toml; its runs at the high level are the treated group and the runs at the
+low level the control (each run one unit, the other factors balanced across both sides). I7 takes the
+same rule but a pass is flagged for Matthew's sign-off, never adopted.
 
 Kill rate (OFFENSE-2026-10.md section 2 KH_PRE; "kills/min" in PLAN-2026-10.md's 2026-10-19 sign-off):
   per game, seat A = the arm's net:
@@ -53,11 +54,21 @@ def game(g, credit='game'):
     return (ka if t < SUDDEN else 0), min(t, SUDDEN) / 3600, ka, kb, max(t, 1) / 3600
 
 
+def points(g):
+    return 1.0 if g['outcome'] == 'a' else 0.5 if g['outcome'] == 'draw' else 0.0
+
+
 def summarize(rows, credit='game'):
+    """Kill rates, plus the human-regime scores: pre_score over the games decided before sudden death,
+    score_sd_draw with every game that reaches sudden death counted as a draw."""
     x = np.array([game(g, credit) for g in rows], float).reshape(-1, 5)
     s = x.sum(axis=0)
+    pre = [points(g) for g in rows if g['ticks'] < SUDDEN]
     return dict(n=len(rows), kh_pre=float(s[0] / max(s[1], 1e-9)), ckpm=float(s[2] / max(s[4], 1e-9)),
                 ckpm_b=float(s[3] / max(s[4], 1e-9)),
+                score=float(np.mean([points(g) for g in rows])) if rows else None,
+                pre_score=float(np.mean(pre)) if pre else None,
+                score_sd_draw=float(np.mean([points(g) if g['ticks'] < SUDDEN else 0.5 for g in rows])) if rows else None,
                 sd=float(np.mean([g['ticks'] >= SUDDEN for g in rows])) if rows else None,
                 len_s=float(np.median([g['ticks'] / 60 for g in rows])) if rows else None,
                 env_loss=float(np.mean([g['outcome'] == 'b' and g['deaths'][0].get('environment', 0) > 0 for g in rows]))
@@ -146,7 +157,8 @@ def rule(arms, control, endpoint='anneal', credit='game'):
     return out
 
 
-OFFENSE_STYLES = {'I1': 'offense_kill', 'I3': 'offense_time'}
+OFFENSE_STYLES = {'I1': 'offense_kill', 'I3': 'offense_time', 'I7': 'offense_sd_discount'}
+SIGN_OFF = ('I7',)   # passes are flagged for Matthew's sign-off, never adopted automatically (PLAN 2026-10-19 off1)
 
 
 def factorial_rule(results, endpoint='anneal', credit='game'):
@@ -169,8 +181,11 @@ def factorial_rule(results, endpoint='anneal', credit='game'):
         v = verdicts[k]
         v['holm'] = ok
         v['kill_rate_pass'] = v['ratio'] >= RATIO and v['ratio_ci'][0] > 1.0 and ok
-        v['adopt'] = v['kill_rate_pass'] and v['strength_pass'] and not v['vetoes']['ckpm_b_up_50pct'] \
+        passed = v['kill_rate_pass'] and v['strength_pass'] and not v['vetoes']['ckpm_b_up_50pct'] \
             and not v['vetoes']['env_loss_up']
+        v['sign_off'] = k.split()[0] in SIGN_OFF
+        v['adopt'] = passed and not v['sign_off']
+        v['passed'] = passed
     return verdicts
 
 
@@ -191,7 +206,8 @@ def report(verdicts, control_name):
             f"  ckpm_b ratio {v['ckpm_b_ratio']:.2f} (veto > {VETO_CKPM_B}); env_loss {v['env_loss_diff']:+.3f} (veto > "
             f"+{VETO_UNFORCED}); len_s {v['len_s']:.1f} vs {v['len_s_control']:.1f}; sd {v['sd']:.3f} vs {v['sd_control']:.3f}; "
             f"idle veto unmeasured\n"
-            f"  ADOPT: {'yes' if v['adopt'] else 'no'}")
+            + (f"  PASSED, NOT ADOPTED: needs Matthew's sign-off" if v.get('sign_off') and v.get('passed') else
+               f"  ADOPT: {'yes' if v['adopt'] else 'no'}" + (' (sign-off arm)' if v.get('sign_off') else '')))
     return '\n'.join(lines)
 
 

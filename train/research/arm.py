@@ -1,14 +1,19 @@
 """Research arms (native/rl/research/PLAN-2026-10.md, REVIEW-2026-10-cursor.md): one experiment is one TOML file.
 
     venv/bin/python train/research/arm.py train/research/arms/e0.toml [more.toml ...] [--dry-run] [--only NAME,...]
+        [--eval-only] [--eval-jobs N]
 
-An arm warm-starts from `init`, trains `constant_steps` learner steps at constant LR with
+An arm warm-starts from `init` (a checkpoint, a league member, or a run directory whose status.json is
+complete; `{seed}` becomes the arm's seed), trains `constant_steps` learner steps at constant LR with
 --ema-decay (the trainer keeps one EMA; its decay is computed per arm so the half-life is
 `ema_half_life` learner steps whatever the batch per optimizer step: 5B gives 0.9999966 at the l2
 batch; an explicit `ema_decay` overrides), then runs the matched cosine anneal (`anneal_steps`, --init-weights <last raw
 checkpoint>, same seed) down to the absolute floor `anneal_floor_lr` (--min-lr-ratio is computed
 from the arm's --learning-rate), then scores its endpoints with league/all_combos.py --games-out:
-raw, EMA and annealed, plus the raw checkpoints at `raw_at` learner steps.
+raw, EMA and annealed, plus the raw checkpoints at `raw_at` learner steps. `constant_steps = 0` skips
+the constant stage: the anneal starts from `init` and only the annealed endpoint is scored (raw is
+`init`, scored by the program that made it). `anneal_floor_lr` equal to --learning-rate makes the
+anneal stage a constant-LR restart.
 
 Training flags are the l2 main's turn-100 command (`base`, a command.txt) minus the flags an arm
 owns (OWNED) and minus the `exclude_opponents` members; `flags` adds or overrides (true = bare flag,
@@ -20,16 +25,20 @@ load). Top-level keys are defaults, [arm.<name>] tables override them (`flags` a
 each group in turn (control s301, treatment s301, control s302, ...). A [factorial]
 table adds one arm per run of a two-level (fractional) factorial: [factorial.factors.<letter>] with
 `low`/`high` flag tables, `generators = { E = "ABCD" }` for the aliased factors, `seed` (run i gets
-seed + i), `replicates`, and `order_seed` (runs are trained in a shuffled order).
+seed + i), `replicates`, and `order_seed` (runs are trained in a shuffled order). Factors that set
+`style` join their specs into one comma list; any other flag two factors set must agree.
 
 Evaluation: every endpoint plays the held-out `panel` (league members, none of them in the training
 opponents: the run refuses otherwise), `games` per endpoint split evenly over it; the primary metric
 is the equal-weight panel mean. [opponents.<name>] adds secondary opponents (`path`: a file or a
-league member, `games`, `endpoints`). Seeds: one seed base per purpose, screen 211001 and
-confirm/release 221001. Each opponent's row also carries `offense` (eval/kill_rate.py: KH_PRE, ckpm, ckpm_b,
-sd, len_s from its games); eval/research_report.py applies the offense arms' pass rule. Endpoint e against opponent o (panel first, then [opponents] in order)
-plays seed base + SEED_STRIDE*(SLOTS*o + e), so an arm's endpoints play fresh setups and every arm
-plays the same setups per endpoint; append new opponents and endpoints at the end.
+league member, `games`, `endpoints`; `pinned = true` plays a member on its declared kits, as
+--pinned-opponents does in training, instead of on all kits). Seeds: one seed base per purpose, screen
+211001 and confirm/release 221001. Each opponent's row also carries `offense` (eval/kill_rate.py: KH_PRE, ckpm, ckpm_b,
+sd, len_s from its games); eval/research_report.py applies the offense arms' pass rule. Endpoint e
+against opponent slot o (panel first, then [opponents] in order, or the opponent's `slot`) plays seed
+base + SEED_STRIDE*(SLOTS*o + e), so an arm's endpoints play fresh setups and every arm plays the
+same setups per endpoint; append new opponents and endpoints at the end, and give an opponent the
+`slot` it has in another program to share that program's setups.
 
 Arms train one at a time (each stage a systemd unit, CPUWeight 1000, after waiting for `gpu_mib`
 free on the card); evals run one at a time in CPUWeight 30 units, overlapping the next arm's
@@ -38,7 +47,9 @@ when its status.json says complete, and otherwise restarts fresh (the partial ru
 every arm is one run per stage, because --resume restarts the prioritized-replay beta schedule.
 `resume_on_crash = true` resumes instead; a stage whose config.json records a resume is listed
 in results.json `tainted` and flagged by the report. An eval is done when its --out row has all
-its games. Every command is appended to <out>/commands.log.
+its games. Every command is appended to <out>/commands.log. --eval-only never trains and never
+touches a training stage: it scores the arms whose stages are complete and skips the rest;
+--eval-jobs N evaluates N arms at once (each eval unit takes eval_workers cores).
 """
 import argparse
 import functools
@@ -120,6 +131,18 @@ def path(spec):
     return ROOT / members()[spec]['path']
 
 
+def init_weights(spec, dry_run=False):
+    """An arm's `init`: a checkpoint, a league member, or a run directory's completed checkpoint."""
+    p = path(spec)
+    if not p.is_dir():
+        return p
+    if done := Runner.finished(p):
+        return done
+    if dry_run:
+        return p / 'checkpoints/policy-<last>.bin'
+    raise SystemExit(f'{p}: init run is not complete')
+
+
 def parse_flags(argv):
     flags, i = {}, 0
     while i < len(argv):
@@ -154,12 +177,35 @@ def factorial_arms(spec):
         for i, x in enumerate(runs):
             flags = {}
             for f, level in x.items():
-                flags.update(factors[f].get('high' if level > 0 else 'low', {}))
+                for key, value in factors[f].get('high' if level > 0 else 'low', {}).items():
+                    if key.removeprefix('--') == 'style' and key in flags:
+                        flags[key] = f'{flags[key]},{value}'
+                    elif key in flags and flags[key] != value:
+                        raise SystemExit(f'factorial: factors set {key} to {flags[key]!r} and {value!r}')
+                    else:
+                        flags[key] = value
             name = ''.join(f.lower() for f in factors if x[f] > 0) or '1'
             arms.append((f"ff-{name}" + (f'-r{r}' if spec.get('replicates', 1) > 1 else ''),
                          dict(seed=spec['seed'] + r * len(runs) + i, group=f'ff-{name}', factors=x, flags=flags)))
     random.Random(spec.get('order_seed', 0)).shuffle(arms)
     return arms
+
+
+def scored_endpoints(arm):
+    """The endpoints an arm scores: no raw, EMA or raw_at ones without a constant stage, no EMA without a decay."""
+    ema = arm.get('ema_decay') or (arm.get('ema_decay') is None and arm.get('ema_half_life'))
+    return [e for e in arm['endpoint_names']
+            if (arm['constant_steps'] or e == 'anneal') and (e != 'ema' or ema)]
+
+
+def evals(arm):
+    """[(opponent, spec, seed slot)]: the panel in slots 0.., then [opponents] in order unless they set `slot`."""
+    per_member = 2 * round(arm['games'] / (2 * len(arm['panel'])))
+    out = [(m, dict(path=m, games=per_member), o) for o, m in enumerate(arm['panel'])]
+    out += [(name, spec, spec.get('slot', len(arm['panel']) + i)) for i, (name, spec) in enumerate(arm['opponents'].items())]
+    if len({s for *_, s in out}) < len(out):
+        raise SystemExit(f"arm {arm['name']}: two opponents share a seed slot")
+    return out
 
 
 def load_arms(config_file):
@@ -177,7 +223,7 @@ def load_arms(config_file):
             raise SystemExit(f'{config_file}: arm {name} sets program keys {bad}')
         for seed in cfg.pop('seeds', None) or [cfg['seed']]:
             arm = dict(cfg, name=f'{name}-s{seed}' if 'seeds' in table else name, group=table.get('group', name),
-                       seed=seed, program=program)
+                       seed=seed, program=program, init=str(cfg['init']).replace('{seed}', str(seed)))
             arm['dir'] = out / arm['name']
             arm['checkpoint_every'] = arm['checkpoint_every'] or arm['constant_steps']
             flags = base_flags(arm['base'])
@@ -197,7 +243,9 @@ def load_arms(config_file):
                                  'add them to exclude_opponents')
             arm['train_flags'] = flags
             check_opponents(arm, opponents, config_file)
-            if arm['ema_decay'] is None and arm['ema_half_life']:
+            if not arm['constant_steps']:
+                arm['ema_decay'] = None
+            elif arm['ema_decay'] is None and arm['ema_half_life']:
                 value = lambda flag, default: float(flags.get(flag, [default])[0])
                 per_step = LEARNER_ROWS_PER_WORKER * value('--workers', 16) * value('--horizon', 128) / (
                     value('--minibatch-div', 1) * value('--learner-passes', 1))
@@ -210,12 +258,15 @@ def load_arms(config_file):
             arm['endpoint_names'] = [*ENDPOINTS, *(f'raw{s // 1_000_000}m' for s in arm['raw_at'])]
             if len(arm['endpoint_names']) > SLOTS:
                 raise SystemExit(f'{config_file}: at most {SLOTS - len(ENDPOINTS)} raw_at endpoints')
-            per_member = 2 * round(arm['games'] / (2 * len(arm['panel'])))
-            arm['evals'] = [(m, dict(path=m, games=per_member)) for m in arm['panel']] + list(arm['opponents'].items())
-            for opponent, spec in arm['evals']:
+            arm['scored'] = scored_endpoints(arm)
+            arm['evals'] = evals(arm)
+            for opponent, spec, _ in arm['evals']:
                 games = spec.get('games', arm['games'])
                 if games % 2 or not 0 < games // 2 <= MAX_PAIRS:
                     raise SystemExit(f'{config_file}: {opponent} games must be even and at most {2 * MAX_PAIRS}')
+                if spec.get('pinned') and not registry().kits(members().get(spec['path'], {})):
+                    raise SystemExit(f'{config_file}: {opponent} is pinned but {spec["path"]} is not a league member '
+                                     'with declared kits')
             arms.append(arm)
     if top.get('order') == 'interleave':   # one arm of each group in turn, so drift hits every group alike
         groups = {}
@@ -334,6 +385,8 @@ class Runner:
     # -- evaluation
 
     def endpoints(self, arm, raw, annealed):
+        if not arm['constant_steps']:
+            return dict(anneal=annealed)
         endpoints = dict(raw=raw, anneal=annealed)
         if arm['ema_decay']:
             endpoints['ema'] = raw.with_name(f'{raw.stem}-ema.bin')
@@ -346,13 +399,14 @@ class Runner:
     def evals(self, arm, endpoints):
         evals = arm['dir'] / 'evals'
         results = dict(arm=arm['name'], group=arm['group'], program=arm['program'], seed=arm['seed'],
-                       purpose=arm['purpose'], init=str(path(arm['init'])), constant_steps=arm['constant_steps'],
+                       purpose=arm['purpose'], init=str(init_weights(arm['init'])), constant_steps=arm['constant_steps'],
                        anneal_steps=arm['anneal_steps'], anneal_floor_lr=arm['anneal_floor_lr'],
                        ema_decay=arm['ema_decay'], ema_half_life=arm['ema_half_life'], flags=arm['flags'], factors=arm.get('factors'),
                        compare=arm.get('compare'), panel=arm['panel'], endpoints={},
                        tainted=[stage for stage in ('constant', 'anneal') if resumed(arm['dir'] / stage)])
-        for o, (opponent, spec) in enumerate(arm['evals']):
+        for opponent, spec, o in arm['evals']:
             games = spec.get('games', arm['games'])
+            b = spec['path'] if spec.get('pinned') else path(spec['path'])   # a member name: all_combos pins its kits
             for e, endpoint in enumerate(arm['endpoint_names']):
                 if endpoint not in spec.get('endpoints', arm['endpoint_names']) or endpoint not in endpoints:
                     continue
@@ -361,7 +415,7 @@ class Runner:
                 seed_base = arm['seed_base'] + SEED_STRIDE * (SLOTS * o + e)
                 if not self.eval_done(out, games_out, games):
                     shell = f'rm -f {shlex.quote(str(out))}; ' + shlex.join(map(str, [
-                        PY, ROOT / 'league/all_combos.py', endpoints[endpoint], path(spec['path']), '--pairs', games // 2,
+                        PY, ROOT / 'league/all_combos.py', endpoints[endpoint], b, '--pairs', games // 2,
                         '--workers', arm['eval_workers'], '--seed-base', seed_base,
                         '--label', f"{arm['program']}:{arm['name']}:{endpoint}:{opponent}",
                         '--out', out, '--games-out', games_out]))
@@ -374,7 +428,7 @@ class Runner:
                     if not self.eval_done(out, games_out, games):
                         raise RuntimeError(f'eval {out} gave no complete row (see {log_path})')
                 row = results['endpoints'].setdefault(endpoint, dict(checkpoint=str(endpoints[endpoint]), opponents={}))
-                row['opponents'][opponent] = summary(games_out, seed_base)
+                row['opponents'][opponent] = dict(summary(games_out, seed_base), pinned=bool(spec.get('pinned')))
         if self.dry_run:
             return
         for row in results['endpoints'].values():
@@ -428,6 +482,9 @@ def main(argv=None):
     p.add_argument('configs', nargs='+', type=Path)
     p.add_argument('--dry-run', action='store_true', help='print every command; run nothing')
     p.add_argument('--only', help='comma-separated arm names')
+    p.add_argument('--eval-only', action='store_true',
+                   help='never train: score the arms whose stages are complete, skip the others')
+    p.add_argument('--eval-jobs', type=int, default=1, help='arms evaluated at once (default 1)')
     a = p.parse_args(argv)
     work = []
     for config in a.configs:
@@ -436,12 +493,18 @@ def main(argv=None):
         work += [(runner, arm) for arm in arms if not a.only or arm['name'] in a.only.split(',')]
     if not work:
         raise SystemExit('no arms selected')
-    if not a.dry_run and any(arm['ema_decay'] for _, arm in work):
+    if not a.dry_run and not a.eval_only and any(arm['ema_decay'] for _, arm in work):
         check = subprocess.run([PY, '-c', 'from pufferlib import _C; assert hasattr(_C, "save_ema")'],
                                env={'PYTHONPATH': str(PUFFER)}, capture_output=True)
         if check.returncode:
             raise SystemExit(f'{PUFFER} has no EMA support: rebuild with train/build.py --device cuda')
-    jobs, failed = queue.Queue(), []
+    if not a.dry_run:   # a stale eval library fails every eval unit; refuse before the first one
+        check = subprocess.run([PY, '-c', 'import native_policy; native_policy._library(native_policy.LIBRARY)'],
+                               cwd=ROOT / 'eval', env={'PYTHONPATH': f'{ROOT / "eval"}:{PUFFER}'}, capture_output=True, text=True)
+        if check.returncode:
+            raise SystemExit(f'eval library: {check.stderr.strip().splitlines()[-1]}\n'
+                             f'rebuild with {PY} eval/native_policy.py --build')
+    jobs, failed, skipped = queue.Queue(), [], []
 
     def evaluate():
         while (job := jobs.get()) is not None:
@@ -451,13 +514,23 @@ def main(argv=None):
             except Exception as error:
                 log(f"{arm['name']} eval failed: {error}")
                 failed.append(arm['name'])
-    evaluator = threading.Thread(target=evaluate)
-    evaluator.start()
+    evaluators = [threading.Thread(target=evaluate) for _ in range(max(1, a.eval_jobs))]
+    for evaluator in evaluators:
+        evaluator.start()
     try:
         for runner, arm in work:
             try:
-                raw = runner.train(arm, 'constant', path(arm['init']))
-                annealed = runner.train(arm, 'anneal', raw)
+                init = init_weights(arm['init'], a.dry_run)
+                if a.eval_only:
+                    raw = Runner.finished(arm['dir'] / 'constant') if arm['constant_steps'] else init
+                    annealed = Runner.finished(arm['dir'] / 'anneal')
+                    if not (raw and annealed):
+                        log(f"{arm['name']}: not trained, skipped (--eval-only)")
+                        skipped.append(arm['name'])
+                        continue
+                else:
+                    raw = runner.train(arm, 'constant', init) if arm['constant_steps'] else init
+                    annealed = runner.train(arm, 'anneal', raw)
             except Exception as error:
                 log(f"{arm['name']} training failed: {error}")
                 failed.append(arm['name'])
@@ -467,8 +540,12 @@ def main(argv=None):
             else:
                 jobs.put((runner, arm, runner.endpoints(arm, raw, annealed)))
     finally:
-        jobs.put(None)
-        evaluator.join()
+        for evaluator in evaluators:
+            jobs.put(None)
+        for evaluator in evaluators:
+            evaluator.join()
+    if skipped:
+        log(f'skipped (not trained): {", ".join(skipped)}')
     if failed:
         raise SystemExit(f'failed arms: {", ".join(failed)}')
     return 0

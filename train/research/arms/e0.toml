@@ -34,6 +34,32 @@ path = "l2-me32-trap-2000m"
 games = 400
 endpoints = ["anneal"]
 
+# The exploiters on their declared kits (slots 8-11; off1 and anneal-ctl share these setups). On all
+# kits (slots 4-7 above) they mostly play kits they were never built for.
+[opponents.x2-drill-kit]
+path = "x2-drill-1500m"
+pinned = true
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-kit]
+path = "x2-missile-1500m"
+pinned = true
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-kit]
+path = "x2-blinkplat-1500m"
+pinned = true
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-kit]
+path = "l2-me32-trap-2000m"
+pinned = true
+games = 400
+endpoints = ["anneal"]
+
 [arm.l2]
 seeds = [301, 302, 303, 304, 305, 306]
 

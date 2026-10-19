@@ -14,6 +14,7 @@ mean over the panel; s_seed^2 = var_i(panel_i) - sum_o MS_resid_o / (P^2 J_o). T
 arm play different seed bases, so within-arm endpoint contrasts carry the full within-net eval variance.
 """
 import argparse
+import itertools
 import json
 import math
 import sys
@@ -63,12 +64,10 @@ def program_spec(program):
             a = dict(cfg, name=f'{name}-s{seed}' if 'seeds' in table else name,
                      group=table.get('group', name), seed=seed)
             a['endpoint_names'] = [*harness.ENDPOINTS, *(f'raw{s // 1_000_000}m' for s in a['raw_at'])]
-            if not a.get('ema_decay') and not a.get('ema_half_life'):
-                a['endpoint_names'].remove('ema')
-            per_member = 2 * round(a['games'] / (2 * len(a['panel'])))
-            a['evals'] = {m: dict(games=per_member, endpoints=a['endpoint_names']) for m in a['panel']}
-            for o, spec in a['opponents'].items():
-                a['evals'][o] = dict(games=spec.get('games', a['games']), endpoints=spec.get('endpoints', a['endpoint_names']))
+            a['endpoint_names'] = harness.scored_endpoints(a)
+            a['evals'] = {o: dict(games=spec.get('games', a['games']),
+                                  endpoints=[e for e in spec.get('endpoints', a['endpoint_names']) if e in a['endpoint_names']])
+                          for o, spec, _ in harness.evals(a)}
             arms.append(a)
     return raw['name'], top, arms
 
@@ -96,7 +95,7 @@ def load_games(path):
 
 class Data:
     def __init__(self, out, arms):
-        self.cells, self.missing, self.status = {}, [], {}
+        self.cells, self.files, self.missing, self.status = {}, {}, [], {}
         for a in arms:
             d = out / a['name']
             self.status[a['name']] = (stage_status(d / 'constant'), stage_status(d / 'anneal'))
@@ -107,6 +106,7 @@ class Data:
                     n = sum(map(len, pairs.values()))
                     if n == spec['games'] and all(len(v) == 2 for v in pairs.values()):
                         self.cells[a['name'], e, o] = pairs
+                        self.files[a['name'], e, o] = f
                     else:
                         self.missing.append((a['name'], e, o, n, spec['games']))
 
@@ -190,7 +190,7 @@ def fmt_s(s2):
 
 # ---- report -------------------------------------------------------------------
 
-def report(program, top, arms, data, prior, lines, ref=None):
+def report(program, top, arms, data, prior, lines, ref=None, reference=None):
     p = lines.append
     groups = {}
     for a in arms:
@@ -320,8 +320,12 @@ def report(program, top, arms, data, prior, lines, ref=None):
         if rule.get('extra'):
             p(f'    also: {rule["extra"]}')
     fac = [a for a in arms if a.get('factors')]
-    if fac:
+    if fac and program == 'off1':
+        offense_factorial_report(data, fac, reference, p)
+    elif fac:
         factorial_report(data, fac, ref or {}, prior, p)
+    if program == 'anneal-ctl':
+        anneal_ctl_report(data, arms, reference, p)
 
     # secondary opponents
     sec = [o for o in arms[0]['evals'] if o not in arms[0]['panel']]
@@ -336,7 +340,8 @@ def report(program, top, arms, data, prior, lines, ref=None):
                 if s:
                     row.append(f'{o.split("-1500m")[0].split("-2000m")[0]} {np.mean(s):.3f} (k {len(s)})')
             if row:
-                p(f'  {gname:<7}' + ', '.join(row))
+                p(f'  {gname:<12}' + ', '.join(row))
+    human_regime_report(data, {g: v for g, v in groups.items() if not v[0].get('factors')}, p)
     return comps, r_crn
 
 
@@ -357,6 +362,190 @@ def decide(rule, diff):
         return ('supported' if diff >= rule['hypothesis'] else 'falsified' if abs(diff) <= rule['band']
                 else 'inconclusive')
     return 'report only'
+
+
+def bh(pv, q):
+    """The keys Benjamini-Hochberg passes at level q."""
+    order = sorted(pv, key=pv.get)
+    for rank in range(len(order), 0, -1):
+        if pv[order[rank - 1]] <= q * rank / len(order):
+            return set(order[:rank])
+    return set()
+
+
+# ---- offense and the human regime (eval/kill_rate.py) ------------------------------
+
+HUMAN_KEYS = ('kh_pre', 'kh_pre_cast', 'sd', 'pre_score', 'score_sd_draw', 'ckpm_b', 'env_loss')
+OFFENSE_RULE = dict(q=0.10, source='PLAN-2026-10.md 2026-10-19 "pre-registration: off1 and anneal-ctl"')
+ANNEAL_CTL = dict(reference_group='l2', q=0.10, min_effect=0.02, source=OFFENSE_RULE['source'],
+                  contrasts={'D1 LR decay (e0 anneal - const1b)': ('e0-anneal', 'const1b'),
+                             'D2 2B anneal (ann2b - e0 anneal)': ('ann2b', 'e0-anneal'),
+                             'D3 floor 2.4e-6 (ann1b-f24 - e0 anneal)': ('ann1b-f24', 'e0-anneal')})
+
+
+def as_result(data, a, e):
+    """The results.json fields eval/kill_rate.py reads, for an endpoint whose panel is complete (else None)."""
+    v = panel(data, a, e)
+    if not v:
+        return None
+    return dict(arm=a['name'], group=a['group'], seed=a['seed'], panel=a['panel'], factors=a.get('factors'),
+                flags=a.get('flags', {}), endpoints={e: dict(panel=dict(score=v[0]), opponents={
+                    m: dict(games_out=str(data.files[a['name'], e, m])) for m in a['panel']})})
+
+
+def regime(data, a, e='anneal'):
+    """kill_rate.summarize over an endpoint's panel games, plus the v4.2 (cast credit) KH_PRE where rows carry it."""
+    r = as_result(data, a, e)
+    if not r:
+        return None
+    kr = harness.kill_rate()
+    rows = kr.panel_rows(r, e)
+    s = kr.summarize(rows)
+    s['kh_pre_cast'] = kr.summarize(rows, 'cast')['kh_pre'] if all(g.get('credited') is not None for g in rows) else None
+    s['panel'] = r['endpoints'][e]['panel']['score']
+    return s
+
+
+def human_regime_report(data, groups, p, e='anneal'):
+    lines = []
+    for gname, g in groups.items():
+        rows = [s for s in (regime(data, a, e) for a in g) if s]
+        if rows:
+            vals = [[s[k] for s in rows if s.get(k) is not None] for k in HUMAN_KEYS]
+            lines.append(f'  {gname:<12}{len(rows):>3} ' + ''.join(f'{np.mean(v):>14.4f}' if v else f'{"-":>14}' for v in vals))
+    if lines:
+        p('')
+        p(f'-- human regime at {e} (eval/kill_rate.py on the panel games, mean over seeds; kh_pre_cast is v4.2 credit, '
+          'secondary; score_sd_draw counts every game reaching sudden death as a draw)')
+        p(f'  {"group":<12}{"k":>3} ' + ''.join(f'{k:>14}' for k in HUMAN_KEYS))
+        for line in lines:
+            p(line)
+
+
+def factor_label(fac, f):
+    hi, lo = [a for a in fac if a['factors'][f] > 0], [a for a in fac if a['factors'][f] < 0]
+    for name, style in harness.kill_rate().OFFENSE_STYLES.items():
+        if all(style in json.dumps(a['flags']) for a in hi) and not any(style in json.dumps(a['flags']) for a in lo):
+            return name
+    items = lambda a: {f'{k}={v}' for k, v in a['flags'].items()}
+    return ' '.join(sorted(set.intersection(*map(items, hi)) - set.union(*map(items, lo)))) or f
+
+
+def offense_factorial_report(data, fac, reference, p):
+    """off1: BH q 0.10 on the KH_PRE main effects screens factors into round 2 (kill_rate.rule per factor, high vs
+    low runs, strength non-inferiority > -0.02, its vetoes); kill_rate.factorial_rule is the I1/I3 auto-adopt rule
+    (I7: sign-off); secondary main effects and interactions are reported, no decision."""
+    kr = harness.kill_rate()
+    letters = list(fac[0]['factors'])
+    results = [r for r in (as_result(data, a, 'anneal') for a in fac) if r]
+    p(f'  offense factorial: {len(results)}/{len(fac)} runs with an annealed panel; rules: {OFFENSE_RULE["source"]}')
+    if len(results) < len(fac):
+        p('    PENDING: effects need the full balanced design')
+        return
+    labels = {f: factor_label(fac, f) for f in letters}
+    verdicts = {f: kr.rule({f: [r for r in results if r['factors'][f] > 0]},
+                           [r for r in results if r['factors'][f] < 0])[f] for f in letters}
+    pv = {f: 2 * min(v['p_one_sided'], 1 - v['p_one_sided']) for f, v in verdicts.items()}
+    passed = bh(pv, OFFENSE_RULE['q'])
+    p(f'    primary: KH_PRE main effect = mean(high runs) / mean(low runs), {len(results) // 2} vs {len(results) // 2}; '
+      f'BH q {OFFENSE_RULE["q"]} over the {len(letters)} two-sided bootstrap p')
+    for f in sorted(letters, key=pv.get):
+        v = verdicts[f]
+        ni, veto = v['noninferiority'], v['vetoes']['ckpm_b_up_50pct'] or v['vetoes']['env_loss_up']
+        screen = f in passed and v['ratio'] > 1 and ni['lower95'] > kr.MARGIN and not veto
+        p(f'    {f} {labels[f]:<38} KH_PRE x{v["ratio"]:.3f} [{v["ratio_ci"][0]:.3f}, {v["ratio_ci"][1]:.3f}] p {pv[f]:.4f} '
+          f'BH {"pass" if f in passed else "fail"} | panel {ni["diff"]:+.4f} LB {ni["lower95"]:+.4f} | ckpm_b x{v["ckpm_b_ratio"]:.2f} '
+          f'env_loss {v["env_loss_diff"]:+.3f}{" VETO" if veto else ""} -> {"ROUND 2" if screen else "no"}')
+    p('    I1/I3 auto-adopt rule (eval/kill_rate.py factorial_rule: ratio >= 1.20, CI > 1, Holm over I1/I3/I7; I7 needs sign-off):')
+    adopt = kr.factorial_rule(results)
+    for line in kr.report(adopt, 'the low level').splitlines():
+        p('      ' + line)
+    if sum(v['adopt'] for k, v in adopt.items() if k.split()[0] in ('I1', 'I3')) == 2:
+        p('    I1 and I3 both pass: run I1+I3 combined against each alone before adopting both (sign-off 2026-10-19)')
+    runs = {a['name']: regime(data, a) for a in fac}
+    keys = ('panel', 'pre_score', 'score_sd_draw', 'sd', 'kh_pre_cast')
+    p('    secondary main effects (high - low, no decision): ' + ', '.join(keys))
+    for f in letters:
+        diff = []
+        for k in keys:
+            hi = [runs[a['name']][k] for a in fac if a['factors'][f] > 0 and runs[a['name']].get(k) is not None]
+            lo = [runs[a['name']][k] for a in fac if a['factors'][f] < 0 and runs[a['name']].get(k) is not None]
+            diff.append(f'{np.mean(hi) - np.mean(lo):+.4f}' if hi and lo else '-')
+        p(f'    {f} {labels[f]:<38} ' + '  '.join(diff))
+    x = np.array([[a['factors'][f] for f in letters] for a in fac], float)
+    for metric, y in (('log KH_PRE', np.log([max(runs[a['name']]['kh_pre'], 1e-6) for a in fac])),
+                      ('panel', np.array([runs[a['name']]['panel'] for a in fac]))):
+        n, effects, alias = len(y), {}, {}
+        for i, j in itertools.combinations(range(len(letters)), 2):
+            effects[letters[i] + letters[j]] = float(y @ (x[:, i] * x[:, j])) * 2 / n
+        for c in itertools.combinations(range(len(letters)), 3):
+            col = x[:, c[0]] * x[:, c[1]] * x[:, c[2]]
+            if tuple(-col) not in alias:
+                alias.setdefault(tuple(col), float(y @ col) * 2 / n)
+        se = math.sqrt(np.mean(np.square(list(alias.values())))) if alias else float('nan')
+        top = sorted(effects.items(), key=lambda kv: -abs(kv[1]))[:4]
+        p(f'    exploratory 2fi on {metric} (se {se:.4f} from {len(alias)} 3fi alias contrasts): '
+          + ', '.join(f'{k} {v:+.4f} (|z| {abs(v) / se:.1f})' for k, v in top))
+    if reference:
+        ref_data, ref_arms = reference
+        ctl = [s for s in (regime(ref_data, a) for a in ref_arms if a['group'] == 'obsfix') if s]
+        low = next((runs[a['name']] for a in fac if all(v < 0 for v in a['factors'].values())), None)
+        if ctl and low:
+            p(f'    check: all-low run vs e0/obsfix (k {len(ctl)}): KH_PRE {low["kh_pre"]:.4f} vs '
+              f'{np.mean([s["kh_pre"] for s in ctl]):.4f} sd {np.std([s["kh_pre"] for s in ctl], ddof=1) if len(ctl) > 1 else 0:.4f}; '
+              f'panel {low["panel"]:.4f} vs {np.mean([s["panel"] for s in ctl]):.4f}')
+
+
+def anneal_ctl_report(data, arms, reference, p):
+    """anneal-ctl: each cell vs E0's own anneal on the same 6B checkpoints and setups; seeds x cells two-way ANOVA
+    residual as the error (df (cells-1)(seeds-1)), BH q 0.10 over D1-D3; the restart effect is exploratory."""
+    rule = ANNEAL_CTL
+    if not reference:
+        p('  anneal-ctl: needs --reference e0')
+        return
+    ref_data, ref_arms = reference
+    e0 = {a['seed']: a for a in ref_arms if a['group'] == rule['reference_group']}
+    groups = {}
+    for a in arms:
+        groups.setdefault(a['group'], {})[a['seed']] = a
+    cells = {'e0-anneal': {s: (ref_data, a) for s, a in e0.items()}, **{g: {s: (data, a) for s, a in v.items()} for g, v in groups.items()}}
+    seeds = sorted(s for s in set.intersection(*(set(c) for c in cells.values()))
+                   if all(panel(d, a, 'anneal') for d, a in (c[s] for c in cells.values())))
+    p(f'  anneal-ctl: {len(seeds)} seeds with every cell scored (reference e0/{rule["reference_group"]}); rule: {rule["source"]}')
+    if len(seeds) < 2:
+        p('    PENDING: needs >= 2 complete seeds')
+        return
+    names = list(cells)
+    y = np.array([[panel(*cells[c][s], 'anneal')[0] for s in seeds] for c in names])
+    resid = y - y.mean(1, keepdims=True) - y.mean(0, keepdims=True) + y.mean()
+    df = (len(names) - 1) * (len(seeds) - 1)
+    se = math.sqrt(2 * (resid ** 2).sum() / df / len(seeds))
+    p('    cells (panel at anneal): ' + ', '.join(f'{c} {y[i].mean():.4f}' for i, c in enumerate(names)) + f'; contrast se {se:.4f}, t df {df}')
+    est, pv = {}, {}
+    for name, (hi, lo) in rule['contrasts'].items():
+        if hi in names and lo in names:
+            est[name] = float(y[names.index(hi)].mean() - y[names.index(lo)].mean())
+            pv[name] = float(2 * stats.t.sf(abs(est[name]) / se, df))
+    passed = bh(pv, rule['q'])
+    t = stats.t.ppf(0.975, df)
+    for name in est:
+        ok = name in passed and est[name] >= rule['min_effect']
+        verdict = ('LR decay adds to the restart' if ok else 'no evidence the decay adds to the restart') if name.startswith('D1') \
+            else ('ADOPT as the program endpoint' if ok else 'keep the 1B anneal to 1.2e-5')
+        p(f'    {name:<40} {est[name]:+.4f} 95% [{est[name] - t * se:+.4f}, {est[name] + t * se:+.4f}] p {pv[name]:.4f} '
+          f'BH {"pass" if name in passed else "fail"} -> {verdict}')
+    raw = [panel(ref_data, e0[s], 'raw') for s in seeds]
+    if 'const1b' in names and all(raw):
+        d = y[names.index('const1b')] - np.array([r[0] for r in raw])
+        sd_ = np.std(d, ddof=1)
+        p(f'    exploratory restart effect (const1b - e0 raw 6B, paired over seeds, other setups): {d.mean():+.4f} '
+          f'95% [{d.mean() - stats.t.ppf(0.975, len(d) - 1) * sd_ / math.sqrt(len(d)):+.4f}, '
+          f'{d.mean() + stats.t.ppf(0.975, len(d) - 1) * sd_ / math.sqrt(len(d)):+.4f}]')
+    p('    human regime per cell (mean over those seeds): ' + ', '.join(HUMAN_KEYS[:5]))
+    for c in names:
+        rows = [regime(*cells[c][s]) for s in seeds]
+        p(f'      {c:<12}' + ''.join(f'{np.mean([r[k] for r in rows if r.get(k) is not None]):>10.4f}'
+                                     if any(r.get(k) is not None for r in rows) else f'{"-":>10}' for k in HUMAN_KEYS[:5]))
 
 
 def factorial_report(data, fac, ctl, prior, p):
@@ -532,7 +721,7 @@ def main(argv=None):
     if a.reference and a.reference != program:
         ref = reference_components(a.reference, a.reference_dir)
     lines = []
-    comps, r_crn = report(program, top, arms, data, a.prior_sseed, lines, ref and ref[0])
+    comps, r_crn = report(program, top, arms, data, a.prior_sseed, lines, ref and ref[0], ref and (ref[1], ref[2]))
     if ref:   # power is planned from the reference program's control seeds and eval noise
         comps, r_crn, data, arms = {(ref[0]['group'], 'anneal'): ref[0]}, ref[3], ref[1], ref[2]
         lines.append(f'\n(power from reference program {ref[0]["program"]}, group {ref[0]["group"]})')
