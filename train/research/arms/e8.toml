@@ -1,0 +1,80 @@
+# E8: capacity (PLAN-2026-10 Section 3). Is the 256-wide main capacity-limited on 36^3 kits x 124 maps?
+# Two arms from the l2 main at 136.0B, 3 seeds each, equal learner steps: 10B constant LR with EMA,
+# then the matched 1B anneal. Seeds are shared between the arms (training is nondeterministic, so
+# this pairs nothing; it keeps the runs comparable in name).
+#
+#   w512  hidden 512 from train/surgery.py --widen 2 --widen-init zero --widen-noise 0.1 (seed 0):
+#         fusion rows tiled, new mingru units are noisy copies reading the fusion copy, the actor and
+#         critic read them through zero columns. The actor is exact: KL(main || w512) mean 9e-12,
+#         max 6e-10 over 9,884 decisions of 6 games vs f5 (train/check_widen.py); the critic's layer
+#         norm spans [trunk, privileged], so the value moves by RMSE 0.007 (value sd 0.21).
+#   c256  the control: the main itself, same flags.
+#
+# No 2-layer arm: the kernels run --layers 2 (train/check_v4.py's CPU case), but no init of a new
+# minGRU layer keeps the policy. There are no biases, so its highway gate sigmoid(W x) cannot be
+# driven to 0 to pass x through, and its candidate g(0) = 0.5 leaks a constant into the state. A
+# 2-layer arm needs distillation first (train/distill.py has no plain teacher mode yet).
+#
+# Frozen opponents run in the learner's kernels, so the w512 arm needs every training opponent at
+# hidden 512 (registry.opponents refuses a 256 member): train/widen_league.py widened the 120
+# --opponents of l2-anneal-2 the same exact way and wrote a league file whose rows point at the
+# copies. The w512 training units must run with
+#   BOPL_LEAGUE_JSON=native/artifacts/rl/sweeps/capacity-e8/league-w512.json
+# (`env` below; the harness has to pass it to the training units only, not to evals: the panel
+# plays the original 256 members on CPU, where mixed widths are fine).
+#
+# Memory: the 2026-09 capacity-widen runs at this shape took 9056 vs 8524 MB (device total, +530
+# MB); the 2026-10-18 smoke at a 3072-row minibatch took 1532 vs 1390 MB per process (+142 MB, x8
+# to the l2 minibatch = +1.1 GB if it all scales with it). So w512 needs 8.7-9.3 GB against the l2
+# trainer's 8156 MB: it fits the 12 GB card alone, never beside another full-size run.
+#
+# Equal wall clock: w512's learner GPU time per update is 1.4-1.7x c256's (smoke, 2026-10-18,
+# capacity-e8/smoke; 1.74x at full size in 2026-09), and its learner sps was 590k vs 636k (-7%) at
+# full size in 2026-09, where the rollout hides most of it. Expect r = sps(w512)/sps(c256) in
+# 0.6-0.93. Equal learner steps is the primary contrast. If w512 wins, check it at equal wall
+# clock: r from the result.json elapsed of the constant stages; if r < 0.9, run arm c256-wall
+# (uncomment) with constant_steps = round(10e9 / r). The plan's kill rule: an sps drop > 40% means
+# the equal-wall-clock control wins by default.
+name = "e8"
+purpose = "screen"
+init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
+constant_steps = 10_000_000_000
+anneal_steps = 1_000_000_000
+checkpoint_every = 2_000_000_000
+raw_at = [2_000_000_000, 6_000_000_000]
+ema_decay = 0.99997
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+[opponents.x2-drill-1500m]
+path = "x2-drill-1500m"
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-1500m]
+path = "x2-missile-1500m"
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-1500m]
+path = "x2-blinkplat-1500m"
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-2000m]
+path = "l2-me32-trap-2000m"
+games = 400
+endpoints = ["anneal"]
+
+[arm.w512]
+init = "native/artifacts/rl/sweeps/capacity-e8/init/l2-main-136002m-w512.bin"
+flags = { hidden = 512 }
+env = { BOPL_LEAGUE_JSON = "native/artifacts/rl/sweeps/capacity-e8/league-w512.json" }
+gpu_mib = 10000
+seeds = [801, 802, 803]
+
+[arm.c256]
+seeds = [801, 802, 803]
+
+# [arm.c256-wall]
+# constant_steps = 10_750_000_000   # 10e9 / r, r from the w512 runs' elapsed
+# seeds = [801, 802, 803]

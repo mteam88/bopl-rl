@@ -1,6 +1,7 @@
 """Carry a trained checkpoint's weights into a changed policy v4 architecture.
 
     native/artifacts/rl/venv/bin/python train/surgery.py OLD.bin NEW.bin --hidden 384
+    native/artifacts/rl/venv/bin/python train/surgery.py OLD.bin NEW.bin --widen 2 --widen-init zero   # actor exact
 
 Every v4 tensor is named and shaped by eval/layout.py, so surgery is a walk over
 two segmentations of the same flat buffer: same name and shape, copy; same name,
@@ -273,6 +274,68 @@ def widen(weights, source_arch, factor, noise=0.01, seed=0):
     return target, target_arch, report
 
 
+def widen_zero(weights, source_arch, factor, noise=0.01, seed=0):
+    """(flat target weights, target arch, report rows): hidden grown `factor`-fold, new units silent.
+
+    The fusion rows are tiled, so the layer norm after the fusion sees the same mean and
+    variance and the source's units get exactly the input they had. Every source mingru
+    row reads only the source's units (zero columns on the new ones), so the source's
+    recurrent state evolves as before. Every reader of the trunk (actor, critic_in's
+    trunk segment) starts with zero columns for the new units, so the actor computes
+    exactly what the source did, whatever the new units hold.
+
+    What they hold matters to the critic: its layer norm spans [trunk, privileged], so
+    the new units enter its mean and variance. Fresh random units moved the value by
+    half its spread (value RMSE 0.09 vs sd 0.18 on l2-main-136002m). So each new unit's
+    mingru rows are a copy of its source unit's, reading the fusion copy, plus Gaussian
+    noise of `noise` times the tensor's std over the whole row: the trunk the critic
+    sees is the source's tiled, as in widen. The copies are not symmetric with their
+    sources even without noise, since their outgoing columns differ (zero vs trained).
+    An FFN's layer norm over the trunk would have the critic's problem, so ffn_dim > 0
+    is refused.
+    """
+    if factor != 2:
+        raise ValueError('zero widening adds one copy of the units; use factor 2')
+    if source_arch['ffn_dim']:
+        raise ValueError('zero widening cannot keep the FFN layer norm exact; use ffn_dim 0')
+    rng = np.random.default_rng(seed)
+    hidden = source_arch['hidden']
+    wide = hidden * factor
+    target_arch = dict(source_arch, hidden=wide)
+    source_tensors, target_tensors = tensors(source_arch), tensors(target_arch)
+    target = np.zeros(layout.policy_v4_weights(wide, target_arch['num_layers'],
+                                               **{k: v for k, v in target_arch.items() if k not in ('hidden', 'num_layers')}),
+                      dtype='<f4')
+
+    def mingru(w):
+        parts, zeros = [], np.zeros((hidden, hidden), w.dtype)
+        for block in np.split(w, 3):
+            copy = np.concatenate([zeros, block], 1)
+            copy += rng.normal(0.0, noise * float(w.std()), copy.shape).astype(w.dtype)
+            parts += [np.concatenate([block, zeros], 1), copy]
+        return np.concatenate(parts)
+
+    def zero_cols(w):
+        return np.concatenate([w[:, :hidden], np.zeros((w.shape[0], wide - hidden), w.dtype), w[:, hidden:]], 1)
+
+    report = []
+    for name, (offset, shape) in target_tensors.items():
+        source_offset, source_shape = source_tensors[name]
+        w = weights[source_offset:source_offset + source_shape[0] * source_shape[1]].reshape(source_shape)
+        if name == 'fusion':
+            out, action = np.tile(w, (factor, 1)), 'tiled'
+        elif name.startswith('mingru'):
+            out, action = mingru(w), 'grown'
+        elif name in ('actor', 'critic_in'):
+            out, action = zero_cols(w), 'zero-cols'
+        else:
+            out, action = w, 'copied'
+        assert out.shape == shape, (name, out.shape, shape)
+        target[offset:offset + out.size] = out.ravel()
+        report.append((name, source_shape, shape, action, w.size, out.size))
+    return target, target_arch, report
+
+
 def read_checkpoint(path):
     """(architecture, metadata, flat weights) of a published v4 checkpoint."""
     path = Path(path)
@@ -320,13 +383,19 @@ def main(argv=None):
     parser.add_argument('--widen', type=int, help='instead: grow hidden this many times by duplicating units, '
                                                   'keeping the policy (see widen); no other change allowed')
     parser.add_argument('--widen-noise', type=float, default=0.01, help='symmetry-breaking noise on the copies, x tensor std')
+    parser.add_argument('--widen-init', choices=('copy', 'zero'), default='copy',
+                        help='copy: duplicate units (Net2WiderNet, see widen); zero: fresh units with zero '
+                             'outgoing weights, the actor exactly preserved (see widen_zero)')
     args = parser.parse_args(argv)
 
     source_arch, metadata, weights = read_checkpoint(args.source)
     if args.widen:
         if any(getattr(args, k) is not None for k in ARCH_KEYS):
             parser.error('--widen sets hidden itself and changes nothing else')
-        target, target_arch, report = widen(weights, source_arch, args.widen, args.widen_noise, args.seed)
+        if args.widen_init == 'zero':
+            target, target_arch, report = widen_zero(weights, source_arch, args.widen, args.widen_noise, args.seed)
+        else:
+            target, target_arch, report = widen(weights, source_arch, args.widen, args.widen_noise, args.seed)
     else:
         target_arch = dict(source_arch, **{k: v for k, v in vars(args).items() if k in source_arch and v is not None})
         target, report = surgery(weights, source_arch, target_arch, args.seed)
@@ -342,7 +411,7 @@ def main(argv=None):
                                       if source_arch[k] != target_arch[k]},
                              kept_floats=kept, total_floats=int(target.size), seed=args.seed)
     if args.widen:
-        config['surgery'].update(widen=args.widen, widen_noise=args.widen_noise)
+        config['surgery'].update(widen=args.widen, widen_init=args.widen_init, widen_noise=args.widen_noise)
     written = write_checkpoint(args.target, target.tofile, obs_size=layout.V4_OBS_SIZE,
                                hidden=target_arch['hidden'], num_layers=target_arch['num_layers'],
                                architecture=layout.V4_ARCHITECTURE, game_steps=metadata['step'],

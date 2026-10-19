@@ -192,6 +192,31 @@ class ArchitectureChangeTests(unittest.TestCase):
                     torch.testing.assert_close(new_rows[:, :width], old_rows[:, :width], atol=1e-4, rtol=1e-4)
                     torch.testing.assert_close(new_state[:, :, :arch['hidden']], old_state, atol=1e-5, rtol=1e-5)
 
+    def test_zero_widening_keeps_the_actor_with_noisy_new_units(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for changes in (dict(ffn_dim=0), dict(ffn_dim=0, critic_dim=0)):
+                source, arch = synthetic(directory, f'source-{len(changes)}.bin', **changes)
+                _, _, weights = surgery.read_checkpoint(source)
+                arch2 = dict(arch, num_layers=2)
+                weights2 = policy_v4.init_weights(32, 2, 4, 0, seed=3, **surgery.v4_shape(arch))
+                for base, base_arch in ((weights, arch), (weights2, arch2)):
+                    grown, grown_arch, _ = surgery.widen_zero(base, base_arch, 2, noise=0.5)
+                    before = policy_v4.PolicyV4(base, **base_arch)
+                    after = policy_v4.PolicyV4(grown, **grown_arch)
+                    observations = torch.from_numpy(np.random.default_rng(9).normal(
+                        size=(5, 3, layout.V4_OBS_SIZE)).astype(np.float32))
+                    old_state, new_state = before.initial(3), after.initial(3)
+                    for step in observations:
+                        old_rows, old_state = before.step_raw(step, old_state)
+                        new_rows, new_state = after.step_raw(step, new_state)
+                        width = before.width if arch['critic_dim'] else before.width + 1
+                        torch.testing.assert_close(new_rows[:, :width], old_rows[:, :width], atol=1e-5, rtol=1e-5)
+                        torch.testing.assert_close(new_state[:, :, :arch['hidden']], old_state, atol=1e-6, rtol=1e-6)
+                    self.assertGreater(float((new_state[:, :, arch['hidden']:] - old_state).abs().max()), 1e-3)
+            source, ffn_arch = synthetic(directory, 'ffn.bin', ffn_dim=48)
+            with self.assertRaises(ValueError):
+                surgery.widen_zero(surgery.read_checkpoint(source)[2], ffn_arch, 2)
+
     def test_a_v3_checkpoint_is_refused_rather_than_guessed(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'v3.bin'
