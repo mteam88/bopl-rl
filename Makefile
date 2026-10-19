@@ -481,10 +481,14 @@ check-reward: $(OUT)/check_reward
 #
 # --output must be absolute: it becomes the native log path, and bopl_rl_open
 # rejects a relative executable/replay/log outright (and aborts doing it).
+# PYTHONPATH pins this checkout's binding: without it the venv's editable
+# finder resolves pufferlib to whichever checkout installed it.
 check-routing: $(RUST_ROLLOUT)
-	native/artifacts/rl/venv/bin/python train/check_routing.py \
+	PYTHONPATH=$(abspath native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9) \
+	  native/artifacts/rl/venv/bin/python train/check_routing.py \
 	  --game $(abspath $(REFERENCE)) --output $(abspath $(OUT))/check-routing-oracle
-	native/artifacts/rl/venv/bin/python train/check_routing.py \
+	PYTHONPATH=$(abspath native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9) \
+	  native/artifacts/rl/venv/bin/python train/check_routing.py \
 	  --game $(abspath $(RUST_ROLLOUT)) --output $(abspath $(OUT))/check-routing-port
 
 # train.py --loadout-learner-first: on a frozen-bank vector the learner seat

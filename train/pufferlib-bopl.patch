@@ -4376,8 +4376,8 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      if (pufferl.nccl_comm != nullptr) {
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
---- pristine-src/vecenv.h	2026-10-18 20:45:05.199738955 -0400
-+++ puffer-overlay/vecenv.h	2026-10-18 20:45:05.261739778 -0400
+--- pristine-src/vecenv.h	2026-10-18 23:52:09.937597872 -0400
++++ puffer-overlay/vecenv.h	2026-10-18 23:52:34.434684985 -0400
 @@ -97,6 +97,52 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
@@ -5524,9 +5524,9 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      for (int buf = 0; buf < vec->buffers; buf++) {
 -        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
 +        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
-+    }
-+}
-+
+     }
+ }
+ 
 +double static_vec_omp_wait(StaticVec* vec) {
 +    StaticThreading* threading = vec->threading;
 +    double last = 0.0;
@@ -5537,7 +5537,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            bopl_futex_wait(&threading->buffer_states[buf], s);
 +        }
 +        if (threading->done_at[buf] > last) last = threading->done_at[buf];
-     }
++    }
 +    if (threading->ab) {
 +        int arm = atomic_load_explicit(&threading->arm, memory_order_relaxed);
 +        atomic_fetch_add_explicit(&threading->arm_rollouts[arm], 1, memory_order_relaxed);
@@ -5549,8 +5549,8 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +void static_vec_omp_step(StaticVec* vec) {
 +    static_vec_omp_start(vec);
 +    static_vec_omp_wait(vec);
- }
- 
++}
++
  void static_vec_seq_step(StaticVec* vec) {
      StaticThreading* threading = vec->threading;
      for (int buf = 0; buf < vec->buffers; buf++) {
@@ -5566,7 +5566,23 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -418,11 +1389,17 @@
+@@ -399,6 +1370,15 @@
+ }
+ #endif
+ 
++// A failed allocation leaves its pointer NULL, and the first reset writes
++// observations through it: a busy GPU (no room for the context) must abort
++// here with the CUDA error, not segfault in c_reset.
++static void bopl_vec_cuda(cudaError_t err, const char* what) {
++    if (err == cudaSuccess) return;
++    fprintf(stderr, "Bopl RL: %s failed: %s\n", what, cudaGetErrorString(err));
++    abort();
++}
++
+ StaticVec* create_static_vec(int total_agents, int num_buffers, int gpu, Dict* vec_kwargs, Dict* env_kwargs) {
+     StaticVec* vec = (StaticVec*)calloc(1, sizeof(StaticVec));
+     vec->total_agents = total_agents;
+@@ -418,21 +1398,27 @@
      vec->size = num_envs;
  
      size_t obs_elem_size = obs_element_size();
@@ -5576,32 +5592,54 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 -        cudaHostAlloc((void**)&vec->actions, total_agents * NUM_ATNS * sizeof(float), cudaHostAllocPortable);
 -        cudaHostAlloc((void**)&vec->rewards, total_agents * sizeof(float), cudaHostAllocPortable);
 -        cudaHostAlloc((void**)&vec->terminals, total_agents * sizeof(float), cudaHostAllocPortable);
+-
+-        cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
+-        cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
+-        cudaMalloc((void**)&vec->gpu_rewards, total_agents * sizeof(float));
+-        cudaMalloc((void**)&vec->gpu_terminals, total_agents * sizeof(float));
+-
+-        cudaMemset(vec->gpu_observations, 0, total_agents * OBS_SIZE * obs_elem_size);
+-        cudaMemset(vec->gpu_actions, 0, total_agents * NUM_ATNS * sizeof(float));
+-        cudaMemset(vec->gpu_rewards, 0, total_agents * sizeof(float));
+-        cudaMemset(vec->gpu_terminals, 0, total_agents * sizeof(float));
 +        unsigned hflags = cudaHostAllocPortable | cudaHostAllocMapped;
-+        cudaHostAlloc((void**)&vec->observations, total_agents * OBS_SIZE * obs_elem_size, hflags);
-+        cudaHostAlloc((void**)&vec->actions, total_agents * NUM_ATNS * sizeof(float), hflags);
-+        cudaHostAlloc((void**)&vec->rewards, total_agents * sizeof(float), hflags);
-+        cudaHostAlloc((void**)&vec->terminals, total_agents * sizeof(float), hflags);
++        bopl_vec_cuda(cudaHostAlloc((void**)&vec->observations, total_agents * OBS_SIZE * obs_elem_size, hflags), "cudaHostAlloc observations");
++        bopl_vec_cuda(cudaHostAlloc((void**)&vec->actions, total_agents * NUM_ATNS * sizeof(float), hflags), "cudaHostAlloc actions");
++        bopl_vec_cuda(cudaHostAlloc((void**)&vec->rewards, total_agents * sizeof(float), hflags), "cudaHostAlloc rewards");
++        bopl_vec_cuda(cudaHostAlloc((void**)&vec->terminals, total_agents * sizeof(float), hflags), "cudaHostAlloc terminals");
 +        vec->mapped = cudaHostGetDevicePointer((void**)&vec->dev_observations, vec->observations, 0) == cudaSuccess
 +            && cudaHostGetDevicePointer((void**)&vec->dev_actions, vec->actions, 0) == cudaSuccess
 +            && cudaHostGetDevicePointer((void**)&vec->dev_rewards, vec->rewards, 0) == cudaSuccess
 +            && cudaHostGetDevicePointer((void**)&vec->dev_terminals, vec->terminals, 0) == cudaSuccess;
- 
-         cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
-         cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
-@@ -449,9 +1426,11 @@
++
++        bopl_vec_cuda(cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size), "cudaMalloc observations");
++        bopl_vec_cuda(cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float)), "cudaMalloc actions");
++        bopl_vec_cuda(cudaMalloc((void**)&vec->gpu_rewards, total_agents * sizeof(float)), "cudaMalloc rewards");
++        bopl_vec_cuda(cudaMalloc((void**)&vec->gpu_terminals, total_agents * sizeof(float)), "cudaMalloc terminals");
++
++        bopl_vec_cuda(cudaMemset(vec->gpu_observations, 0, total_agents * OBS_SIZE * obs_elem_size), "cudaMemset observations");
++        bopl_vec_cuda(cudaMemset(vec->gpu_actions, 0, total_agents * NUM_ATNS * sizeof(float)), "cudaMemset actions");
++        bopl_vec_cuda(cudaMemset(vec->gpu_rewards, 0, total_agents * sizeof(float)), "cudaMemset rewards");
++        bopl_vec_cuda(cudaMemset(vec->gpu_terminals, 0, total_agents * sizeof(float)), "cudaMemset terminals");
+     } else {
+         vec->observations = calloc(total_agents * OBS_SIZE, obs_elem_size);
+         vec->actions = (float*)calloc(total_agents * NUM_ATNS, sizeof(float));
+@@ -449,9 +1435,11 @@
      vec->action_mask_size = MY_ACTION_MASK;
      size_t mask_bytes = (size_t)total_agents * MY_ACTION_MASK * sizeof(unsigned char);
      if (gpu) {
 -        cudaHostAlloc((void**)&vec->action_mask, mask_bytes, cudaHostAllocPortable);
-+        cudaHostAlloc((void**)&vec->action_mask, mask_bytes, cudaHostAllocPortable | cudaHostAllocMapped);
-         cudaMalloc((void**)&vec->gpu_action_mask, mask_bytes);
-         cudaMemset(vec->gpu_action_mask, 0, mask_bytes);
+-        cudaMalloc((void**)&vec->gpu_action_mask, mask_bytes);
+-        cudaMemset(vec->gpu_action_mask, 0, mask_bytes);
++        bopl_vec_cuda(cudaHostAlloc((void**)&vec->action_mask, mask_bytes, cudaHostAllocPortable | cudaHostAllocMapped), "cudaHostAlloc action mask");
++        bopl_vec_cuda(cudaMalloc((void**)&vec->gpu_action_mask, mask_bytes), "cudaMalloc action mask");
++        bopl_vec_cuda(cudaMemset(vec->gpu_action_mask, 0, mask_bytes), "cudaMemset action mask");
 +        vec->mapped = vec->mapped
 +            && cudaHostGetDevicePointer((void**)&vec->dev_action_mask, vec->action_mask, 0) == cudaSuccess;
      } else {
          vec->action_mask = (unsigned char*)calloc(total_agents * MY_ACTION_MASK, sizeof(unsigned char));
          vec->gpu_action_mask = vec->action_mask;
-@@ -576,6 +1555,7 @@
+@@ -576,6 +1564,7 @@
              (size_t)vec->total_agents * MY_ACTION_MASK * sizeof(unsigned char),
              cudaMemcpyHostToDevice);
  #endif
@@ -5609,7 +5647,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1571,168 @@
+@@ -591,6 +1580,168 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -5778,7 +5816,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1745,11 @@
+@@ -603,7 +1754,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -5791,7 +5829,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -611,10 +1757,21 @@
+@@ -611,10 +1766,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -5815,7 +5853,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1785,7 @@
+@@ -628,6 +1794,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -5823,7 +5861,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1881,73 @@
+@@ -723,6 +1890,73 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }
