@@ -379,6 +379,9 @@ def arguments():
                    help='GAE lambda; default keeps the PufferLib config value (0.90)')
     p.add_argument('--gamma', type=float, default=None,
                    help='Discount per decision; default keeps the PufferLib config value (train/bopl.ini, 0.995)')
+    p.add_argument('--prio-alpha', type=float, default=None,
+                   help='Prioritized replay exponent on |advantage| (0 = uniform sampling); default keeps the '
+                        'PufferLib config value (0.8)')
     p.add_argument('--entropy', type=float, default=.01)
     p.add_argument('--entropy-floor', type=float, default=.0005)
     p.add_argument('--entropy-half-life', type=int, default=30_000_000,
@@ -806,6 +809,8 @@ def main():
         args['train'].update(gae_lambda=a.gae_lambda)
     if a.gamma is not None:
         args['train'].update(gamma=a.gamma)
+    if a.prio_alpha is not None:
+        args['train'].update(prio_alpha=a.prio_alpha)
     # Scripted banks are the LAST ones. When share_min < 1 some of their matches
     # fall to frozen weights, so the pool manages every bank (bot matches stay
     # out of hist_*_bank). At share_min = share_max = 1 the leftover never

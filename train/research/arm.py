@@ -12,9 +12,11 @@ raw, EMA and annealed, plus the raw checkpoints at `raw_at` learner steps.
 
 Training flags are the l2 main's turn-100 command (`base`, a command.txt) minus the flags an arm
 owns (OWNED) and minus the `exclude_opponents` members; `flags` adds or overrides (true = bare flag,
-false = removed). Top-level keys are defaults, [arm.<name>] tables override them (`flags` merges);
-`seeds = [...]` expands an arm into replicate arms <name>-s<seed> of group <name>; `compare = "<group>"` names the control group the
-report tests it against on their common seeds; top-level `order = "interleave"` trains one arm of
+false = removed); `env` sets environment variables of the training units only (a widened run's
+BOPL_LEAGUE_JSON: every training opponent must resolve there at the learner's --hidden, checked at
+load). Top-level keys are defaults, [arm.<name>] tables override them (`flags` and `env` merge);
+`seeds = [...]` expands an arm into replicate arms <name>-s<seed> of group <name>; `compare =
+"<group>"` names the control group the report tests it against on their common seeds; top-level `order = "interleave"` trains one arm of
 each group in turn (control s301, treatment s301, control s302, ...). A [factorial]
 table adds one arm per run of a two-level (fractional) factorial: [factorial.factors.<letter>] with
 `low`/`high` flag tables, `generators = { E = "ABCD" }` for the aliased factors, `seed` (run i gets
@@ -31,8 +33,11 @@ plays the same setups per endpoint; append new opponents and endpoints at the en
 Arms train one at a time (each stage a systemd unit, CPUWeight 1000, after waiting for `gpu_mib`
 free on the card); evals run one at a time in CPUWeight 30 units, overlapping the next arm's
 training. Rerunning skips every stage whose output on disk is complete: a training stage is done
-when its status.json says complete, and resumes with --resume from its last checkpoint otherwise;
-an eval is done when its --out row has all its games. Every command is appended to <out>/commands.log.
+when its status.json says complete, and otherwise restarts fresh (the partial run is moved aside):
+every arm is one run per stage, because --resume restarts the prioritized-replay beta schedule.
+`resume_on_crash = true` resumes instead; a stage whose config.json records a resume is listed
+in results.json `tainted` and flagged by the report. An eval is done when its --out row has all
+its games. Every command is appended to <out>/commands.log.
 """
 import argparse
 import functools
@@ -68,7 +73,8 @@ DEFAULTS = dict(
     init='native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin',
     constant_steps=6_000_000_000, anneal_steps=1_000_000_000, anneal_floor_lr=1.2e-5,
     ema_half_life=5_000_000_000, ema_decay=None,
-    checkpoint_every=None, raw_at=[], metrics_every=10_000_000, flags={}, exclude_opponents=[],
+    checkpoint_every=None, raw_at=[], metrics_every=10_000_000, flags={}, env={}, exclude_opponents=[],
+    resume_on_crash=False,
     panel=PANEL, games=4300, opponents={})
 NTFY = 'http://127.0.0.1:2586/bopl'
 
@@ -77,11 +83,30 @@ def log(message):
     print(f'[research {time.strftime("%m-%d %H:%M:%S")}] {message}', flush=True)
 
 
-@functools.cache
-def members():
-    sys.path.insert(0, str(ROOT / 'league'))
+def registry():
+    if str(ROOT / 'league') not in sys.path:
+        sys.path.insert(0, str(ROOT / 'league'))
     import registry
-    return {m['name']: m for m in registry.load(verify=False)['members']}
+    return registry
+
+
+@functools.cache
+def members(league=None):
+    """League members by name, from league/league.json or another league file (BOPL_LEAGUE_JSON)."""
+    return {m['name']: m for m in registry().load(league and path(league), verify=False)['members']}
+
+
+def check_opponents(arm, opponents, config_file):
+    """Every training opponent resolves in the league the training unit reads, at the learner's width."""
+    league = arm['env'].get('BOPL_LEAGUE_JSON')
+    table, hidden = members(league), int(arm['train_flags'].get('--hidden', [128])[0])
+    for name in opponents:
+        row = table.get(name)
+        checkpoint = row and row.get('path') and path(row['path'])
+        if not checkpoint or not checkpoint.exists():
+            raise SystemExit(f"{config_file}: arm {arm['name']}: opponent {name} has no weights in {league or 'league.json'}")
+        if (width := registry().policy_shape(checkpoint).get('hidden')) != hidden:
+            raise SystemExit(f"{config_file}: arm {arm['name']}: opponent {name} is {width} wide, the learner {hidden}")
 
 
 def path(spec):
@@ -145,7 +170,8 @@ def load_arms(config_file):
     tables = list(raw.get('arm', {}).items()) + (factorial_arms(raw['factorial']) if 'factorial' in raw else [])
     arms = []
     for name, table in tables:
-        cfg = {**top, **table, 'flags': {**top['flags'], **table.get('flags', {})}}
+        cfg = {**top, **table, 'flags': {**top['flags'], **table.get('flags', {})},
+               'env': {**top['env'], **table.get('env', {})}}
         if bad := [k for k in PROGRAM_KEYS if k in table]:
             raise SystemExit(f'{config_file}: arm {name} sets program keys {bad}')
         for seed in cfg.pop('seeds', None) or [cfg['seed']]:
@@ -169,6 +195,7 @@ def load_arms(config_file):
                 raise SystemExit(f'{config_file}: arm {arm["name"]} trains against panel members {sorted(leaked)}; '
                                  'add them to exclude_opponents')
             arm['train_flags'] = flags
+            check_opponents(arm, opponents, config_file)
             if arm['ema_decay'] is None and arm['ema_half_life']:
                 value = lambda flag, default: float(flags.get(flag, [default])[0])
                 per_step = LEARNER_ROWS_PER_WORKER * value('--workers', 16) * value('--horizon', 128) / (
@@ -207,9 +234,18 @@ def active(unit):
     return subprocess.run(['systemctl', '--user', 'is-active', '--quiet', unit + '.service']).returncode == 0
 
 
+def resumed(run):
+    """A stage that ran --resume: its prioritized-replay beta schedule restarted mid-run (findings log)."""
+    try:
+        return bool(json.loads((run / 'config.json').read_text()).get('resumed'))
+    except (OSError, ValueError):
+        return False
+
+
 def checkpoints(run):
-    """Raw (non-EMA) checkpoints of a run by learner step."""
-    return {int(p.stem.split('-')[1]): p for p in (run / 'checkpoints').glob('policy-*.bin') if not p.stem.endswith('-ema')}
+    """Raw (non-EMA) checkpoints of a run by learner step (the file names count game steps)."""
+    return {json.loads(Path(f'{p}.json').read_text())['learner_steps']: p
+            for p in (run / 'checkpoints').glob('policy-*.bin') if not p.stem.endswith('-ema')}
 
 
 class Runner:
@@ -218,7 +254,7 @@ class Runner:
 
     def unit(self, unit, shell, log_path, weight, memory, env):
         if self.dry_run:
-            print(f'# {unit}\n{shell}\n', flush=True)
+            print(f'# {unit}\n{shlex.join(env[1:])}{" " if env[1:] else ""}{shell}\n', flush=True)
             return
         if active(unit):   # a previous runner's unit is still going: wait for it rather than start another
             log(f'{unit} is already running; waiting for it')
@@ -265,7 +301,7 @@ class Runner:
         else:
             owned |= {'--steps': [arm['anneal_steps']], '--checkpoint-every': [arm['anneal_steps']],
                       '--anneal-lr': [1], '--min-lr-ratio': [f"{arm['min_lr_ratio']:.6g}"]}
-        if (run / 'pool/state.json').exists():
+        if arm['resume_on_crash'] and (run / 'pool/state.json').exists():
             owned['--resume'] = []
         elif run.exists() and not self.dry_run:
             run.rename(run.with_name(f'{stage}.crashed-{time.strftime("%Y%m%d-%H%M%S")}'))
@@ -275,7 +311,8 @@ class Runner:
         if not self.dry_run:
             arm['dir'].mkdir(parents=True, exist_ok=True)
             self.wait_gpu(arm['gpu_mib'], unit)
-        self.unit(unit, shlex.join(map(str, argv)), arm['dir'] / f'{stage}.log', 1000, '12G', [f'PYTHONPATH={PUFFER}'])
+        self.unit(unit, shlex.join(map(str, argv)), arm['dir'] / f'{stage}.log', 1000, '12G',
+                  [f'PYTHONPATH={PUFFER}', *(f'{k}={v}' for k, v in arm['env'].items())])
         if self.dry_run:
             return run / 'checkpoints' / f'policy-<{stage} last>.bin'
         if not (done := self.finished(run)):
@@ -311,7 +348,8 @@ class Runner:
                        purpose=arm['purpose'], init=str(path(arm['init'])), constant_steps=arm['constant_steps'],
                        anneal_steps=arm['anneal_steps'], anneal_floor_lr=arm['anneal_floor_lr'],
                        ema_decay=arm['ema_decay'], ema_half_life=arm['ema_half_life'], flags=arm['flags'], factors=arm.get('factors'),
-                       compare=arm.get('compare'), panel=arm['panel'], endpoints={})
+                       compare=arm.get('compare'), panel=arm['panel'], endpoints={},
+                       tainted=[stage for stage in ('constant', 'anneal') if resumed(arm['dir'] / stage)])
         for o, (opponent, spec) in enumerate(arm['evals']):
             games = spec.get('games', arm['games'])
             for e, endpoint in enumerate(arm['endpoint_names']):

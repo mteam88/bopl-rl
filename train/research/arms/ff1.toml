@@ -1,7 +1,10 @@
-# Screening factorial (REVIEW-2026-10-cursor.md Section 4, levels per LITERATURE-2026-10.md): a 2^(5-1)
-# design, E = -ABCD (resolution V; the half-fraction that holds the all-low cell ff-1, the l2 config
-# E0 replicates), 16 runs in shuffled order, 6B constant + 1B anneal, 2000 games per endpoint. Every
-# run carries the 5B half-life EMA (decay per arm), so EMA - raw is a within-run contrast.
+# Screening factorial (REVIEW-2026-10-cursor.md Section 4, levels per LITERATURE-2026-10.md and the
+# findings log's prioritized-replay entry): a 2^(6-1) design, F = ABCDE (resolution VI: main effects
+# and two-factor interactions all clean; the half-fraction that holds the all-low cell ff-1, the l2
+# config E0 replicates), 32 runs in shuffled order, 6B constant + 1B anneal, 2000 games per endpoint,
+# about 96 GPU-h. Every run carries the 5B half-life EMA (decay per arm), so EMA - raw is a within-run
+# contrast. To halve the cost at resolution IV (main effects clean, interactions aliased in pairs):
+# generators = { E = "ABC", F = "BCD" }, 16 runs, also holding ff-1.
 name = "ff1"
 purpose = "screen"
 init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
@@ -13,7 +16,7 @@ exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-2
 
 [factorial]
 seed = 401
-generators = { E = "-ABCD" }
+generators = { F = "ABCDE" }
 order_seed = 1
 
 [factorial.factors.A]   # LR
@@ -35,9 +38,14 @@ high = { pfsp-f = "var" }
 [factorial.factors.E]
 high = { minibatch-div = 1 }
 
-# Optional F, Muon decoupled weight decay (w -= lr * wd * w per optimizer step), once train.py has the
+# Prioritized replay: alpha 0.8 (the l2 config) vs 0, uniform sampling. Every arm is one fresh run per
+# stage, so beta ramps 0.2 -> 0.84 the same way in all of them (and again in each anneal).
+[factorial.factors.F]
+high = { prio-alpha = 0 }
+
+# Optional G, Muon decoupled weight decay (w -= lr * wd * w per optimizer step), once train.py has the
 # flag. 0.02 at lr 2.43e-4 shrinks 4.9e-6 per step, one e-fold per ~5B learner steps (about one over
-# the 6B arm); 0.1 would be six, too strong for a warm start. Half as much at A+ and at E+ (half the steps).
-# Six factors in 16 runs lose resolution V; for 32 runs replace the generators with { F = "-ABCDE" }.
-# [factorial.factors.F]
+# the 6B arm); 0.1 would be six, too strong for a warm start. Half as much at A+ and at E+ (half the
+# steps). Seven factors in 32 runs at resolution IV: generators = { F = "ABC", G = "-BCDE" }.
+# [factorial.factors.G]
 # high = { weight-decay = 0.02 }

@@ -37,6 +37,7 @@
 # the equal-wall-clock control wins by default.
 name = "e8"
 purpose = "screen"
+order = "interleave"   # w512-s801, c256-s801, w512-s802, ...: drift hits both arms
 init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
 constant_steps = 10_000_000_000
 anneal_steps = 1_000_000_000
@@ -70,6 +71,7 @@ init = "native/artifacts/rl/sweeps/capacity-e8/init/l2-main-136002m-w512.bin"
 flags = { hidden = 512 }
 env = { BOPL_LEAGUE_JSON = "native/artifacts/rl/sweeps/capacity-e8/league-w512.json" }
 gpu_mib = 10000
+compare = "c256"
 seeds = [801, 802, 803]
 
 [arm.c256]

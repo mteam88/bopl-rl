@@ -11,7 +11,8 @@ and s_seed = sqrt(max(0, sd_obs^2 - mean eval variance)). Its 95% interval appli
 interval with k-1 df to sd_obs^2 and subtracts the eval variance from both ends; the 80% upper bound
 is what later designs should be sized from. Within-group contrasts (EMA - raw, anneal - raw,
 anneal - EMA) are paired across seeds. A group whose arms name `compare = "<group>"` is tested
-against that group on their common seeds (difference of seed means, Welch).
+against that group on their common seeds (difference of seed means, Welch). Arms whose training
+resumed mid-run are starred and listed as tainted; they stay in the statistics.
 
 Factorial (arms with `factors`): at --endpoint, each main effect and two-factor interaction is
 mean(y | +) - mean(y | -), aliased columns reported once. Its se is 2 sigma / sqrt(N) with sigma the
@@ -167,13 +168,17 @@ def main(argv=None):
                               factorial=designs), indent=1))
         return 0
 
-    print(f"{'program':<8} {'arm':<16} {'seed':>5} {'endpoint':<9} {'panel':>6}  {'95% CI':<15} {'n':>6}  per opponent (score/n)")
+    print(f"{'program':<8} {'arm':<17} {'seed':>5} {'endpoint':<9} {'panel':>6}  {'95% CI':<15} {'n':>6}  per opponent (score/n)")
     for r in results:
         for endpoint, row in r['endpoints'].items():
             c = row.get('panel')
             head = f"{c['score']:6.3f}  [{c['ci'][0]:.3f}, {c['ci'][1]:.3f}] {c['n']:>6}" if c else f"{'-':>6}  {'':<15} {'':>6}"
             each = '  '.join(f"{o}={v['score']:.3f}/{v['n']}" for o, v in row['opponents'].items())
-            print(f"{r['program']:<8} {r['arm']:<16} {r['seed']:>5} {endpoint:<9} {head}  {each}")
+            print(f"{r['program']:<8} {r['arm'] + ('*' if r.get('tainted') else ''):<17} {r['seed']:>5} {endpoint:<9} "
+                  f"{head}  {each}")
+    if tainted := [r for r in results if r.get('tainted')]:
+        print('* TAINTED, resumed mid-run (beta schedule restarted; findings log): '
+              + ', '.join(f"{r['program']}/{r['arm']} ({'+'.join(r['tainted'])})" for r in tainted))
     for name, rows in variance.items():
         if not rows:
             continue

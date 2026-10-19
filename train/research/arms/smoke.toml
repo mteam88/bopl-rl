@@ -9,7 +9,7 @@ checkpoint_every = 10_000_000
 raw_at = [10_000_000]
 metrics_every = 5_000_000
 games = 48
-gpu_mib = 2500
+gpu_mib = 2000
 flags = { workers = 32 }
 exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
 
