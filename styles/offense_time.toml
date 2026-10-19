@@ -1,0 +1,11 @@
+# Offense: per-decision time cost (OFFENSE-2026-10.md intervention I3; LITERATURE-2026-10.md 3b,
+# Blade & Soul's per-step time penalty). Both players pay 8e-5 per decision (2e-5 per tick at
+# ~4 ticks/decision) while both live, about 0.14 over a median 121 s game. Judged on win rate only.
+# Permanent: train with --style-fade-steps 1000000000000000000.
+name = "offense_time"
+fade = { start = 0.999, end = 1.0 }
+
+[[term]]
+name = "time_cost"
+when = "self.alive and alive(opp)"
+value = "-2e-5 * dt"

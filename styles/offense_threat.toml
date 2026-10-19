@@ -1,0 +1,12 @@
+# Offense: faded threat shaping (OFFENSE-2026-10.md intervention I2, the exploration test).
+# Paid per tick while both live and one of this player's projectiles or explosives is within
+# 4u of the opponent: real attacks only (not body proximity, which self-play seats could
+# share by hugging). 6e-5/tick is <= 0.43 per 120 s. Fades 1 -> 0 over the first 70% of
+# --style-fade-steps (6e9 for the 6B constant phase); the anneal runs without it.
+name = "offense_threat"
+fade = { start = 0.0, end = 0.7 }
+
+[[term]]
+name = "threat"
+when = "self.alive and alive(opp) and count(entities where owner == self and (flags & (PROJECTILE | EXPLOSIVE)) and dist(opp) < 4) > 0"
+value = "6e-5 * dt"

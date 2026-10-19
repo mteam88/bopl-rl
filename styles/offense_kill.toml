@@ -1,0 +1,13 @@
+# Offense: early kill premium for the main (OFFENSE-2026-10.md intervention I1). Paid to the
+# killer only, never mirrored as a death penalty, for each credited kill before sudden death
+# (episode tick 6960): 0.3 at 0 s falling linearly to 0 at sudden death. With reward_kill 0.288
+# a credited win before sudden death is worth up to 1.59 instead of 1.29; a win by the
+# opponent's own fall stays 1.0. Permanent: train with --style-fade-steps 1000000000000000000.
+name = "offense_kill"
+fade = { start = 0.999, end = 1.0 }
+
+[[term]]
+name = "early_kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self"
+value = "0.3 * max(0, 1 - now / 6960)"
