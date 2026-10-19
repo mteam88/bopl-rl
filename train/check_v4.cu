@@ -105,7 +105,8 @@ extern "C" int bopl_v4_check_gather(void* context, int T, int B_total, const int
 }
 // obs is (batch, stride) or, in gather mode, (T, B_total, stride). Outputs: the
 // encoder output (batch, hidden), the decoder rows (batch, out_width), the
-// weight gradients (weight_count) and the per-set overflow (4).
+// weight gradients (weight_count) and the per-set overflow (4: rows past the budget) and per-sample
+// cuts (4: rows BOPL4_FULL_ROWS caps cut from single samples).
 extern "C" int bopl_v4_check_run(void* context, const float* weights, const float* obs, const float* grad_logits,
                                  const float* grad_value, float* enc_out, float* dec_out, float* gradients, int* overflow, int graph) {
     auto* c = (V4Check*)context;
@@ -139,7 +140,7 @@ extern "C" int bopl_v4_check_run(void* context, const float* weights, const floa
         checked(cudaMemcpy(enc_out, c->ea->out.data, numel(c->ea->out.shape) * sizeof(float), cudaMemcpyDeviceToHost));
         checked(cudaMemcpy(dec_out, c->da->base.out.data, numel(c->da->base.out.shape) * sizeof(float), cudaMemcpyDeviceToHost));
         checked(cudaMemcpy(gradients, c->gradients.mem, c->gradients.total_bytes, cudaMemcpyDeviceToHost));
-        checked(cudaMemcpy(overflow, c->ea->overflow.data, v4::SETS * sizeof(int), cudaMemcpyDeviceToHost));
+        checked(cudaMemcpy(overflow, c->ea->overflow.data, 2 * v4::SETS * sizeof(int), cudaMemcpyDeviceToHost));
         return 0;
     } catch (const std::exception& e) { last_error = e.what(); return 1; }
 }
@@ -156,6 +157,25 @@ extern "C" double bopl_v4_check_time(void* context, int iterations, int forward_
     float ms = 0.0f; cudaEventElapsedTime(&ms, start, stop);
     cudaEventDestroy(start); cudaEventDestroy(stop);
     return ms / iterations;
+}
+// As bopl_v4_check_time, but every pass after the trainer's prepass (the set GEMMs over the
+// batch's row bucket, not the capacity); only the passes are timed.
+extern "C" double bopl_v4_check_time_prepass(void* context, int iterations, int forward_only) {
+    auto* c = (V4Check*)context;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start); cudaEventCreate(&stop);
+    double total = 0.0;
+    for (int i = -3; i < iterations; i++) {
+        v4::enc_prepass(c->ea, c->obs, c->stream);
+        cudaEventRecord(start, c->stream);
+        if (forward_only) c->forward(); else c->pass();
+        cudaEventRecord(stop, c->stream);
+        cudaEventSynchronize(stop);
+        float ms = 0.0f; cudaEventElapsedTime(&ms, start, stop);
+        if (i >= 0) total += ms;
+    }
+    cudaEventDestroy(start); cudaEventDestroy(stop);
+    return total / iterations;
 }
 // Stage times of one forward+backward pass (ms since the previous mark); names into `names` (64 chars each).
 extern "C" int bopl_v4_check_profile(void* context, char* names, double* ms, int max_marks) {

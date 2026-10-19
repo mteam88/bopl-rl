@@ -35,6 +35,16 @@ def budget_in_effect():
     return tuple(int(v) for v in value.split(",")) if value else DEFAULT_BUDGET
 
 
+def full_rows_in_effect():
+    return os.environ.get("BOPL4_FULL_ROWS", "0") not in ("", "0")
+
+
+def full_rows_caps():
+    """BOPL4_FULL_ROWS=p,s,e,l: the rows each sample keeps per set; None for every row."""
+    value = os.environ.get("BOPL4_FULL_ROWS", "")
+    return tuple(int(v) for v in value.split(",")) if "," in value else None
+
+
 def build(output, source, compiler):
     nvidia = Path(sysconfig.get_path("purelib")) / "nvidia"
     cuda = nvidia / "cu13"
@@ -95,10 +105,19 @@ def from_checkpoint_grad(grad_ckpt, hidden):
 def oracle(obs, flat_trainer, hidden, grad_logits, grad_value, budget=None):
     """(encoder out, decoder rows [logits, value], trainer-order weight gradient).
     `budget`: per-set rows per sample the packed buffers hold; rows past the
-    capacity (in sample order) are dropped exactly as the CUDA path drops them."""
+    capacity (in sample order) are dropped exactly as the CUDA path drops them,
+    unless BOPL4_FULL_ROWS is set (nothing dropped, or each sample's rows past
+    its per-set cap)."""
     obs = np.array(obs, np.float32, copy=True)
     budget = budget or budget_in_effect()
-    if budget is not None:
+    caps = full_rows_caps()
+    if caps is not None:
+        for s, (name, offset, count, width, _) in enumerate(layout.V4_SETS):
+            rows = obs[:, offset:offset + count * width].reshape(len(obs), count, width).copy()
+            valid = rows[:, :, 0] != 0
+            rows[valid & (np.cumsum(valid, 1) > caps[s])] = 0
+            obs[:, offset:offset + count * width] = rows.reshape(len(obs), -1)
+    elif not full_rows_in_effect():
         for s, (name, offset, count, width, _) in enumerate(layout.V4_SETS):
             cap = min(len(obs) * budget[s], len(obs) * count)
             cap = (cap + 63) // 64 * 64
@@ -188,12 +207,12 @@ class Check:
         enc = np.empty((self.batch, self.hidden), np.float32)
         dec = np.empty((self.batch, self.width), np.float32)
         grads = np.empty_like(weights)
-        overflow = np.zeros(4, np.int32)
+        overflow = np.zeros(8, np.int32)
         args = [np.ascontiguousarray(v, dtype=np.float32) for v in (weights, obs, grad_logits, grad_value)]
         if self.lib.bopl_v4_check_run(self.context, *args, enc, dec, grads, overflow, int(graph)):
             raise RuntimeError(self.lib.bopl_v4_check_error().decode())
         assert np.isfinite(enc).all() and np.isfinite(dec).all() and np.isfinite(grads).all()
-        return enc, dec[:, :OD + 1], grads, overflow
+        return enc, dec[:, :OD + 1], grads, overflow   # [rows past the budget per set, rows cut per sample per set]
 
     def gather(self, ticks, total, indices):
         indices = np.ascontiguousarray(indices, dtype=np.int32)
@@ -216,8 +235,10 @@ class Check:
                 best[k] = min(best.get(k, v), v)
         return best
 
-    def time(self, iterations, forward_only=False):
-        return self.lib.bopl_v4_check_time(self.context, iterations, int(forward_only))
+    def time(self, iterations, forward_only=False, prepass=False):
+        """GPU ms per pass; prepass=True sizes each pass's set GEMMs to the batch's rows as the trainer does."""
+        timer = self.lib.bopl_v4_check_time_prepass if prepass else self.lib.bopl_v4_check_time
+        return timer(self.context, iterations, int(forward_only))
 
     def close(self):
         self.lib.bopl_v4_check_close(self.context)
@@ -299,6 +320,35 @@ def overflow_case(library, rng, hidden=64):
         del os.environ["BOPL4_ROW_BUDGET"]
 
 
+def full_rows_case(library, rng, hidden=64, caps=None):
+    """BOPL4_FULL_ROWS with the same tiny budget: the overflow past the budget is
+    counted, nothing is dropped (the reference keeps every row; with caps, each
+    sample's rows past its cap, counted), and replacing the crowded half of the
+    batch leaves the other half's rows bit-identical."""
+    budget = (2, 3, 4, 2)
+    os.environ["BOPL4_ROW_BUDGET"] = ",".join(map(str, budget))
+    os.environ["BOPL4_FULL_ROWS"] = ",".join(map(str, caps)) if caps else "1"
+    try:
+        obs = random_obs(rng, 40, density=0.8)
+        result = compare(library, obs, hidden, rng, budget=budget)
+        assert sum(result["overflow"][:4]) > 0, result
+        assert (sum(result["overflow"][4:]) > 0) == bool(caps), result
+        weights = init_weights(rng, hidden)
+        zeros = np.zeros((len(obs), OD), np.float32), np.zeros(len(obs), np.float32)
+        check = Check(library, len(obs), hidden)
+        try:
+            _, dec, _, _ = check.run(weights, obs, *zeros)
+            calm = obs.copy(); calm[:20] = random_obs(rng, 20, density=0.05)
+            _, dec2, _, _ = check.run(weights, calm, *zeros)
+        finally:
+            check.close()
+        np.testing.assert_array_equal(dec2[20:], dec[20:])
+        result["other_half_identical"] = True
+        return result
+    finally:
+        del os.environ["BOPL4_ROW_BUDGET"], os.environ["BOPL4_FULL_ROWS"]
+
+
 def timing(library, rng, hidden=256, batches=(4096, 8192)):
     """Best of three 20-iteration timings per batch (the GPU is usually shared)."""
     out = {}
@@ -363,6 +413,8 @@ def load_library(library_path):
     library.bopl_v4_check_profile.argtypes = [ctypes.c_void_p, ctypes.c_char_p, np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS"), ctypes.c_int]
     library.bopl_v4_check_time.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     library.bopl_v4_check_time.restype = ctypes.c_double
+    library.bopl_v4_check_time_prepass.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    library.bopl_v4_check_time_prepass.restype = ctypes.c_double
     library.bopl_v4_check_close.argtypes = [ctypes.c_void_p]
     return library
 
@@ -420,6 +472,8 @@ def main():
     report["graph"] = compare(library, random_obs(rng, 33), 128, rng, graph=True)
     report["gather"] = gather_case(library, rng)
     report["overflow"] = overflow_case(library, rng)
+    report["full_rows"] = full_rows_case(library, rng)
+    report["full_rows_caps"] = full_rows_case(library, rng, caps=(3, 6, 10, 4))
     # The evaluators read the trainer's dump, which is encoder, decoder, then the
     # recurrent core (models.cu); a reader that expects the MinGRU before the
     # decoder loads every v4 checkpoint scrambled (v4-full's first seven in-run

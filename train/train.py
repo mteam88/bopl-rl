@@ -205,6 +205,24 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
     return max(floor, initial * math.exp2(-learner_steps / half_life))
 
 
+def prio_beta(a, beta0, learner_steps):
+    """The prioritized-replay beta for the next update; -1 keeps the native epoch anneal."""
+    if a.prio_beta_const is not None:
+        return a.prio_beta_const
+    if a.prio_beta_fix:
+        return beta0 + (1 - beta0) * min(1.0, learner_steps / a.steps)
+    return -1.0
+
+
+def schedule_fixes(a):
+    """The opt-in schedule / encoder fixes, as config.json records them."""
+    return dict(prio_beta_fix=a.prio_beta_fix, prio_beta_const=a.prio_beta_const, anneal_lr_fix=a.anneal_lr_fix,
+                v4_full_rows=a.v4_full_rows)
+
+
+DEFAULT_FIXES = dict(prio_beta_fix=0, prio_beta_const=None, anneal_lr_fix=0, v4_full_rows='0')
+
+
 # Resume (--resume): a run directory is restarted from its last checkpoint and
 # may be given a larger --steps (every schedule is a function of learner
 # decisions or constant, never of the run budget). Restored: policy weights,
@@ -214,7 +232,11 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
 # restarts at zero and this process offsets, the Muon momentum buffer, and the
 # --ema-decay weight average (when the decay is unchanged; else it restarts at
 # the resumed weights).
-# Not restored: the recurrent state, which starts as at an episode boundary.
+# Not restored: the recurrent state, which starts as at an episode boundary,
+# and the native trainer's epoch, so --anneal-lr's cosine and the native
+# prioritized-replay beta restart at every resume unless --anneal-lr-fix /
+# --prio-beta-fix drive them from the restored learner steps (schedule_fixes,
+# which a resume may change; the change is recorded).
 RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'layers', 'horizon',
                  'learner_passes', 'learning_rate', 'anneal_lr', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'reward_self_death', 'pool_size', 'pfsp_p', 'min_games', 'snapshot_interval',
@@ -359,6 +381,13 @@ def arguments():
     p.add_argument('--v4-row-budget', default=None, metavar='P,S,E,L',
                    help='policy v4: packed rows per sample the set MLPs hold for players, slots, entities, slimes '
                         '(bopl_v4.cu DEFAULT_BUDGET 6,12,20,8); rows past the budget are dropped and counted (set_overflow)')
+    p.add_argument('--v4-full-rows', default='0', metavar='0|1|P,S,E,L',
+                   help='policy v4: 1 sizes the training set buffers for every row, so no row is dropped (training '
+                        'sees the rollout\'s rows and no sample depends on its minibatch); the budget only sizes the '
+                        'GEMM buckets and set_overflow counts the rows kept past it. P,S,E,L keeps each sample\'s '
+                        'first rows of each set (rows past a cap are cut from that sample only, counted in set_cut): '
+                        'less memory, exact while no sample exceeds a cap (6,12,48,8 covers 2v2). '
+                        '0 (default) drops past the budget in batch order')
     p.add_argument('--hidden', type=int, default=128)
     p.add_argument('--layers', type=int, default=1)
     p.add_argument('--horizon', type=int, default=128)
@@ -371,6 +400,15 @@ def arguments():
                    help='0 keeps learning rate constant; 1 uses native cosine decay over the run budget')
     p.add_argument('--min-lr-ratio', type=float, default=0.,
                    help='Final/base learning-rate ratio when --anneal-lr 1')
+    p.add_argument('--anneal-lr-fix', type=int, choices=(0, 1), default=0,
+                   help='1: the --anneal-lr cosine follows learner steps / --steps (restored on --resume); 0 (default) '
+                        "keeps the native per-process epoch, which restarts the cosine at every --resume")
+    p.add_argument('--prio-beta-fix', type=int, choices=(0, 1), default=0,
+                   help='1: prioritized-replay beta anneals beta0 -> 1 over learner steps / --steps (restored on --resume). '
+                        '0 (default) keeps the native beta0 + (1 - beta0) alpha epoch / total_epochs: the epoch '
+                        'restarts at every --resume and the alpha factor stops it at 0.84')
+    p.add_argument('--prio-beta-const', type=float, default=None,
+                   help='Fixed prioritized-replay beta in [0, 1] (factorial arms); excludes --prio-beta-fix')
     p.add_argument('--ema-decay', type=float, default=0.,
                    help='Polyak average of the weights, ema = d*ema + (1-d)*w after every optimizer step, saved as '
                         'checkpoints/policy-<step>-ema.bin beside each checkpoint; 0 (default) = off. Half-life '
@@ -567,6 +605,11 @@ def arguments():
         p.error('min-lr-ratio must be finite and within 0..1')
     if not 0 <= a.ema_decay < 1:
         p.error('ema-decay must be within [0, 1)')
+    if a.prio_beta_const is not None and (a.prio_beta_fix or not 0 <= a.prio_beta_const <= 1):
+        p.error('prio-beta-const must be within [0, 1] and excludes --prio-beta-fix')
+    caps = a.v4_full_rows.split(',')
+    if not (a.v4_full_rows in ('0', '1') or (len(caps) == 4 and all(c.isdigit() and int(c) > 0 for c in caps))):
+        p.error('v4-full-rows must be 0, 1 or four positive row caps P,S,E,L')
     try:
         head_scale = [float(part) for part in a.entropy_head_scale.split(',')]
     except ValueError:
@@ -736,6 +779,7 @@ def main():
             os.environ[variable] = str(v4_shape[key])
         if a.v4_row_budget:
             os.environ['BOPL4_ROW_BUDGET'] = a.v4_row_budget
+        os.environ['BOPL4_FULL_ROWS'] = a.v4_full_rows
         layout.policy_v4_weights(a.hidden, a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, **v4_shape)  # rejects unaligned shapes
     os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in a.head_scale)
     os.environ['BOPL_AIM_FOURIER'] = str(a.aim_fourier)  # read once by the trainer (bopl_aim_config)
@@ -895,6 +939,7 @@ def main():
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
                   gae_lambda=args['train']['gae_lambda'],
                   **(dict(ema_decay=a.ema_decay) if a.ema_decay else {}),
+                  fixes=schedule_fixes(a),
                   selfplay=pool_config,
                   init_weights=checkpoint_identity(a.init_weights) if a.init_weights else None,
                   **(dict(kl_reference=checkpoint_identity(a.kl_reference), kl_coef=a.kl_coef) if a.kl_reference else {}),
@@ -918,6 +963,11 @@ def main():
             config.update({name: new for name, (_, new) in schedule_changes.items()})
             config['native']['train'].update(ent_coef=a.entropy, min_ent_coef_ratio=a.entropy_floor/a.entropy)
             print(f'--resume: entropy schedule changed {schedule_changes}', flush=True)
+        fixes = config.get('fixes', DEFAULT_FIXES)
+        if fixes != schedule_fixes(a):
+            config['resumed'][-1]['changed'] = {**config['resumed'][-1].get('changed', {}), 'fixes': [fixes, schedule_fixes(a)]}
+            config['fixes'] = schedule_fixes(a)
+            print(f'--resume: fixes changed {fixes} -> {schedule_fixes(a)}', flush=True)
     atomic_json(output/'config.json', config)
     started = time.monotonic()
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
@@ -1287,6 +1337,8 @@ def main():
             # update's wall time; wall_seconds is that time (previous
             # record to this one), which is what sps/learner_sps divide by.
             record['wall_seconds'] = p['elapsed']-p['previous_elapsed']
+            if 'prio_beta' in native['loss']:
+                record['prio_beta'] = native['loss']['prio_beta']
             record['overlap'] = overlap
             record['pool'] = after_pool
             if p['scripted'] is not None:
@@ -1312,10 +1364,13 @@ def main():
             packing = p['packing']
             if packing is not None:
                 # The last training forward's packing (players, slots, entities, slimes): rows the packed set
-                # buffers dropped, and the rows packed per batch row (the row budget the batch needed).
+                # buffers dropped (kept past the budget under --v4-full-rows), and the rows packed per batch row
+                # (the row budget the batch needed).
                 record['set_overflow'] = packing[:4]
-                if len(packing) == 9 and packing[8]:
+                if len(packing) >= 9 and packing[8]:
                     record['set_rows'] = [round(n / packing[8], 3) for n in packing[4:8]]
+                if len(packing) == 13 and any(packing[9:13]):
+                    record['set_cut'] = packing[9:13]   # --v4-full-rows caps: rows cut from single samples
             if logged:
                 metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
             for event in native_selfplay.events(p['before_pool'], after_pool, ledger, done['learner_steps']):
@@ -1397,6 +1452,9 @@ def main():
                 # frozen/padded rows never advance the schedule.
                 trainer.hypers.ent_coef = entropy_coefficient(
                     counts['learner_steps'], a.entropy, a.entropy_floor, a.entropy_half_life)
+                trainer.hypers.prio_beta = prio_beta(a, trainer.hypers.prio_beta0, counts['learner_steps'])
+                if a.anneal_lr_fix:
+                    trainer.hypers.lr_progress = min(1.0, counts['learner_steps'] / a.steps)
                 # Latched rows contribute zero entropy and zero entropy gradient
                 # to the button and hold heads, and the loss is a mean over all
                 # rows, so with most decisions latched the bonus on those heads

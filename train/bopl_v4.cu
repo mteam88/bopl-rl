@@ -29,7 +29,13 @@
  *
  * Row budget: each set's packed capacity is B x BOPL4_BUDGET_<set> rows
  * (BOPL4_ROW_BUDGET="p,s,e,l" overrides); rows past the capacity are dropped
- * in sample order and counted (bopl_v4_overflow), never silently.
+ * in sample order and counted (bopl_v4_overflow), never silently. Dropping in
+ * sample order makes a sample's encoding depend on the samples before it in
+ * the minibatch; BOPL4_FULL_ROWS=1 sizes the training capacity for every row
+ * (nothing dropped, the rollout's rows) and keeps the budget as the bucket
+ * size, so a batch within the budget runs the same shapes bit for bit;
+ * BOPL4_FULL_ROWS=p,s,e,l caps the rows each sample keeps per set instead
+ * (cut from that sample only, counted), for less memory.
  * Determinism: the GEMMs are cuBLAS with a fixed shape and kernel choice and
  * deterministic split-K reductions; the embedding gradient is dW1's one-hot
  * columns, so it inherits that.
@@ -109,6 +115,7 @@ __device__ __forceinline__ float bf(bf16 v) { return __bfloat162float(v); }
 __device__ __forceinline__ bf16 tobf(float v) { return __float2bfloat16(v); }
 
 /* ---- packing ---------------------------------------------------------- */
+__device__ __forceinline__ int int4_at(int4 v, int s) { return s == 0 ? v.x : s == 1 ? v.y : s == 2 ? v.z : v.w; }
 /* Valid rows (column 0 != 0) of each set per sample. (A warp-per-sample form
  * with ballots measured +0.2%, inside the noise.) */
 __global__ void count_rows(const float* input, Gather g, int B, int* counts /* (SETS, B) */) {
@@ -122,17 +129,21 @@ __global__ void count_rows(const float* input, Gather g, int B, int* counts /* (
     counts[i] = n;
 }
 /* Exclusive scan of one set's counts (one block per set, fixed order), the
- * clamped total and the overflow past the capacity. */
-__global__ void scan_rows(const int* counts, int B, int4 caps, int* offsets, int* totals, int* overflow) {
+ * total clamped to the capacity and the overflow past the nominal budget
+ * (the capacity itself unless BOPL4_FULL_ROWS, where nothing is dropped).
+ * A sample's count above keep[s] (only under BOPL4_FULL_ROWS caps) is cut to
+ * its first keep[s] rows in place and the cut rows counted in overflow[SETS + s]. */
+__global__ void scan_rows(int* counts, int B, int4 caps, int4 nominal, int4 keep, int* offsets, int* totals, int* overflow) {
     __shared__ int sums[1024];
-    __shared__ int carry;
-    int s = blockIdx.x;
-    const int* c = counts + (long)s * B; int* o = offsets + (long)s * B;
-    if (threadIdx.x == 0) carry = 0;
+    __shared__ int carry, cut;
+    int s = blockIdx.x, k = int4_at(keep, s);
+    int* c = counts + (long)s * B; int* o = offsets + (long)s * B;
+    if (threadIdx.x == 0) { carry = 0; cut = 0; }
     __syncthreads();
     for (int base = 0; base < B; base += blockDim.x) {
         int i = base + threadIdx.x;
         int v = i < B ? c[i] : 0;
+        if (v > k) { atomicAdd(&cut, v - k); v = k; c[i] = k; }
         sums[threadIdx.x] = v;
         __syncthreads();
         for (int stride = 1; stride < blockDim.x; stride <<= 1) {   /* Hillis-Steele inclusive scan */
@@ -147,9 +158,10 @@ __global__ void scan_rows(const int* counts, int B, int4 caps, int* offsets, int
         __syncthreads();
     }
     if (threadIdx.x == 0) {
-        int cap = s == 0 ? caps.x : s == 1 ? caps.y : s == 2 ? caps.z : caps.w;
+        int cap = int4_at(caps, s), budget = int4_at(nominal, s);
         totals[s] = carry < cap ? carry : cap;
-        overflow[s] = carry > cap ? carry - cap : 0;
+        overflow[s] = carry > budget ? carry - budget : 0;
+        overflow[SETS + s] = cut;
     }
 }
 /* Scatter set S's valid rows into the packed bf16 matrix ([features |
@@ -158,13 +170,15 @@ __global__ void scan_rows(const int* counts, int B, int4 caps, int* offsets, int
  * the warp in row order (the thread-per-row form recomputed each row's rank
  * with an O(rows) strided walk). */
 template<int S>
-__global__ void scatter_rows(const float* input, Gather g, int B, const int* offsets, int cap,
+__global__ void scatter_rows(const float* input, Gather g, int B, const int* offsets, const int* counts, int cap,
                              bf16* packed, int* ids, int* sample) {
     const Spec sp = c_spec[S];
     int b = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, lane = threadIdx.x & 31;
     if (b >= B) return;
     const float* row = row_ptr(input, g, b) + sp.offset;
     int dst = offsets[(long)S * B + b];
+    int end = dst + counts[(long)S * B + b];
+    if (end < cap) cap = end;
     for (int r0 = 0; r0 < sp.rows; r0 += 32) {
         int r = r0 + lane;
         unsigned valid = __ballot_sync(0xffffffffu, r < sp.rows && row[r * sp.width] != 0.0f);
@@ -1098,6 +1112,8 @@ struct EncWeights {
     PrecisionTensor w1[SETS], w2[SETS], embedding, flat, fusion;
     int hidden, D, I, flat_dim, mean_pool;
     int budget[SETS];
+    int full_rows;        /* BOPL4_FULL_ROWS: training capacity = every row, or full_keep rows of each sample (see enc_reg_forward) */
+    int full_keep[SETS];
 };
 /* ---- row cache: the observation-side packing once per update ---------------
  * Every training pass resamples its minibatch (prio_replay draws segments
@@ -1127,6 +1143,9 @@ struct EncActs {
     RowCache cache;
     const float* saved_input;
     int B, cap[SETS];
+    int nominal[SETS];      /* the budget's capacity: cap, or below it under BOPL4_FULL_ROWS (bucket granule, overflow count) */
+    int keep[SETS];         /* rows kept per sample (count_rows): the set's rows, or BOPL4_FULL_ROWS's cap */
+    int key_base;           /* buckets per set + 1 in the graph key */
     int act[SETS];          /* rows this pass's GEMMs / tails run over: cap, or the prepass's bucket (see enc_prepass) */
     int prepassed;          /* enc_prepass ran count_rows / scan_rows for the coming forward */
     int* host_totals;       /* pinned, mapped (SETS): the prepass's readback, written by publish_totals */
@@ -1150,7 +1169,7 @@ struct EncActs {
  * privileged rows to another's decoder). */
 static thread_local const float* g_v4_privileged = nullptr;
 static thread_local int g_v4_privileged_rows = 0;
-static IntTensor* g_v4_overflow = nullptr;        /* (SETS) dropped rows of the last training forward */
+static IntTensor* g_v4_overflow = nullptr;        /* (2 SETS) rows past the budget, rows cut per sample, of the last training forward */
 static IntTensor* g_v4_totals = nullptr;          /* (SETS) packed rows (clamped to the capacity) of the same forward */
 static int g_v4_train_rows = 0;
 
@@ -1342,7 +1361,10 @@ static void count_and_scan(EncActs* a, PrecisionTensor input, cudaStream_t strea
     int B = a->B;
     if (a->cache.valid) cache_counts<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(a->gather, a->cache.agent_pos, B, a->cache.N, a->cache.counts, a->counts.data);
     else count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
-    scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
+    scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]),
+                                         make_int4(a->nominal[0], a->nominal[1], a->nominal[2], a->nominal[3]),
+                                         make_int4(a->keep[0], a->keep[1], a->keep[2], a->keep[3]),
+                                         a->offsets.data, a->totals.data, a->overflow.data);
 }
 /* Returns the graph key (>= 1) of the coming forward. A forward without a
  * prepass (the harness) runs at act = cap with count / scan inside it. Not
@@ -1365,13 +1387,18 @@ static int enc_prepass(void* activations, PrecisionTensor input, cudaStream_t st
     publish_totals<<<1, 32, 0, stream>>>(a->totals.data, a->host_totals_dev);
     if (cudaEventRecord(a->ready_event, stream) != cudaSuccess || cudaEventSynchronize(a->ready_event) != cudaSuccess)
         throw std::runtime_error("Bopl v4: prepass readback failed");
+    /* Under BOPL4_FULL_ROWS the granule and the ceiling of a batch within the
+     * budget stay the budget's (the same GEMM shapes, so bit-identical to the
+     * budgeted capacity); only a batch past it runs over more buckets. */
     int key = 0;
     for (int s = 0; s < SETS; s++) {
-        int g = active_granule(a->cap[s]), act = (a->host_totals[s] + g - 1) / g * g;
+        int total = a->host_totals[s];
+        int g = active_granule(a->nominal[s]), act = (total + g - 1) / g * g;
+        int ceiling = total <= a->nominal[s] ? a->nominal[s] : a->cap[s];
         if (act < g) act = g;
-        if (act > a->cap[s]) act = a->cap[s];
+        if (act > ceiling) act = ceiling;
         a->act[s] = act;
-        key = key * (ACTIVE_BUCKETS + 1) + (act + g - 1) / g;
+        key = key * a->key_base + (act + g - 1) / g;
     }
     a->prepassed = 1;
     return key + 1;
@@ -1412,10 +1439,10 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
         cache_copy_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(a->gather, c.agent_pos, B, a->counts.data, a->offsets.data, a->cap[2], c.slab[2], c.ids[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data);
         cache_copy_rows<3><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(a->gather, c.agent_pos, B, a->counts.data, a->offsets.data, a->cap[3], c.slab[3], c.ids[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data);
     } else {
-        scatter_rows<0><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[0], bfp(a->xpack[0]), a->ids[0].data, a->sample[0].data);
-        scatter_rows<1><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data);
-        scatter_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data);
-        scatter_rows<3><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data);
+        scatter_rows<0><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->counts.data, a->cap[0], bfp(a->xpack[0]), a->ids[0].data, a->sample[0].data);
+        scatter_rows<1><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->counts.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data);
+        scatter_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->counts.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data);
+        scatter_rows<3><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->counts.data, a->cap[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data);
     }
     prof_mark("enc.count_scan_scatter", stream);
     for (int s = 0; s < SETS; s++) {
@@ -1538,7 +1565,13 @@ static void enc_reg_params(void* weights, Allocator* alloc) {
     w->flat = {.shape = {w->flat_dim, FLAT}}; reg_aligned(alloc, &w->flat);
     w->fusion = {.shape = {H, w->flat_dim + SETS * 2 * D}}; reg_aligned(alloc, &w->fusion);
 }
-static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B) {
+/* full: the training activations under BOPL4_FULL_ROWS. Every valid row of
+ * every sample then fits (cap = B x the set's rows), so a sample's encoding
+ * never depends on the rest of its minibatch and training sees the rows the
+ * rollout (bopl_rollout_v4.cu, which drops none) acted on. The budget only
+ * sizes the buckets (nominal); the extra capacity costs memory, and GEMM work
+ * only on batches past the budget. */
+static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B, bool full) {
     int H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim;
     a->B = B; a->gather = Gather{};
     a->flat_input = {.shape = {B, FLAT}};
@@ -1547,12 +1580,20 @@ static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B) 
     for (auto* t : {&a->flat_input, &a->joined, &a->fused, &a->out, &a->priv}) alloc_register(alloc, t);
     a->ln_mean = {.shape = {B}}; a->ln_rstd = {.shape = {B}};
     alloc_register(alloc, &a->ln_mean); alloc_register(alloc, &a->ln_rstd);
-    a->counts = {.shape = {SETS, B}}; a->offsets = {.shape = {SETS, B}}; a->totals = {.shape = {SETS}}; a->overflow = {.shape = {SETS}};
+    a->counts = {.shape = {SETS, B}}; a->offsets = {.shape = {SETS, B}}; a->totals = {.shape = {SETS}}; a->overflow = {.shape = {2 * SETS}};
     for (auto* t : {&a->counts, &a->offsets, &a->totals, &a->overflow}) alloc_register(alloc, t);
+    a->key_base = ACTIVE_BUCKETS + 1;
     for (int s = 0; s < SETS; s++) {
-        int cap = (B * w->budget[s] + TILE - 1) / TILE * TILE;
-        if (cap > B * SPEC[s].rows) cap = (B * SPEC[s].rows + TILE - 1) / TILE * TILE;
+        a->keep[s] = full ? w->full_keep[s] : SPEC[s].rows;
+        int all = (B * a->keep[s] + TILE - 1) / TILE * TILE;
+        int nominal = (B * w->budget[s] + TILE - 1) / TILE * TILE;
+        if (nominal > (B * SPEC[s].rows + TILE - 1) / TILE * TILE) nominal = (B * SPEC[s].rows + TILE - 1) / TILE * TILE;
+        if (nominal > all) nominal = all;
+        int cap = full ? all : nominal;
+        a->nominal[s] = nominal;
         a->cap[s] = a->act[s] = cap;
+        int buckets = (cap + active_granule(nominal) - 1) / active_granule(nominal);
+        if (buckets + 1 > a->key_base) a->key_base = buckets + 1;
         a->ids[s] = {.shape = {cap}}; a->sample[s] = {.shape = {cap}}; a->winner[s] = {.shape = {B, (D + 3) / 4}};   /* int8 (B, D) */
         a->w1b[s] = {.shape = {I, SPEC[s].kpad / 2}}; a->w2b[s] = {.shape = {D, I / 2}};
         a->xpack[s] = {.shape = {cap, SPEC[s].kpad / 2}}; a->h1[s] = {.shape = {cap, I / 2}}; a->h2[s] = {.shape = {cap, D / 2}};
@@ -1568,13 +1609,13 @@ static void memlog(const char* what, int B, const Allocator* alloc, long before)
 }
 static void enc_reg_rollout(void* weights, void* activations, Allocator* alloc, int B) {
     long before = alloc->total_elems;
-    enc_reg_forward((EncWeights*)weights, (EncActs*)activations, alloc, B);
+    enc_reg_forward((EncWeights*)weights, (EncActs*)activations, alloc, B, false);
     memlog("encoder rollout activations", B, alloc, before);
 }
 static void enc_reg_train(void* weights, void* activations, Allocator* acts, Allocator* grads, int B) {
     auto* w = (EncWeights*)weights; auto* a = (EncActs*)activations; int H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim;
     long before = acts->total_elems;
-    enc_reg_forward(w, a, acts, B);
+    enc_reg_forward(w, a, acts, B, w->full_rows);
     a->grad_fused = {.shape = {B, H}}; a->grad_joined = {.shape = {B, FD + SETS * 2 * D}}; a->grad_flat = {.shape = {B, FD}};
     for (auto* t : {&a->grad_fused, &a->grad_joined, &a->grad_flat}) alloc_register(acts, t);
     long acc = 0;   /* dW1's fp32 (I, kpad) */
@@ -1614,6 +1655,20 @@ static void* enc_create(void* self) {
     if (const char* b = std::getenv("BOPL4_ROW_BUDGET")) {
         int p, sl, e, l;
         if (sscanf(b, "%d,%d,%d,%d", &p, &sl, &e, &l) == 4) { w->budget[0] = p; w->budget[1] = sl; w->budget[2] = e; w->budget[3] = l; }
+    }
+    /* BOPL4_FULL_ROWS=1: every row; "p,s,e,l": each sample's first rows of each set
+     * (a set's rows past its cap in one sample are dropped from that sample only;
+     * caps at least the game's most rows per sample keep it exact with less memory). */
+    for (int s = 0; s < SETS; s++) w->full_keep[s] = SPEC[s].rows;
+    if (const char* f = std::getenv("BOPL4_FULL_ROWS")) {
+        int k[SETS];
+        if (sscanf(f, "%d,%d,%d,%d", &k[0], &k[1], &k[2], &k[3]) == 4) {
+            w->full_rows = 1;
+            for (int s = 0; s < SETS; s++) {
+                if (k[s] < 1) throw std::runtime_error("Bopl v4: BOPL4_FULL_ROWS caps must be positive");
+                w->full_keep[s] = k[s] < SPEC[s].rows ? k[s] : SPEC[s].rows;
+            }
+        } else w->full_rows = std::atoi(f) != 0;
     }
     return w;
 }
@@ -1925,14 +1980,19 @@ static void bopl_v4_train_precompute(void* activations, int apb, int primary, cu
     v4::enc_precompute(activations, apb, primary, stream);
 }
 /* The last training forward's packing, for the trainer's log: out[0..3] the
- * dropped rows per set, out[4..7] the rows packed per set (clamped to the
- * capacity: with no drops, the batch's actual rows, so packed / batch rows is
- * the row budget the batch needed), out[8] the batch rows. */
+ * rows past the budget per set (dropped, or kept under BOPL4_FULL_ROWS),
+ * out[4..7] the rows packed per set (clamped to the capacity: with no drops,
+ * the batch's actual rows, so packed / batch rows is the row budget the batch
+ * needed), out[8] the batch rows, out[9..12] the rows BOPL4_FULL_ROWS caps cut
+ * from single samples. */
 int bopl_v4_overflow(int* out) {
     if (!v4::g_v4_overflow || !v4::g_v4_overflow->data) return -1;
-    cudaMemcpy(out, v4::g_v4_overflow->data, v4::SETS * sizeof(int), cudaMemcpyDeviceToHost);
+    int ovf[2 * v4::SETS];
+    cudaMemcpy(ovf, v4::g_v4_overflow->data, sizeof(ovf), cudaMemcpyDeviceToHost);
+    memcpy(out, ovf, v4::SETS * sizeof(int));
     cudaMemcpy(out + v4::SETS, v4::g_v4_totals->data, v4::SETS * sizeof(int), cudaMemcpyDeviceToHost);
     out[2 * v4::SETS] = v4::g_v4_train_rows;
-    return 2 * v4::SETS + 1;
+    memcpy(out + 2 * v4::SETS + 1, ovf + v4::SETS, v4::SETS * sizeof(int));
+    return 3 * v4::SETS + 1;
 }
 #endif
