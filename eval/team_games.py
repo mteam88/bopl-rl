@@ -40,7 +40,7 @@ DEATH = 1
 class Event(C.Structure):
     """BoplRlEvent (sim/abi/bopl_rl.h)."""
     _fields_ = [(name, C.c_uint32) for name in ('kind', 'tick', 'subject', 'actor', 'entity', 'source_ability', 'cause',
-                                                'flags', 'related', 'related_actor', 'related_tick', 'reserved')] + \
+                                                'flags', 'related', 'related_actor', 'related_tick', 'creator')] + \
                [(name, C.c_int64) for name in ('x', 'y', 'vx', 'vy', 'ax', 'ay', 'avx', 'avy')]
 
 

@@ -338,6 +338,14 @@ int bopl_bank_kits_install(int bank, const int *rows, int count) {
     __atomic_store_n(&bopl_bank_kit_gen[bank], gen, __ATOMIC_RELEASE);
     return gen;
 }
+/* The writer bits (bopl_obs_v4.h BOPL4_ABLATE_*) of the member just loaded
+ * into frozen bank `bank`, or -1 for the run's own (bopl_bank_ablate).
+ * Returns 0, or -1 for a bad bank or mask. */
+int bopl_bank_ablate_install(int bank, int mask) {
+    if (bank<0 || bank>=BOPL_MAX_BANKS || mask<-1 || mask>31) return -1;
+    __atomic_store_n(&bopl_bank_ablate[bank], mask+1, __ATOMIC_RELAXED);
+    return 0;
+}
 /* The kit a scripted bot plays on a pinning bank (3 ids; 0 0 0 leaves the
  * run's draw). Installed before the vector is created. Returns 0 or -1. */
 int bopl_bot_kit_install(const int *kit) {

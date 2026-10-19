@@ -365,6 +365,11 @@ const E_EXPLOSIVE: u32 = 1 << 11;
 const E_HITBOX: u32 = 1 << 12;
 const E_CONTACT_DAMAGE: u32 = 1 << 13;
 const E_CONTACT_DAMAGE_KNOWN: u32 = 1 << 14;
+/// Published bits 16-23 (sim/abi/bopl_rl.h BOPL_ENTITY_CREATOR_SHIFT): the
+/// player id that created an object with no owner, as RlObservation.Entity
+/// writes it. Only `publish_observed` sets them, on its copy of the table.
+const E_CREATOR_SHIFT: u32 = 16;
+const E_CREATOR: u32 = 0xff << E_CREATOR_SHIFT;
 /// Internal marker: FixTransform.IsDestroyed of the row's object.
 /// Updater.DestroyFix sets it, and it holds until the frame's closing
 /// OnDestroyUpdatable loop and DestroyImmediate (Updater.cs:89-110, 329-345),
@@ -40801,6 +40806,65 @@ impl RolloutWorld {
     /// `number_observed` would. The rope layout, and a pass that would number
     /// more rows than that list holds, take the three passes instead.
     fn publish_observed(&mut self, out: &mut Vec<CEntity>) {
+        self.stamp_creators(true);
+        self.publish_observed_rows(out);
+        self.stamp_creators(false);
+    }
+
+    /// The creator bits (`E_CREATOR`) of the rows that carry one, on
+    /// `self.entities` for the length of a publish (`on`), cleared after it.
+    /// `RlObservation.Entity` (sim/Gameplay/RlObservation.cs) writes them for
+    /// a row with no owner whose FixTransform it reads: a Missile's
+    /// `Item.OwnerId` (SparkShot.Fire, ShootDuplicator's copies), and a
+    /// ResizablePlatform's caster, the listed slime whose PlatformTransform
+    /// buffer holds it (`spawn.buffer`; a platform being removed has left it).
+    /// A row `gate_source_ability` strips of its owner (destroyed, inactive:
+    /// its FixTransform is gone) gets none either.
+    fn stamp_creators(&mut self, on: bool) {
+        fn stamp(row: &mut CEntity, id: u32) {
+            row.flags &= !E_CREATOR;
+            if id != 0 && row.owner == 0 && !(row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0) {
+                row.flags |= (id << E_CREATOR_SHIFT) & E_CREATOR;
+            }
+        }
+        for i in 0..self.guided_missiles.len() {
+            let missile = &self.guided_missiles[i];
+            if let Some(entity) = missile.entity {
+                let id = if on { player_id(&self.players, missile.owner) } else { 0 };
+                stamp(&mut self.entities[entity], id);
+            }
+        }
+        // A smoke cloud's Item.OwnerId (FlammableSmoke.SetPlayerOwnerId), which
+        // its ignition credits; a duplicate copies it.
+        for i in 0..self.smoke_clouds.len() {
+            let cloud = &self.smoke_clouds[i];
+            if let Some(entity) = cloud.entity {
+                let id = if on { player_id(&self.players, cloud.owner) } else { 0 };
+                stamp(&mut self.entities[entity], id);
+            }
+        }
+        for i in 0..self.spawned.len() {
+            let spawn = self.spawned[i];
+            if !spawn.active || spawn.platform_index >= self.platform_entities.len() {
+                continue;
+            }
+            let id = match spawn.buffer {
+                Some((player, slot))
+                    if on
+                        && !spawn.being_removed
+                        && Self::slime_listed(&self.players[player])
+                        && slot < self.players[player].ability_count.min(3) =>
+                {
+                    self.players[player].base.id
+                }
+                _ => 0,
+            };
+            let entity = self.platform_entities[spawn.platform_index];
+            stamp(&mut self.entities[entity], id);
+        }
+    }
+
+    fn publish_observed_rows(&mut self, out: &mut Vec<CEntity>) {
         #[cfg(debug_assertions)]
         let numbering = (self.observed_ids.clone(), self.last_observed_id);
         if !self.publish_observed_fused(out) {

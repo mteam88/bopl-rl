@@ -125,7 +125,7 @@ V4_SETS = (("player", V4_PLAYER_OFFSET, V4_PLAYERS, V4_PLAYER_FEATURES, None),
            ("slime", V4_SLIME_OFFSET, V4_SLIMES, V4_SLIME_FEATURES, None))
 V4_DEFAULTS = dict(set_dim=128, set_inner=128, flat_dim=256, ffn_dim=512, critic_dim=512,
                    critic_privileged=1, critic_detach=0, mean_pool=1,
-                   ablate=0)   # writer bitmask (bopl_obs_v4.h): 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays
+                   ablate=0)   # writer bitmask (bopl_obs_v4.h): 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes
 
 
 def obs_size_of(layout_version):

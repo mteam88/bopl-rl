@@ -24,7 +24,7 @@
 #define BOPL_RL_EVENTS 1
 typedef struct {
     uint32_t kind, tick, subject, actor, entity, source_ability, cause, flags;
-    uint32_t related, related_actor, related_tick, reserved;
+    uint32_t related, related_actor, related_tick, creator;
     int64_t x, y, vx, vy;
     int64_t ax, ay, avx, avy;
 } BoplRlEvent;

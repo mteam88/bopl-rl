@@ -18,7 +18,11 @@ enum BoplRlEntityFlags {
     BOPL_ENTITY_TIMER_KNOWN=64, BOPL_ENTITY_PICKUP=128, BOPL_ENTITY_PROJECTILE=256,
     BOPL_ENTITY_SPARK_NODE=512, BOPL_ENTITY_FLAMMABLE_SMOKE=1024,
     BOPL_ENTITY_EXPLOSIVE=2048, BOPL_ENTITY_HITBOX=4096,
-    BOPL_ENTITY_CONTACT_DAMAGE=8192, BOPL_ENTITY_CONTACT_DAMAGE_KNOWN=16384
+    BOPL_ENTITY_CONTACT_DAMAGE=8192, BOPL_ENTITY_CONTACT_DAMAGE_KNOWN=16384,
+    /* Bits 16-23: the player id that created an object whose owner is 0 (no
+     * IPlayerIdHolder): a guided missile's or smoke cloud's Item.OwnerId, and a Platform-cast
+     * platform's caster while its spawner's buffer holds it. 0 otherwise. */
+    BOPL_ENTITY_CREATOR_SHIFT=16, BOPL_ENTITY_CREATOR_MASK=0xff
 };
 enum BoplRlSlimeFlags {
     BOPL_SLIME_ACTIVE=1, BOPL_SLIME_SPAWNED=2, BOPL_SLIME_IN_ABILITY=4,
@@ -139,7 +143,9 @@ typedef struct {
     uint32_t related;         /* kind-specific entity id (deaths: victim's last contact entity) */
     uint32_t related_actor;   /* kind-specific player id (deaths: who blinked `related`, 0 none) */
     uint32_t related_tick;    /* kind-specific tick (deaths: tick of last contact) */
-    uint32_t reserved;
+    uint32_t creator;         /* deaths with actor 0: the player whose cast made the killing
+                                 object (a Missile's blast, a cast Spike), which the game
+                                 credits to nobody; 0 otherwise. Training-side credit only. */
     int64_t x, y, vx, vy;     /* Q32.32: subject's body at the event */
     int64_t ax, ay, avx, avy; /* Q32.32: actor's body (or the entity) at the event */
 } BoplRlEvent;

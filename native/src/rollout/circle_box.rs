@@ -673,12 +673,26 @@ impl RolloutWorld {
             Part::Item(i) => self.thrown_items[i].ability,
             _ => ABILITY_NULL,
         };
+        // Who cast the killing object when the game credits nobody: a
+        // Missile's MineExplosion (Missile.OnCollide never sets its
+        // PlayerOwnerId) and a cast SpikeAttack (a ShootDuplicator copy has
+        // no caster). Events only.
+        let creator = match other {
+            Part::Explosion(Blast::Mine(i))
+                if self.missile_explosions[i].ability == ABILITY_MISSILE && !self.missile_explosions[i].credited_owner =>
+            {
+                player_id(&self.players, self.missile_explosions[i].owner)
+            }
+            Part::Spike(i) => self.spike_attacks[i].owner_slot.map_or(0, |(p, _)| self.players[p].base.id),
+            _ => 0,
+        };
         KillSource {
             entity: collider.or_else(|| self.part_entity(other)),
             actor,
             cause,
             in_form: actor != BodyRef::None,
             ability,
+            creator,
             ..KillSource::default()
         }
     }

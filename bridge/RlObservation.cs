@@ -204,6 +204,37 @@ internal static class RlObservation
         return any;
     }
 
+    // Bits 16-23 of an unowned row's flags (bopl_rl.h BOPL_ENTITY_CREATOR_SHIFT): the
+    // player that created it. A Missile or smoke cloud has no IPlayerIdHolder, only
+    // Item.OwnerId (SparkShot.Fire, FlammableSmoke.SetPlayerOwnerId, ShootDuplicator's
+    // copies); a spawned platform only its
+    // spawner's buffer (a platform being removed has left it). The Rust sim writes
+    // the same bits (rollout/mod.rs stamp_creators).
+    private static uint Creator(FixTransform transform)
+    {
+        if (transform.GetComponent<Missile>() != null || transform.GetComponent<FlammableSmoke>() != null) {
+            var item = transform.GetComponent<Item>();
+            return item == null ? 0u : (uint)item.OwnerId;
+        }
+        var resizable = transform.GetComponent<ResizablePlatform>();
+        if (resizable == null) return 0;
+        foreach (var slime in slimes) {
+            if (slime == null || slime.IsDestroyed || slime.abilities == null) continue;
+            int count = Math.Min(3, slime.abilities.Count);
+            for (int slot = 0; slot < count; slot++) {
+                var ability = slime.abilities[slot];
+                if (ability == null || ability.IsDestroyed) continue;
+                var spawner = ability.GetComponent<PlatformTransform>();
+                if (spawner == null) continue;
+                var held = (ResizablePlatform[])platformBuffer.GetValue(spawner);
+                if (held != null)
+                    for (int i = 0; i < held.Length; i++)
+                        if (held[i] == resizable) return (uint)slime.GetPlayerId();
+            }
+        }
+        return 0;
+    }
+
     private static uint SourceAbility(FixTransform transform, int owner, DynamicAbilityPickup pickup, Grenade grenade,
         FlammableSmoke smoke, SimpleSparkNode spark, Projectile projectile)
     {
@@ -277,6 +308,7 @@ internal static class RlObservation
                 if (contact.KillPlayersOnContact) flags |= 1u << 13;
             }
             source = SourceAbility(transform, owner, pickup, grenade, smoke, spark, projectile);
+            if (owner == 0) flags |= (Creator(transform) & 0xffu) << 16;
             if (grenade != null && grenade.selfDestructDelay >= Fix.Zero) {
                 remaining = RemainingTicks(grenade.selfDestructDelay); clockRate = GameTime.PlayerTimeScale; flags |= 1u << 6;
             } else if (pickup != null) {

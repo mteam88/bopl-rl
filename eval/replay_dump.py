@@ -42,7 +42,7 @@ ENTITY = [('tick', 'u4'), ('id', 'u4'), ('kind', 'u1'), ('layer', 'u4'), ('owner
           ('x', 'f4'), ('y', 'f4'), ('vx', 'f4'), ('vy', 'f4'), ('right_x', 'f4'), ('right_y', 'f4'),
           ('up_x', 'f4'), ('up_y', 'f4'), ('radius', 'f4'), ('rotation', 'f4'), ('angular_velocity', 'f4'),
           ('inverse_mass', 'f4'), ('clock_rate', 'f4')]
-EVENT = [('tick', 'u4'), ('event_tick', 'u4')] + [(f, 'u4') for f in EVENT_FIELDS if f not in ('tick', 'reserved')] + \
+EVENT = [('tick', 'u4'), ('event_tick', 'u4')] + [(f, 'u4') for f in EVENT_FIELDS if f != 'tick'] + \
         [(f, 'f4') for f in ('x', 'y', 'vx', 'vy', 'ax', 'ay', 'avx', 'avy')]
 TELEMETRY = ['ability_activations0', 'ability_activations1', 'ability_activations2', 'arrows_fired', 'arrow_hits',
              'deaths_environment', 'deaths_opponent', 'deaths_self', 'deaths_other']
@@ -103,7 +103,7 @@ def dump(path, out, game=None, check_identity=True):
 
 def event_row(t, e):
     return (t, e.tick, e.kind, e.subject, e.actor, e.entity, e.source_ability, e.cause, e.flags, e.related,
-            e.related_actor, e.related_tick, e.x * Q, e.y * Q, e.vx * Q, e.vy * Q, e.ax * Q, e.ay * Q, e.avx * Q,
+            e.related_actor, e.related_tick, e.creator, e.x * Q, e.y * Q, e.vx * Q, e.vy * Q, e.ax * Q, e.ay * Q, e.avx * Q,
             e.avy * Q)
 
 

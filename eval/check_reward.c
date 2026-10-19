@@ -167,6 +167,49 @@ int main(void) {
          penalized_for(find("clean win"), 0)==clean_win && penalized_for(find("clean win"), 1)==clean_loss
          && penalized_for(find("mutual death"), 1)==trade_victim && penalized_for(find("lone suicide"), 1)==survivor},
     };
+    /* Layout v4.2 kill credit (bopl_credit_from): a Missile's or Spike's kill,
+     * which the game credits to nobody (actor 0), is the creator's under the
+     * writer bit and nobody's without it. */
+    static BoplPuffer env;
+    BoplRlState state;
+    build(&state, find("clean win"));
+    env.players=2;
+    BoplRlEvent events[4]={
+        {.kind=BOPL_EVENT_DEATH, .subject=2, .actor=0, .creator=1},   /* 1's Missile kills 2 */
+        {.kind=BOPL_EVENT_DEATH, .subject=1, .actor=0, .creator=1},   /* 1's own Spike kills 1 */
+        {.kind=BOPL_EVENT_DEATH, .subject=1, .actor=2, .creator=0},   /* an ordinary credited kill */
+        {.kind=BOPL_EVENT_BLINK, .subject=2, .actor=0, .creator=1},
+    };
+    BoplCredit on, off;
+    for (int i=0; i<2; i++) { env.layout[i]=BOPL4_LAYOUT_VERSION; bopl_set_ablate_of(&env, i, BOPL4_ABLATE_AIM|BOPL4_ABLATE_OBSFIX); }
+    bopl_credit_from(&env, events, 4, &state, &on);
+    for (int i=0; i<2; i++) bopl_set_ablate_of(&env, i, BOPL4_ABLATE_AIM);
+    bopl_credit_from(&env, events, 4, &state, &off);
+    printf("kill credit\n");
+    struct { const char *claim; int holds; } credit[]={
+        {"v4.2: a Missile or Spike kill is its caster's",
+         on.kills[0]==1 && on.kills[1]==0 && on.opponent[1]==1 && on.team[0]==0},
+        {"v4.2: dying to one's own Spike is a self-death",       on.self[0]==1 && on.self[1]==0 && on.opponent[0]==0},
+        {"v4.2: credited kills and other events are left alone", on.kills[1]==0},
+        {"v4.1: nobody is credited",
+         !off.kills[0] && !off.kills[1] && !off.self[0] && !off.self[1] && !off.opponent[0] && !off.opponent[1]},
+    };
+    /* A frozen bank's member writes its own family (bopl_bank_ablate): a v4.1
+     * opponent in a v4.2 run keeps its rows and earns no v4.2 credit. */
+    static BoplPuffer banked;
+    banked.players=2; banked.banks=2; banked.side=0; banked.active_bank=1;
+    for (int i=0; i<2; i++) banked.layout[i]=BOPL4_LAYOUT_VERSION;
+    bopl_bank_ablate[1]=BOPL4_ABLATE_AIM+1;
+    int bank_rows=bopl_ablate_of(&banked, 1)==BOPL4_ABLATE_AIM && bopl_ablate_of(&banked, 0)==-1;
+    banked.active_bank=0;
+    bank_rows&=bopl_ablate_of(&banked, 1)==-1;
+    bopl_bank_ablate[1]=0;
+    printf("  %-55s %s\n", "a frozen bank writes its own member's family", bank_rows?"ok":"FAIL");
+    failures+=!bank_rows;
+    for (size_t i=0; i<sizeof(credit)/sizeof(*credit); i++) {
+        failures+=!credit[i].holds;
+        printf("  %-55s %s\n", credit[i].claim, credit[i].holds?"ok":"FAIL");
+    }
     printf("ordering\n");
     for (size_t i=0; i<sizeof(order)/sizeof(*order); i++) {
         failures+=!order[i].holds;

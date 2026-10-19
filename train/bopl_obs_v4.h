@@ -12,7 +12,10 @@
  * the ablated block is zero. */
 /* BOPL4_ABLATE_AIM is layout v4.1, not an ablation:
  * the two down rays that duplicate around rays (-135 and -45 degrees are
- * around rays 20 and 28) carry the aim ray and the line of sight instead. */
+ * around rays 20 and 28) carry the aim ray and the line of sight instead.
+ * BOPL4_ABLATE_OBSFIX is layout v4.2, not an ablation either: creators as
+ * owners, smoke out of the rays and last in the rows, Spike's spikes lethal
+ * walls (bopl_rows_v4.h). */
 static int bopl4_ablation_value=-1;
 /* The process default (BOPL4_ABLATE, read once): every row of a training run. */
 static void bopl4_set_ablation(int bits) { bopl4_ablation_value=bits; }
@@ -38,7 +41,7 @@ static void bopl4_sincos(const BoplRlSlime *slime, float *sin_r, float *cos_r) {
 }
 /* The rays' scene for `self`'s row (bopl_rays_v4.h), computed in double and
  * stored as float: the walls are the rounded rects on the wall and terrain
- * layers (11 wall, 16 lethal, 21 non-lethal), water the highest water
+ * layers (11 wall, 16 lethal, 21 non-lethal) and in v4.2 the boxes on 16, water the highest water
  * entity's top, the circles the observed dynamic bodies (the nearest visible
  * entities with mass, not ropes or platforms) and the visible enemy slimes. */
 static void bopl4_scene_fill(Bopl4Scene *s, const BoplRlState *state, const uint32_t *nearest, int count,
@@ -53,7 +56,7 @@ static void bopl4_scene_fill(Bopl4Scene *s, const BoplRlState *state, const uint
     double water_top=-1e9; int has_water=0;
     for (uint32_t i=0; i<state->header.entity_count; i++) {
         float w[9]; double top=0.0; int lethal=0, skew=0;
-        int kind=bopl4_scene_entity(&state->entities[i], w, &top, &lethal, &skew);
+        int kind=bopl4_scene_entity(&state->entities[i], w, &top, &lethal, &skew, ablation);
         if (kind==BOPL4_SCENE_WATER) {
             if (!has_water || top>water_top) water_top=top;
             has_water=1;
@@ -66,7 +69,7 @@ static void bopl4_scene_fill(Bopl4Scene *s, const BoplRlState *state, const uint
     if (has_water) { s->flags|=BOPL4F_WATER; s->water_top=(float)water_top; } else s->water_top=-1e9f;
     for (int i=0; i<count; i++) {
         float c[5]; int32_t cls;
-        if (bopl4_entity_circle(&state->entities[nearest[i]], self, c, &cls)) bopl4_scene_circle(s, s->circle_count++, c, cls);
+        if (bopl4_entity_circle(&state->entities[nearest[i]], self, c, &cls, ablation)) bopl4_scene_circle(s, s->circle_count++, c, cls);
     }
     for (int i=0; i<slime_count; i++) {
         float c[5]; int32_t cls;
@@ -210,8 +213,7 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
             if (!bopl_entity_visible(state, entity, self->id)) continue;
             double distance=bopl_surface_distance(entity, self_x, self_y);
             bopl4_surface[i+(uint32_t)j]=distance;
-            if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
-            bopl_nearest(nearest, distances, &c.count, BOPL4_ENTITIES, i+(uint32_t)j, distance);
+            bopl_nearest(nearest, distances, &c.count, BOPL4_ENTITIES, i+(uint32_t)j, bopl4_rank_distance(entity, distance, ablation));
             c.active_count++;
             uint32_t source=entity->reserved[0];
             if (source>0 && source<=BOPL_ABILITY_COUNT) c.source_counts[source-1]++;

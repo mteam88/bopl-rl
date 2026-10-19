@@ -355,7 +355,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                 int kind = BOPL4_SCENE_NONE;
                 if (k < w.E) {
                     double top = 0.0;
-                    kind = bopl4_scene_class(&w.st.entities[k], &top);
+                    kind = bopl4_scene_class(&w.st.entities[k], &top, w.ablation);
                     w.kind[k] = (unsigned char)kind; w.top[k] = top; w.lethal[k] = 0; w.skew[k] = 0;
                 }
                 const unsigned walls = __ballot_sync(0xffffffffu, kind == BOPL4_SCENE_WALL);
@@ -409,7 +409,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                 // Entity k's circle.
                 const BoplRlEntity* entity = &state->entities[k];
                 int32_t cls = 0;
-                w.ehas[k] = (unsigned char)bopl4_entity_circle(entity, self, w.ecirc[k], &cls);
+                w.ehas[k] = (unsigned char)bopl4_entity_circle(entity, self, w.ecirc[k], &cls, w.ablation);
                 w.ecls[k] = cls;
             } else if (q == 1) {
                 // The entity pass.
@@ -418,8 +418,7 @@ __global__ void __launch_bounds__(BR4E_THREADS, 4) bopl4_encode_rows(const float
                 w.kept[k] = (unsigned char)kept;
                 unsigned long long key = ~0ull;   // above every non-NaN double's
                 if (kept) {
-                    double distance = bopl_surface_distance(entity, bopl_fix(self->x), bopl_fix(self->y));
-                    if (entity->flags & BOPL_ENTITY_PICKUP) distance -= 1.0e12;
+                    const double distance = bopl4_rank_distance(entity, bopl_surface_distance(entity, bopl_fix(self->x), bopl_fix(self->y)), w.ablation);
                     w.distance[k] = distance;
                     key = br4e_key(distance);
                     if (distance != distance) w.nan = 1;

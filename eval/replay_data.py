@@ -65,7 +65,7 @@ class Config(C.Structure):
 class Action(C.Structure):
     _fields_ = [('angle',C.c_uint8),('reserved',C.c_uint8),('buttons',C.c_uint16)]
 EVENT_FIELDS = ('kind','tick','subject','actor','entity','source_ability','cause','flags',
-                'related','related_actor','related_tick','reserved')
+                'related','related_actor','related_tick','creator')
 class Event(C.Structure):
     """BoplRlEvent (sim/abi/bopl_rl.h, docs/STYLES.md): one game event."""
     _fields_ = [(name,C.c_uint32) for name in EVENT_FIELDS] + [(name,C.c_int64) for name in ('x','y','vx','vy','ax','ay','avx','avy')]

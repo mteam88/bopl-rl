@@ -358,9 +358,7 @@ def opponents(league, names=None, root=None, policy=None):
     if policy is not None:
         wrong = []
         for row in out:
-            theirs = policy_shape(row['path'])
-            differs = {key: (theirs.get(key), policy.get(key))
-                       for key in POLICY_SHAPE if theirs.get(key) != policy.get(key)}
+            differs = shape_differs(policy_shape(row['path']), policy)
             if differs:
                 wrong.append(f"{row['name']}: " + ', '.join(
                     f'{key} {mine!r} != run {ours!r}' for key, (mine, ours) in differs.items()))
@@ -376,6 +374,35 @@ def opponents(league, names=None, root=None, policy=None):
 
 # What has to agree for one member's weights to run in another run's frozen bank.
 POLICY_SHAPE = ('architecture', 'obs_size', 'hidden', 'num_layers', 'aim_fourier', 'aim_ar', 'v4_shape')
+
+
+# Writer revisions: v4 ablate bits that change what the row writer puts in a
+# field but never the row's shape or what a field means (16: layout v4.2, the
+# observation fixes in train/bopl_rows_v4.h). Weights load across them, so a
+# v4.1 net can be fine-tuned on v4.2 rows; a frozen bank writes its member's
+# own rows (train/bank_kits.py WriterBackend).
+WRITER_REVISIONS = 16
+
+
+def shape_differs(theirs, ours):
+    """{key: (theirs, ours)} for the POLICY_SHAPE keys that keep one checkpoint's weights out of another run."""
+    def comparable(shape):
+        shape = dict(shape)
+        if isinstance(shape.get('v4_shape'), dict):
+            shape['v4_shape'] = dict(shape['v4_shape'])
+            shape['v4_shape']['ablate'] = int(shape['v4_shape'].get('ablate') or 0) & ~WRITER_REVISIONS
+        return shape
+    a, b = comparable(theirs), comparable(ours)
+    return {key: (theirs.get(key), ours.get(key)) for key in POLICY_SHAPE if a.get(key) != b.get(key)}
+
+
+def writer_ablate(path):
+    """A checkpoint's v4 writer bits from its sidecar, or None (no sidecar, not v4)."""
+    sidecar = Path(str(path) + '.json')
+    if not sidecar.is_file():
+        return None
+    shape = json.loads(sidecar.read_text()).get('v4_shape')
+    return int(shape.get('ablate') or 0) if isinstance(shape, dict) else None
 
 
 def policy_shape(path):

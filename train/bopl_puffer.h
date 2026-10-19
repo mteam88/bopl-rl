@@ -148,6 +148,11 @@ uint8_t bopl_bank_kit_rows[BOPL_MAX_BANKS][2][BOPL_BANK_KITS_MAX][6];
 int bopl_bank_kit_count[BOPL_MAX_BANKS][2];
 int bopl_bank_kit_gen[BOPL_MAX_BANKS];
 uint8_t bopl_bot_kit[3];
+/* The writer bits of the member each frozen bank holds, as mask+1 (0: the
+ * process default, the learner's). train.py installs them as it loads a
+ * member (bopl_bank_ablate_install, binding.c), so a v4.1 member keeps
+ * writing v4.1 rows against a v4.2 learner (bopl_ablate_of). */
+int bopl_bank_ablate[BOPL_MAX_BANKS];
 unsigned long bopl_bank_kit_redraws;
 typedef struct { int valid, bot, gen, src; uint8_t base[6]; } BoplPin;
 /* The style program (bopl_style.h) every environment created after
@@ -353,6 +358,7 @@ typedef struct {
     float last_telemetry[6*BOPL_TELEMETRY_SIZE];
     BoplRlTelemetry previous_telemetry[6];
     uint32_t deaths[6], kills[6], steps;
+    uint32_t credited_kills[6];   /* this episode's v4.2 kill credit (bopl_credit_kills) */
     /* Button latch (hold head). hold_left: decisions the latched button state
      * still applies after this one; held: that state; hold_run: consecutive
      * decisions each button has been down (0 when up). Aim is never latched. */
@@ -433,7 +439,11 @@ static float *bopl_obs_row(BoplPuffer *env, int player) {
 }
 /* Layout version of player p's row: 4 (bopl_layout_v4.h) or 3 (the default). */
 static int bopl_layout_of(const BoplPuffer *env, int player) { return env->layout[player]==BOPL4_LAYOUT_VERSION?4:3; }
-static int bopl_ablate_of(const BoplPuffer *env, int player) { return env->ablate[player]-1; }   /* -1: the process default */
+static int bopl_ablate_of(const BoplPuffer *env, int player) {   /* -1: the process default */
+    if (!env->ablate[player] && env->banks && player!=env->side)
+        return __atomic_load_n(&bopl_bank_ablate[env->active_bank], __ATOMIC_RELAXED)-1;
+    return env->ablate[player]-1;
+}
 static void bopl_set_ablate_of(BoplPuffer *env, int player, int mask) { env->ablate[player]=mask<0?0:mask+1; }
 static int bopl_obs_size_of(const BoplPuffer *env, int player) { return bopl_layout_of(env, player)==4?BOPL4_OBS_SIZE:BOPL_OBS_SIZE; }
 static int bopl_previous_offset(const BoplPuffer *env, int player) {
@@ -469,12 +479,15 @@ static void bopl_note_entity_rows(BoplPuffer *env, const BoplRlState *state,
 }
 /* Every visible-entity and visible-slime count of `state` per observer, for
  * the overflow telemetry of a sampled state that is never encoded. */
+static int bopl4_ablation_default(void);
 static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
     if (!state) return;
     for (int a=0; a<env->players; a++) {
         const BoplRlPlayer *self=&state->players[a];
         uint32_t nearest[BOPL_OBS_ENTITIES]; double distances[BOPL_OBS_ENTITIES];
         int capacity=bopl_layout_of(env,a)==4?BOPL4_ENTITIES:BOPL_OBS_ENTITIES;
+        /* The v4 rows' ranking (layout v4.2 ranks smoke last); v3 keeps its own. */
+        int ablation=bopl_layout_of(env,a)==4?(bopl_ablate_of(env,a)>=0?bopl_ablate_of(env,a):bopl4_ablation_default()):0;
         int count=0, active_count=0, visible_slimes=0, visible_slots=0;
         int source_counts[BOPL_ABILITY_COUNT]={0};
         for (uint32_t i=0; i<state->header.entity_count;) {
@@ -485,16 +498,14 @@ static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
                     const BoplRlEntity *entity=&state->entities[i+j];
                     if (!bopl_entity_visible(state,entity,self->id)) continue;
                     double distance=bopl_surface_distance(entity,bopl_fix(self->x),bopl_fix(self->y));
-                    if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
-                    bopl_nearest(nearest,distances,&count,capacity,i+(uint32_t)j,distance);active_count++;
+                    bopl_nearest(nearest,distances,&count,capacity,i+(uint32_t)j,bopl4_rank_distance(entity,distance,ablation));active_count++;
                     if (entity->reserved[0]>0 && entity->reserved[0]<BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
                 }
                 i=(uint32_t)end;
             } else {
                 if (bopl_entity_visible(state, entity, self->id)) {
                     double distance=bopl_surface_distance(entity,bopl_fix(self->x),bopl_fix(self->y));
-                    if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
-                    bopl_nearest(nearest,distances,&count,capacity,i,distance);active_count++;
+                    bopl_nearest(nearest,distances,&count,capacity,i,bopl4_rank_distance(entity,distance,ablation));active_count++;
                     if (entity->reserved[0]>0 && entity->reserved[0]<BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
                 }
                 i++;
@@ -908,15 +919,15 @@ static void bopl4_census_note(BoplPuffer *env, const Bopl4Census *c) {
 /* bopl4_census_note for a row of a state that ships more than
  * BOPL4_ENTITIES entities: the census, and when more than BOPL4_ENTITIES of
  * them are visible, the nearest BOPL4_ENTITIES as bopl_encode_v4_row keeps
- * them (its pass: rope thinning, visibility, the surface distance, a pickup's
- * offset, bopl_nearest), whose sources say what each ability overflows. */
+ * them (its pass: rope thinning, visibility, bopl4_rank_distance,
+ * bopl_nearest), whose sources say what each ability overflows. */
 static void bopl4_crowded_note(BoplPuffer *env, const BoplRlState *state, int a) {
     Bopl4Census c; bopl4_census(state, a, &c);
     if (c.count<=BOPL4_ENTITIES) { bopl4_census_note(env, &c); return; }
     const BoplRlPlayer *self=&state->players[a];
     double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
     uint32_t nearest[BOPL4_ENTITIES]; double distances[BOPL4_ENTITIES];
-    int count=0;
+    int count=0, ablation=bopl_ablate_of(env, a)>=0?bopl_ablate_of(env, a):bopl4_ablation_default();
     for (uint32_t i=0; i<state->header.entity_count;) {
         int end=(state->entities[i].kind==3)?bopl_rope_group_end(state, i):(int)i+1;
         int group=end-(int)i;
@@ -925,8 +936,7 @@ static void bopl4_crowded_note(BoplPuffer *env, const BoplRlState *state, int a)
             if (entity->kind==3 && !bopl_rope_span_kept(j, group)) continue;
             if (!bopl_entity_visible(state, entity, self->id)) continue;
             double distance=bopl_surface_distance(entity, self_x, self_y);
-            if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
-            bopl_nearest(nearest, distances, &count, BOPL4_ENTITIES, i+(uint32_t)j, distance);
+            bopl_nearest(nearest, distances, &count, BOPL4_ENTITIES, i+(uint32_t)j, bopl4_rank_distance(entity, distance, ablation));
         }
         i=(uint32_t)end;
     }
@@ -1568,6 +1578,51 @@ static int bopl_team_kills(const BoplRl *world, const BoplRlState *state, int pl
     }
     return 0;
 }
+/* Layout v4.2 kill credit (BOPL4_ABLATE_OBSFIX). A Missile's blast and a
+ * cast Spike keep PlayerOwnerId's zero default, so the game credits their
+ * kills to nobody and files the death under deaths_other; the death event's
+ * `creator` names the caster. A player whose writer carries the bit is paid
+ * for such a kill like any other (a teammate's also counts in team_kills, so
+ * team play charges it), and a victim whose writer carries it has the death
+ * filed under deaths_opponent, or under deaths_self and charged
+ * reward_self_death when it was its own Missile or Spike. The game, its
+ * counters and a player without the bit are untouched. */
+typedef struct {
+    int64_t kills[BOPL_MAX_PLAYERS], team[BOPL_MAX_PLAYERS];   /* the creator's */
+    int64_t self[BOPL_MAX_PLAYERS], opponent[BOPL_MAX_PLAYERS]; /* the victim's */
+} BoplCredit;
+static int bopl_obsfix_of(const BoplPuffer *env, int player) {
+    if (bopl_layout_of(env, player)!=4) return 0;
+    int ablation=bopl_ablate_of(env, player);
+    return ((ablation>=0?ablation:bopl4_ablation_default())&BOPL4_ABLATE_OBSFIX)!=0;
+}
+static void bopl_credit_from(const BoplPuffer *env, const BoplRlEvent *events, uint32_t count,
+                             const BoplRlState *state, BoplCredit *credit) {
+    memset(credit, 0, sizeof(*credit));
+    for (uint32_t e=0; e<count && events; e++) {
+        const BoplRlEvent *event=&events[e];
+        if (event->kind!=BOPL_EVENT_DEATH || event->actor || !event->creator) continue;
+        int creator=-1, victim=-1;
+        for (int i=0; i<env->players; i++) {
+            if (state->players[i].id==event->creator) creator=i;
+            if (state->players[i].id==event->subject) victim=i;
+        }
+        if (creator<0 || victim<0) continue;
+        if (creator==victim) { credit->self[victim]+=bopl_obsfix_of(env, victim); continue; }
+        if (bopl_obsfix_of(env, creator)) {
+            credit->kills[creator]++;
+            credit->team[creator]+=state->players[creator].team==state->players[victim].team;
+        }
+        credit->opponent[victim]+=bopl_obsfix_of(env, victim);
+    }
+}
+static void bopl_credit_kills(const BoplPuffer *env, const BoplRl *world, const BoplRlState *state, BoplCredit *credit) {
+    int on=0;
+    for (int i=0; i<env->players; i++) on|=bopl_obsfix_of(env, i);
+    uint32_t count=0;
+    const BoplRlEvent *events=on && world && bopl_rl_event_support(world)?bopl_rl_events(world, &count):NULL;
+    bopl_credit_from(env, events, count, state, credit);
+}
 /* Everything one decision pays one player. `previous_kills` and
  * `previous_deaths` are that player's counters as of the previous decision;
  * kills are opponent kills, never the game's self-crediting count. */
@@ -1619,7 +1674,7 @@ static void c_reset(BoplPuffer *env) {
         if (bopl_rl_reset_begin(env->spare, &env->spare_config)) bopl_failed_world(env, env->spare, "spare reset request");
     }
     const BoplRlState *state=bopl_rl_state(env->world);
-    memset(env->returns, 0, sizeof(env->returns)); env->steps=0;
+    memset(env->returns, 0, sizeof(env->returns)); memset(env->credited_kills, 0, sizeof(env->credited_kills)); env->steps=0;
     if (env->style_slots) memset(env->style_slots, 0, (size_t)env->players*env->style->hist_floats*sizeof(float));
     memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
     for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=(uint32_t)bopl_opponent_kills(state, i); }
@@ -1792,6 +1847,8 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
     int64_t team_kills[BOPL_MAX_PLAYERS]={0};
     if (env->team_play && bopl_team_kills(world?env->world:NULL, state, env->players, team_kills))
         bopl_failed(env, "team play needs the game's death events");
+    BoplCredit credit;
+    bopl_credit_kills(env, world?env->world:NULL, state, &credit);
     for (int i=0; i<env->players; i++) {
         const BoplRlPlayer *player=&state->players[i];
         int slot=bopl_slot(env, i), learner=!env->banks || i==env->side;
@@ -1806,20 +1863,27 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
          * (the same single add per field and decision), not reloaded from the
          * row after: a vector load of fields just stored one by one waits for
          * the stores to retire instead of forwarding. */
+        int64_t filed[BOPL_EVENT_FIELDS]={0};   /* v4.2 kill credit's refiling of deaths_other */
+        filed[6]=credit.opponent[i]; filed[7]=credit.self[i]; filed[8]=-credit.opponent[i]-credit.self[i];
         for (int field=0; field<BOPL_EVENT_FIELDS; field++) {
-            float value=(float)(events[field]-previous[field]);
+            float value=(float)((int64_t)(events[field]-previous[field])+filed[field]);
             stats[field]=value;
             if (learner) c->telemetry[field]+=value;
         }
         BoplOutcome o=bopl_outcome(state, i, decided, env->kills[i], env->deaths[i],
                                    env->reward_kill, env->reward_timeout);
+        if (credit.kills[i]) {
+            o.kills+=credit.kills[i]; env->credited_kills[i]+=(uint32_t)credit.kills[i];
+            o.shaping=env->reward_kill*((float)o.kills-(float)o.deaths);
+        }
+        if (env->team_play) team_kills[i]+=credit.team[i];
         if (env->team_play) {
             /* A teammate's death is not a kill: it is charged like the player's own. */
             o.kills-=team_kills[i];
             o.shaping=env->reward_kill*((float)o.kills-(float)o.deaths-(float)team_kills[i]);
         }
         /* Read before previous_telemetry advances below. */
-        int64_t self_deaths=bopl_self_deaths(&state->telemetry[i], &env->previous_telemetry[i]);
+        int64_t self_deaths=bopl_self_deaths(&state->telemetry[i], &env->previous_telemetry[i])+credit.self[i];
         if (o.kills<0) bopl_failed(env, "opponent kill counter regressed");
         /* Terminal reward as paid: the win/loss outcome, or the timeout penalty
          * both players receive on truncation (0 in the phase-1 comparison). */
@@ -1854,7 +1918,7 @@ static void bopl_step_finish_with(BoplPuffer *env, const BoplStepPhase *phase, c
         if (terminal) {
             if (env->config.map<BOPL_COUNTER_MAPS) env->log.map_fraction[env->config.map]++;
             *env->terminal_ptr[slot]=1;
-            env->log.perf+=o.won; env->log.score+=(float)bopl_opponent_kills(state, i);
+            env->log.perf+=o.won; env->log.score+=(float)(bopl_opponent_kills(state, i)+env->credited_kills[i]);
             env->log.episode_return+=env->returns[i]; env->log.episode_length+=env->steps; env->log.n++;
             if (learner) {
                 env->log.learner_episodes++; env->log.learner_wins+=o.won;

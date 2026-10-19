@@ -206,7 +206,12 @@ mismatch before the trainer is created. With the shapes matched, the same
 its own kit and 0.22-0.48 against the seven playing a foreign one, and PFSP puts
 its largest weight on `drill-throw-magnet`. `v4_shape.ablate` is part of the
 comparison: it is a writer bitmask, so a member trained with features ablated
-would otherwise be fed features it has never seen.
+would otherwise be fed features it has never seen. The exception is a writer
+*revision* (`registry.WRITER_REVISIONS`, today bit 16, layout v4.2): it changes
+what some fields hold but not the row's shape or what a field means, so it is
+masked out of the comparison. A v4.2 run (`--v4-ablate 24`) can start from a
+v4.1 checkpoint and load v4.1 members, and each frozen bank writes its member's
+own rows (`bank_kits.WriterBackend`, `bopl_bank_ablate`).
 
 The practical consequence is that the eight seeded specialists pin any run that
 wants to train against them to their shape (`--encoder v4 --hidden 256

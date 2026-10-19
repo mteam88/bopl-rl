@@ -39,7 +39,7 @@ typedef struct {
     uint32_t related;         /* kind-specific entity id (deaths: victim's last contact entity) */
     uint32_t related_actor;   /* kind-specific player id (deaths: who blinked `related`, 0 none) */
     uint32_t related_tick;    /* kind-specific tick (deaths: tick of last contact) */
-    uint32_t reserved;
+    uint32_t creator;         /* deaths with actor 0: whose Missile blast or cast Spike it was */
     int64_t x, y, vx, vy;     /* Q32.32: subject's body at the event */
     int64_t ax, ay, avx, avy; /* Q32.32: actor's body (or the entity) at the event */
 } BoplRlEvent;
@@ -61,7 +61,11 @@ int bopl_rl_event_support(const BoplRl *world);
   Ring-out means scene bounds or a fall. `related` is the victim's last ground or
   contact entity before death, with its tick in `related_tick`. If that entity is
   hidden by a Blink gun tunnel, or was within the last N ticks, then
-  RELATED_BLINKED is set and `related_actor` is the blinker.
+  RELATED_BLINKED is set and `related_actor` is the blinker. `creator` is set
+  only when the game credits nobody (`actor` 0) and the killing object has a
+  caster anyway: a Missile's blast or a cast Spike, whose Explosions keep
+  PlayerOwnerId's zero default. The game's counters never see it; layout v4.2
+  training pays it (`bopl_puffer.h` `bopl_credit_kills`).
 - **BLINK**: a Blink gun hit (`ShootQuantum.BlinkObject`). `actor` is the
   shooter, `entity` the blinked object, `subject` its owner (0 for map), and
   `flags & 1` is set if it was a player.

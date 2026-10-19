@@ -231,7 +231,7 @@ V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNE
                 flat_dim=('BOPL4_FLAT_DIM', 'flat_dim'), ffn_dim=('BOPL4_FFN_DIM', 'ffn_dim'),
                 critic_dim=('BOPL4_CRITIC_DIM', 'critic_dim'), critic_privileged=('BOPL4_CRITIC_PRIVILEGED', 'critic_privileged'),
                 critic_detach=('BOPL4_CRITIC_DETACH', 'critic_detach'), mean_pool=('BOPL4_MEAN_POOL', 'mean_pool'),
-                ablate=('BOPL4_ABLATE', 'ablate'))   # writer bitmask: 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays
+                ablate=('BOPL4_ABLATE', 'ablate'))   # writer bitmask: 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes + Missile/Spike kill credit
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -971,9 +971,9 @@ def main():
         run_shape = dict(architecture=architecture, obs_size=obs_size, hidden=a.hidden,
                          num_layers=a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
                          v4_shape=v4_shape)
-        theirs = registry.policy_shape(checkpoint)
-        differs = {key: (theirs.get(key), run_shape.get(key)) for key in registry.POLICY_SHAPE
-                   if theirs.get(key) != run_shape.get(key)}
+        # Writer revisions (registry.WRITER_REVISIONS) load across: that is how a
+        # v4.1 net is fine-tuned on v4.2 rows.
+        differs = registry.shape_differs(registry.policy_shape(checkpoint), run_shape)
         if differs:
             raise SystemExit(f'{flag} {checkpoint}: architecture differs from the run: {differs}')
     print(f'league opponents: {len(league_opponents)}'
@@ -991,6 +991,9 @@ def main():
         # Bank swaps go through the backend: with kit pinning it installs the
         # bank's kit rows for the member it loads (bank_kits.PinnedBackend).
         backend = bank_kits.PinnedBackend(_C, kit_lib, pinned_rows) if a.bank_kits else _C
+        if v4_shape is not None:
+            # Each frozen member writes its own rows (a v4.1 member in a v4.2 run).
+            backend = bank_kits.WriterBackend(backend, kit_lib or bank_kits.library(_C), v4_shape['ablate'])
         kit_audit = (bank_kits.Audit(kit_lib, vector.gpu_obs_ptr, a.workers, backend, pinned_kits,
                                      {o['path']: o['name'] for o in league_opponents}, a.bot_kit,
                                      registry._space_maps())

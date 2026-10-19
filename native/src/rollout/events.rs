@@ -24,7 +24,11 @@ pub struct CEvent {
     pub related: u32,
     pub related_actor: u32,
     pub related_tick: u32,
-    pub reserved: u32,
+    /// Deaths: the player whose cast made the killing object when the game
+    /// credits nobody (`actor` 0): a Missile's blast or a cast Spike, whose
+    /// Explosions keep PlayerOwnerId's zero default. Training-side credit
+    /// only; the game's kill counters never see it. 0 otherwise.
+    pub creator: u32,
     pub x: i64,
     pub y: i64,
     pub vx: i64,
@@ -89,6 +93,9 @@ pub(super) struct KillSource {
     pub in_form: bool,
     /// Source ability when neither the form nor the entity row names one.
     pub ability: u32,
+    /// The caster behind an object whose kill the game credits to nobody
+    /// (the event's `creator`), 0 none.
+    pub creator: u32,
     /// The victim as it was when the outer kill began (a clone promoted to
     /// an extra body for its revival).
     pub victim: Option<Victim>,
@@ -379,7 +386,7 @@ impl RolloutWorld {
             related,
             related_actor,
             related_tick: if related != 0 { snapshot.ground.tick } else { 0 },
-            reserved: 0,
+            creator: if actor == 0 && killer != ENVIRONMENT { source.creator } else { 0 },
             x,
             y,
             vx,
@@ -446,7 +453,7 @@ impl RolloutWorld {
             related: 0,
             related_actor: 0,
             related_tick: 0,
-            reserved: 0,
+            creator: 0,
             x,
             y,
             vx,

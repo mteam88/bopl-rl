@@ -25,6 +25,8 @@ def library(module):
     lib.bopl_bot_kit_install.argtypes = [ctypes.POINTER(ctypes.c_int)]
     lib.bopl_bot_kit_install.restype = ctypes.c_int
     lib.bopl_bank_kit_redraw_count.restype = ctypes.c_ulong
+    lib.bopl_bank_ablate_install.argtypes = [ctypes.c_int, ctypes.c_int]
+    lib.bopl_bank_ablate_install.restype = ctypes.c_int
     for name in ('bopl_vec_layout', 'bopl_vec_kits', 'bopl_vec_pins'):
         fn = getattr(lib, name)
         fn.argtypes, fn.restype = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.c_int], ctypes.c_int
@@ -67,6 +69,29 @@ class PinnedBackend:
     def load_frozen_bank(self, trainer, bank, path):
         self.gen[bank] = install(self.lib, bank, self.rows_by_path.get(str(path), []))
         self.loaded[bank] = str(path)
+        return self.module.load_frozen_bank(trainer, bank, path)
+
+    def __getattr__(self, name):
+        return getattr(self.module, name)
+
+
+class WriterBackend:
+    """The trainer backend, loading each frozen member with its own v4 writer bits.
+
+    A member whose sidecar records other writer bits than the run's (a v4.1
+    member in a v4.2 run, registry.WRITER_REVISIONS) keeps writing its own
+    rows: load_frozen_bank installs them for the bank (bopl_bank_ablate) before
+    the weights. A checkpoint without a sidecar runs the run's. Everything else
+    is the wrapped backend's.
+    """
+    def __init__(self, module, lib, run_ablate):
+        self.module, self.lib, self.run_ablate = module, lib, int(run_ablate or 0)
+
+    def load_frozen_bank(self, trainer, bank, path):
+        from league import registry
+        mask = registry.writer_ablate(path)
+        if self.lib.bopl_bank_ablate_install(bank, -1 if mask is None or mask == self.run_ablate else mask):
+            raise ValueError(f'bank {bank}: bad writer bits {mask} for {path}')
         return self.module.load_frozen_bank(trainer, bank, path)
 
     def __getattr__(self, name):

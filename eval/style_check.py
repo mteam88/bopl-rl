@@ -36,7 +36,7 @@ ENTITY_DT = np.dtype([(n, U4) for n in ('id', 'kind', 'layer', 'owner', 'flags',
 SLIME_DT = np.dtype([(n, U4) for n in ('id', 'owner', 'flags', 'state')] + [(n, I8) for n in ('x', 'y', 'vx', 'vy', 'rotation', 'scale')]
                     + [('abilities', U4, (3,)), ('ability_flags', U4, (3,)), ('cooldowns', I8, (3,)), ('timers', I8, (3,))])
 EVENT_DT = np.dtype([(n, U4) for n in ('kind', 'tick', 'subject', 'actor', 'entity', 'source_ability', 'cause', 'flags',
-                                        'related', 'related_actor', 'related_tick', 'reserved')]
+                                        'related', 'related_actor', 'related_tick', 'creator')]
                     + [(n, I8) for n in ('x', 'y', 'vx', 'vy', 'ax', 'ay', 'avx', 'avy')])
 Q_FIELDS = {'x', 'y', 'vx', 'vy', 'ax', 'ay', 'avx', 'avy', 'scale', 'invisible_time', 'ability_time', 'right_x', 'right_y',
             'up_x', 'up_y', 'radius', 'rotation', 'angular_velocity', 'inverse_mass', 'clock_rate', 'cooldowns', 'timers'}
@@ -104,7 +104,7 @@ def synthetic_events(game):
 def c_events(events):
     out = np.zeros(len(events), EVENT_DT)
     for name in EVENT_DT.names:
-        if name == 'reserved':
+        if name == 'creator':
             continue
         out[name] = q(events[name]) if name in Q_FIELDS else events[name]
     return out

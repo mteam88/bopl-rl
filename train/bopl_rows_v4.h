@@ -39,9 +39,42 @@
 #define BOPL4_ZERO(p, n) memset(__builtin_assume_aligned((p), 4), 0, (size_t)(n)*sizeof(float))
 #define BOPL4_COPY(d, s, n) memcpy(__builtin_assume_aligned((d), 4), __builtin_assume_aligned((s), 4), (size_t)(n)*sizeof(float))
 
-/* Writer ablations (bopl_obs_v4.h). */
-enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8 };
+/* Writer ablations (bopl_obs_v4.h). AIM and OBSFIX are layout revisions,
+ * not ablations: v4.1 the aim and line-of-sight rays, v4.2 the entity fixes
+ * below. Neither changes a width, so a net trained without one fine-tunes
+ * with it. */
+enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8,
+       BOPL4_ABLATE_OBSFIX=16 };
 #define BOPL4_SLIME_RADIUS 0.76   /* bopl_bots.h BOT_SLIME_RADIUS */
+#define BOPL4_LETHAL_LAYER 16     /* LethalTerrain */
+#define BOPL4_SMOKE_LAYER 22      /* Smoke: the Smoke ability's clouds (FlammableSmoke) */
+
+/* Layout v4.2 (BOPL4_ABLATE_OBSFIX), every field's width and meaning kept:
+ * - an entity with no owner reads its creator (flags bits 16-23, bopl_rl.h:
+ *   a guided missile's or smoke cloud's caster, a Platform-cast platform's)
+ *   as its owner, in
+ *   the row's own / ally / enemy bits and the rays' own-object class;
+ * - smoke ranks after every other entity for the rows (pickups still first)
+ *   and is no circle of the rays: nothing collides with it, and ~58 s clouds
+ *   crowded platforms, Spike boxes and projectiles out of both;
+ * - a box on the lethal layer (a Spike's spike) is a lethal wall of the rays,
+ *   where it was a 0.25 hostile circle at its centre.
+ * Training also ties the Missile / Spike kill credit to the bit
+ * (bopl_puffer.h bopl_credit_kills). Without it every function below returns
+ * what it did before. */
+BOPL4D_FN uint32_t bopl4_entity_owner(const BoplRlEntity *e, int ablation) {
+    if (e->owner || !(ablation&BOPL4_ABLATE_OBSFIX)) return e->owner;
+    return (e->flags>>BOPL_ENTITY_CREATOR_SHIFT)&BOPL_ENTITY_CREATOR_MASK;
+}
+/* The key bopl_nearest ranks an entity's surface distance by. */
+BOPL4D_FN double bopl4_rank_distance(const BoplRlEntity *e, double distance, int ablation) {
+    if (e->flags&BOPL_ENTITY_PICKUP) return distance-1.0e12;
+    if ((ablation&BOPL4_ABLATE_OBSFIX) && e->layer==BOPL4_SMOKE_LAYER) return distance+1.0e12;
+    return distance;
+}
+BOPL4D_FN int bopl4_lethal_box(const BoplRlEntity *e, int ablation) {
+    return (ablation&BOPL4_ABLATE_OBSFIX) && e->kind==1 && e->layer==BOPL4_LETHAL_LAYER;
+}
 
 /* fmax(-1, fmin(1, value)) without the libm calls (gcc will not inline them
  * for their NaN rules): the same result for every input, NaN included (1).
@@ -619,8 +652,9 @@ BOPL4D_FN void bopl4_entity_part(float *row, int part, const BoplRlState *state,
     if (part==0) {
         BOPL4_ZERO(row, 33);
         row[0]=1; if (entity->kind<5) row[1+entity->kind]=1;
-        row[6]=entity->owner==self->id; row[7]=bopl_ally(state, entity->owner, self);
-        row[8]=entity->owner!=0 && !row[6] && !row[7];
+        const uint32_t owner=bopl4_entity_owner(entity, ablation);
+        row[6]=owner==self->id; row[7]=bopl_ally(state, owner, self);
+        row[8]=owner!=0 && !row[6] && !row[7];
         row[9]=bopl_clip((ex-self_x)/64.0); row[10]=bopl_clip((ey-self_y)/64.0);
         row[11]=bopl_clip(BOPL4_DIVC(evx, BOPL4_VELOCITY_SCALE)); row[12]=bopl_clip(BOPL4_DIVC(evy, BOPL4_VELOCITY_SCALE));
         row[13]=bopl_clip(bopl_fix(entity->right_x)/64.0); row[14]=bopl_clip(bopl_fix(entity->right_y)/64.0);
@@ -720,12 +754,13 @@ enum { BOPL4_SCENE_NONE=0, BOPL4_SCENE_WATER=1, BOPL4_SCENE_AXIS=2, BOPL4_SCENE_
  * wall), the axes' unit vectors (bopl4_axis_length and a quotient per
  * component, kept when the length is over 1e-6), then bopl4_scene_wall. */
 enum { BOPL4_SCENE_WALL=4 };
-BOPL4D_FN int bopl4_scene_class(const BoplRlEntity *e, double *top) {
+BOPL4D_FN int bopl4_scene_class(const BoplRlEntity *e, double *top, int ablation) {
     if (!(e->flags&1) || (e->flags&4)) return BOPL4_SCENE_NONE;
     if (e->layer==BOPL4_WATER_LAYER) {
         *top=bopl_fix(e->y)+fabs(bopl_fix(e->up_y))+fabs(bopl_fix(e->right_y));
         return BOPL4_SCENE_WATER;
     }
+    if (bopl4_lethal_box(e, ablation)) return BOPL4_SCENE_WALL;
     if (e->kind!=2 || !(e->layer==11 || e->layer==16 || e->layer==21)) return BOPL4_SCENE_NONE;
     return BOPL4_SCENE_WALL;
 }
@@ -746,8 +781,8 @@ BOPL4D_FN int bopl4_scene_wall(const BoplRlEntity *e, double rx, double ry, doub
     *skew=fabs(rx*ux+ry*uy)>1e-9;
     return BOPL4_SCENE_ROT;
 }
-BOPL4D_FN int bopl4_scene_entity(const BoplRlEntity *e, float *w, double *top, int *lethal, int *skew) {
-    int kind=bopl4_scene_class(e, top);
+BOPL4D_FN int bopl4_scene_entity(const BoplRlEntity *e, float *w, double *top, int *lethal, int *skew, int ablation) {
+    int kind=bopl4_scene_class(e, top, ablation);
     if (kind!=BOPL4_SCENE_WALL) return kind;
     double rx=bopl_fix(e->right_x), ry=bopl_fix(e->right_y), ux=bopl_fix(e->up_x), uy=bopl_fix(e->up_y);
     double ex=bopl4_axis_length(rx, ry), ey=bopl4_axis_length(ux, uy);
@@ -769,11 +804,12 @@ BOPL4D_FN void bopl4_scene_rot(Bopl4Scene *s, int k, const float *w, int lethal,
 /* A circle of the scene: an observed entity with mass (not a rope or a
  * platform edge; class 2 own, 0 otherwise), or a visible enemy slime (class
  * 1). Returns 0 when it is none. */
-BOPL4D_FN int bopl4_entity_circle(const BoplRlEntity *e, const BoplRlPlayer *self, float *c, int32_t *cls) {
+BOPL4D_FN int bopl4_entity_circle(const BoplRlEntity *e, const BoplRlPlayer *self, float *c, int32_t *cls, int ablation) {
     if (e->inverse_mass<=0 || e->kind==3 || e->kind==4) return 0;
+    if ((ablation&BOPL4_ABLATE_OBSFIX) && (e->layer==BOPL4_SMOKE_LAYER || bopl4_lethal_box(e, ablation))) return 0;
     c[0]=(float)bopl_fix(e->x); c[1]=(float)bopl_fix(e->y); c[2]=(float)fmax(bopl_fix(e->radius), 0.25);
     c[3]=(float)bopl_fix(e->vx); c[4]=(float)bopl_fix(e->vy);
-    *cls=e->owner==self->id?2:0;
+    *cls=bopl4_entity_owner(e, ablation)==self->id?2:0;
     return 1;
 }
 BOPL4D_FN int bopl4_slime_circle(const BoplRlState *state, const BoplRlSlime *slime, const BoplRlPlayer *self, float *c, int32_t *cls) {
