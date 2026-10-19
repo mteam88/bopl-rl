@@ -1,0 +1,44 @@
+# Stage 2d "overfit one matchup" (native/rl/research/EXPLOITER-GAPS-2026-10.md Section 3) for train/research/arm.py
+# (the arm-harness rift's harness). The same three arms as x2d-drill.sh, which is the reference command: the l2
+# main that l2-me31-drill-grenade-2000m beat, fine-tuned 1B learner steps against only that exploiter, with the
+# exploiter's own LR/pool and the roles swapped. Only the main's kit differs between arms.
+#
+# The harness's panel endpoints (all_combos vs the held-out panel) serve as the general-play guard. The decision
+# itself is the kit-scheduled matchup eval, which all_combos can't deal: run `x2d-drill.sh eval <arm>` on the
+# constant stage's last checkpoint. The anneal stage isn't part of 2d. Ignore its endpoint, or skip it if the
+# harness accepts anneal_steps = 0.
+name = "x2d-drill"
+purpose = "screen"
+init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-125336092672.bin"   # l2-main-125336m, me31's target
+constant_steps = 1_000_000_000
+checkpoint_every = 250_000_000
+anneal_steps = 0
+ema_decay = 0
+games = 1000
+
+[flags]
+opponents = "l2-me31-drill-grenade-2000m"
+historical-every = 1
+bank-groups = "league,league,league,league"
+pool-size = 2
+pfsp-p = 1
+learning-rate = 0.0004852184640654399
+scripted-banks = false
+scripted-roster = false
+scripted-elo = false
+scripted-share-min = false
+scripted-share-max = false
+pinned-opponents = false
+
+[arm.mirror]
+seed = 5201
+flags = { "loadout-pool" = false, "loadout-learner-first" = true, "loadout-set" = "native/data/lineups-2d-drill-mirror.txt" }
+
+
+[arm.iid]
+seed = 5203
+flags = { "pinned-opponents" = "l2-me31-drill-grenade-2000m" }
+
+[arm.counter]
+seed = 5204
+flags = { "loadout-pool" = false, "loadout-learner-first" = true, "loadout-set" = "native/data/lineups-2d-drill-counter.txt" }

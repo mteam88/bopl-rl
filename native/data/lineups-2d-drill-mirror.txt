@@ -1,0 +1,5 @@
+# exploit-gaps 2026-10-18 (stage 2d): [main kit | drill exploiter kit], both on Dash/Drill/Grenade in either slot order.
+2,26,3,2,26,3
+2,26,3,26,3,2
+26,3,2,2,26,3
+26,3,2,26,3,2
