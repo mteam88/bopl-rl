@@ -7958,6 +7958,37 @@
    },
    "path": "native/artifacts/rl/sweeps/l2-anneal/run/checkpoints/policy-5333385216.bin",
    "metadata_sha256": "a11a51cafe74565584acf778764803ee47c0516c8aa5314e4679994f04f09019"
+  },
+  {
+   "id": "c433386b5988b6435c007ebcefdce8887efc0a8f886806f637de3b92fab48211",
+   "name": "l2-main-136002m",
+   "kind": "main",
+   "parent": "final5-18666m",
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/league-loops/l2/main",
+    "step": 136002994176
+   },
+   "sim": "a53b0345b698a7a4c9756225b567112240135e0f6a60e691e058d64181b5d071",
+   "reward": {
+    "tag": "binding-af87761e",
+    "binding_sha256": "af87761e446effd1585a77ce549e83f6024f428f3de3d52c5b0f3af810dc8810",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": null,
+   "added": {
+    "date": "2026-10-18",
+    "rule": "league loop l2: main snapshot every 2B learner (AlphaStar adds main players every 2e9 steps)"
+   },
+   "path": "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin",
+   "metadata_sha256": "44a8d8150108968c6a07659275e360d5f7a2a14190e3f77ae322163321fb44f3"
   }
  ],
  "conditions": {
@@ -8991,5 +9022,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "7e5ca5aa62b7eeb511fa758f74b21b552a7c7cc42596c04401f0ee5e77d832e8"
+ "league_sha256": "0aa15f0dd50d84f4166af87da5cc86d66d3387143f548d7967a669189f12bf4d"
 }
