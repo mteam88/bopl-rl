@@ -35,7 +35,7 @@ subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=
 # resets of the MinGRU state (rollout and training scan), training
 # sequences start from the real rollout-start state, learner-only replay
 # sampling, no reward clamp, per-head entropy / gradient-norm / advantage
-# statistics, the bopl branch of create_custom_encoder (BOPL_NATIVE_ENCODER
+# statistics, the --ema-decay weight average (ema_weights, save_ema), the bopl branch of create_custom_encoder (BOPL_NATIVE_ENCODER
 # = linear|set selects bopl_set_encoder.cu, found via the -I below), per-bank
 # rollout graph branches with per-stream cuBLAS handles, and the rollout env
 # pool in vecenv.h (persistent work-stealing workers and futex handshakes in

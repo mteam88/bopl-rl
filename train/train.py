@@ -211,7 +211,9 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
 # the self-play pool (entries, per-bank opponents, PFSP draws, sampling RNG), the
 # frozen banks' weights, the native step counter (pool snapshot names and
 # intervals), and the cumulative environment counters, which the C vector
-# restarts at zero and this process offsets, and the Muon momentum buffer.
+# restarts at zero and this process offsets, the Muon momentum buffer, and the
+# --ema-decay weight average (when the decay is unchanged; else it restarts at
+# the resumed weights).
 # Not restored: the recurrent state, which starts as at an episode boundary.
 RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'layers', 'horizon',
                  'learner_passes', 'learning_rate', 'anneal_lr', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
@@ -292,11 +294,11 @@ def offset_counters(counts, base):
     return out
 
 
-def pool_state_json(pool, ledger, *, counts, elapsed, global_step, update_index, checkpoint, momentum):
+def pool_state_json(pool, ledger, *, counts, elapsed, global_step, update_index, checkpoint, momentum, ema=None):
     return dict(schema=1, pool={k: v for k, v in pool.items() if k != 'rng'},
                 rng=pool['rng'].bit_generator.state, ledger=ledger, counts=counts, elapsed=elapsed,
                 global_step=int(global_step), update_index=update_index, checkpoint=str(checkpoint),
-                momentum=str(momentum))
+                momentum=str(momentum), **(dict(ema=str(ema)) if ema else {}))
 
 
 def load_pool_state(record):
@@ -369,6 +371,10 @@ def arguments():
                    help='0 keeps learning rate constant; 1 uses native cosine decay over the run budget')
     p.add_argument('--min-lr-ratio', type=float, default=0.,
                    help='Final/base learning-rate ratio when --anneal-lr 1')
+    p.add_argument('--ema-decay', type=float, default=0.,
+                   help='Polyak average of the weights, ema = d*ema + (1-d)*w after every optimizer step, saved as '
+                        'checkpoints/policy-<step>-ema.bin beside each checkpoint; 0 (default) = off. Half-life '
+                        'ln(2)/(1-d) optimizer steps (0.99997: 23k)')
     p.add_argument('--gae-lambda', type=float, default=None,
                    help='GAE lambda; default keeps the PufferLib config value (0.90)')
     p.add_argument('--gamma', type=float, default=None,
@@ -547,6 +553,8 @@ def arguments():
         p.error('Expected positive learning rate and 0 < entropy-floor <= entropy')
     if not math.isfinite(a.min_lr_ratio) or not 0 <= a.min_lr_ratio <= 1:
         p.error('min-lr-ratio must be finite and within 0..1')
+    if not 0 <= a.ema_decay < 1:
+        p.error('ema-decay must be within [0, 1)')
     try:
         head_scale = [float(part) for part in a.entropy_head_scale.split(',')]
     except ValueError:
@@ -783,6 +791,8 @@ def main():
                          learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
+    if a.ema_decay:
+        args['train'].update(ema_decay=a.ema_decay)
     if a.gae_lambda is not None:
         args['train'].update(gae_lambda=a.gae_lambda)
     if a.gamma is not None:
@@ -869,6 +879,7 @@ def main():
                               hold_lengths=layout.HOLD_LENGTHS),
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
                   gae_lambda=args['train']['gae_lambda'],
+                  **(dict(ema_decay=a.ema_decay) if a.ema_decay else {}),
                   selfplay=pool_config,
                   init_weights=checkpoint_identity(a.init_weights) if a.init_weights else None,
                   **(dict(kl_reference=checkpoint_identity(a.kl_reference), kl_coef=a.kl_coef) if a.kl_reference else {}),
@@ -1010,26 +1021,36 @@ def main():
                                  game_steps=step, learner_steps=counts['learner_steps'], config=config,
                                  aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, v4_shape=v4_shape)
                 saved[step] = path
+                if a.ema_decay:
+                    write_checkpoint(path.with_name(f'{path.stem}-ema.bin'), lambda name: _C.save_ema(trainer, name),
+                                     obs_size=obs_size, hidden=a.hidden, num_layers=a.layers, architecture=architecture,
+                                     game_steps=step, learner_steps=counts['learner_steps'],
+                                     config=dict(config, weights='ema'),
+                                     aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, v4_shape=v4_shape)
             if pool is not None:
                 # Everything --resume needs besides the weights, written with
                 # every checkpoint so the last one is always consistent. Only
                 # the newest Muon momentum is kept: resume is its one reader.
                 momentum = output/'pool'/f'momentum-{step:09d}.bin'
                 _C.save_momentum(trainer, str(momentum))
+                ema = output/'pool'/f'ema-{step:09d}.bin' if a.ema_decay else None
+                if ema:
+                    _C.save_ema(trainer, str(ema), state=True)
                 atomic_json(output/'pool/state.json', pool_state_json(
                     pool, ledger, counts=counts, elapsed=elapsed_before + time.monotonic() - training_started,
                     global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step],
-                    momentum=momentum))
-                for old in (output/'pool').glob('momentum-*.bin'):
-                    if old != momentum:
+                    momentum=momentum, ema=ema))
+                for old in [*(output/'pool').glob('momentum-*.bin'), *(output/'pool').glob('ema-*.bin')]:
+                    if old not in (momentum, ema):
                         old.unlink()
                 persist_roster()
             return saved[step]
         training_started = time.monotonic()
         if resume:
-            saved = {int(path.stem.split('-')[1]): path for path in sorted((output/'checkpoints').glob('policy-*.bin'))}
+            saved = {int(path.stem.split('-')[1]): path for path in sorted((output/'checkpoints').glob('policy-*.bin'))
+                     if not path.stem.endswith('-ema')}
             initial = saved[min(saved)]
-            _C.load_weights(trainer, resume['checkpoint'])
+            _C.load_weights(trainer, resume['checkpoint'])  # also restarts the EMA at these weights
             # Runs saved before momentum was persisted resume with it cold.
             momentum = resume.get('momentum')
             if momentum and Path(momentum).is_file():
@@ -1037,6 +1058,20 @@ def main():
             else:
                 print('--resume: no saved Muon momentum; the optimiser restarts cold', flush=True)
             config['resumed'][-1]['momentum'] = bool(momentum and Path(momentum).is_file())
+            if a.ema_decay:
+                ema = resume.get('ema')
+                kept = bool(ema and Path(ema).is_file() and previous_config.get('ema_decay') == a.ema_decay)
+                if kept:
+                    _C.load_ema_state(trainer, ema)
+                else:
+                    print(f'--resume: no saved EMA at decay {a.ema_decay}; it restarts at the resumed weights', flush=True)
+                config['resumed'][-1]['ema'] = kept
+            if previous_config.get('ema_decay', 0.) != a.ema_decay:
+                config['resumed'][-1]['changed'] = {**config['resumed'][-1].get('changed', {}),
+                                                    'ema_decay': [previous_config.get('ema_decay', 0.), a.ema_decay]}
+                config['ema_decay'] = a.ema_decay
+                config['native']['train'].pop('ema_decay', None)
+                config['native']['train'].update(**({'ema_decay': a.ema_decay} if a.ema_decay else {}))
             trainer.global_step = resume['global_step']
             pool, ledger = load_pool_state(resume)
             if len(pool['banks']) != policy_banks:

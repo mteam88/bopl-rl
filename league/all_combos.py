@@ -12,7 +12,9 @@ Deterministic in --seed-base: two runs with the same seed play the same kits and
 so successive checkpoints are measured on the same games.
 
 Prints A's score (wins + draws/2) with a seed-pair bootstrap interval, then A's score
-by ability (games where A's kit holds it), weakest first.
+by ability (games where A's kit holds it), weakest first. --games-out F also writes one
+row per game, so two runs on the same --seed-base and --pairs difference pair by pair
+(eval/paired.py F_X F_Y).
 """
 import argparse
 import json
@@ -53,6 +55,7 @@ def main(argv=None):
     p.add_argument('--seed-base', type=int, default=131001)
     p.add_argument('--label', help='name for the output row (default: the two paths)')
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--games-out', type=Path, help='write one JSON row per game here (overwritten)')
     p.add_argument('--search', help='play A through the decision-time search (eval/search_policy.py) with this '
                    'budget: k,n,depth[,h][,mix=M][,vs=V] (search_policy.parse_budget)')
     p.add_argument('--temperature-a', help='sample A\'s heads at this softmax temperature: one value or aim,buttons,hold '
@@ -72,6 +75,13 @@ def main(argv=None):
     todo = tasks(a.pairs, a.seed_base, map_catalogue.parse_map_ids(registry.MAPS))
     kit_of = {(t['seed'], t['side']): t['a_kit'] for t in todo}
     played = league_games.play(built, todo, a.workers, a.seed_base)
+    if a.games_out:
+        with open(a.games_out, 'w') as f:
+            for g in sorted(played, key=lambda g: (g['seed'], g['side'])):
+                f.write(json.dumps(dict(a=str(a.a), b=str(a.b), seed_base=a.seed_base, pair=g['seed'] - a.seed_base,
+                                        seed=g['seed'], map=g['map'], side=g['side'], kits=g['kits'], a_kit=g['a_kit'],
+                                        outcome=g['outcome'], draw_kind=g.get('draw_kind'), ticks=g['ticks'],
+                                        deaths=g['deaths'])) + '\n')
     search = None
     if a.search:
         built['A'].finish()

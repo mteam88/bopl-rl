@@ -18,6 +18,7 @@ import layout
 
 HEAD_BOUNDS=[sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS+1)]  # logits row offsets per head
 ELO_SCALE=400/math.log(10)
+DEATH_FIELDS=('deaths_environment','deaths_opponent','deaths_self','deaths_other')  # telemetry.EVENT_FIELDS
 
 
 def as_numpy(value):
@@ -362,6 +363,13 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
                 b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
                 result=dict(task,ticks=final['t'],
                             outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b'))
+                # Per participant [a, b]: deaths by cause (telemetry deaths_*) and the
+                # sim's cause_of_death code of the last one, None if it never died
+                # (eval/readout.py deaths reads the codes).
+                result['deaths']=[]
+                for seat in (task['side'],1-task['side']):
+                    counts={k[7:]:final['telemetry'][seat][k] for k in DEATH_FIELDS}
+                    result['deaths'].append(dict(counts,code=final['players'][seat]['cause_of_death'] if any(counts.values()) else None))
                 # A draw is either the episode limit or a trade; they mean opposite things
                 # about a policy, so say which without changing how a draw is scored.
                 if result['outcome']=='draw':
