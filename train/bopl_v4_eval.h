@@ -33,6 +33,10 @@ typedef struct {
     int batch, hidden, width;
     const float *w1[4], *w2[4], *embedding, *flat, *fusion, *ffn_in, *ffn_out, *actor, *critic_in, *critic_b1, *critic_b2, *critic_out;
     float *joined, *fused, *h1, *h2, *y, *ln, *f, *zin, *z, *b, *z2;   /* scratch */
+    /* bopl_v4_fast: column-major copies of the matrices above (NULL until then) and
+     * whether the critic runs (the value column is 0 when it does not). */
+    float *t_w1[4], *t_w2[4], *t_flat, *t_fusion, *t_ffn_in, *t_ffn_out, *t_actor, *t_critic_in, *t_critic_b1, *t_critic_b2;
+    int skip_value;
 } BoplV4Eval;
 
 static int bopl_v4_shape_valid(const BoplV4Shape *s) {
@@ -90,7 +94,10 @@ static void bopl_v4_read_decoder(BoplV4Eval *e, Weights *weights) {
 static void bopl_v4_free(BoplV4Eval *e) {
     if (!e) return;
     free(e->joined); free(e->fused); free(e->h1); free(e->h2); free(e->y); free(e->ln); free(e->f);
-    free(e->zin); free(e->z); free(e->b); free(e->z2); free(e);
+    free(e->zin); free(e->z); free(e->b); free(e->z2);
+    for (int i=0; i<4; i++) { free(e->t_w1[i]); free(e->t_w2[i]); }
+    free(e->t_flat); free(e->t_fusion); free(e->t_ffn_in); free(e->t_ffn_out); free(e->t_actor);
+    free(e->t_critic_in); free(e->t_critic_b1); free(e->t_critic_b2); free(e);
 }
 
 /* out[o] = sum_i W[o][i] x[i] (W row-major (rows, cols)), fixed order. */
@@ -100,6 +107,64 @@ static void bopl_v4_matvec(float *out, const float *W, const float *x, int rows,
         for (int i=0; i<cols; i++) sum+=w[i]*x[i];
         out[o]=sum;
     }
+}
+/* bopl_v4_matvec from WT = W transposed (cols, rows): every out[o] still adds its
+ * products in order i = 0..cols-1, so the result is bit-identical, but the rows run
+ * side by side (vectorised) instead of as one serial add chain each. A column whose
+ * x[i] is +-0 is skipped: with finite weights its products are +-0, and adding +-0
+ * leaves a sum that started at +0 unchanged (round-to-nearest never yields -0 there).
+ * Must not be compiled with -ffast-math or FMA contraction. */
+static inline void bopl_v4_matvec_t(float *restrict out, const float *restrict WT, const float *restrict x, int rows, int cols) {
+    for (int o=0; o<rows; o++) out[o]=0.0f;
+    for (int i=0; i<cols; i++) {
+        float xi=x[i];
+        if (xi==0.0f) continue;
+        const float *w=WT+(size_t)i*rows;
+        for (int o=0; o<rows; o++) out[o]+=w[o]*xi;
+    }
+}
+static inline float *bopl_v4_transpose(const float *W, int rows, int cols) {
+    float *t=malloc((size_t)rows*cols*sizeof(float));
+    if (t) for (int o=0; o<rows; o++) for (int i=0; i<cols; i++) t[(size_t)i*rows+o]=W[(size_t)o*cols+i];
+    return t;
+}
+#ifdef __FAST_MATH__
+/* -ffast-math builds (the research library's search) keep exactly the original loops. */
+#define bopl_v4_mv(out, W, WT, x, rows, cols) bopl_v4_matvec(out, W, x, rows, cols)
+#else
+static inline void bopl_v4_mv(float *out, const float *W, const float *WT, const float *x, int rows, int cols) {
+    if (WT) bopl_v4_matvec_t(out, WT, x, rows, cols); else bopl_v4_matvec(out, W, x, rows, cols);
+}
+#endif
+/* Switch to the transposed matrices; skip_value also drops the critic. 0 on success,
+ * -1 under -ffast-math (where the transposed sums would not be bit-identical). */
+static inline int bopl_v4_fast(BoplV4Eval *e, int skip_value) {
+#ifdef __FAST_MATH__
+    (void)e; (void)skip_value;
+    return -1;
+#endif
+    int H=e->hidden, F=e->shape.ffn_dim, C=e->shape.critic_dim, D=e->shape.set_dim, I=e->shape.set_inner;
+    int W=H+(e->shape.critic_privileged?BOPL4_PRIVILEGED:0);
+    e->skip_value=skip_value;
+    if (e->t_flat) return 0;
+    int ok=1;
+    for (int s=0; s<4; s++) {
+        ok&=(e->t_w1[s]=bopl_v4_transpose(e->w1[s], I, BOPL_V4_SETS[s].features))!=NULL;
+        ok&=(e->t_w2[s]=bopl_v4_transpose(e->w2[s], D, I))!=NULL;
+    }
+    ok&=(e->t_flat=bopl_v4_transpose(e->flat, e->shape.flat_dim, BOPL4_FLAT))!=NULL;
+    ok&=(e->t_fusion=bopl_v4_transpose(e->fusion, H, e->shape.flat_dim+8*D))!=NULL;
+    if (F) {
+        ok&=(e->t_ffn_in=bopl_v4_transpose(e->ffn_in, F, H))!=NULL;
+        ok&=(e->t_ffn_out=bopl_v4_transpose(e->ffn_out, H, F))!=NULL;
+    }
+    ok&=(e->t_actor=bopl_v4_transpose(e->actor, e->width+(C?0:1), H))!=NULL;
+    if (C) {
+        ok&=(e->t_critic_in=bopl_v4_transpose(e->critic_in, C, W))!=NULL;
+        ok&=(e->t_critic_b1=bopl_v4_transpose(e->critic_b1, C, C))!=NULL;
+        ok&=(e->t_critic_b2=bopl_v4_transpose(e->critic_b2, C, C))!=NULL;
+    }
+    return ok?0:-1;
 }
 static void bopl_v4_layer_norm(float *out, const float *x, int n) {
     float mean=0.0f;
@@ -123,13 +188,13 @@ static void bopl_v4_pool(BoplV4Eval *e, int set, const float *obs, float *out) {
     for (int r=0; r<s->rows; r++) {
         const float *row=obs+s->offset+(size_t)r*s->width;
         if (row[0]==0.0f) continue;
-        bopl_v4_matvec(e->h1, e->w1[set], row, I, s->features);
+        bopl_v4_mv(e->h1, e->w1[set], e->t_w1[set], row, I, s->features);
         if (s->id_column>=0) {
             const float *emb=e->embedding+(size_t)bopl_v4_embedding_id(row[s->id_column])*I;
             for (int i=0; i<I; i++) e->h1[i]+=emb[i];
         }
         for (int i=0; i<I; i++) e->h1[i]=fmaxf(0.0f, e->h1[i]);
-        bopl_v4_matvec(e->h2, e->w2[set], e->h1, D, I);
+        bopl_v4_mv(e->h2, e->w2[set], e->t_w2[set], e->h1, D, I);
         for (int c=0; c<D; c++) {
             float v=fmaxf(0.0f, e->h2[c]);
             if (v>out[c]) out[c]=v;
@@ -146,10 +211,10 @@ static float *bopl_v4_encode(BoplV4Eval *e, const float *observations) {
     for (int b=0; b<e->batch; b++) {
         const float *obs=observations+(size_t)b*BOPL4_OBS_SIZE;
         float *joined=e->joined+(size_t)b*joined_width;
-        bopl_v4_matvec(joined, e->flat, obs, FD, BOPL4_FLAT);
+        bopl_v4_mv(joined, e->flat, e->t_flat, obs, FD, BOPL4_FLAT);
         for (int c=0; c<FD; c++) joined[c]=fmaxf(0.0f, joined[c]);
         for (int s=0; s<4; s++) bopl_v4_pool(e, s, obs, joined+FD+2*D*s);
-        bopl_v4_matvec(e->ln+(size_t)b*H, e->fusion, joined, H, joined_width);
+        bopl_v4_mv(e->ln+(size_t)b*H, e->fusion, e->t_fusion, joined, H, joined_width);
         bopl_v4_layer_norm(e->fused+(size_t)b*H, e->ln+(size_t)b*H, H);
     }
     return e->fused;
@@ -163,22 +228,22 @@ static void bopl_v4_decode(BoplV4Eval *e, const float *h, const float *observati
         memcpy(y, hb, H*sizeof(float));
         if (F) {
             bopl_v4_layer_norm(e->ln, hb, H);
-            bopl_v4_matvec(e->f, e->ffn_in, e->ln, F, H);
+            bopl_v4_mv(e->f, e->ffn_in, e->t_ffn_in, e->ln, F, H);
             for (int i=0; i<F; i++) e->f[i]=fmaxf(0.0f, e->f[i]);
-            bopl_v4_matvec(e->ln, e->ffn_out, e->f, H, F);
+            bopl_v4_mv(e->ln, e->ffn_out, e->t_ffn_out, e->f, H, F);
             for (int i=0; i<H; i++) y[i]+=e->ln[i];
         }
-        bopl_v4_matvec(row, e->actor, y, e->width+(C?0:1), H);
+        bopl_v4_mv(row, e->actor, e->t_actor, y, e->width+(C?0:1), H);
         float value=C?0.0f:row[e->width];
-        if (C) {
+        if (C && !e->skip_value) {
             memcpy(e->zin, y, H*sizeof(float));
             if (P) memcpy(e->zin+H, observations+(size_t)b*BOPL4_OBS_SIZE+BOPL4_OBS_PRIVILEGED_OFFSET, P*sizeof(float));
             bopl_v4_layer_norm(e->ln, e->zin, W);
-            bopl_v4_matvec(e->z, e->critic_in, e->ln, C, W);
+            bopl_v4_mv(e->z, e->critic_in, e->t_critic_in, e->ln, C, W);
             bopl_v4_layer_norm(e->ln, e->z, C);
-            bopl_v4_matvec(e->b, e->critic_b1, e->ln, C, C);
+            bopl_v4_mv(e->b, e->critic_b1, e->t_critic_b1, e->ln, C, C);
             for (int i=0; i<C; i++) e->b[i]=fmaxf(0.0f, e->b[i]);
-            bopl_v4_matvec(e->z2, e->critic_b2, e->b, C, C);
+            bopl_v4_mv(e->z2, e->critic_b2, e->t_critic_b2, e->b, C, C);
             for (int i=0; i<C; i++) e->z2[i]+=e->z[i];
             bopl_v4_layer_norm(e->ln, e->z2, C);
             for (int i=0; i<C; i++) value+=e->critic_out[i]*e->ln[i];

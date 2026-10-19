@@ -25,6 +25,7 @@ typedef struct {
     BoplV4Eval *v4;                  /* policy v4: encoder + decoder (bopl_v4_eval.h); net holds only the MinGRU */
     size_t state_size;
     int aim_fourier, aim_ar, width;  /* width: decoder logit columns; the row is width + 1 */
+    float **mingru_t;                /* bopl_policy_eval_fast: per layer, the projection transposed (hidden, 3 hidden) */
 } BoplPolicyEval;
 
 void *bopl_policy_eval_create_aim(const float *data, size_t count, int batch, int observations,
@@ -120,6 +121,55 @@ int bopl_policy_eval_width(void *handle) { return handle ? ((BoplPolicyEval *)ha
 int bopl_policy_eval_aim_fourier(void *handle) { return handle ? ((BoplPolicyEval *)handle)->aim_fourier : -1; }
 int bopl_policy_eval_aim_ar(void *handle) { return handle ? ((BoplPolicyEval *)handle)->aim_ar : -1; }
 
+/* Upstream mingru() with each layer's projection from its transposed copy
+ * (bopl_v4_matvec_t: same sums, bit-identical) and the same gate arithmetic. */
+static void bopl_mingru_fast(MinGRU *layer, float **transposed, float *input) {
+    int B = layer->batch_size, H = layer->hidden_size;
+    float *x = input;
+    for (int l = 0; l < layer->num_layers; l++) {
+        float *state_l = layer->state + l * B * H;
+        float *combined = layer->proj[l]->output;
+        for (int b = 0; b < B; b++)
+            bopl_v4_matvec_t(combined + b * 3 * H, transposed[l], x + b * H, 3 * H, H);
+        for (int b = 0; b < B; b++) {
+            float *cb = combined + b * 3 * H, *sb = state_l + b * H, *xb = x + b * H, *ob = layer->output + b * H;
+            for (int h = 0; h < H; h++) {
+                float hidden = cb[h], gate = cb[H + h], hw = cb[2*H + h], s = sb[h];
+                float gate_s = _sigmoid(gate);
+                float h_tilde = (hidden >= 0.0f) ? hidden + 0.5f : _sigmoid(hidden);
+                float mingru_out = s + gate_s * (h_tilde - s);
+                float hw_s = _sigmoid(hw);
+                ob[h] = hw_s * mingru_out + (1.0f - hw_s) * xb[h];
+                sb[h] = mingru_out;
+            }
+        }
+        x = layer->output;
+    }
+}
+
+/* Evaluation fast path, bit-identical rows: transposed copies of the MinGRU and v4
+ * matrices (bopl_v4_matvec_t), and with skip_value the v4 critic is not run (the
+ * value column is 0). Never enabled by the in-game agent or the research library's
+ * search, which keep the original loops. 0 on success. */
+int bopl_policy_eval_fast(void *handle, int skip_value) {
+#ifdef __FAST_MATH__
+    (void)handle; (void)skip_value;
+    return -1;
+#endif
+    BoplPolicyEval *eval = handle;
+    MinGRU *m = eval->net->mingru;
+    if (!eval->mingru_t) {
+        float **t = calloc(m->num_layers, sizeof(float *));
+        if (!t) return -1;
+        for (int l = 0; l < m->num_layers; l++) {
+            t[l] = bopl_v4_transpose(m->proj[l]->weights, 3 * m->hidden_size, m->hidden_size);
+            if (!t[l]) { for (int k = 0; k < l; k++) free(t[k]); free(t); return -1; }
+        }
+        eval->mingru_t = t;
+    }
+    return eval->v4 ? bopl_v4_fast(eval->v4, skip_value) : 0;
+}
+
 /* rows: (batch, width + 1) raw decoder rows. */
 void bopl_policy_eval_step_raw(void *handle, float *observations, const float *state,
                                float *rows, float *next_state) {
@@ -129,7 +179,8 @@ void bopl_policy_eval_step_raw(void *handle, float *observations, const float *s
     float *encoded;
     if (eval->v4) {
         encoded = bopl_v4_encode(eval->v4, observations);
-        mingru(net->mingru, encoded);
+        if (eval->mingru_t) bopl_mingru_fast(net->mingru, eval->mingru_t, encoded);
+        else mingru(net->mingru, encoded);
         bopl_v4_decode(eval->v4, net->mingru->output, observations, rows);
         memcpy(next_state, net->mingru->state, eval->state_size * sizeof(float));
         return;
@@ -140,7 +191,8 @@ void bopl_policy_eval_step_raw(void *handle, float *observations, const float *s
         linear(net->encoder, observations);
         encoded = net->encoder->output;
     }
-    mingru(net->mingru, encoded);
+    if (eval->mingru_t) bopl_mingru_fast(net->mingru, eval->mingru_t, encoded);
+    else mingru(net->mingru, encoded);
     linear(net->decoder, net->mingru->output);
     memcpy(rows, net->decoder->output, (size_t)net->num_agents * (eval->width + 1) * sizeof(float));
     memcpy(next_state, net->mingru->state, eval->state_size * sizeof(float));
@@ -174,6 +226,10 @@ void bopl_policy_eval_step(void *handle, float *observations, const float *state
 void bopl_policy_eval_close(void *handle) {
     if (!handle) return;
     BoplPolicyEval *eval = handle;
+    if (eval->mingru_t) {
+        for (int l = 0; l < eval->net->mingru->num_layers; l++) free(eval->mingru_t[l]);
+        free(eval->mingru_t);
+    }
     if (eval->v4) {
         free_puffernet(eval->net);   /* encoder / decoder / obs are NULL here (free(NULL) is fine) */
         bopl_v4_free(eval->v4);

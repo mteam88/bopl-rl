@@ -48,6 +48,7 @@ def head_kl(p_row, q_row):
 
 class Shadowed(elo_ladder.Model):
     """SOURCE as a player, with the wide nets stepped beside it on its observations."""
+    needs_value = True
 
     def __init__(self, name, path, wides):
         super().__init__(name, path, 'candidate')

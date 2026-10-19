@@ -131,6 +131,8 @@ class Search(elo_ladder.Model):
     """A checkpoint played through the search. Timing is accumulated over games in
     self.totals (decisions, searched, rollouts, steps, forward rows, seconds); call
     finish() after the last game to harvest the open handles, then summary()."""
+    needs_value = True
+
     def __init__(self, name, path, kind, k=8, n=2, depth=8, halving=False, search_latched=True,
                  gamma=0.995, kill=TRAINING_KILL, timeout=-1.0, prior_mix=0.0, value_scale=1.0, step=None, library=None):
         super().__init__(name, path, kind, step=step, library=library)

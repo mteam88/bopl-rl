@@ -56,7 +56,8 @@ def build(output=LIBRARY):
     output.parent.mkdir(parents=True, exist_ok=True)
     include = ROOT / "native/artifacts/rl/dependencies" / f"PufferLib-{REVISION}" / "src"
     temporary = output.with_name(output.name + ".tmp")   # link then rename: a loaded copy keeps its inode
-    subprocess.run(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared",
+    # -ffp-contract=off: no FMA, so the vectorised fast path rounds as the plain loops do.
+    subprocess.run(["cc", "-O3", "-std=gnu11", "-march=native", "-ffp-contract=off", "-fPIC", "-shared",
                     "-I" + str(include), str(ROOT / "train/policy_eval.c"),
                     "-lm", "-o", str(temporary)], check=True)
     os.replace(temporary, output)
@@ -84,6 +85,14 @@ def _library(path):
     lib.bopl_policy_eval_game_logits.restype = None
     lib.bopl_policy_eval_close.argtypes = [ctypes.c_void_p]
     lib.bopl_policy_eval_close.restype = None
+    if not hasattr(lib, "bopl_policy_eval_fast"):
+        raise RuntimeError(f"{path} predates bopl_policy_eval_fast; run native_policy.build() (or train/build.py)")
+    lib.bopl_policy_eval_fast.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.bopl_policy_eval_fast.restype = ctypes.c_int
+    # Raw-address twins for Stepper: no per-call ndpointer conversion.
+    address = lambda name, *args: ctypes.CFUNCTYPE(None, *args)(ctypes.cast(getattr(lib, name), ctypes.c_void_p).value)
+    lib.step_raw_at = address("bopl_policy_eval_step_raw", *([ctypes.c_void_p] * 5))
+    lib.game_logits_at = address("bopl_policy_eval_game_logits", *([ctypes.c_void_p] * 4))
     return lib
 
 
@@ -151,8 +160,18 @@ class NativePolicy:
         self.weights.flags.writeable = False
         self.lib = _library(library)
         self.local = threading.local()
+        self.fast = None
 
     def eval(self):
+        return self
+
+    def use_fast_path(self, value=True):
+        """Evaluate from transposed weight copies (policy_eval.c bopl_policy_eval_fast):
+        bit-identical rows and state, a few times cheaper. value=False also skips the v4
+        critic, whose value column is then 0. Call before the first step."""
+        if hasattr(self.local, "contexts"):
+            raise RuntimeError("use_fast_path must precede the first step")
+        self.fast = int(not value)
         return self
 
     def initial(self, agents, device="cpu"):
@@ -167,6 +186,8 @@ class NativePolicy:
             self.local.contexts[batch] = _Context(self.lib, self.weights, batch, self.obs_size, self.hidden,
                                                 self.num_layers, int(self.architecture == layout.ARCHITECTURE),
                                                 self.aim_fourier, self.aim_ar, self.v4_shape)
+            if self.fast is not None and self.lib.bopl_policy_eval_fast(self.local.contexts[batch].handle, self.fast):
+                raise MemoryError("Could not allocate the native policy fast path")
         return self.local.contexts[batch]
 
     def step_raw(self, observations, state):
@@ -210,6 +231,44 @@ class NativePolicy:
         rows, next_state = self.step_raw(observations, state)
         logits, values = self.game_logits(rows)
         return logits, values, next_state
+
+
+class Stepper:
+    """One recurrent player of `policy` in the calling thread, stepped on numpy rows
+    without torch: step_raw then game_logits with the same checks, through fixed
+    buffers whose addresses go straight to C. Returned arrays are views of those
+    buffers, valid until this stepper's next call."""
+    def __init__(self, policy, batch=1):
+        self.lib = policy.lib
+        self.handle = policy._context(batch).handle
+        self.obs = np.zeros((batch, policy.obs_size), dtype=np.float32)
+        self.state = np.zeros((policy.num_layers, batch, policy.hidden), dtype=np.float32)
+        self.rows = np.empty((batch, policy.width + 1), dtype=np.float32)
+        self.combos = np.zeros(batch, dtype=np.int32)
+        self.out = np.empty((batch, layout.DECODER), dtype=np.float32)
+        self.logits = self.out[:, :layout.LOGITS]
+        self._at = [a.ctypes.data for a in (self.obs, self.state, self.rows, self.combos, self.out)]
+
+    def step(self, observations):
+        """observations (batch, obs_size) -> the raw decoder rows; the state advances."""
+        np.copyto(self.obs, observations)
+        if not np.isfinite(self.obs).all():
+            raise ValueError("Nonfinite observation or recurrent state")
+        obs, state, rows, _, _ = self._at
+        # step_raw copies the state in before it writes the next one, so one buffer serves both.
+        self.lib.step_raw_at(self.handle, obs, state, rows, state)
+        if not np.isfinite(self.rows).all() or not np.isfinite(self.state).all():
+            raise FloatingPointError("Native checkpoint produced nonfinite policy output")
+        return self.rows
+
+    def game_logits(self, combo=0):
+        """The layout.LOGITS game logits of the last step's rows for button combo `combo` (aim_ar only)."""
+        self.combos[:] = combo
+        _, _, rows, combos, out = self._at
+        self.lib.game_logits_at(self.handle, rows, combos, out)
+        if not np.isfinite(self.out).all():
+            raise FloatingPointError("Native checkpoint produced nonfinite policy output")
+        return self.logits
 
 
 def masked(logits, mask):

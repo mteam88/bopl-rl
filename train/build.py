@@ -138,7 +138,8 @@ link(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(ABI), str(HERE / "
 # policy_eval.c is the CPU forward pass evaluate.py / the pool rater load through
 # native_policy.py; it shares the head layout with the trainer, so rebuild it in
 # lockstep (overnight-7 lost 4 trials to a stale copy missing _create_aim).
-link(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared", "-I" + str(source / "src"),
+# -ffp-contract=off: no FMA, so the vectorised fast path rounds as the plain loops do.
+link(["cc", "-O3", "-std=gnu11", "-march=native", "-ffp-contract=off", "-fPIC", "-shared", "-I" + str(source / "src"),
       str(HERE / "policy_eval.c"), "-lm"], out / "libbopl_policy_eval.so")
 shutil.copyfile(HERE / "bopl.ini", source / "config/bopl.ini")
 print(target)

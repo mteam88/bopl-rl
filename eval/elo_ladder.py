@@ -25,12 +25,29 @@ def as_numpy(value):
     return value.detach().cpu().numpy() if hasattr(value,'detach') else np.asarray(value)
 
 
+def sample_head(rng,row,index,temperature):
+    """rng.choice(len(part), p=softmax(part / temperature)) for one head of a masked logits row,
+    drawing the same index from the same rng state (numpy Generator.choice: float64 cdf of p,
+    normalised by its last entry, searched right of one rng.random()) without choice's
+    per-call validation."""
+    part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]/temperature[index]
+    weights=np.exp(part-part.max()); weights/=weights.sum()
+    cdf=weights.astype(np.float64).cumsum(); cdf/=cdf[-1]
+    return int(cdf.searchsorted(rng.random(),side='right'))
+
+
 class Model:
-    """A native checkpoint participant (eval/native_policy.py contract)."""
+    """A native checkpoint participant (eval/native_policy.py contract). Only this seat's
+    row is evaluated (batch 1: rows are independent, so its logits and state are
+    bit-identical to a batch holding both seats), through the evaluator's fast path;
+    the critic is skipped unless a subclass sets needs_value."""
+    needs_value=False
+
     def __init__(self,name,path,kind,step=None,library=None):
         from native_policy import load
         self.name=name; self.kind=kind; self.step=step; self.path=Path(path)
         self.policy,self.meta=load(self.path,**(dict(library=library) if library else {}))
+        self.policy.use_fast_path(value=self.needs_value)
         self.sha256=hashlib.sha256(self.path.read_bytes()).hexdigest()
         self.layout=layout.layout_of(self.meta.get('architecture'))
         from native_policy import writer_ablation
@@ -43,34 +60,21 @@ class Model:
         env.set_layout(side,self.layout,ablate=self.ablate)
 
     def start(self,task,side,rng):
-        import torch
-        state=self.policy.initial(2,'cpu')
-        policy=self.policy
+        from native_policy import Stepper
+        policy=self.policy; stepper=Stepper(policy)
         temperature=getattr(self,'temperature',None) or (1.0,1.0,1.0)
-        def head(row,index):
-            part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]/temperature[index]
-            weights=np.exp(part-part.max()); weights/=weights.sum()
-            return rng.choice(len(part),p=weights)
         def act(observation,mask):
-            nonlocal state
             # observation: both rows at the padded stride; only this side's row is in this
-            # checkpoint's layout (the other row is zero here, its state is never read).
-            batch=np.zeros((2,policy.obs_size),dtype=np.float32)
-            batch[side]=observation[side,:policy.obs_size]
-            with torch.no_grad():
-                batch=torch.from_numpy(batch)
-                rows,state=policy.step_raw(batch,state)
-                logits,_=policy.game_logits(rows)
+            # checkpoint's layout.
+            stepper.step(observation[side:side+1,:policy.obs_size])
             # Sample as the trainer does: the environment's action mask (1 = allowed) zeroes latched choices;
             # an autoregressive aim head is materialised for the sampled button combo before aim is drawn.
             allowed=np.asarray(mask[side])!=0
-            row=np.where(allowed,as_numpy(logits)[side],-np.inf)
-            action=[0,head(row,1),0]
+            row=np.where(allowed,stepper.game_logits()[0],-np.inf)
+            action=[0,sample_head(rng,row,1,temperature),0]
             if policy.aim_ar:
-                combos=np.zeros(rows.shape[0],dtype=np.int32); combos[side]=action[1]
-                with torch.no_grad(): logits,_=policy.game_logits(rows,combos)
-                row=np.where(allowed,as_numpy(logits)[side],-np.inf)
-            action[0]=head(row,0); action[2]=head(row,2)
+                row=np.where(allowed,stepper.game_logits(action[1])[0],-np.inf)
+            action[0]=sample_head(rng,row,0,temperature); action[2]=sample_head(rng,row,2,temperature)
             return np.asarray(action,dtype=np.int64)
         return act
 
@@ -103,30 +107,21 @@ class Ensemble:
         env.set_layout(side,self.layout,ablate=self.ablate)
 
     def start(self,task,side,rng):
-        import time,torch
-        policies=[m.policy for m in self.members]
-        # Only this seat's row is evaluated: rows are independent, and batch 1 gives bit-identical
-        # logits and state to Model's batch 2 at ~60% of its cost per member.
-        states=[p.initial(1,'cpu') for p in policies]
+        import time
+        from native_policy import Stepper
+        steppers=[Stepper(m.policy) for m in self.members]
+        width=self.members[0].policy.obs_size; aim_ar=self.members[0].policy.aim_ar
         temperature=getattr(self,'temperature',None) or (1.0,1.0,1.0)
-        def head(row,index):
-            part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]/temperature[index]
-            weights=np.exp(part-part.max()); weights/=weights.sum()
-            return rng.choice(len(part),p=weights)
         def act(observation,mask):
             t0=time.perf_counter()
-            batch=torch.from_numpy(np.ascontiguousarray(observation[side:side+1,:policies[0].obs_size],dtype=np.float32))
             allowed=np.asarray(mask[side])!=0
-            rows=[]
-            with torch.no_grad():
-                for i,p in enumerate(policies):
-                    r,states[i]=p.step_raw(batch,states[i]); rows.append(r)
-                pooled=lambda combos=None: np.mean([as_numpy(p.game_logits(r,combos)[0])[0] for p,r in zip(policies,rows)],axis=0)
-                row=np.where(allowed,pooled(),-np.inf)
-                action=[0,head(row,1),0]
-                if policies[0].aim_ar:
-                    row=np.where(allowed,pooled(np.asarray([action[1]],dtype=np.int32)),-np.inf)
-            action[0]=head(row,0); action[2]=head(row,2)
+            for s in steppers: s.step(observation[side:side+1,:width])
+            pooled=lambda combo=0: np.mean([s.game_logits(combo)[0] for s in steppers],axis=0)
+            row=np.where(allowed,pooled(),-np.inf)
+            action=[0,sample_head(rng,row,1,temperature),0]
+            if aim_ar:
+                row=np.where(allowed,pooled(action[1]),-np.inf)
+            action[0]=sample_head(rng,row,0,temperature); action[2]=sample_head(rng,row,2,temperature)
             with self.lock:
                 self.seconds+=time.perf_counter()-t0; self.decisions+=1
             return np.asarray(action,dtype=np.int64)
