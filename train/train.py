@@ -229,7 +229,8 @@ DEFAULT_FIXES = dict(prio_beta_fix=0, prio_beta_const=None, anneal_lr_fix=0, v4_
 # the self-play pool (entries, per-bank opponents, PFSP draws, sampling RNG), the
 # frozen banks' weights, the native step counter (pool snapshot names and
 # intervals), and the cumulative environment counters, which the C vector
-# restarts at zero and this process offsets, the Muon momentum buffer, and the
+# restarts at zero and this process offsets, the optimizer state (Muon momentum,
+# or Adam's moments and step count), and the
 # --ema-decay weight average (when the decay is unchanged; else it restarts at
 # the resumed weights).
 # Not restored: the recurrent state, which starts as at an episode boundary,
@@ -243,10 +244,12 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts',
-                 'historical_every', 'team_every', 'style_sha256')
+                 'historical_every', 'team_every', 'style_sha256', 'optimizer', 'weight_decay', 'adam_lr')
 # The entropy schedule is a pure function of these and the learner step,
 # recomputed every update, so a resume may change it; the change is recorded.
 RESUME_SCHEDULE = ('entropy', 'entropy_floor', 'entropy_half_life')
+# --optimizer muon-adamw: the v4 tensors AdamW updates (embedding and output heads).
+ADAMW_TENSORS = ('embedding', 'actor', 'critic_out')
 # Policy v4 (train/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
@@ -297,7 +300,8 @@ def recorded_hypers(config):
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0),
                 v4_shape=config.get('v4_shape'), loadouts=config.get('loadouts',resolve_loadouts()),
                 historical_every=env.get('historical_every', 2), team_every=env.get('team_every', 0),
-                style_sha256=(config.get('style') or {}).get('sha256'))
+                style_sha256=(config.get('style') or {}).get('sha256'), optimizer=config.get('optimizer', 'muon'),
+                weight_decay=config.get('weight_decay', 0.), adam_lr=config.get('adam_lr'))
 
 
 def offset_counters(counts, base):
@@ -396,6 +400,17 @@ def arguments():
                    help='Split each learner batch into this many minibatches (optimizer steps); must divide the learner rows. '
                         'Throughput knob: smaller minibatches give the 16-SM training partition less work per GEMM but more launches; default 1')
     p.add_argument('--learning-rate', type=float, default=.0003)
+    p.add_argument('--optimizer', choices=('muon', 'adam', 'muon-adamw'), default='muon',
+                   help='muon (default); adam: torch-style AdamW on every parameter with the config beta1/beta2/eps '
+                        '(0.95/0.999/1e-12) and the same gradient clip; muon-adamw: Muon, but AdamW at --adam-lr on '
+                        f'the v4 {"/".join(ADAMW_TENSORS)} tensors and any 1-D one. AdamW state resumes with --resume')
+    p.add_argument('--weight-decay', type=float, default=0.,
+                   help='Decoupled weight decay for either optimizer, w *= 1 - lr*wd every optimizer step '
+                        '(Moonlight/AdamW style, follows the LR schedule; under muon-adamw every tensor decays at the '
+                        'Muon LR); 0 (default) = off')
+    p.add_argument('--adam-lr', type=float, default=None,
+                   help='muon-adamw: peak learning rate of the AdamW tensors (scaled with the LR schedule); '
+                        'default --learning-rate')
     p.add_argument('--anneal-lr', type=int, choices=(0, 1), default=0,
                    help='0 keeps learning rate constant; 1 uses native cosine decay over the run budget')
     p.add_argument('--min-lr-ratio', type=float, default=0.,
@@ -610,6 +625,16 @@ def arguments():
     caps = a.v4_full_rows.split(',')
     if not (a.v4_full_rows in ('0', '1') or (len(caps) == 4 and all(c.isdigit() and int(c) > 0 for c in caps))):
         p.error('v4-full-rows must be 0, 1 or four positive row caps P,S,E,L')
+    if not (math.isfinite(a.weight_decay) and a.weight_decay >= 0):
+        p.error('weight-decay must be finite and >= 0')
+    if a.optimizer == 'muon-adamw':
+        if a.encoder != 'v4':
+            p.error('--optimizer muon-adamw names v4 tensors; it needs --encoder v4')
+        a.adam_lr = a.adam_lr or a.learning_rate
+        if not a.adam_lr > 0:
+            p.error('adam-lr must be positive')
+    elif a.adam_lr is not None:
+        p.error('--adam-lr only applies to --optimizer muon-adamw')
     try:
         head_scale = [float(part) for part in a.entropy_head_scale.split(',')]
     except ValueError:
@@ -849,6 +874,15 @@ def main():
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
     if a.ema_decay:
         args['train'].update(ema_decay=a.ema_decay)
+    if a.optimizer == 'adam':
+        args['train'].update(adam=1)
+    if a.optimizer == 'muon-adamw':
+        names = [name for name, _ in layout.policy_v4_tensors(a.hidden, a.layers, aim_fourier=a.aim_fourier,
+                                                              aim_ar=a.aim_ar, **a.v4_shape)]
+        args['train'].update(adam=2, adam_regs=sum(1 << i for i, name in enumerate(names) if name in ADAMW_TENSORS),
+                             adam_lr_scale=a.adam_lr/a.learning_rate)
+    if a.weight_decay:
+        args['train'].update(weight_decay=a.weight_decay)
     if a.gae_lambda is not None:
         args['train'].update(gae_lambda=a.gae_lambda)
     if a.gamma is not None:
@@ -940,6 +974,9 @@ def main():
                   gae_lambda=args['train']['gae_lambda'],
                   **(dict(ema_decay=a.ema_decay) if a.ema_decay else {}),
                   fixes=schedule_fixes(a),
+                  **(dict(optimizer=a.optimizer) if a.optimizer != 'muon' else {}),
+                  **(dict(adam_lr=a.adam_lr) if a.optimizer == 'muon-adamw' else {}),
+                  **(dict(weight_decay=a.weight_decay) if a.weight_decay else {}),
                   selfplay=pool_config,
                   init_weights=checkpoint_identity(a.init_weights) if a.init_weights else None,
                   **(dict(kl_reference=checkpoint_identity(a.kl_reference), kl_coef=a.kl_coef) if a.kl_reference else {}),
