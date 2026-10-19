@@ -1,0 +1,234 @@
+
+== human-vs-bot (n 380, Dash/Bow/Platform 288)
+  KH_PRE          1.496 [1.097,1.867] n 380
+  ckpm            1.490 [1.088,1.838] n 380
+  ckpm_b          0.718 [0.485,1.170] n 380
+  score           0.713 [0.541,0.825] n 380
+  len_s          10.525 [10.166,13.286] n 380
+  sd              0.005 [0.000,0.019] n 380
+  win_credited    0.400 [0.314,0.467] n 380
+  free_win        0.253 [0.149,0.298] n 380
+  free_loss       0.076 [0.032,0.138] n 380
+  apm           213.947 [200.998,227.254] n 380
+  apm_b         703.157 [390.573,906.925] n 380
+  idle            0.000 [0.000,0.000] n 30
+  engage_s        4.308 [4.067,4.733] n 380
+  close_frac      0.175 [0.147,0.220] n 380
+  presses_pm     16.026 [13.778,18.348] n 380
+  mean_dist      27.215 [25.335,28.624] n 380
+  first_hit_s     8.892 [8.183,10.733] n 380
+  win          0.713
+  le120        0.995
+  loser_how    {'credited': 0.566, 'env-unforced': 0.329, 'env-near': 0.063, 'self': 0.042}
+  loser_cause  {'projectile': 0.447, 'squished': 0.287, 'ring-out': 0.105, 'explosion': 0.061, 'contact': 0.055, 'self': 0.042, 'beam': 0.003}
+  a_death_how  {'credited': 0.578, 'env-unforced': 0.266, 'self': 0.092, 'env-near': 0.064}
+  press_mix    {'Bow': 0.624, 'Platform': 0.336, 'Dash': 0.04}
+  dbp_per_min  {'Bow': 8.58, 'Platform': 2.57, 'Dash': 2.93, 'arrows_fired': 8.4, 'arrow_kills': 1.4}
+
+== human-vs-g111 (n 21, Dash/Bow/Platform 1)
+  KH_PRE          0.999 [0.999,0.999] n 21
+  ckpm            0.999 [0.999,0.999] n 21
+  ckpm_b          1.831 [1.831,1.831] n 21
+  score           0.286 [0.286,0.286] n 21
+  len_s          25.933 [25.933,25.933] n 21
+  sd              0.000 [0.000,0.000] n 21
+  win_credited    0.190 [0.190,0.190] n 21
+  free_win        0.048 [0.048,0.048] n 21
+  free_loss       0.190 [0.190,0.190] n 21
+  apm           213.768 [213.768,213.768] n 21
+  apm_b         528.078 [528.078,528.078] n 21
+  idle            0.000 [0.000,0.000] n 6
+  engage_s        4.133 [4.133,4.133] n 21
+  close_frac      0.244 [0.244,0.244] n 21
+  presses_pm     18.812 [18.812,18.812] n 21
+  mean_dist      24.861 [24.861,24.861] n 21
+  first_hit_s    12.533 [12.533,12.533] n 21
+  win          0.286
+  le120        1.0
+  loser_how    {'credited': 0.571, 'env-unforced': 0.238, 'env-near': 0.095, 'self': 0.095}
+  loser_cause  {'contact': 0.333, 'explosion': 0.238, 'ring-out': 0.19, 'squished': 0.143, 'self': 0.095}
+  a_death_how  {'credited': 0.533, 'env-unforced': 0.267, 'env-near': 0.133, 'self': 0.067}
+  press_mix    {'Bow': 0.791, 'Platform': 0.19, 'Dash': 0.019}
+  dbp_per_min  {'Bow': 8.2, 'Platform': 2.34, 'Dash': 1.17, 'arrows_fired': 8.2, 'arrow_kills': 1.17}
+
+== human-vs-human (n 284, Dash/Bow/Platform 124)
+  KH_PRE          1.134 [0.829,1.522] n 284
+  ckpm            1.058 [0.811,1.374] n 284
+  ckpm_b          1.058 [0.812,1.347] n 284
+  score           0.500 [0.500,0.500] n 284
+  len_s          27.258 [11.933,33.333] n 284
+  sd              0.000 [0.000,0.000] n 284
+  win_credited    0.236 [0.164,0.281] n 284
+  free_win        0.095 [0.053,0.130] n 284
+  free_loss       0.095 [0.051,0.129] n 284
+  apm           193.034 [153.815,240.082] n 284
+  apm_b         193.034 [154.540,240.074] n 284
+  idle            0.000 [0.000,0.000] n 46
+  engage_s        5.267 [3.600,5.867] n 284
+  close_frac      0.162 [0.135,0.174] n 284
+  presses_pm     21.358 [16.283,32.719] n 284
+  mean_dist      24.855 [21.281,27.000] n 284
+  first_hit_s    12.133 [5.667,15.950] n 284
+  win          0.5
+  le120        1.0
+  loser_how    {'credited': 0.604, 'env-unforced': 0.243, 'self': 0.099, 'env-near': 0.054}
+  loser_cause  {'projectile': 0.261, 'explosion': 0.225, 'ring-out': 0.171, 'contact': 0.135, 'squished': 0.126, 'self': 0.081}
+  a_death_how  {'credited': 0.604, 'env-unforced': 0.243, 'self': 0.099, 'env-near': 0.054}
+  press_mix    {'Bow': 0.558, 'Platform': 0.336, 'Dash': 0.107}
+  dbp_per_min  {'Bow': 9.31, 'Platform': 2.1, 'Dash': 3.4, 'arrows_fired': 9.19, 'arrow_kills': 0.77}
+
+== bot<-human:Sept nets (09-11..14) (n 254, Dash/Bow/Platform 254)
+  KH_PRE          0.464 [0.308,0.585] n 254
+  ckpm            0.464 [0.293,0.582] n 254
+  ckpm_b          1.515 [1.210,2.132] n 254
+  score           0.228 [0.116,0.370] n 254
+  len_s          10.417 [10.183,11.267] n 254
+  sd              0.000 [0.000,0.000] n 254
+  win_credited    0.118 [0.077,0.152] n 254
+  free_win        0.075 [0.022,0.137] n 254
+  free_loss       0.323 [0.254,0.379] n 254
+  apm           962.816 [809.375,1141.148] n 254
+  apm_b         219.280 [203.776,235.767] n 254
+  idle            0.000 [0.000,0.000] n 14
+  engage_s        4.442 [4.067,6.800] n 254
+  close_frac      0.164 [0.134,0.275] n 254
+  presses_pm     88.397 [78.083,99.081] n 254
+  mean_dist      27.128 [24.513,27.890] n 254
+  first_hit_s     9.500 [8.933,10.950] n 254
+  win          0.228
+  le120        1.0
+  loser_how    {'credited': 0.5, 'env-unforced': 0.398, 'env-near': 0.063, 'self': 0.039}
+  loser_cause  {'projectile': 0.409, 'squished': 0.346, 'ring-out': 0.114, 'explosion': 0.055, 'self': 0.039, 'contact': 0.031, 'beam': 0.004}
+  a_death_how  {'credited': 0.495, 'env-unforced': 0.418, 'env-near': 0.066, 'self': 0.02}
+  press_mix    {'Platform': 0.511, 'Bow': 0.266, 'Dash': 0.223}
+  dbp_per_min  {'Dash': 4.38, 'Bow': 10.9, 'Platform': 4.95, 'arrows_fired': 10.51, 'arrow_kills': 0.46}
+
+== bot<-human:scripted (n 69, Dash/Bow/Platform 69)
+  KH_PRE          0.974 [0.572,1.318] n 69
+  ckpm            1.030 [0.709,1.317] n 69
+  ckpm_b          2.364 [1.152,5.051] n 69
+  score           0.261 [0.167,0.444] n 69
+  len_s           8.900 [6.925,14.525] n 69
+  sd              0.014 [0.000,0.037] n 69
+  win_credited    0.232 [0.148,0.444] n 69
+  free_win        0.014 [0.000,0.037] n 69
+  free_loss       0.130 [0.045,0.222] n 69
+  apm           146.905 [118.041,177.353] n 69
+  apm_b         178.202 [147.519,201.793] n 69
+  idle            0.000 [0.000,0.000] n 3
+  engage_s        4.133 [3.400,5.308] n 69
+  close_frac      0.178 [0.075,0.226] n 69
+  presses_pm     22.184 [19.272,24.959] n 69
+  mean_dist      29.595 [26.954,35.632] n 69
+  first_hit_s     7.683 [6.742,10.050] n 69
+  win          0.261
+  le120        0.986
+  loser_how    {'credited': 0.783, 'env-unforced': 0.145, 'env-near': 0.058, 'self': 0.014}
+  loser_cause  {'projectile': 0.783, 'squished': 0.174, 'ring-out': 0.029, 'self': 0.014}
+  a_death_how  {'credited': 0.745, 'env-unforced': 0.176, 'env-near': 0.059, 'self': 0.02}
+  press_mix    {'Bow': 0.927, 'Dash': 0.047, 'Platform': 0.026}
+  dbp_per_min  {'Dash': 6.97, 'Bow': 11.46, 'Platform': 3.76, 'arrows_fired': 10.67, 'arrow_kills': 1.09}
+
+== bot<-human:v4-full (2026-09-17) (n 36, Dash/Bow/Platform 36)
+  KH_PRE          0.526 [0.202,1.128] n 36
+  ckpm            0.580 [0.294,1.127] n 36
+  ckpm_b          0.838 [0.376,1.079] n 36
+  score           0.500 [0.480,0.545] n 36
+  len_s          12.417 [12.017,12.950] n 36
+  sd              0.028 [0.000,0.040] n 36
+  win_credited    0.250 [0.120,0.545] n 36
+  free_win        0.139 [0.000,0.200] n 36
+  free_loss       0.111 [0.080,0.182] n 36
+  apm           347.847 [164.658,443.508] n 36
+  apm_b         229.862 [224.835,232.487] n 36
+  idle            0.000 [0.000,0.000] n 7
+  engage_s        4.200 [3.200,4.367] n 36
+  close_frac      0.213 [0.172,0.306] n 36
+  presses_pm     64.454 [49.225,72.406] n 36
+  mean_dist      24.641 [18.336,27.415] n 36
+  first_hit_s     8.808 [7.867,9.483] n 36
+  win          0.5
+  le120        0.972
+  loser_how    {'credited': 0.611, 'env-unforced': 0.25, 'self': 0.083, 'env-near': 0.056}
+  loser_cause  {'projectile': 0.333, 'squished': 0.167, 'contact': 0.167, 'ring-out': 0.139, 'explosion': 0.111, 'self': 0.083}
+  a_death_how  {'credited': 0.722, 'env-unforced': 0.222, 'env-near': 0.056}
+  press_mix    {'Dash': 0.552, 'Platform': 0.224, 'Bow': 0.224}
+  dbp_per_min  {'Dash': 4.96, 'Bow': 7.22, 'Platform': 0.26, 'arrows_fired': 7.22, 'arrow_kills': 0.58}
+
+== bot<-human:g111-20b (2026-10-10) (n 21, Dash/Bow/Platform 0)
+  KH_PRE          1.832 [1.832,1.832] n 21
+  ckpm            1.831 [1.831,1.831] n 21
+  ckpm_b          0.999 [0.999,0.999] n 21
+  score           0.714 [0.714,0.714] n 21
+  len_s          25.933 [25.933,25.933] n 21
+  sd              0.000 [0.000,0.000] n 21
+  win_credited    0.381 [0.381,0.381] n 21
+  free_win        0.190 [0.190,0.190] n 21
+  free_loss       0.048 [0.048,0.048] n 21
+  apm           528.078 [528.078,528.078] n 21
+  apm_b         213.768 [213.768,213.768] n 21
+  idle            0.000 [0.000,0.000] n 6
+  engage_s        4.133 [4.133,4.133] n 21
+  close_frac      0.244 [0.244,0.244] n 21
+  presses_pm     87.565 [87.565,87.565] n 21
+  mean_dist      24.861 [24.861,24.861] n 21
+  first_hit_s     9.000 [9.000,9.000] n 21
+  win          0.714
+  le120        1.0
+  loser_how    {'credited': 0.571, 'env-unforced': 0.238, 'env-near': 0.095, 'self': 0.095}
+  loser_cause  {'contact': 0.333, 'explosion': 0.238, 'ring-out': 0.19, 'squished': 0.143, 'self': 0.095}
+  a_death_how  {'credited': 0.667, 'self': 0.167, 'env-unforced': 0.167}
+  press_mix    {}
+  dbp_per_min  None
+
+== s301-vs-f5-any (n 300, Dash/Bow/Platform 0)
+  KH_PRE          0.096 [0.062,0.137] n 300
+  ckpm            0.119 [0.085,0.158] n 300
+  ckpm_b          0.112 [0.080,0.151] n 300
+  score           0.523 [0.460,0.587] n 300
+  len_s         119.775 [101.700,123.617] n 300
+  sd              0.553 [0.487,0.620] n 300
+  win_credited    0.173 [0.123,0.223] n 300
+  free_win        0.240 [0.183,0.300] n 300
+  free_loss       0.210 [0.157,0.263] n 300
+  apm           183.810 [145.986,232.679] n 300
+  apm_b         212.906 [171.813,258.295] n 300
+  idle            0.086 [0.050,0.130] n 198
+  engage_s        4.300 [3.567,5.400] n 300
+  close_frac      0.262 [0.223,0.300] n 300
+  presses_pm     29.274 [24.130,34.736] n 300
+  mean_dist      32.865 [29.815,35.950] n 300
+  first_hit_s    17.575 [13.008,28.000] n 300
+  win          0.523
+  le120        0.45
+  loser_how    {'env-unforced': 0.453, 'credited': 0.339, 'env-near': 0.174, 'self': 0.034}
+  loser_cause  {'ring-out': 0.577, 'contact': 0.128, 'beam': 0.104, 'projectile': 0.057, 'squished': 0.047, 'explosion': 0.04, 'eaten': 0.023, 'self': 0.023}
+  a_death_how  {'env-unforced': 0.444, 'credited': 0.345, 'env-near': 0.19, 'self': 0.021}
+  press_mix    {}
+  dbp_per_min  None
+
+== s301-vs-f5-dbp (n 200, Dash/Bow/Platform 200)
+  KH_PRE          0.104 [0.070,0.140] n 200
+  ckpm            0.148 [0.115,0.183] n 200
+  ckpm_b          0.092 [0.064,0.122] n 200
+  score           0.547 [0.477,0.618] n 200
+  len_s         141.900 [134.200,155.983] n 200
+  sd              0.685 [0.620,0.740] n 200
+  win_credited    0.285 [0.220,0.345] n 200
+  free_win        0.150 [0.105,0.200] n 200
+  free_loss       0.150 [0.105,0.205] n 200
+  apm            76.603 [73.034,80.032] n 200
+  apm_b          68.757 [65.404,72.191] n 200
+  idle            0.000 [0.000,0.000] n 150
+  engage_s        3.500 [2.733,4.167] n 200
+  close_frac      0.125 [0.109,0.143] n 200
+  presses_pm     33.520 [31.903,35.223] n 200
+  mean_dist      29.839 [28.211,31.569] n 200
+  first_hit_s    23.942 [18.892,36.533] n 200
+  win          0.547
+  le120        0.335
+  loser_how    {'credited': 0.497, 'env-unforced': 0.324, 'self': 0.103, 'env-near': 0.076}
+  loser_cause  {'projectile': 0.497, 'ring-out': 0.319, 'self': 0.103, 'squished': 0.081}
+  a_death_how  {'credited': 0.422, 'env-unforced': 0.361, 'self': 0.12, 'env-near': 0.096}
+  press_mix    {'Dash': 0.473, 'Platform': 0.323, 'Bow': 0.204}
+  dbp_per_min  None

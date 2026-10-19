@@ -1,0 +1,15 @@
+# Offense: sudden-death win discount (HUMAN-GAP-2026-10.md, proposed arm I7). A round decided at or
+# after sudden death (episode tick 6960) pays its winner 0.5 less: the opponent's last-body death
+# then nets +0.5 (+ the kill bonus if credited) instead of +1. Losses are unchanged, so no seat
+# gains by dying, and sudden death becomes negative-sum for the pair: in the mirror, waiting for the
+# opponent's fall pays half what a pre-sudden-death win pays. Humans never reach sudden death
+# (0 to 0.5% of rounds); the main reaches it in 49-69% of its games and wins 84% of those without a
+# credited kill (OFFENSE-2026-10.md section 1). Permanent: --style-fade-steps 1000000000000000000.
+name = "offense_sd_discount"
+fade = { start = 0.999, end = 1.0 }
+
+[[term]]
+name = "sd_win_discount"
+on = "death"
+when = "ev.subject == opp and now >= 6960 and ev.flags & death_flag.LAST_BODY"
+value = "-0.5"
