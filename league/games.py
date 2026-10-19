@@ -77,10 +77,10 @@ def matchup(ra, rb, maps, pairs, seed_base, start=0):
     return tasks
 
 
-def play(built, tasks, workers, seed_base, style=None):
+def play(built, tasks, workers, seed_base, style=None, processes=False):
     """Play tasks from `matchup` and check every game ran on the kits it was scheduled on.
     `style` (elo_ladder.play_games) measures a compiled style in every game without
-    changing it."""
+    changing it; `processes` plays in forked workers instead of threads (same games)."""
     import elo_ladder
     from evaluation_protocol import DEFAULT_LOADOUT
     # The environment pins one [seat 0 | seat 1] row per task (play_games) out of a
@@ -97,7 +97,8 @@ def play(built, tasks, workers, seed_base, style=None):
         loadouts = dict(mode='set', fixed=list(DEFAULT_LOADOUT), pool=[], lineups=[list(r) for r in lineups],
                         set_file=None, no_dup=False, mirror_share=0.0)
         games += elo_ladder.play_games(built, chunk, registry.EPISODE_TICKS, workers, seed_base,
-                                       delay=registry.DELAY, loadouts=loadouts, style=style)
+                                       delay=registry.DELAY, loadouts=loadouts, style=style,
+                                       **({'processes': True} if processes else {}))
     # lineup_ids is what the game actually played.
     for game in games:
         if list(game.get('lineup_ids') or []) != game['kits']:

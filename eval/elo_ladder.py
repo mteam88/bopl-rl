@@ -30,9 +30,10 @@ def sample_head(rng,row,index,temperature):
     drawing the same index from the same rng state (numpy Generator.choice: float64 cdf of p,
     normalised by its last entry, searched right of one rng.random()) without choice's
     per-call validation."""
-    part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]/temperature[index]
+    part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]
+    if temperature[index]!=1.0: part=part/temperature[index]   # x / 1.0 is x
     weights=np.exp(part-part.max()); weights/=weights.sum()
-    cdf=weights.astype(np.float64).cumsum(); cdf/=cdf[-1]
+    cdf=np.cumsum(weights,dtype=np.float64); cdf/=cdf[-1]
     return int(cdf.searchsorted(rng.random(),side='right'))
 
 
@@ -126,6 +127,13 @@ class Ensemble:
                 self.seconds+=time.perf_counter()-t0; self.decisions+=1
             return np.asarray(action,dtype=np.int64)
         return act
+
+    def fork_stats(self):
+        return (self.seconds,self.decisions)
+
+    def merge_fork_stats(self,delta):
+        with self.lock:
+            self.seconds+=delta[0]; self.decisions+=delta[1]
 
     def summary(self):
         return dict(members=[str(m.path) for m in self.members],decisions=self.decisions,
@@ -380,7 +388,7 @@ def side_pinned_tasks(a,b,maps,games_per_map,seed_base,lineup_by_side):
     return tasks
 
 
-def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,loadouts=None,style=None):
+def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,loadouts=None,style=None,processes=False):
     """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
 
     Each participant provides start(task, side, rng) -> act(observation, mask)
@@ -400,7 +408,13 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
     same ones): each result gets `style`, per seat {term: [pay, fires]},
     `style_decisions` per seat, and `event_support` (1 when the game backend emitted
     events, which event terms need).
+
+    processes plays each worker's games in a forked process instead of a thread
+    (forked): the same games, without GIL contention. Participants then must not rely
+    on state shared across games beyond fork_stats, and on_result is not supported.
     """
+    if processes and on_result:
+        raise ValueError('on_result would run in the forked workers; play with threads')
     from environment import Environment
     rows=(loadouts or {}).get('lineups') or []
     def play(bucket):
@@ -466,8 +480,56 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
         return results
     if not tasks: return []
     buckets=[tasks[i::workers] for i in range(min(workers,len(tasks)))]
+    if processes and len(buckets)>1:
+        return forked(play,buckets,by_name)
     with ThreadPoolExecutor(max_workers=len(buckets)) as pool:
         return [game for bucket in pool.map(play,buckets) for game in bucket]
+
+
+def forked(play,buckets,by_name):
+    """[game for bucket in map(play, buckets)], each bucket in its own forked process.
+
+    Threads share one GIL, and the per-decision Python of a game is about a third of
+    its CPU once the policy runs on the fast path, so six threads cannot use six
+    cores; forked workers can. The games are the same (each task seeds its own rng;
+    a bucket's environment is seeded as in the threaded path). State a participant
+    accumulates while playing stays in the child unless it defines fork_stats() (a
+    tuple of running totals) and merge_fork_stats(delta), which the parent calls with
+    what the child's games added."""
+    import os,pickle,signal,sys,traceback
+    children=[]
+    try:
+        for bucket in buckets:
+            r,w=os.pipe()
+            pid=os.fork()
+            if pid==0:
+                os.close(r); code=0
+                try:
+                    counted={n:p for n,p in by_name.items() if hasattr(p,'fork_stats')}
+                    before={n:p.fork_stats() for n,p in counted.items()}
+                    played=play(bucket)
+                    delta={n:tuple(x-y for x,y in zip(p.fork_stats(),before[n])) for n,p in counted.items()}
+                    payload=pickle.dumps((None,played,delta))
+                except BaseException:
+                    payload=pickle.dumps((traceback.format_exc(),None,None)); code=1
+                with os.fdopen(w,'wb') as f: f.write(payload)
+                sys.stdout.flush(); sys.stderr.flush()
+                os._exit(code)
+            os.close(w); children.append((pid,r))
+        games=[]
+        for pid,r in children:
+            # A finished child blocks on its full pipe until read; reading in order cannot deadlock.
+            with os.fdopen(r,'rb') as f: error,played,stats=pickle.loads(f.read() or pickle.dumps(('worker died',None,None)))
+            os.waitpid(pid,0)
+            if error: raise RuntimeError(f'game worker {pid} failed:\n{error}')
+            for name,totals in stats.items(): by_name[name].merge_fork_stats(totals)
+            games+=played
+        children=[]
+        return games
+    finally:
+        for pid,_ in children:
+            try: os.kill(pid,signal.SIGKILL); os.waitpid(pid,0)
+            except (ProcessLookupError,ChildProcessError): pass
 
 
 def tally(games):

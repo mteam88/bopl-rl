@@ -59,6 +59,8 @@ def main(argv=None):
                    '(plays its own kits and maps)')
     p.add_argument('--pairs', type=int, default=500)
     p.add_argument('--workers', type=int, default=6)
+    p.add_argument('--threads', action='store_true', help='play in worker threads instead of forked processes '
+                   '(same games; threads share the GIL)')
     p.add_argument('--seed-base', type=int, default=131001)
     p.add_argument('--label', help='name for the output row (default: the two paths)')
     p.add_argument('--out', type=Path, required=True)
@@ -90,7 +92,8 @@ def main(argv=None):
     league_games.configure(a.out.parent / 'all-combos-workers')
     todo = tasks(a.pairs, a.seed_base, maps, b_kits)
     kit_of = {(t['seed'], t['side']): t['a_kit'] for t in todo}
-    played = league_games.play(built, todo, a.workers, a.seed_base)
+    # Forked workers unless searching: the search keeps per-thread handles and timing totals.
+    played = league_games.play(built, todo, a.workers, a.seed_base, processes=not a.search and not a.threads)
     if a.games_out:
         with open(a.games_out, 'w') as f:
             for g in sorted(played, key=lambda g: (g['seed'], g['side'])):
