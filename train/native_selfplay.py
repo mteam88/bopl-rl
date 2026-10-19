@@ -93,6 +93,39 @@ def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_s
     return pool
 
 
+class CheckedBackend:
+    """The pool's backend, failing where the native calls fail silently.
+
+    pufferl_load_frozen_bank (pufferlib.cu) returns void: a missing, short or
+    wrong-size file only prints to stderr and the bank keeps its previous
+    weights, while the pool records the new opponent and credits its games to
+    it. save_weights ignores fwrite's result, so a full disk leaves a truncated
+    snapshot that a later swap then fails to load. Both checks are the native
+    load's own size condition (`nbytes`: the run's weight file size, the banks'
+    too), so they fire only where the native call already failed. Everything
+    else is the wrapped backend's.
+    """
+    def __init__(self, module, nbytes=None):
+        self.module, self.nbytes = module, nbytes
+
+    def _check(self, path, what):
+        size = os.path.getsize(path) if os.path.isfile(path) else None
+        if self.nbytes is not None and size != self.nbytes:
+            raise RuntimeError(f'{what} {path}: {size} bytes, the run\'s weights are {self.nbytes}')
+
+    def load_frozen_bank(self, trainer, bank, path):
+        self._check(path, f'load_frozen_bank {bank}:')
+        return self.module.load_frozen_bank(trainer, bank, path)
+
+    def save_weights(self, trainer, path):
+        out = self.module.save_weights(trainer, path)
+        self._check(path, 'save_weights:')
+        return out
+
+    def __getattr__(self, name):
+        return getattr(self.module, name)
+
+
 def _league_entry(m):
     entry = dict(path=str(m['path']), name=str(m['name']), permanent=True, kind=m.get('kind'))
     if m.get('pinned'):

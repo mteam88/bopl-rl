@@ -205,22 +205,85 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
     return max(floor, initial * math.exp2(-learner_steps / half_life))
 
 
+def schedule_progress(a, learner_steps):
+    """Fraction of the fixed schedules' horizon (--schedule-steps, default --steps) trained, clamped to 1."""
+    return min(1.0, learner_steps / (a.schedule_steps or a.steps))
+
+
 def prio_beta(a, beta0, learner_steps):
     """The prioritized-replay beta for the next update; -1 keeps the native epoch anneal."""
     if a.prio_beta_const is not None:
         return a.prio_beta_const
     if a.prio_beta_fix:
-        return beta0 + (1 - beta0) * min(1.0, learner_steps / a.steps)
+        return beta0 + (1 - beta0) * schedule_progress(a, learner_steps)
     return -1.0
+
+
+def lr_progress(a, learner_steps):
+    """The --anneal-lr cosine's progress for the next update; -1 keeps the native per-process epoch."""
+    return schedule_progress(a, learner_steps) if a.anneal_lr_fix else -1.0
 
 
 def schedule_fixes(a):
     """The opt-in schedule / encoder fixes, as config.json records them."""
     return dict(prio_beta_fix=a.prio_beta_fix, prio_beta_const=a.prio_beta_const, anneal_lr_fix=a.anneal_lr_fix,
-                v4_full_rows=a.v4_full_rows)
+                v4_full_rows=a.v4_full_rows, **({'schedule_steps': a.schedule_steps} if a.schedule_steps else {}))
 
 
 DEFAULT_FIXES = dict(prio_beta_fix=0, prio_beta_const=None, anneal_lr_fix=0, v4_full_rows='0')
+
+
+def schedule_rewinds(a, recorded_learner_steps):
+    """Why a resume rewinds --anneal-lr-fix / --prio-beta-fix, or None.
+
+    Both follow learner steps / --steps, so a resume that grows --steps (a league
+    loop's next turn) moves them backwards: the LR climbs back up the cosine and
+    beta falls. --schedule-steps pins the horizon.
+    """
+    if a.schedule_steps or not (a.anneal_lr_fix or a.prio_beta_fix) or a.steps == recorded_learner_steps:
+        return None
+    return (f'--steps {recorded_learner_steps} -> {a.steps} rescales the --anneal-lr-fix / --prio-beta-fix schedules '
+            f'(progress at a learner step drops by {recorded_learner_steps / a.steps:.3f}x); pass --schedule-steps to pin them')
+
+
+# config.json's native hypers a resume may change without a check (RESUME_HYPERS
+# does not name them: gamma, gae_lambda, prio_alpha, min_lr_ratio, minibatch_size,
+# mirror share, KL coefficient, ...). The budget and the hypers recorded elsewhere are not compared.
+NATIVE_UNCOMPARED = {'train': {'total_timesteps', 'ent_coef', 'min_ent_coef_ratio', 'ema_decay'}}
+
+
+def native_changes(previous, current):
+    """{section: {key: [was, now]}} of the native config a resume changes (JSON-normalised)."""
+    current = json.loads(json.dumps(current))
+    out = {}
+    for section in sorted(set(previous) | set(current)):
+        was, now = previous.get(section), current.get(section)
+        if not isinstance(was, dict) or not isinstance(now, dict):
+            if was != now:
+                out[section] = [was, now]
+            continue
+        skip = NATIVE_UNCOMPARED.get(section, set())
+        changed = {key: [was.get(key), now.get(key)] for key in sorted(set(was) | set(now))
+                   if key not in skip and was.get(key) != now.get(key)}
+        if changed:
+            out[section] = changed
+    return out
+
+
+def accumulate_overflow(total, packing):
+    """Running set-row overflow over every update (the per-update packing is the last training forward's).
+
+    total: dict(rows=[players, slots, entities, slimes], updates=n updates whose packing dropped rows, or
+    kept them past the budget under --v4-full-rows; cut = rows the --v4-full-rows caps cut).
+    """
+    if packing is None:
+        return total
+    rows = [x + y for x, y in zip(total['rows'], packing[:4])]
+    cut = [x + y for x, y in zip(total['cut'], packing[9:13])] if len(packing) == 13 else total['cut']
+    return dict(rows=rows, updates=total['updates'] + bool(any(packing[:4])), cut=cut)
+
+
+EMPTY_OVERFLOW = dict(rows=[0, 0, 0, 0], updates=0, cut=[0, 0, 0, 0])
 
 
 # Resume (--resume): a run directory is restarted from its last checkpoint and
@@ -424,6 +487,9 @@ def arguments():
                         'restarts at every --resume and the alpha factor stops it at 0.84')
     p.add_argument('--prio-beta-const', type=float, default=None,
                    help='Fixed prioritized-replay beta in [0, 1] (factorial arms); excludes --prio-beta-fix')
+    p.add_argument('--schedule-steps', type=int, default=None,
+                   help='Learner steps the --anneal-lr-fix cosine and the --prio-beta-fix ramp span (default --steps). '
+                        'Pin it when a --resume grows --steps (league turns), which otherwise rewinds both')
     p.add_argument('--ema-decay', type=float, default=0.,
                    help='Polyak average of the weights, ema = d*ema + (1-d)*w after every optimizer step, saved as '
                         'checkpoints/policy-<step>-ema.bin beside each checkpoint; 0 (default) = off. Half-life '
@@ -622,6 +688,8 @@ def arguments():
         p.error('ema-decay must be within [0, 1)')
     if a.prio_beta_const is not None and (a.prio_beta_fix or not 0 <= a.prio_beta_const <= 1):
         p.error('prio-beta-const must be within [0, 1] and excludes --prio-beta-fix')
+    if a.schedule_steps is not None and (a.schedule_steps < 1 or not (a.anneal_lr_fix or a.prio_beta_fix)):
+        p.error('schedule-steps must be positive and needs --anneal-lr-fix or --prio-beta-fix')
     caps = a.v4_full_rows.split(',')
     if not (a.v4_full_rows in ('0', '1') or (len(caps) == 4 and all(c.isdigit() and int(c) > 0 for c in caps))):
         p.error('v4-full-rows must be 0, 1 or four positive row caps P,S,E,L')
@@ -726,6 +794,7 @@ def main():
     if a.resume:
         resume = json.loads((output/'pool/state.json').read_text())
         previous_config = json.loads((output/'config.json').read_text())
+        previous_learner_steps = previous_config['learner_steps']   # config.update below replaces it
         recorded = recorded_hypers(previous_config)
         for name in RESUME_HYPERS:
             if recorded[name] != getattr(a, name):
@@ -1005,6 +1074,20 @@ def main():
             config['resumed'][-1]['changed'] = {**config['resumed'][-1].get('changed', {}), 'fixes': [fixes, schedule_fixes(a)]}
             config['fixes'] = schedule_fixes(a)
             print(f'--resume: fixes changed {fixes} -> {schedule_fixes(a)}', flush=True)
+        rewinds = schedule_rewinds(a, previous_learner_steps)
+        if rewinds:
+            print(f'--resume: warning: {rewinds}', flush=True)
+        # Hypers RESUME_HYPERS does not check (gamma, gae_lambda, prio_alpha, ...)
+        # train as given; config.json records them instead of keeping the old values.
+        native = native_changes(config['native'], args)
+        if native:
+            config['resumed'][-1]['changed'] = {**config['resumed'][-1].get('changed', {}), 'native': native}
+            for section, changed in native.items():
+                if isinstance(changed, dict):
+                    config['native'][section].update({key: now for key, (_, now) in changed.items()})
+                else:
+                    config['native'][section] = changed[1]
+            print(f'--resume: native hypers changed {native}', flush=True)
     atomic_json(output/'config.json', config)
     started = time.monotonic()
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
@@ -1096,6 +1179,9 @@ def main():
         if v4_shape is not None:
             # Each frozen member writes its own rows (a v4.1 member in a v4.2 run).
             backend = bank_kits.WriterBackend(backend, kit_lib or bank_kits.library(_C), v4_shape['ablate'])
+        # A failed native bank load or snapshot write raises instead of training on (its size is set from
+        # the initial checkpoint below).
+        backend = native_selfplay.CheckedBackend(backend)
         kit_audit = (bank_kits.Audit(kit_lib, vector.gpu_obs_ptr, a.workers, backend, pinned_kits,
                                      {o['path']: o['name'] for o in league_opponents}, a.bot_kit,
                                      registry._space_maps())
@@ -1155,6 +1241,7 @@ def main():
             saved = {int(path.stem.split('-')[1]): path for path in sorted((output/'checkpoints').glob('policy-*.bin'))
                      if not path.stem.endswith('-ema')}
             initial = saved[min(saved)]
+            backend.nbytes = initial.stat().st_size
             _C.load_weights(trainer, resume['checkpoint'])  # also restarts the EMA at these weights
             # Runs saved before momentum was persisted resume with it cold.
             momentum = resume.get('momentum')
@@ -1204,6 +1291,7 @@ def main():
             if a.init_weights:
                 _C.load_weights(trainer, str(a.init_weights.resolve()))
             initial = save()
+            backend.nbytes = initial.stat().st_size
             # Every bank starts from the initial policy; PFSP retires and
             # redraws them independently as each matchup settles.
             for bank in range(a.banks):
@@ -1289,6 +1377,7 @@ def main():
         next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
         next_metrics = 0
+        overflow = EMPTY_OVERFLOW   # this process's set-row overflow over every update (accumulate_overflow)
         previous, previous_elapsed = counts, elapsed_before
         free, applied_scale = None, list(a.head_scale)
         # Overlap (BOPL_ASYNC=1 default; 0 restores the
@@ -1356,7 +1445,7 @@ def main():
         # are the same either way, the arms' wall_seconds are the A/B.
         defer_ab = int(os.environ.get('BOPL_TRAIN_AB_DEFER', '0'))
         def bookkeep(p, evaluate_due=True):
-            nonlocal next_checkpoint, next_eval, next_metrics
+            nonlocal next_checkpoint, next_eval, next_metrics, overflow
             done = p['counts']   # == counts: the next rollout is not collected yet
             logged = done['learner_steps'] >= min(next_metrics, a.steps) or stop
             if logged and a.metrics_every:
@@ -1408,6 +1497,13 @@ def main():
                     record['set_rows'] = [round(n / packing[8], 3) for n in packing[4:8]]
                 if len(packing) == 13 and any(packing[9:13]):
                     record['set_cut'] = packing[9:13]   # --v4-full-rows caps: rows cut from single samples
+                # set_overflow is one forward of one update; these sum every update of this process, so a
+                # rare overflow between metrics rows still shows (the other minibatches' forwards stay unread).
+                overflow = accumulate_overflow(overflow, packing)
+                record['set_overflow_total'] = overflow['rows']
+                record['set_overflow_updates'] = overflow['updates']
+                if any(overflow['cut']):
+                    record['set_cut_total'] = overflow['cut']
             if logged:
                 metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
             for event in native_selfplay.events(p['before_pool'], after_pool, ledger, done['learner_steps']):
@@ -1491,7 +1587,7 @@ def main():
                     counts['learner_steps'], a.entropy, a.entropy_floor, a.entropy_half_life)
                 trainer.hypers.prio_beta = prio_beta(a, trainer.hypers.prio_beta0, counts['learner_steps'])
                 if a.anneal_lr_fix:
-                    trainer.hypers.lr_progress = min(1.0, counts['learner_steps'] / a.steps)
+                    trainer.hypers.lr_progress = lr_progress(a, counts['learner_steps'])
                 # Latched rows contribute zero entropy and zero entropy gradient
                 # to the button and hold heads, and the loss is a mean over all
                 # rows, so with most decisions latched the bonus on those heads
