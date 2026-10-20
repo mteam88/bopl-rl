@@ -434,7 +434,7 @@ def factor_label(fac, f):
 def offense_factorial_report(data, fac, reference, p):
     """off1: BH q 0.10 on the KH_PRE main effects screens factors into round 2 (kill_rate.rule per factor, high vs
     low runs, strength non-inferiority > -0.02, its vetoes); kill_rate.factorial_rule is the I1/I3 auto-adopt rule
-    (I7: sign-off); secondary main effects and interactions are reported, no decision."""
+    (I7 too since 2026-10-20); secondary main effects and interactions are reported, no decision."""
     kr = harness.kill_rate()
     letters = list(fac[0]['factors'])
     results = [r for r in (as_result(data, a, 'anneal') for a in fac) if r]
@@ -456,12 +456,13 @@ def offense_factorial_report(data, fac, reference, p):
         p(f'    {f} {labels[f]:<38} KH_PRE x{v["ratio"]:.3f} [{v["ratio_ci"][0]:.3f}, {v["ratio_ci"][1]:.3f}] p {pv[f]:.4f} '
           f'BH {"pass" if f in passed else "fail"} | panel {ni["diff"]:+.4f} LB {ni["lower95"]:+.4f} | ckpm_b x{v["ckpm_b_ratio"]:.2f} '
           f'env_loss {v["env_loss_diff"]:+.3f}{" VETO" if veto else ""} -> {"ROUND 2" if screen else "no"}')
-    p('    I1/I3 auto-adopt rule (eval/kill_rate.py factorial_rule: ratio >= 1.20, CI > 1, Holm over I1/I3/I7; I7 needs sign-off):')
+    p('    I1/I3/I7 auto-adopt rule (eval/kill_rate.py factorial_rule: ratio >= 1.20, CI > 1, Holm over I1/I3/I7):')
     adopt = kr.factorial_rule(results)
     for line in kr.report(adopt, 'the low level').splitlines():
         p('      ' + line)
-    if sum(v['adopt'] for k, v in adopt.items() if k.split()[0] in ('I1', 'I3')) == 2:
-        p('    I1 and I3 both pass: run I1+I3 combined against each alone before adopting both (sign-off 2026-10-19)')
+    if sum(v['adopt'] for k, v in adopt.items() if k.split()[0] in ('I1', 'I3', 'I7')) >= 2:
+        p('    two or more of I1/I3/I7 pass: run the passers combined against each alone before adopting them together '
+          '(sign-off 2026-10-19, I7 2026-10-20)')
     runs = {a['name']: regime(data, a) for a in fac}
     keys = ('panel', 'pre_score', 'score_sd_draw', 'sd', 'kh_pre_cast')
     p('    secondary main effects (high - low, no decision): ' + ', '.join(keys))

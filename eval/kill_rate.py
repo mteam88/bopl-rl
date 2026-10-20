@@ -9,7 +9,7 @@ replan: I1 and I3 are factors of the offense factorial, "judged on its main effe
 factor is I1, I3 or I7 when its high level sets styles/offense_kill*.toml, styles/offense_time.toml or
 styles/offense_sd_discount.toml; its runs at the high level are the treated group and the runs at the
 low level the control (each run one unit, the other factors balanced across both sides). I7 takes the
-same rule but a pass is flagged for Matthew's sign-off, never adopted.
+same rule and, since Matthew's 2026-10-20 sign-off, is auto-adopted like I1 and I3.
 
 Kill rate (OFFENSE-2026-10.md section 2 KH_PRE; "kills/min" in PLAN-2026-10.md's 2026-10-19 sign-off):
   per game, seat A = the arm's net:
@@ -158,7 +158,7 @@ def rule(arms, control, endpoint='anneal', credit='game'):
 
 
 OFFENSE_STYLES = {'I1': 'offense_kill', 'I3': 'offense_time', 'I7': 'offense_sd_discount'}
-SIGN_OFF = ('I7',)   # passes are flagged for Matthew's sign-off, never adopted automatically (PLAN 2026-10-19 off1)
+SIGN_OFF = ()   # factors whose passes wait for Matthew's sign-off; I7 left it on 2026-10-20 (PLAN)
 
 
 def factorial_rule(results, endpoint='anneal', credit='game'):
