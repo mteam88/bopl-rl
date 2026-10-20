@@ -36,8 +36,11 @@ print('check_v4: pass_all, full_rows other half identical')
 EOF
 
 BATCH=3072   # 16 workers, historical-every 2: 24 learner rows x horizon 128
+# The research arms' policy (arm.py): v4, 256 wide, aim K=4. The default linear encoder can't
+# checkpoint (its native input is OBS_STRIDE wide, the writer expects layout 3's OBS_SIZE).
 COMMON=(--workers 16 --opponents self --no-eval --no-in-run-rating --anneal-lr 1 --min-lr-ratio 0.1
-        --checkpoint-every $BATCH --seed 7)
+        --checkpoint-every $BATCH --seed 7 --encoder v4 --hidden 256 --aim-fourier 4
+        --v4-critic-dim 384 --v4-ffn-dim 0 --v4-set-inner 64)
 run() {   # run <dir> <extra args...>: 10 updates straight, and 5 + --resume 5
     local dir=$1; shift
     "$PY" train/train.py --output "$OUT/$dir-full" --steps $((10 * BATCH)) "${COMMON[@]}" "$@" > "$OUT/$dir-full.log" 2>&1
