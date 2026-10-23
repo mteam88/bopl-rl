@@ -322,14 +322,20 @@ member. The binding masks accept bits up to 63.
   Most of the remaining misses are rows at the surface (SDF at the truth -0.4 to -0.5), where the
   delayed origin is still above the ground.
 - **Probes** (`probe.py` on DS/look43/, against undelayed truth; DS/probe43/, v4.2 in DS/probe/):
-  heading cos from the row, ridge R^2 0.94 (v4.2: 0.70). Ground ahead from the row, ridge 0.12
+  heading from the row, ridge R^2 cos 0.94, sin 0.87 (v4.2: 0.70, 0.47). Ground ahead from the row, ridge 0.12
   (v4.2: 0.07), MLP 0.11 (v4.2: -0.11), row + true heading 0.15 / 0.16. **The jump the draft
   predicted for this probe did not come, and the probe cannot show it.** Its target is the
   undelayed truth, but the row is 9 ticks (2 decisions, ~1.5 u of drill travel plus turning) old.
   Picking the ray along the heading is also a product that a ridge probe cannot form. With the
   target aligned to the delay, ridge reaches 0.22 (v4.2: degenerate). The direct readout above is
   the evidence that the information is in the row. Whether the policy uses it is for arm SO vs S.
-- encode_check CPU == GPU and the training smoke run: Section 6's rift GPU gate.
+- **CPU == GPU rows** (rift build, encode_check, 40 tp-spec replays with a Drill kit, 2026-10-23
+  19:36): export on, bits 0/16/32/48, 492,104 rows, 0 mismatched. Export off, bits 0/16, 246,052
+  rows, 0 mismatched. Negative control (GPU kernel without the exit march, bits 48): 3861 rows
+  mismatched, all in terrain/rays, so the check exercises the inside path. The training-side
+  checks (bit-off training run, check_trainer_fixes_gpu.sh, the SO smoke run) did not run in that
+  slot: a comment-only header edit after the build tripped train.py's stale-binding guard. They
+  run in drill-queue's GPU gate on T's fresh build (Section 6).
 
 ## 5. Reward: style `drill_burrow` (final, 2026-10-23: `styles/drill_burrow.toml`)
 
@@ -516,9 +522,13 @@ That is acceptable for a showcase.
 **Schedule** (Matthew 2026-10-23: the drill runs go ahead of the queued recipe steps).
 User unit `drill-queue` (RL/research/drill-queue.sh, log RL/research/drill-queue.log, ntfy topic
 bopl): pause research-recipe while it is still in its wait loop; wait for research-offense; require
-the rift GPU gate's pass; pull T and rebuild (pgo_build.sh, train/build.py --device cuda,
-native_policy.py --build); gate on env_bench hashes equal to the pre-change build and on
-check_trainer_fixes_gpu.sh; run the five arms with each eval started as its anneal completes;
+research/drill-gate.sh pre on the old build (a 10-update v4.2 training run twice, the binding's
+host-step hashes); pull T and rebuild (pgo_build.sh, train/build.py --device cuda,
+native_policy.py --build); hard gates: env_bench hashes equal to the pre-change build, then
+drill-gate.sh post (bit-off training run byte-identical when the baseline repeats, host-step hashes
+equal, CPU == CUDA rows with the export on at bits 0/16/32/48 and off at 0/16 over 178 Drill-kit
+replays plus the negative control, check_trainer_fixes_gpu.sh, the style binding, a 1M-step SO
+smoke run). Any failure sends ntfy, stops the queue and relaunches research-recipe; run the five arms with each eval started as its anneal completes;
 relaunch research-recipe as soon as the last run ends (also on any failure); then analyze.py drill.
 
 ## 7. Matthew's answers (2026-10-23)
