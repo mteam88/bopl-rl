@@ -3,7 +3,8 @@
     venv/bin/python train/research/analyze.py e0 [--dir DIR] [--prior-sseed 0.015] [--json OUT]
 
 --json also writes `decisions`: the pre-registered verdicts a queue script acts on (optimizer: `followup`, the
-groups to rerun with `arm.py optimizer.toml --followup ...`; x2d-drill: `case`, `stop_optimizer`).
+groups to rerun with `arm.py optimizer.toml --followup ...`; x2d-drill: `case`, `stop_optimizer`; drill: `showcase`,
+`p1_pass`, `insanely_good`, `adopt_v43`).
 
 Reads train/research/arms/<program>.toml (or a path) for the expected arms, then every
 <out>/<arm>/{constant,anneal}/status.json and evals/*.games.jsonl. Only complete games files enter
@@ -102,6 +103,7 @@ def load_games(path):
 
 class Data:
     def __init__(self, out, arms):
+        self.out = out
         self.cells, self.files, self.missing, self.status = {}, {}, [], {}
         for a in arms:
             d = out / a['name']
@@ -337,6 +339,8 @@ def report(program, top, arms, data, prior, lines, ref=None, reference=None):
         DECISIONS['optimizer'] = optimizer_report(data, arms, top, p)
     if program == 'x2d-drill':
         DECISIONS['x2d-drill'] = x2d_report(data, arms, top, p)
+    if program == 'drill':
+        DECISIONS['drill'] = drill_report(arms, data.out, p)
 
     # secondary opponents
     sec = [o for o in arms[0]['evals'] if o not in arms[0]['panel']]
@@ -799,6 +803,105 @@ def x2d_report(data, arms, top, p):
         else:
             out['case'] = 'none of 1-3 (between thresholds): report, no stop'
     p(f'    -> case {out["case"]}' + ('; STOP the optimizer program and debug (Section 3 case 1)' if out['stop_optimizer'] else ''))
+    return out
+
+
+# ---- drill showcase specialist (PLAN-2026-10.md 2026-10-23 pre-registration) -------------------------------
+
+DRILL = dict(
+    source='DRILL-SPEC-2026-10.md Section 6 as decided by Matthew 2026-10-23, pre-registered in PLAN-2026-10.md '
+           '"2026-10-23 pre-registration: drill specialist"',
+    games=1200,                  # per drill_look eval: 600 seed pairs, both seats
+    p1_point=0.75, p1_lb=0.70,   # P1 (primary): score vs l2-main-136002m on iid random kits, pair-bootstrap 95% LB
+    p2_ug1s=0.10, p2_kill05=0.25,   # P2: >= 10% of drill episodes with >= 1 s continuous underground, and
+                                    # >= 25% of drill kills after >= 0.5 s underground in that dive
+    p3=0.50,                     # P3: score vs me31 on its declared kits
+    p4_unforced=0.03, p4_sd=0.30,   # P4 guard: unforced drill deaths <= 3% of drill episodes, SD share <= 30%
+    intent=0.20,                 # surfacings within 6 u of the opponent (Section 4 "intent")
+    v43=0.05)                    # adopt v4.3 for the specialist if SO - S >= +0.05 on P1 (seed means)
+
+
+def drill_look_analyze():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('drill_look_analyze', ROOT / 'native/rl/research/drill-spec/analyze.py')
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def drill_pairs(d):
+    """{pair: mean score of A} of a complete drill_look games.jsonl, else None."""
+    f = d / 'games.jsonl'
+    if not f.exists():
+        return None
+    games = [json.loads(l) for l in f.read_text().splitlines()]
+    if len(games) != DRILL['games']:
+        return None
+    pairs = {}
+    for g in games:
+        pairs.setdefault(g['pair'], []).append(1.0 if g['outcome'] == 'a' else 0.5 if g['outcome'] == 'draw' else 0.0)
+    return {k: float(np.mean(v)) for k, v in pairs.items() if len(v) == 2}
+
+
+def drill_report(arms, base, p):
+    """P1 (primary) and P2-P4 per run at the annealed endpoint (drill.sh eval: drill_look vs main136 on random kits
+    and vs me31 on its kits); the showcase is the styled run (S or SO) with the best P1 point; group contrasts on seed
+    means paired by seed pair: S - C and SO - C (the burrow style's strength cost, report only) and SO - S (v4.3)."""
+    rule, out = DRILL, dict(showcase=None, p1_pass=False, insanely_good=False, adopt_v43=None, runs={})
+    A = drill_look_analyze()
+    p(f'  drill: rules {rule["source"]}')
+    pairs, groups = {}, {}
+    for a in arms:
+        d = base / a['name']
+        main_p, me31_p = drill_pairs(d / 'drill-eval-main'), drill_pairs(d / 'drill-eval-me31')
+        if main_p is None:
+            p(f'    {a["name"]:<9} PENDING: no complete P1 eval (train/research/arms/drill.sh eval {a["name"]})')
+            continue
+        m = A.analyze(d / 'drill-eval-main')
+        m3 = A.analyze(d / 'drill-eval-me31') if me31_p is not None else None
+        pairs[a['name']] = main_p
+        groups.setdefault(a['group'], []).append(a['name'])
+        sc, k05, ug1, unf, sd, em = m['score'], m.get('drill_kills_after_ug05'), m.get('ep_ug_ge_1s'), \
+            m.get('ep_death_unforced'), m['sd_share'], m.get('emerge_within_6u')
+        r = dict(p1=sc, p1_pass=sc[0] >= rule['p1_point'] and sc[1] >= rule['p1_lb'],
+                 p2_pass=bool(ug1 and k05 and ug1[0] >= rule['p2_ug1s'] and k05[0] >= rule['p2_kill05']),
+                 p3=m3['score'] if m3 else None, p3_pass=bool(m3 and m3['score'][0] >= rule['p3']),
+                 p4_pass=bool(unf and unf[0] <= rule['p4_unforced'] and sd[0] <= rule['p4_sd']),
+                 intent=em[0] if em else None, intent_pass=bool(em and em[0] >= rule['intent']),
+                 ug1s=ug1, kill05=k05, unforced=unf, sd=sd, group=a['group'])
+        r['all_pass'] = r['p1_pass'] and r['p2_pass'] and r['p3_pass'] and r['p4_pass']
+        out['runs'][a['name']] = r
+        f = lambda x: '-' if not x else f'{x[0]:.3f} [{x[1]:.3f},{x[2]:.3f}]'
+        p(f'    {a["name"]:<9} P1 {f(sc)} {"PASS" if r["p1_pass"] else "fail"} | P2 ug>=1s {f(ug1)}, kills after 0.5 s ug '
+          f'{f(k05)} {"PASS" if r["p2_pass"] else "fail"} | P3 {f(r["p3"])} {"PASS" if r["p3_pass"] else "fail" if m3 else "pending"} | '
+          f'P4 unforced {f(unf)}, SD {f(sd)} {"PASS" if r["p4_pass"] else "fail"} | intent {f(em)}')
+    styled = {n: r for n, r in out['runs'].items() if r['group'] in ('S', 'SO')}
+    if styled:
+        best = max(styled, key=lambda n: styled[n]['p1'][0])
+        out.update(showcase=best, p1_pass=styled[best]['p1_pass'], insanely_good=styled[best]['all_pass'])
+        p(f'    showcase (best styled run by P1 point, chosen after the fact among {len(styled)}): {best}: '
+          f'P1 {"PASS" if out["p1_pass"] else "FAIL"}; "insanely good" (P1-P4) {"YES" if out["insanely_good"] else "NO"}')
+
+    def group_pairs(g):
+        names = groups.get(g, [])
+        common = set.intersection(*(set(pairs[n]) for n in names)) if names else set()
+        return {k: float(np.mean([pairs[n][k] for n in names])) for k in common}, len(names)
+    for t, c, what in (('S', 'C', 'style strength cost, report only'), ('SO', 'C', 'style + v4.3 vs control, report only'),
+                       ('SO', 'S', 'v4.3 effect on P1')):
+        (gt, kt), (gc, kc) = group_pairs(t), group_pairs(c)
+        r = paired(gt, gc) if kt and kc else None
+        if r is None:
+            p(f'    {t} - {c} ({what}): pending')
+            continue
+        p(f'    {t} - {c} ({what}): {r[0]:+.3f} ±{r[1]:.3f} (eval-only 95% over {r[2]} seed pairs; seeds {kt} vs {kc}, '
+          f'seed variance not in the interval)')
+        out[f'{t}-{c}'] = r[0]
+        if (t, c) == ('SO', 'S'):
+            so_p2 = any(out['runs'][n]['p2_pass'] and out['runs'][n]['intent_pass'] for n in groups['SO'])
+            s_p2 = any(out['runs'][n]['p2_pass'] and out['runs'][n]['intent_pass'] for n in groups['S'])
+            out['adopt_v43'] = r[0] >= rule['v43'] or (so_p2 and not s_p2)
+            p(f'    -> v4.3 for the specialist: {"ADOPT" if out["adopt_v43"] else "no"} (SO - S >= +{rule["v43"]} on P1, '
+              f'or SO passes P2 + intent where S does not)')
     return out
 
 

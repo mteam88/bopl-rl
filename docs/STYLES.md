@@ -106,7 +106,11 @@ value = "8e-5"
     `body(self).ability_flags[slot]`, `header.episode_ticks`...
   - Inside an event term, `ev.*` fields.
 - **Aggregates over entities:** `count(entities where owner == self and flags & EXPLOSIVE and dist(opp) < 6)`,
-  `min_dist`, `coverage(opp, radius, sectors, filter)`. Coverage is the fraction
+  `min_dist`, `coverage(opp, radius, sectors, filter)`. An entity's `underground`
+  is 1 on a Drill form's row while it is in the ground (`count(entities where
+  owner == self and underground == 1)`); it is the sim's Drill form export
+  (ABI flag bit 24, `BOPL_RL_FORM_BODY=1`, which train.py sets when a style
+  names it). `flags` holds bits 0-23, which a float holds exactly. Coverage is the fraction
   of angular sectors around `opp` that contain a matching hazard; `sources(...)`
   counts the distinct source abilities among them.
 - **Categories:** `ready(p, "mobility")` and `ready_count(p, "offense")` read

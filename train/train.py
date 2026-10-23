@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -319,7 +320,7 @@ V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNE
                 flat_dim=('BOPL4_FLAT_DIM', 'flat_dim'), ffn_dim=('BOPL4_FFN_DIM', 'ffn_dim'),
                 critic_dim=('BOPL4_CRITIC_DIM', 'critic_dim'), critic_privileged=('BOPL4_CRITIC_PRIVILEGED', 'critic_privileged'),
                 critic_detach=('BOPL4_CRITIC_DETACH', 'critic_detach'), mean_pool=('BOPL4_MEAN_POOL', 'mean_pool'),
-                ablate=('BOPL4_ABLATE', 'ablate'))   # writer bitmask: 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes + Missile/Spike kill credit
+                ablate=('BOPL4_ABLATE', 'ablate'))   # writer bitmask: 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes + Missile/Spike kill credit, 32 layout v4.3 drill body + rays from inside the ground
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -637,6 +638,9 @@ def arguments():
         except (style_compile.CompileError, OSError) as error:
             p.error(f'--style: {error}')
         a.style_sha256 = a.style_program.sha256
+        # An entity's `underground` (bopl_style.h) is the sim's Drill form export, on at each reset.
+        if any(re.search(r'\bunderground\b', path.read_text()) for path in a.style):
+            os.environ['BOPL_RL_FORM_BODY'] = '1'
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
                  'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life',
                  'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout'):
@@ -874,6 +878,8 @@ def main():
         if a.v4_row_budget:
             os.environ['BOPL4_ROW_BUDGET'] = a.v4_row_budget
         os.environ['BOPL4_FULL_ROWS'] = a.v4_full_rows
+        if int(v4_shape['ablate']) & 32:
+            os.environ['BOPL_RL_FORM_BODY'] = '1'   # layout v4.3 reads the sim's Drill form export (form_body_export)
         layout.policy_v4_weights(a.hidden, a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, **v4_shape)  # rejects unaligned shapes
     os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in a.head_scale)
     os.environ['BOPL_AIM_FOURIER'] = str(a.aim_fourier)  # read once by the trainer (bopl_aim_config)
@@ -1146,6 +1152,8 @@ def main():
             pinned_kits[member['path']] = kits
             pinned_rows[member['path']] = bank_kits.member_rows(kits)
         pinned_paths = {member['path'] for member in pinned}
+        if any((registry.writer_ablate(o['path']) or 0) & 32 for o in league_opponents + pinned):
+            os.environ['BOPL_RL_FORM_BODY'] = '1'   # a layout v4.3 member writes its rows from the Drill form export
         league_opponents = [o for o in league_opponents if o['path'] not in pinned_paths] + \
                            [dict(member, pinned=True) for member in pinned]
     for flag, checkpoint in (('--init-weights', None if resume else a.init_weights), ('--kl-reference', a.kl_reference)):

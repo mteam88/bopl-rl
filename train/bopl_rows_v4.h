@@ -44,7 +44,7 @@
  * below. Neither changes a width, so a net trained without one fine-tunes
  * with it. */
 enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8,
-       BOPL4_ABLATE_OBSFIX=16 };
+       BOPL4_ABLATE_OBSFIX=16, BOPL4_ABLATE_DRILL=32 };
 #define BOPL4_SLIME_RADIUS 0.76   /* bopl_bots.h BOT_SLIME_RADIUS */
 #define BOPL4_LETHAL_LAYER 16     /* LethalTerrain */
 #define BOPL4_SMOKE_LAYER 22      /* Smoke: the Smoke ability's clouds (FlammableSmoke) */
@@ -735,7 +735,8 @@ BOPL4D_FN void bopl4_slime_row(float *out, const BoplRlState *state, const BoplR
  * this decision (aimed: its direction from the aim table) and the enemy. */
 BOPL4D_FN void bopl4_scene_head(Bopl4Scene *s, int ablation, double x, double y, double svx, double svy,
                                 int aimed, float aim_dx, float aim_dy, const Bopl4Enemy *enemy) {
-    s->flags=(ablation&BOPL4_ABLATE_RAYS?0:BOPL4F_FAN)|(ablation&BOPL4_ABLATE_RAYS16?BOPL4F_HALF:0)|(ablation&BOPL4_ABLATE_AIM?BOPL4F_AIM:0);
+    s->flags=(ablation&BOPL4_ABLATE_RAYS?0:BOPL4F_FAN)|(ablation&BOPL4_ABLATE_RAYS16?BOPL4F_HALF:0)|(ablation&BOPL4_ABLATE_AIM?BOPL4F_AIM:0)
+            |(ablation&BOPL4_ABLATE_DRILL?BOPL4F_INSIDE:0);
     s->x=(float)x; s->y=(float)y; s->svx=(float)svx; s->svy=(float)svy;
     s->aim_dx=s->aim_dy=0.0f;
     if (aimed) { s->flags|=BOPL4F_AIMED; s->aim_dx=aim_dx; s->aim_dy=aim_dy; }
@@ -803,10 +804,15 @@ BOPL4D_FN void bopl4_scene_rot(Bopl4Scene *s, int k, const float *w, int lethal,
 }
 /* A circle of the scene: an observed entity with mass (not a rope or a
  * platform edge; class 2 own, 0 otherwise), or a visible enemy slime (class
- * 1). Returns 0 when it is none. */
+ * 1). Returns 0 when it is none. Under the drill writer (v4.3) a wall or
+ * water of the scene is not also a circle: a floating platform (a wall with
+ * mass) was a class-0 circle of its corner radius about its centre, which a
+ * ray from inside it hit at distance 0 before its exit (2026-10-23: half the
+ * underground heading rays). */
 BOPL4D_FN int bopl4_entity_circle(const BoplRlEntity *e, const BoplRlPlayer *self, float *c, int32_t *cls, int ablation) {
     if (e->inverse_mass<=0 || e->kind==3 || e->kind==4) return 0;
     if ((ablation&BOPL4_ABLATE_OBSFIX) && (e->layer==BOPL4_SMOKE_LAYER || bopl4_lethal_box(e, ablation))) return 0;
+    if (ablation&BOPL4_ABLATE_DRILL) { double top=0.0; if (bopl4_scene_class(e, &top, ablation)!=BOPL4_SCENE_NONE) return 0; }
     c[0]=(float)bopl_fix(e->x); c[1]=(float)bopl_fix(e->y); c[2]=(float)fmax(bopl_fix(e->radius), 0.25);
     c[3]=(float)bopl_fix(e->vx); c[4]=(float)bopl_fix(e->vy);
     *cls=bopl4_entity_owner(e, ablation)==self->id?2:0;

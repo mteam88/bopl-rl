@@ -47,7 +47,12 @@ HEAD_BOUNDS = [sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS + 1)]
 def writer_ablation(policy):
     """The v4 writer bits (v4_shape.ablate) a policy's row must be written with; -1 for
     v3 policies and scripted players (the process default, which they never read)."""
-    return int(policy.v4_shape["ablate"]) if getattr(policy, "architecture", None) == layout.V4_ARCHITECTURE else -1
+    bits = int(policy.v4_shape["ablate"]) if getattr(policy, "architecture", None) == layout.V4_ARCHITECTURE else -1
+    if bits >= 0 and bits & 32:
+        # Layout v4.3 reads the sim's Drill form export (sim/abi/bopl_rl.h
+        # BOPL_ENTITY_FORM_BODY), which the library reads at each reset.
+        os.environ["BOPL_RL_FORM_BODY"] = "1"
+    return bits
 
 
 def build(output=LIBRARY):

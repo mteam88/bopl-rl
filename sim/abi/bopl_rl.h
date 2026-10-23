@@ -22,7 +22,16 @@ enum BoplRlEntityFlags {
     /* Bits 16-23: the player id that created an object whose owner is 0 (no
      * IPlayerIdHolder): a guided missile's or smoke cloud's Item.OwnerId, and a Platform-cast
      * platform's caster while its spawner's buffer holds it. 0 otherwise. */
-    BOPL_ENTITY_CREATOR_SHIFT=16, BOPL_ENTITY_CREATOR_MASK=0xff
+    BOPL_ENTITY_CREATOR_SHIFT=16, BOPL_ENTITY_CREATOR_MASK=0xff,
+    /* Training export (the Rust library with BOPL_RL_FORM_BODY=1 in its
+     * environment at reset; off by default, never set by the .NET backend):
+     * FORM_BODY marks a live Drill form's row, whose rotation and
+     * angular_velocity then hold the drill body's velocity x and y (Q32.32:
+     * its velocity and external velocity plus the point velocity of the
+     * platform it is in), not a rotation; its vx/vy stay 0. UNDERGROUND: that
+     * form is in the ground (DrillState.underground). Layout v4.3 reads
+     * them (train/bopl_obs_v4.h bopl4_form_view). */
+    BOPL_ENTITY_UNDERGROUND=1<<24, BOPL_ENTITY_FORM_BODY=1<<25
 };
 enum BoplRlSlimeFlags {
     BOPL_SLIME_ACTIVE=1, BOPL_SLIME_SPAWNED=2, BOPL_SLIME_IN_ABILITY=4,

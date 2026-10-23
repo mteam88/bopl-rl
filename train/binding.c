@@ -342,7 +342,7 @@ int bopl_bank_kits_install(int bank, const int *rows, int count) {
  * into frozen bank `bank`, or -1 for the run's own (bopl_bank_ablate).
  * Returns 0, or -1 for a bad bank or mask. */
 int bopl_bank_ablate_install(int bank, int mask) {
-    if (bank<0 || bank>=BOPL_MAX_BANKS || mask<-1 || mask>31) return -1;
+    if (bank<0 || bank>=BOPL_MAX_BANKS || mask<-1 || mask>63) return -1;
     __atomic_store_n(&bopl_bank_ablate[bank], mask+1, __ATOMIC_RELAXED);
     return 0;
 }

@@ -1070,6 +1070,8 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     head->words=(uint32_t)bopl4_state_words(entities, slimes); head->entity_count=entities; head->slime_count=slimes;
     char *out=(char*)(slot+BOPL4_STATE_OFFSET);
     const BoplRlEntity *shipped=(const BoplRlEntity*)(out+BOPL_COPY_HEAD);
+    /* The shipped slimes and their trig: after the header, players and entities either way. */
+    BoplRlSlime *shipped_slimes=(BoplRlSlime*)(out+BOPL_COPY_HEAD+(size_t)entities*sizeof(BoplRlEntity));
     unsigned char *sectors;
     if (shared->image) {   /* a copy: the header (its entity_count the kept count) and players, then the image */
 #if defined(__has_builtin) && __has_builtin(__builtin_memcpy_inline)
@@ -1092,6 +1094,17 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
         float *trig=(float*)out;
         memcpy(trig, shared->trig, (size_t)slimes*2*sizeof(float));
         sectors=(unsigned char*)(trig+2*slimes);
+    }
+    /* Layout v4.3: the slimes with a form body as the CPU writer reads them
+     * (bopl4_form_view), their trig with them; this row's slot only. */
+    if ((ablation>=0?ablation:bopl4_ablation_default())&BOPL4_ABLATE_DRILL && bopl4_form_any(state)) {
+        float *trig=(float*)(shipped_slimes+slimes);
+        for (uint32_t i=0; i<slimes; i++) {
+            const BoplRlEntity *form=bopl4_form_body(state, &state->slimes[i]);
+            if (!form) continue;
+            bopl4_form_slime(&shipped_slimes[i], form);
+            bopl4_sincos(&shipped_slimes[i], &trig[2*i], &trig[2*i+1]);
+        }
     }
     double self_x=bopl_fix(state->players[a].x), self_y=bopl_fix(state->players[a].y);
     /* One run (a copy): the sectors read the source, not the slot just stored. */

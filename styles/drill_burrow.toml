@@ -1,0 +1,41 @@
+# Drill burrow (native/rl/research/DRILL-SPEC-2026-10.md Section 5): flair for the drill showcase
+# specialist on Drill/Dash/Dash. Pays outcomes that need skill (net approach while underground, kills
+# out of a burrow), never duration (underground time is farmable by circling in thick platforms);
+# zero in sudden death and with no opponent alive. Small next to reward-kill (0.288 a kill).
+# On for the whole run, no fade (Matthew 2026-10-23): the arm passes --style-fade-steps 1e18. Its
+# strength cost is measured against the style-free control (arm C), report only.
+# `underground` is the Drill form row's in-the-ground bit (sim Drill form export, BOPL_RL_FORM_BODY=1,
+# which train.py sets for a style that names it).
+name = "drill_burrow"
+kits = [[26, 2, 2], [2, 26, 2], [2, 2, 26]]
+
+[let]
+ug = "any(entities where owner == self and underground == 1)"
+drilling = "form_ability(self) == ability.Drill"
+closer = "prev(min(dist(self, opp), 30)) - min(dist(self, opp), 30)"   # approach since the last decision, u
+
+[[term]]   # net approach while underground: c * closer on decisions underground at both ends. A gain counts
+           # at most 2 u a decision, a loss in full, so over any stretch it pays at most c * (net approach).
+name = "burrow_approach"
+when = "header.sudden_death == 0 and alive(opp) and ug and prev(ug)"
+value = "0.006 * min(closer, 2)"   # <= 0.18 for a 30 u approach
+
+[[term]]   # retreat off the underground stretches, in a Drill form that has been underground, costs the same
+           # rate (never pays): without it, approach underground then back off above ground (a hop chain)
+           # would farm the term. With it, any closed loop within one form pays <= 0; a farm must end the
+           # form and recast (4 s cooldown). A form that never went under is not charged.
+name = "drill_retreat"
+when = "header.sudden_death == 0 and alive(opp) and drilling and prev(drilling) and not (ug and prev(ug)) and since(ug) < since_form_entry(self)"
+value = "0.006 * min(closer, 0)"
+
+[[term]]   # burrow-kill premium: drill kill after >= 0.5 s underground in the last 1.5 s, full at 1.5 s
+name = "burrow_kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self and ev.source_ability == ability.Drill and header.sudden_death == 0 and count_over(90, ug) >= 8"
+value = "0.12 * min(1, count_over(90, ug) / 22)"
+
+[[term]]   # unforced drill death (ring-out, self) costs extra: burrowing raises exposure to bounds
+name = "drill_unforced"
+on = "death"
+when = "ev.subject == self and form_ability(self) == ability.Drill and (ev.cause == death.RING_OUT or ev.cause == death.SELF)"
+value = "-0.08"

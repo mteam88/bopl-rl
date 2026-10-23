@@ -1,14 +1,18 @@
 """How a checkpoint uses Drill: per-decision log of every drill-form decision of seat A, per-episode
 summaries, per-game outcomes, and (optionally) the v4 flat block of drill frames and full visual frames.
 
-    drill_look.py --a CKPT --a-kit 26,2,2 --b CKPT --b-kit random|ids --games N --seed-base S --out DIR
-                  [--rows-every K] [--visual K]
+    drill_look.py --a CKPT --a-kit 26,2,2|ddd --b CKPT --b-kit random|ids[;ids...] --games N --seed-base S --out DIR
+                  [--rows-every K] [--visual K] [--rows-ablate BITS]
 
 Seat A plays both sides over seed pairs (pair p: side 0 and side 1, same seed, map and kits).
 Ground truth "underground" = the terrain SDF (rounded rects on layers 11/16/21, the v4 writer's walls) at
 A's player position < 0 at the decision (undelayed); the row's terrain[9] is the 9-tick-delayed SDF the
 policy sees. Kits for B with 'random': 3 iid draws from 2..38 minus {12, 15} (the trainer's pool 'all',
-duplicates allowed).
+duplicates allowed). --a-kit ddd: Drill/Dash/Dash with Drill in slot pair % 3 (the drill specialist's
+training rotation, native/data/lineups-drill-ddd.txt); --b-kit with ';' between kits: pair p plays kit p % n.
+--rows-ablate BITS: the logged rows (flat block and the row fields of decisions.jsonl) come from a shadow
+environment stepped in lockstep with the same actions, seat A's row written with writer bits BITS (e.g. 48,
+layout v4.3), so the policies still play on their own rows.
 """
 import argparse, gzip, json, math, sys, time
 from pathlib import Path
@@ -73,23 +77,33 @@ def main():
     p.add_argument('--maps', default='training-111'); p.add_argument('--out', type=Path, required=True)
     p.add_argument('--rows-every', type=int, default=1, help='keep the flat block of every k-th drill decision (0 = none)')
     p.add_argument('--visual', type=int, default=0, help='keep full frames for the first K games')
+    p.add_argument('--rows-ablate', type=int, default=None, help="log seat A's rows written with these writer bits (shadow env)")
     a = p.parse_args()
+    if a.rows_ablate is not None and a.rows_ablate & 32:
+        import os; os.environ['BOPL_RL_FORM_BODY'] = '1'   # v4.3 reads the form row's export (native_policy.writer_ablation)
     a.out.mkdir(parents=True, exist_ok=True)
     league_games.configure(a.out / 'work')
     A = elo_ladder.Model('A', ckpt(a.a), 'candidate'); B = elo_ladder.Model('B', ckpt(a.b), 'candidate')
-    akit = [int(v) for v in a.a_kit.split(',')]
+    def a_kit_of(pair):
+        if a.a_kit == 'ddd':
+            return [26 if k == pair % 3 else 2 for k in range(3)]
+        return [int(v) for v in a.a_kit.split(',')]
+    b_kits = None if a.b_kit == 'random' else [[int(v) for v in k.split(',')] for k in a.b_kit.split(';')]
+    akit = a_kit_of(0)
     maps = map_catalogue.parse_map_ids(a.maps)
     rng_k = np.random.default_rng(a.seed_base)
-    meta = dict(a=str(ckpt(a.a)), b=str(ckpt(a.b)), a_kit=akit, b_kit=a.b_kit, games=a.games, seed_base=a.seed_base,
-                maps=a.maps, a_ablate=A.ablate, b_ablate=B.ablate, a_layout=A.layout)
+    meta = dict(a=str(ckpt(a.a)), b=str(ckpt(a.b)), a_kit=a.a_kit if a.a_kit == 'ddd' else akit, b_kit=a.b_kit, games=a.games, seed_base=a.seed_base,
+                maps=a.maps, a_ablate=A.ablate, b_ablate=B.ablate, a_layout=A.layout, rows_ablate=a.rows_ablate)
     (a.out / 'meta.json').write_text(json.dumps(meta, indent=1))
     fg = open(a.out / 'games.jsonl', 'w'); fd = open(a.out / 'decisions.jsonl', 'w')
     rows, rowmeta = [], []
     FO, TO, RO = 0, L.V4_TERRAIN_OFFSET, L.V4_RAY_OFFSET
     pairs = (a.games + 1) // 2
+    shadow = Environment(seed=a.seed_base, limit=registry.EPISODE_TICKS, delay=registry.DELAY) if a.rows_ablate is not None else None
     with Environment(seed=a.seed_base, limit=registry.EPISODE_TICKS, delay=registry.DELAY) as env:
         for pair in range(pairs):
-            bkit = [int(v) for v in a.b_kit.split(',')] if a.b_kit != 'random' else [int(v) for v in rng_k.choice(POOL, 3)]
+            bkit = b_kits[pair % len(b_kits)] if b_kits else [int(v) for v in rng_k.choice(POOL, 3)]
+            akit = a_kit_of(pair)
             mp = maps[pair % len(maps)] if pair < len(maps) else maps[int(rng_k.integers(len(maps)))]
             seed = a.seed_base + pair
             for side in (0, 1):
@@ -102,6 +116,9 @@ def main():
                 env.bot(0, 0); env.bot(1, 0)
                 sa, sb = side, 1 - side
                 A.attach(env, sa); B.attach(env, sb)
+                if shadow is not None:
+                    shadow.configure_loadouts(lo); shadow.reset(seed, mp); shadow.bot(0, 0); shadow.bot(1, 0)
+                    shadow.set_layout(sa, 4, ablate=a.rows_ablate); B.attach(shadow, sb)
                 task = dict(seed=seed, map=mp, side=side, kits=kits)
                 rng = np.random.default_rng((seed, mp, side, 7))
                 acts = {sa: A.start(task, sa, rng), sb: B.start(task, sb, rng)}
@@ -133,7 +150,7 @@ def main():
                             n = math.hypot(ux, uy) or 1; ux, uy = ux / n, uy / n
                         g = sdf(W, x, y)
                         hd = (-ux, -uy) if ux is not None else None
-                        row = env.obs_row(sa)
+                        row = (shadow or env).obs_row(sa)
                         rec = dict(g=pair * 2 + side, d=d, t=st.header.episode_ticks, slot=dslot, x=round(x, 2), y=round(y, 2),
                                    hx=None if hd is None else round(hd[0], 3), hy=None if hd is None else round(hd[1], 3),
                                    sdf=round(g, 3), ug=g < 0,
@@ -153,6 +170,9 @@ def main():
                     if frames is not None: frames.append(env.frame())
                     acts_np = np.stack([acts[0](obs, mask), acts[1](obs, mask)])
                     env.step(acts_np)
+                    if shadow is not None:
+                        shadow.step(acts_np)
+                        assert shadow.state.header.episode_ticks == env.state.header.episode_ticks
                     for e in env.events():
                         if e.kind == 1 and e.subject in (ida, idb):
                             who = e.actor or e.creator
@@ -174,6 +194,7 @@ def main():
                 if frames is not None:
                     with gzip.open(a.out / f'frames-g{pair * 2 + side}.json.gz', 'wt', compresslevel=4) as f:
                         json.dump(dict(game=gr, a_seat=sa, frames=frames), f, separators=(',', ':'))
+    if shadow is not None: shadow.close()
     if rows:
         np.savez_compressed(a.out / 'rows.npz', flat=np.stack(rows), meta=np.array(rowmeta, dtype=np.float64))
     print('done', a.out)

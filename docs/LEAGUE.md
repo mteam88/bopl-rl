@@ -207,11 +207,17 @@ its own kit and 0.22-0.48 against the seven playing a foreign one, and PFSP puts
 its largest weight on `drill-throw-magnet`. `v4_shape.ablate` is part of the
 comparison: it is a writer bitmask, so a member trained with features ablated
 would otherwise be fed features it has never seen. The exception is a writer
-*revision* (`registry.WRITER_REVISIONS`, today bit 16, layout v4.2): it changes
-what some fields hold but not the row's shape or what a field means, so it is
-masked out of the comparison. A v4.2 run (`--v4-ablate 24`) can start from a
-v4.1 checkpoint and load v4.1 members, and each frozen bank writes its member's
-own rows (`bank_kits.WriterBackend`, `bopl_bank_ablate`).
+*revision* (`registry.WRITER_REVISIONS`, today bits 16 and 32, layouts v4.2 and
+v4.3): it changes what some fields hold but not the row's shape or what a field
+means, so it is masked out of the comparison. A v4.2 run (`--v4-ablate 24`) can
+start from a v4.1 checkpoint and load v4.1 members, and each frozen bank writes
+its member's own rows (`bank_kits.WriterBackend`, `bopl_bank_ablate`). Layout
+v4.3 (bit 32, e.g. `--v4-ablate 48` on a v4.2 net) reads a Drill form's real
+body velocity and heading in the body blocks, casts rays from inside the
+ground to where they leave it, and no longer also draws a floating platform as
+an object circle (train/bopl_obs_v4.h, bopl_rows_v4.h). It needs the sim's Drill
+form export (`BOPL_RL_FORM_BODY=1`, which train.py and `native_policy` set
+when a run or a loaded member has the bit).
 
 The practical consequence is that the eight seeded specialists pin any run that
 wants to train against them to their shape (`--encoder v4 --hidden 256

@@ -195,8 +195,11 @@ class Game:
         self.telem = self.telem_raw.astype(F32)
         self.ent, self.ent_start, self.ent_count = self._rows(d['entities'], ticks, dec_of_row)
         self.sl, self.sl_start, self.sl_count = self._rows(d['slimes'], ticks, dec_of_row)
-        self.ent_f = {name: self.ent[name].astype(F32) for name in ENTITY_FIELDS if name != 'speed'}
+        self.ent_f = {name: self.ent[name].astype(F32) for name in ENTITY_FIELDS if name not in ('speed', 'underground')}
         self.ent_f['speed'] = hypot(self.ent_f['vx'], self.ent_f['vy'])
+        # bopl_style.h bs_entity_field: flags bits 0-23, bit 24 (UNDERGROUND) its own field.
+        self.ent_f['flags'] = (self.ent['flags'] & 0xffffff).astype(F32)
+        self.ent_f['underground'] = ((self.ent['flags'] >> 24) & 1).astype(F32)
         self.sl_f = {name: self.sl[name].astype(F32) for name in SLIME_FIELDS if name not in ('exists', 'speed')}
         self.sl_f['speed'] = hypot(self.sl_f['vx'], self.sl_f['vy'])
         self.sl_abilities = self.sl['abilities'].astype(np.int64)

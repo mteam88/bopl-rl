@@ -53,7 +53,7 @@ int research_get_layout(BoplPuffer *env, int player) { return player<0 || player
  * (BOPL4_ABLATE). Re-encodes the row like research_set_layout when the player
  * is on layout v4. Persists across resets. Returns -1 for a bad player. */
 int research_set_ablation(BoplPuffer *env, int player, int mask) {
-    if (player<0 || player>=env->players || mask>31) return -1;
+    if (player<0 || player>=env->players || mask>63) return -1;
     if (bopl_ablate_of(env, player)==(mask<0?-1:mask)) return 0;
     bopl_set_ablate_of(env, player, mask);
     if (bopl_layout_of(env, player)==4) research_reencode(env, player);

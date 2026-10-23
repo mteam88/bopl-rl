@@ -113,7 +113,7 @@ static int bs_extra(uint32_t op) { return op==BS_AGG || op==BS_LOOP ? 2 : 0; }
 static int bs_field_limit(uint32_t op) {
     switch (op) {
     case BS_HEADER: return 7;  case BS_PFIELD: return 13; case BS_BFIELD: case BS_SFIELD: return 12;
-    case BS_BFIELDI: case BS_SFIELDI: return 4; case BS_EVFIELD: return 21; case BS_EFIELD: return 22;
+    case BS_BFIELDI: case BS_SFIELDI: return 4; case BS_EVFIELD: return 21; case BS_EFIELD: return 23;
     case BS_TELEM: return 9; default: return -1;
     }
 }
@@ -421,12 +421,15 @@ static float bs_entity_field(const BoplRlEntity *e, uint32_t f) {
     if (!e) return 0.0f;
     switch (f) {
     case 0: return (float)e->id; case 1: return (float)e->kind; case 2: return (float)e->layer;
-    case 3: return (float)e->owner; case 4: return (float)e->flags; case 5: return (float)e->hierarchy;
+    /* flags: bits 0-23 (a float holds them exactly; the training export's
+     * bits 24-25 would round the low bits away), UNDERGROUND as its own field. */
+    case 3: return (float)e->owner; case 4: return (float)(e->flags&0x00ffffffu); case 5: return (float)e->hierarchy;
     case 6: return (float)e->reserved[0]; case 7: return (float)e->reserved[1];
     case 8: return bs_q(e->x); case 9: return bs_q(e->y); case 10: return bs_q(e->vx); case 11: return bs_q(e->vy);
     case 12: return bs_q(e->right_x); case 13: return bs_q(e->right_y); case 14: return bs_q(e->up_x);
     case 15: return bs_q(e->up_y); case 16: return bs_q(e->radius); case 17: return bs_q(e->rotation);
     case 18: return bs_q(e->angular_velocity); case 19: return bs_q(e->inverse_mass); case 20: return bs_q(e->clock_rate);
+    case 22: return (e->flags&BOPL_ENTITY_UNDERGROUND)?1.0f:0.0f;
     default: return bs_hypot(bs_q(e->vx), bs_q(e->vy));
     }
 }
@@ -502,8 +505,8 @@ static inline void bs_pre_bind(const BoplStyleCtx *c, const BoplStylePre *pre, B
 static inline int bs_pre_pass(const BoplStyleBound *b, const BoplRlEntity *e) {
     for (uint32_t i=0; i<b->n; i++) {
         uint32_t f=b->field[i];
-        /* Fields 0-7 are the uint32 words (id ... reserved[1]); EFIELD reads them as (float). */
-        float v=f<8?(float)((const uint32_t *)e)[f]:bs_entity_field(e, f);
+        /* Fields 0-7 are the uint32 words (id ... reserved[1]); EFIELD reads them as (float), flags' bits 0-23. */
+        float v=f<8?(float)(((const uint32_t *)e)[f]&(f==4?0x00ffffffu:0xffffffffu)):bs_entity_field(e, f);
         switch (b->kind[i]) {
         case BS_PRE_EQ: if (!(v==b->ref[i])) return 0; break;
         case BS_PRE_NE: if (v==b->ref[i]) return 0; break;

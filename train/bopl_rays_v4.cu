@@ -931,9 +931,13 @@ __device__ static void br4_finish(const Br4Shared& sh, int lane, float dx, float
 // last step's SDF is wasted). The minima are fminf, one instruction:
 // w < d ? w : d is the same float, as d is never NaN (fminf drops a NaN w as
 // the select does) and neither is -0 (bopl4f_box).
+// With exit (bopl4f_march's, layout v4.3) a ray that starts inside the walls
+// marches to where it leaves them, its steps -d and at least 0.05.
 template <int L, int K>
-__device__ static float br4_march(const Br4Shared& sh, int n, int lane, bool live, float ox, float oy, float dx, float dy, float max, float limit) {
+__device__ static float br4_march(const Br4Shared& sh, int n, int lane, bool live, float ox, float oy, float dx, float dy, float max, float limit,
+                                  bool exit) {
     float t = 0.0f, out = 0.0f;
+    bool inside = false;
     for (int i = 0; i < 32; i++) {
         const float px = ox + dx * t, py = oy + dy * t;
         float d = 1e9f;
@@ -945,8 +949,9 @@ __device__ static float br4_march(const Br4Shared& sh, int n, int lane, bool liv
         if (live && !(t < max)) { out = max; live = false; }
         if (live && t >= limit) { out = limit; live = false; }
         if (!__any_sync(0xffffffffu, live)) return out;
-        if (live && d < 0.05f) { out = t; live = false; }
-        t += d;
+        if (i == 0) inside = exit && d < 0.0f;
+        if (live && (inside ? !(d < 0.0f) : d < 0.05f)) { out = t; live = false; }
+        t += inside ? (-d < 0.05f ? 0.05f : -d) : d;
     }
     return live ? max : out;
 }
@@ -961,12 +966,13 @@ __device__ __forceinline__ int br4_culled(const Br4Shared& sh, float bound) {
 }
 // br4_march with the walls a lane (the same in the whole warp) as its K.
 template <int L>
-__device__ static float br4_marches(const Br4Shared& sh, int n, int lane, bool live, float ox, float oy, float dx, float dy, float max, float limit) {
+__device__ static float br4_marches(const Br4Shared& sh, int n, int lane, bool live, float ox, float oy, float dx, float dy, float max, float limit,
+                                    bool exit = false) {
     switch ((n + L - 1) / L) {
-    case 0: case 1: return br4_march<L, 1>(sh, n, lane, live, ox, oy, dx, dy, max, limit);
-    case 2: return br4_march<L, 2>(sh, n, lane, live, ox, oy, dx, dy, max, limit);
-    case 3: return br4_march<L, 3>(sh, n, lane, live, ox, oy, dx, dy, max, limit);
-    default: return br4_march<L, 4>(sh, n, lane, live, ox, oy, dx, dy, max, limit);
+    case 0: case 1: return br4_march<L, 1>(sh, n, lane, live, ox, oy, dx, dy, max, limit, exit);
+    case 2: return br4_march<L, 2>(sh, n, lane, live, ox, oy, dx, dy, max, limit, exit);
+    case 3: return br4_march<L, 3>(sh, n, lane, live, ox, oy, dx, dy, max, limit, exit);
+    default: return br4_march<L, 4>(sh, n, lane, live, ox, oy, dx, dy, max, limit, exit);
     }
 }
 
@@ -978,7 +984,7 @@ __device__ static float br4_marches(const Br4Shared& sh, int n, int lane, bool l
 // to sh.fan_cull for warp 7's probes.
 template <int L = BR4_LANES>
 __device__ static float br4_group(Br4Shared& sh, int g, int threads, int gt, bool active, bool live,
-                                  float ox, float oy, float dx, float dy, float max, float limit) {
+                                  float ox, float oy, float dx, float dy, float max, float limit, bool exit = false) {
     const Bopl4Scene* s = &sh.s;
     if (!(s->axis_count + s->rot_count)) return max;
     const int lane = gt % L;
@@ -989,7 +995,7 @@ __device__ static float br4_group(Br4Shared& sh, int g, int threads, int gt, boo
     br4_bar(g, threads);
     const float bound = __uint_as_float(sh.reach[g]) + 0.1f;
     if (g == BR4_FAN && gt == 0) *(volatile unsigned*)&sh.fan_cull = __float_as_uint(bound);
-    return br4_marches<L>(sh, br4_culled(sh, bound), lane, live, ox, oy, dx, dy, max, limit);
+    return br4_marches<L>(sh, br4_culled(sh, bound), lane, live, ox, oy, dx, dy, max, limit, exit);
 }
 
 // The aim and line-of-sight casts (bopl4f_aim_rays) by warp 7, into out[2][8].
@@ -1003,7 +1009,8 @@ __device__ static void br4_aim_rays(Br4Shared& sh, int gt, float (*out)[BOPL4_RA
     int cls = -1;
     float closing = 0.0f, best = 0.0f;
     if (active) best = br4_surfaces(sh, lane, dx, dy, &cls, &closing);
-    const float wall = br4_group(sh, BR4_AIM, 32, gt, active, active, s->x, s->y, dx, dy, (float)BOPL4_RAY_LENGTH, best + 1.0f);
+    const float wall = br4_group(sh, BR4_AIM, 32, gt, active, active, s->x, s->y, dx, dy, (float)BOPL4_RAY_LENGTH, best + 1.0f,
+                                 (s->flags & BOPL4F_INSIDE) != 0);
     if (active) br4_finish(sh, lane, dx, dy, best, cls, closing, wall, out[ray]);
 }
 
@@ -1103,7 +1110,8 @@ __device__ static void br4_rays(const float* __restrict__ packed, float* __restr
         } else if (ray < n + 2) {
             dy = ray == n ? -1.0f : 1.0f; limit = max = 32.0f;
         }
-        const float wall = br4_group(sh, BR4_FAN, BR4_FAN_THREADS, i, ray < n + 2, ray < n, x, y, dx, dy, max, limit);
+        const float wall = br4_group(sh, BR4_FAN, BR4_FAN_THREADS, i, ray < n + 2, ray < n, x, y, dx, dy, max, limit,
+                                     (s.flags & BOPL4F_INSIDE) && ray < n);
         if (ray < n && !(aimed && (k == BOPL4_AIM_RAY || k == BOPL4_LOS_RAY))) br4_finish(sh, lane, dx, dy, best, cls, closing, wall, rays + k * BOPL4_RAY_FEATURES);
     } else if (i < BR4_MISC) {
         // Ground within one dash (bopl4f_terrain), needed when the drop probe is over 4.

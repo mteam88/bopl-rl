@@ -175,6 +175,70 @@ static void bopl4_entity_row_keyed(float *row, const BoplRlState *state, uint32_
 /* Each visible entity's surface distance from the observer, by entity index,
  * as the row's nearest pass computes it (this thread's current row). */
 static __thread double *bopl4_surface; static __thread size_t bopl4_surface_capacity;
+/* Layout v4.3 (BOPL4_ABLATE_DRILL), every field's width and meaning kept:
+ * - a slime in an ability whose player's live Drill form exports its body
+ *   (BOPL_ENTITY_FORM_BODY, sim/abi/bopl_rl.h; the training library with
+ *   BOPL_RL_FORM_BODY=1) reads the form's body: vx, vy the drill body's real
+ *   velocity (the form row's rotation, angular_velocity), its rotation the
+ *   form's (atan2 of its right axis; the heading is -up), where the slime's
+ *   record is frozen at the form's entry. That is the observer's own body
+ *   block and its relations' velocity, the opponent's body block, relation
+ *   and the rays' closing speeds, and the slime rows' velocity and rotation;
+ *   positions are the players' as before. The critic's block is untouched.
+ * - the fan's and the aim's rays from inside the ground march to where they
+ *   leave it (bopl_rays_v4.h bopl4f_march, BOPL4F_INSIDE).
+ * - a wall or water of the scene is not also a circle (bopl4_entity_circle).
+ * Without the bit every row is what v4.2 writes; with the bit but without the
+ * export, the rays and circles change and the body blocks do not. */
+/* The form body of `slime` (an ability's, its owner's FORM_BODY row nearest
+ * its record), or NULL. */
+static const BoplRlEntity *bopl4_form_body(const BoplRlState *state, const BoplRlSlime *slime) {
+    if (!(slime->flags&BOPL_SLIME_IN_ABILITY)) return NULL;
+    const BoplRlEntity *best=NULL; double best_distance=0.0;
+    double sx=bopl_fix(slime->x), sy=bopl_fix(slime->y);
+    for (uint32_t i=0; i<state->header.entity_count; i++) {
+        const BoplRlEntity *e=&state->entities[i];
+        if (!(e->flags&BOPL_ENTITY_FORM_BODY) || e->owner!=slime->owner) continue;
+        double dx=bopl_fix(e->x)-sx, dy=bopl_fix(e->y)-sy, distance=dx*dx+dy*dy;
+        if (!best || distance<best_distance) { best=e; best_distance=distance; }
+    }
+    return best;
+}
+/* Slime record `slime` as layout v4.3 reads it given its form body. */
+static void bopl4_form_slime(BoplRlSlime *slime, const BoplRlEntity *form) {
+    slime->vx=form->rotation; slime->vy=form->angular_velocity;
+    double angle=atan2(bopl_fix(form->right_y), bopl_fix(form->right_x));
+    slime->rotation=(int64_t)llround(angle*4294967296.0);
+}
+/* Whether any slime of `state` has a form body (any FORM_BODY row at all,
+ * the common case being none). */
+static int bopl4_form_any(const BoplRlState *state) {
+    for (uint32_t i=0; i<state->header.entity_count; i++)
+        if (state->entities[i].flags&BOPL_ENTITY_FORM_BODY) return 1;
+    return 0;
+}
+/* `state` with its slimes as layout v4.3 reads them in *view (its slimes in
+ * this thread's buffer), or `state` itself when no slime has a form body. */
+static __thread BoplRlSlime *bopl4_form_slimes; static __thread size_t bopl4_form_capacity;
+static const BoplRlState *bopl4_form_view(const BoplRlState *state, BoplRlState *view) {
+    if (!bopl4_form_any(state)) return state;
+    uint32_t n=state->header.slime_count;
+    if (n>bopl4_form_capacity) {
+        size_t capacity=n<16?16:(size_t)n*2;
+        BoplRlSlime *grown=realloc(bopl4_form_slimes, capacity*sizeof(*grown));
+        if (!grown) abort();
+        bopl4_form_slimes=grown; bopl4_form_capacity=capacity;
+    }
+    int patched=0;
+    for (uint32_t i=0; i<n; i++) {
+        bopl4_form_slimes[i]=state->slimes[i];
+        const BoplRlEntity *form=bopl4_form_body(state, &state->slimes[i]);
+        if (form) { bopl4_form_slime(&bopl4_form_slimes[i], form); patched=1; }
+    }
+    if (!patched) return state;
+    *view=*state; view->slimes=bopl4_form_slimes;
+    return view;
+}
 /* Encode `state` into player a's v4 row. Same contract as the v3 row writer:
  * every feature stored, unused set slots zeroed (with the bopl_written record
  * of the previous encode), the own-action tail zeroed and the privileged block
@@ -182,6 +246,8 @@ static __thread double *bopl4_surface; static __thread size_t bopl4_surface_capa
 static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a, int count_overflow) {
     bopl4_row_ablation=bopl_ablate_of(env, a);   /* this player's writer family for the whole row */
     int ablation=bopl4_ablation();
+    BoplRlState form_view;
+    if (ablation&BOPL4_ABLATE_DRILL) state=bopl4_form_view(state, &form_view);
     float *obs=bopl_obs_row(env, a);
     int w=-1;
     for (int i=0; i<env->written_count; i++) if (env->written[i].row==obs) { w=i; break; }

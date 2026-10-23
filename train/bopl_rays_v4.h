@@ -37,8 +37,9 @@ enum { BOPL4F_WALLS=48, BOPL4F_CIRCLES=BOPL4_ENTITIES+BOPL4_SLIMES, BOPL4F_GROUP
 /* Scene flags: the fan and terrain block (off under BOPL4_ABLATE_RAYS), every
  * other around ray only (BOPL4_ABLATE_RAYS16), the aim and line-of-sight
  * slots (BOPL4_ABLATE_AIM), water present, a decision with an aim applied,
- * the primary enemy's position known. */
-enum { BOPL4F_FAN=1, BOPL4F_HALF=2, BOPL4F_AIM=4, BOPL4F_WATER=8, BOPL4F_AIMED=16, BOPL4F_ENEMY=32 };
+ * the primary enemy's position known, rays from inside the ground march to
+ * where they leave it (BOPL4_ABLATE_DRILL, bopl4f_march). */
+enum { BOPL4F_FAN=1, BOPL4F_HALF=2, BOPL4F_AIM=4, BOPL4F_WATER=8, BOPL4F_AIMED=16, BOPL4F_ENEMY=32, BOPL4F_INSIDE=64 };
 #define BOPL4F_BLAST_X 131.25f   /* bopl_bots.h BOT_BLAST_X, BOT_BLAST_Y */
 #define BOPL4F_BLAST_Y 72.5f
 
@@ -162,13 +163,26 @@ BOPL4F_FN Bopl4Mask bopl4f_cull(const Bopl4Scene *s, const Bopl4Anchor *a, float
     return m;
 }
 /* bot_raycast's sphere march: the distance to the walls in m along (dx, dy),
- * max when the ray ends first or after 32 steps, limit once t reaches it. */
-BOPL4F_FN float bopl4f_march(const Bopl4Scene *s, Bopl4Mask m, float ox, float oy, float dx, float dy, float max, float limit) {
+ * max when the ray ends first or after 32 steps, limit once t reaches it.
+ * With `exit` (layout v4.3, BOPL4F_INSIDE: the fan's and the aim's rays) a
+ * ray whose origin is inside the walls (SDF < 0) instead marches to where it
+ * leaves them, the first step at SDF >= 0, by steps of -SDF (a lower bound
+ * on the distance out: every wall the point is in must be left) and at
+ * least 0.05. A culled wall cannot hold the ray in: its SDF exceeds the
+ * group's reach, so it is positive along the whole ray. */
+BOPL4F_FN float bopl4f_march(const Bopl4Scene *s, Bopl4Mask m, float ox, float oy, float dx, float dy, float max, float limit, int exit) {
     float t=0.0f;
+    int inside=0;
     for (int i=0; i<32; i++) {
         if (!(t<max)) return max;
         if (t>=limit) return limit;
         float d=bopl4f_sdf(s, m, ox+dx*t, oy+dy*t);
+        if (i==0) inside=exit && d<0.0f;
+        if (inside) {
+            if (!(d<0.0f)) return t;
+            t+=-d<0.05f?0.05f:-d;
+            continue;
+        }
         if (d<0.05f) return t;
         t+=d;
     }
@@ -252,14 +266,15 @@ BOPL4F_FN void bopl4f_anchor(const Bopl4Scene *s, Bopl4Anchor *a) {
 
 #ifndef __CUDACC__
 /* ---- The CPU writer: the groups one ray at a time. ---- */
-/* March n rays as one group into out[] (max[i] for every ray without walls). */
+/* March n rays as one group into out[] (max[i] for every ray without walls);
+ * the first `exits` of them may march out of the ground (bopl4f_march). */
 static void bopl4f_march_group(const Bopl4Scene *s, const Bopl4Anchor *a, int n, const float *ox, const float *oy,
-                               const float *dx, const float *dy, const float *max, const float *limit, float *out) {
+                               const float *dx, const float *dy, const float *max, const float *limit, float *out, int exits) {
     if (!(s->axis_count+s->rot_count)) { for (int i=0; i<n; i++) out[i]=max[i]; return; }
     float reach=0.0f;
     for (int i=0; i<n; i++) { float r=bopl4f_reach(s, ox[i], oy[i], max[i], limit[i]); reach=r>reach?r:reach; }
     Bopl4Mask m=bopl4f_cull(s, a, reach+0.1f);
-    for (int i=0; i<n; i++) out[i]=bopl4f_march(s, m, ox[i], oy[i], dx[i], dy[i], max[i], limit[i]);
+    for (int i=0; i<n; i++) out[i]=bopl4f_march(s, m, ox[i], oy[i], dx[i], dy[i], max[i], limit[i], i<exits);
 }
 /* n rays from the body into out[i]; with probes, the drop and ceiling casts
  * (straight down and up, 32 units) ride in the same group. */
@@ -275,7 +290,7 @@ static void bopl4f_cast_group(const Bopl4Scene *s, const Bopl4Anchor *a, int n, 
     if (probes) for (int i=0; i<2; i++, marched++) {
         ox[marched]=s->x; oy[marched]=s->y; mx[marched]=0.0f; my[marched]=i?1.0f:-1.0f; limit[marched]=max[marched]=32.0f;
     }
-    bopl4f_march_group(s, a, marched, ox, oy, mx, my, max, limit, wall);
+    bopl4f_march_group(s, a, marched, ox, oy, mx, my, max, limit, wall, (s->flags&BOPL4F_INSIDE)?n:0);
     if (probes) { probes[0]=wall[n]; probes[1]=wall[n+1]; }
     for (int i=0; i<n; i++) bopl4f_finish(s, dx[i], dy[i], best[i], cls[i], closing[i], wall[i], out[i]);
 }
@@ -310,7 +325,7 @@ static void bopl4f_terrain(const Bopl4Scene *s, const Bopl4Dirs *dirs, const Bop
                 side_of[n]=side; k_of[n]=k; n++;
             }
         }
-        bopl4f_march_group(s, a, n, ox, oy, dx, dy, cap, limit, d);
+        bopl4f_march_group(s, a, n, ox, oy, dx, dy, cap, limit, d, 0);
         for (int i=0; i<n; i++) if (d[i]>threshold && k_of[i]<first_drop[side_of[i]]) first_drop[side_of[i]]=k_of[i];
     }
     for (int side=0; side<2; side++) {
@@ -329,7 +344,7 @@ static void bopl4f_terrain(const Bopl4Scene *s, const Bopl4Dirs *dirs, const Bop
     if (!landing) {
         float ox[16], oy[16], dx[16], dy[16], limit[16], d[16];
         for (int i=0; i<16; i++) { ox[i]=x; oy[i]=y; dx[i]=dirs->dash[i][0]; dy[i]=dirs->dash[i][1]; limit[i]=(float)BOPL4_DASH_LENGTH; }
-        bopl4f_march_group(s, a, 16, ox, oy, dx, dy, limit, limit, d);
+        bopl4f_march_group(s, a, 16, ox, oy, dx, dy, limit, limit, d, 0);
         float ex[16], ey[16], zero[16], down[16], above[16], cap[16], fall[16];
         int m=0;
         for (int i=0; i<16; i++) {
@@ -340,7 +355,7 @@ static void bopl4f_terrain(const Bopl4Scene *s, const Bopl4Dirs *dirs, const Bop
             ex[m]=px; ey[m]=py; zero[m]=0.0f; down[m]=-1.0f; above[m]=bopl4f_next_up(4.0f); cap[m]=8.0f; m++;
         }
         if (m && !landing) {
-            bopl4f_march_group(s, a, m, ex, ey, zero, down, cap, above, fall);
+            bopl4f_march_group(s, a, m, ex, ey, zero, down, cap, above, fall, 0);
             for (int i=0; i<m; i++) if (!(fall[i]>4.0f)) landing=1;
         }
     }

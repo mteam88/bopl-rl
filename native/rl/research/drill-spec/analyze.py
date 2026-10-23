@@ -88,7 +88,10 @@ def analyze(d):
                       ug_path=float(steps[ugstep].sum()) if len(steps) else 0.0, a_died=bool(a_died),
                       a_died_unforced=any(x['killer'] in ('none', 'self') for x in a_died),
                       a_cause=[x['cause'] for x in a_died], kill=bool(b_drill), emerges=em, dist0=dist0, distmin=distmin,
-                      sd=ep[0]['t'] >= 6960, kill_ug=bool(b_drill) and any(ug[-16:])))
+                      sd=ep[0]['t'] >= 6960, kill_ug=bool(b_drill) and any(ug[-16:]),
+                      # P2 (DRILL-SPEC Section 6): the dive's longest underground run before the kill >= 0.5 s
+                      # (8 decisions = 0.53 s), per drill kill
+                      kill_ug05=[max(runs(ug[:max(0, x['d'] - d0) + 1]), default=0) >= 8 for x in b_drill]))
     res['episodes'] = len(E)
     if E:
         grp = [e['pair'] for e in E]
@@ -105,6 +108,8 @@ def analyze(d):
         res['ep_ug_ge_1s'] = wilson(sum(e['longest_ug_s'] >= 1.0 for e in E), len(E))
         res['ep_kill'] = wilson(sum(e['kill'] for e in E), len(E))
         res['ep_kill_after_ug'] = wilson(sum(e['kill_ug'] for e in E), len(E))
+        k05 = [x for e in E for x in e['kill_ug05']]
+        res['drill_kills_after_ug05'] = wilson(sum(k05), len(k05)) if k05 else None
         res['ep_death'] = wilson(sum(e['a_died'] for e in E), len(E))
         res['ep_death_unforced'] = wilson(sum(e['a_died_unforced'] for e in E), len(E))
         causes = defaultdict(int)
@@ -157,4 +162,5 @@ def main():
         a.json.write_text(json.dumps([{k: v for k, v in r.items()} for r in allres], default=str, indent=0))
 
 
-main()
+if __name__ == '__main__':
+    main()

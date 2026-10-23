@@ -41,6 +41,8 @@ Language (one expression per `when` / `value`):
   sum|any|all|max|min|count(for o in opponents: <expr>)
   since(cond) count_over(N, cond) max_over(N, expr) ema(tau, expr) prev(expr)
 Inside a filter the row's fields are bare names (owner, flags, x, speed...) and
+an entity's `underground` is 1 on a Drill form's row in the ground (flags bit 24,
+the training export BOPL_RL_FORM_BODY=1; `flags` itself holds bits 0-23), and
 dist(p) is the row's distance to player p. History windows count ticks and are
 sampled once per decision; their argument is a decision-level expression.
 """
@@ -86,7 +88,7 @@ SLIME_FIELDS = ['exists', 'id', 'owner', 'flags', 'state', 'x', 'y', 'vx', 'vy',
 SLIME_ARRAYS = ['abilities', 'ability_flags', 'cooldowns', 'timers']
 ENTITY_FIELDS = ['id', 'kind', 'layer', 'owner', 'flags', 'hierarchy', 'source_ability', 'timer', 'x', 'y',
                  'vx', 'vy', 'right_x', 'right_y', 'up_x', 'up_y', 'radius', 'rotation', 'angular_velocity',
-                 'inverse_mass', 'clock_rate', 'speed']
+                 'inverse_mass', 'clock_rate', 'speed', 'underground']
 EVENT_FIELDS = ['kind', 'tick', 'subject', 'actor', 'entity', 'source_ability', 'cause', 'flags', 'related',
                 'related_actor', 'related_tick', 'x', 'y', 'vx', 'vy', 'ax', 'ay', 'avx', 'avy', 'speed', 'aspeed']
 PLAYER_TYPED = {'subject', 'actor', 'related_actor', 'owner'}

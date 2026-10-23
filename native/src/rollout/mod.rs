@@ -376,6 +376,15 @@ const E_CREATOR: u32 = 0xff << E_CREATOR_SHIFT;
 /// whatever DetPhysics does with the collider meanwhile: rewriting a row as
 /// destroyed or removed keeps it. Cleared before any observation.
 const E_FIX_DESTROYED: u32 = 1 << 15;
+/// Published bits 24-25 (sim/abi/bopl_rl.h BOPL_ENTITY_UNDERGROUND,
+/// BOPL_ENTITY_FORM_BODY), training only: with the form export on
+/// (`form_body_export`, BOPL_RL_FORM_BODY=1 at reset) the live Drill form's
+/// row carries FORM_BODY, its rotation and angular_velocity the drill body's
+/// velocity, and UNDERGROUND while DrillState.underground. Only
+/// `publish_observed` sets them, on its copy of the table; the reference
+/// backend never does, so the divergence and replay gates run with it off.
+const E_UNDERGROUND: u32 = 1 << 24;
+const E_FORM_BODY: u32 = 1 << 25;
 /// Internal marker: DetPhysics dropped this collider. Objects destroyed by an
 /// updatable are removed before the same pass's contacts and never observed;
 /// one destroyed by a collision callback is observed once, flagged
@@ -6100,6 +6109,9 @@ pub struct RolloutWorld {
     pub game_in_progress: bool,
     pub sudden_death_tick: u32,
     pub ability_spawner_enabled: bool,
+    /// BOPL_RL_FORM_BODY=1 at reset: `stamp_forms` exports the Drill form's
+    /// body (E_FORM_BODY, E_UNDERGROUND) on published rows.
+    pub form_body_export: bool,
     /// A Rewind can be cast this episode, decided at reset: a resolved kit
     /// slot holds it, or an ability pickup can appear and be rerolled to it
     /// (the map spawner is on, or a slime can die with the round going on:
@@ -6326,6 +6338,7 @@ impl RolloutWorld {
             game_in_progress: true,
             sudden_death_tick: 0,
             ability_spawner_enabled: false,
+            form_body_export: false,
             rewind_possible: false,
             ability_spawner_state: Vec::with_capacity(2),
             orbits: Vec::with_capacity(4),
@@ -6467,6 +6480,7 @@ impl RolloutWorld {
         self.game_in_progress = src.game_in_progress;
         self.sudden_death_tick = src.sudden_death_tick;
         self.ability_spawner_enabled = src.ability_spawner_enabled;
+        self.form_body_export = src.form_body_export;
         self.rewind_possible = src.rewind_possible;
         self.ability_spawner_state
             .clone_from(&src.ability_spawner_state);
@@ -6595,6 +6609,7 @@ impl RolloutWorld {
             game_in_progress: _,
             sudden_death_tick: _,
             ability_spawner_enabled: _,
+            form_body_export: _,
             rewind_possible: _,
             ability_spawner_state: _,
             orbits: _,
@@ -6722,6 +6737,8 @@ impl RolloutWorld {
         self.scale_changers.clear();
         self.ability_spawner_enabled =
             std::env::var_os("BOPL_RL_ABILITY_SPAWNS").is_some_and(|value| value == "1");
+        self.form_body_export =
+            std::env::var_os("BOPL_RL_FORM_BODY").is_some_and(|value| value == "1");
         self.ability_spawner_state.clear();
         self.player_time_scale = Fix::ONE;
         self.duplicates_may_live = false;
@@ -40807,8 +40824,59 @@ impl RolloutWorld {
     /// more rows than that list holds, take the three passes instead.
     fn publish_observed(&mut self, out: &mut Vec<CEntity>) {
         self.stamp_creators(true);
+        let forms = self.stamp_forms();
         self.publish_observed_rows(out);
+        self.unstamp_forms(&forms);
         self.stamp_creators(false);
+    }
+
+    /// With `form_body_export`: each live Drill form's row gets E_FORM_BODY,
+    /// E_UNDERGROUND while underground, and in rotation / angular_velocity the
+    /// body's velocity as Drill moves it (DrillState: the body's velocity and
+    /// external velocity plus the point velocity of the platform it is in),
+    /// for the length of a publish. Returns each stamped row with its saved
+    /// rotation and angular_velocity, which `unstamp_forms` puts back. No
+    /// published field any consumer of the default export reads changes:
+    /// the form row's vx/vy stay 0 (the v4.2 writer, the bots and the styles
+    /// read those), and the flags are new bits.
+    fn stamp_forms(&mut self) -> [(usize, i64, i64); MAX_BODIES] {
+        let mut saved = [(usize::MAX, 0i64, 0i64); MAX_BODIES];
+        if !self.form_body_export {
+            return saved;
+        }
+        for i in 0..self.players.len().min(MAX_BODIES) {
+            let slot = &self.players[i];
+            let entity = slot.drill_entity;
+            if slot.active != ActiveAbility::Drill || entity >= self.entities.len() {
+                continue;
+            }
+            let mut velocity = slot.base.velocity + slot.base.external_velocity;
+            if let Some(platform) = slot.drill.current_platform
+                && platform < self.platforms.len()
+            {
+                velocity += self.drill_platform_velocity(platform, slot.base.position);
+            }
+            let underground = slot.drill.underground;
+            let row = &mut self.entities[entity];
+            if row.flags & E_REMOVED != 0 {
+                continue;
+            }
+            saved[i] = (entity, row.rotation, row.angular_velocity);
+            row.flags |= E_FORM_BODY | if underground { E_UNDERGROUND } else { 0 };
+            [row.rotation, row.angular_velocity] = Fix::raw_array([velocity.x, velocity.y]);
+        }
+        saved
+    }
+
+    fn unstamp_forms(&mut self, saved: &[(usize, i64, i64); MAX_BODIES]) {
+        for &(entity, rotation, angular_velocity) in saved {
+            if entity < self.entities.len() {
+                let row = &mut self.entities[entity];
+                row.flags &= !(E_FORM_BODY | E_UNDERGROUND);
+                row.rotation = rotation;
+                row.angular_velocity = angular_velocity;
+            }
+        }
     }
 
     /// The creator bits (`E_CREATOR`) of the rows that carry one, on

@@ -1,0 +1,48 @@
+# Drill showcase specialist (native/rl/research/DRILL-SPEC-2026-10.md Section 6, as decided by Matthew
+# 2026-10-23; pre-registered in PLAN-2026-10.md "2026-10-23 pre-registration: drill specialist").
+# A Drill/Dash/Dash specialist (Drill rotating over the slots) fine-tuned from off1's all-low annealed run ff-1,
+# against the league minus the held-out panel (PFSP hard, p = 1) plus me31 pinned on its own Drill kits.
+# Base: off1's ff-1 command (the program base, the l2 turn-100 command, on observation v4.2), with the
+# loadout and opponent overrides below. 3B learner steps at constant LR, then the matched 0.5B anneal to
+# 1.2e-5; checkpoints every 500M.
+#
+# Arms (all three run; SO is no longer conditional on S):
+#   C   v4.2 (writer bits 16), no style                     seed 7101        the kit-pinned control
+#   S   v4.2 + styles/drill_burrow.toml                     seeds 7111, 7112
+#   SO  v4.3 (bits 48 = 16 + 32, the drill writer) + style  seeds 7121, 7122
+# The burrow style stays on for the whole run (no fade, Matthew 2026-10-23): --style-fade-steps 1e18.
+# Trained interleaved: C, S-s7111, SO-s7121, S-s7112, SO-s7122.
+#
+# Decision eval (not arm.py's panel): train/research/arms/drill.sh eval <arm>, the drill_look protocol at the
+# annealed endpoint: 600 seed pairs vs l2-main-136002m on iid random kits (P1, primary) and 600 vs me31 on its
+# declared kits (P3); analyze.py drill applies the rules. The panel below is report only.
+name = "drill"
+purpose = "screen"
+init = "native/artifacts/rl/research/off1/ff-1/anneal/checkpoints/policy-1333395456.bin"
+constant_steps = 3_000_000_000
+anneal_steps = 500_000_000
+checkpoint_every = 500_000_000
+games = 2000
+order = "interleave"
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+[flags]
+v4-ablate = 16
+pfsp-p = 1
+pinned-opponents = "l2-me31-drill-grenade-2000m"
+loadout-pool = false
+loadout-learner-first = true
+loadout-set = "native/data/lineups-drill-ddd.txt"
+
+[arm.C]
+seed = 7101
+
+[arm.S]
+seeds = [7111, 7112]
+compare = "C"
+flags = { style = "styles/drill_burrow.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+[arm.SO]
+seeds = [7121, 7122]
+compare = "C"
+flags = { v4-ablate = 48, style = "styles/drill_burrow.toml", style-fade-steps = 1_000_000_000_000_000_000 }
