@@ -1,41 +1,83 @@
-# Optimizer screen (PLAN-2026-10 stage 3, "Adam is safe"; literature review: Muon weight decay). Muon at
-# constant LR 2.43e-4 moves the weights a fixed RMS 0.090 x LR per update (2 optimizer steps at
-# --minibatch-div 2); Adam's steady state is 0.26 x LR, so 3e-4 Adam steps 3.6x Muon's size and the
-# step-matched Adam LR is 2.43e-4 x 0.090 / 0.26 = 8.4e-5 (smoke runs 2026-10-19, 24 workers,
-# sweeps/adam-opt). One seed each, paired by seed with e0's l2 control (s301).
+# Optimizer screen (PLAN-2026-10 stage 3, "Adam is safe"; literature review: Muon weight decay). Pre-registered
+# in PLAN-2026-10.md's 2026-10-22 entry; analyze.py's OPTIMIZER rule implements exactly that.
 #
-# Anneal floors keep the control's floor ratio (1.2e-5 / 2.43e-4 = 0.049) for Adam at 3e-4 and the
-# matched step size for matched Adam (1.2e-5 x 0.346). Adam restarts cold at the anneal's
-# --init-weights, as Muon's momentum does.
+# Base (2026-10-22): the program base on observation v4.2 (`v4-ablate 16`), held-out panel excluded, 6B constant
+# with the 5B half-life EMA + 1B anneal, 4300 panel games per endpoint and the on-kit exploit panel in slots 8-11:
+# the same command as off1's all-low run ff-1 except the optimizer flags. No trainer-fix flags (off1 has none).
+#
+# Controls are not re-run: the v4.2 base already has 5 scored replicates at this length, e0/obsfix-s301..s304 and
+# off1/ff-1 (`controls` below; all play the same setups per endpoint, so eval CRN carries over).
+#
+# Two stages. Screen: one seed per arm (301). Follow-up: the arms the screen rule promotes get seeds 302 and 303
+# (`arm.py optimizer.toml --followup <groups>`, which analyze.py prints), then the confirm rule decides on k 3.
+#
+# Step sizes (smoke runs 2026-10-19, 24 workers, sweeps/adam-opt): Muon at constant LR 2.43e-4 moves the weights
+# a fixed RMS 0.090 x LR per update (2 optimizer steps at --minibatch-div 2); Adam's steady state is 0.26 x LR, so
+# 3e-4 Adam steps 3.6x Muon's size and the step-matched Adam LR is 2.43e-4 x 0.090 / 0.26 = 8.4e-5.
+#
+# Anneal floors: Muon arms use the program's absolute floor 1.2e-5. The Adam arms keep the control's floor in
+# step-size terms instead: 0.049 of peak for Adam at 3e-4 (1.48e-5) and the matched step size for matched Adam
+# (1.2e-5 x 0.346 = 4.2e-6). Adam restarts cold at the anneal's --init-weights, as Muon's momentum does.
 name = "optimizer"
 purpose = "screen"
 init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
 constant_steps = 6_000_000_000
 anneal_steps = 1_000_000_000
 checkpoint_every = 2_000_000_000
-raw_at = [2_000_000_000]
+games = 4300
+flags = { v4-ablate = 16 }
 exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
-seeds = [301]
+followup_seeds = [302, 303]
+controls = [{ program = "e0", group = "obsfix" }, { program = "off1", group = "ff-1" }]
+
+# The exploiters on their declared kits, in e0/off1's slots, at the annealed endpoint (report only).
+[opponents.x2-drill-kit]
+path = "x2-drill-1500m"
+pinned = true
+slot = 8
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-kit]
+path = "x2-missile-1500m"
+pinned = true
+slot = 9
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-kit]
+path = "x2-blinkplat-1500m"
+pinned = true
+slot = 10
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-kit]
+path = "l2-me32-trap-2000m"
+pinned = true
+slot = 11
+games = 400
+endpoints = ["anneal"]
 
 [arm.adam-3e4]
+seeds = [301]
 flags = { optimizer = "adam", learning-rate = 3e-4 }
 anneal_floor_lr = 1.48e-5
-compare = "l2"
 
 [arm.adam-matched]
+seeds = [301]
 flags = { optimizer = "adam", learning-rate = 8.4e-5 }
 anneal_floor_lr = 4.2e-6
-compare = "l2"
 
-# Decoupled weight decay at the value that holds the main's weight norm (growth 0.53/B at
-# 40.7k optimizer steps/B): about 0.9% norm shrink over the 6B screen, so this arm mostly checks
-# harmlessness before the loop adopts it.
+# Decoupled weight decay at the value that holds the main's weight norm (growth 0.53/B at 40.7k optimizer
+# steps/B): about 0.9% norm shrink over the 6B screen, so this arm checks harmlessness before the long run and
+# the loop adopt it (non-inferiority rule).
 [arm.muon-wd]
+seeds = [301]
 flags = { weight-decay = 1.5e-4 }
-compare = "l2"
 
-# Muon on the trunk, AdamW on the embedding and output heads (actor, critic_out) at 1e-4: Muon
-# gave those tensors 0.11-0.23 x LR per update, AdamW gives 0.26-0.31 x its LR.
+# Muon on the trunk, AdamW on the embedding and output heads (actor, critic_out) at 1e-4: Muon gave those
+# tensors 0.11-0.23 x LR per update, AdamW gives 0.26-0.31 x its LR.
 [arm.muon-adamw]
+seeds = [301]
 flags = { optimizer = "muon-adamw", adam-lr = 1e-4 }
-compare = "l2"

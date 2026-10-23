@@ -2,6 +2,9 @@
 
     venv/bin/python train/research/analyze.py e0 [--dir DIR] [--prior-sseed 0.015] [--json OUT]
 
+--json also writes `decisions`: the pre-registered verdicts a queue script acts on (optimizer: `followup`, the
+groups to rerun with `arm.py optimizer.toml --followup ...`; x2d-drill: `case`, `stop_optimizer`).
+
 Reads train/research/arms/<program>.toml (or a path) for the expected arms, then every
 <out>/<arm>/{constant,anneal}/status.json and evals/*.games.jsonl. Only complete games files enter
 the estimates; everything missing is listed at the top. Read-only and idempotent.
@@ -57,10 +60,14 @@ def program_spec(program):
     raw = tomllib.loads(config.read_text())
     top = {**harness.DEFAULTS, **{k: v for k, v in raw.items() if k not in ('arm', 'factorial')}}
     tables = list(raw.get('arm', {}).items()) + (harness.factorial_arms(raw['factorial']) if 'factorial' in raw else [])
+    out = harness.path(top.get('out', f'native/artifacts/rl/research/{raw["name"]}'))
     arms = []
     for name, table in tables:
         cfg = {**top, **table}
-        for seed in cfg.pop('seeds', None) or [cfg['seed']]:
+        started = any((out / f'{name}-s{s}').exists() for s in cfg.get('followup_seeds', [])) and 'seeds' in table
+        seeds = harness.expand_seeds(name, table, cfg, (table.get('group', name),) if started else ())
+        cfg.pop('seeds', None)
+        for seed in seeds:
             a = dict(cfg, name=f'{name}-s{seed}' if 'seeds' in table else name,
                      group=table.get('group', name), seed=seed)
             a['endpoint_names'] = [*harness.ENDPOINTS, *(f'raw{s // 1_000_000}m' for s in a['raw_at'])]
@@ -290,7 +297,7 @@ def report(program, top, arms, data, prior, lines, ref=None, reference=None):
               f'{"" if c["k"] == len(groups[ctrl]) else "  [interim]"}   (PLAN E0 decision on the REVIEW 80% UB)')
         else:
             p(f'  E0 s_seed(anneal): PENDING, {c.get("k", 0)}/{len(groups[ctrl])} control seeds evaluated')
-    if ctrl and ('ema' in endpoints):
+    if ctrl and ('ema' in endpoints) and not top.get('controls'):
         er, ea = effects.get((ctrl, 'ema', 'raw')), effects.get((ctrl, 'anneal', 'ema'))
         if er and ea:
             tag = '' if er['k'] == len(groups[ctrl]) else '  [interim]'
@@ -326,6 +333,10 @@ def report(program, top, arms, data, prior, lines, ref=None, reference=None):
         factorial_report(data, fac, ref or {}, prior, p)
     if program == 'anneal-ctl':
         anneal_ctl_report(data, arms, reference, p)
+    if program == 'optimizer':
+        DECISIONS['optimizer'] = optimizer_report(data, arms, top, p)
+    if program == 'x2d-drill':
+        DECISIONS['x2d-drill'] = x2d_report(data, arms, top, p)
 
     # secondary opponents
     sec = [o for o in arms[0]['evals'] if o not in arms[0]['panel']]
@@ -608,6 +619,189 @@ def factorial_report(data, fac, ctl, prior, p):
             p(f'    interaction {name} {effect[name]:+.4f} (|z| {abs(effect[name] / se):.1f}) -> adopt pair jointly')
 
 
+# ---- recipe stage 3 optimizer screen and stage 2d (PLAN-2026-10.md 2026-10-22 pre-registration) ----------------
+
+DECISIONS = {}
+OPTIMIZER = dict(
+    source='PLAN-2026-10.md 2026-10-22 "pre-registration: x2d-drill and optimizer"',
+    endpoint='anneal',
+    sd_floor=0.0068,            # per-run sd floor: E0 s_seed(anneal) point 0.0030 (+) CRN eval se 0.0061 at 4300 games
+    switch=('adam-3e4', 'adam-matched', 'muon-adamw'),   # candidates to replace Muon
+    harmless=('muon-wd',),      # adopted if non-inferior
+    screen_promote=0.005,       # switch candidate: follow up if screen diff >= +0.005
+    screen_margin=-0.02,        # muon-wd: follow up if screen diff >= -0.02
+    confirm_min=0.01,           # switch: diff >= +0.01 and Holm one-sided 0.05 over the promoted candidates
+    alpha=0.05, ni_margin=-0.02,   # muon-wd: one-sided 95% LB > -0.02
+    kh_veto=0.85)               # no switch/adopt if KH_PRE (game credit) < 0.85 x control
+X2D = dict(
+    source='EXPLOITER-GAPS-2026-10.md Section 3, restated in PLAN-2026-10.md 2026-10-22',
+    defect=0.10, learn=0.15, intrinsic=0.05, guard=-0.05)
+
+
+def control_runs(top):
+    """The scored control replicates named by `controls` ([{program, group}]): [(label, data, arm)]."""
+    out = []
+    for c in top.get('controls', []):
+        name, ctop, carms = program_spec(c['program'])
+        g = [a for a in carms if a['group'] == c['group']]
+        data = Data(harness.path(ctop.get('out', f'native/artifacts/rl/research/{name}')), g)
+        out += [(f"{name}/{a['name']}", data, a) for a in g]
+    return out
+
+
+def pooled(arm_s, ctl_s, floor):
+    """diff, se, df of a pooled-variance t (per-run sd floored), arm k may be 1."""
+    ka, kc = len(arm_s), len(ctl_s)
+    ss = (np.var(arm_s, ddof=1) * (ka - 1) if ka > 1 else 0.0) + np.var(ctl_s, ddof=1) * (kc - 1)
+    df = ka + kc - 2
+    s = max(math.sqrt(ss / df), floor)
+    return float(np.mean(arm_s) - np.mean(ctl_s)), s * math.sqrt(1 / ka + 1 / kc), df
+
+
+def optimizer_report(data, arms, top, p):
+    """Screen (k 1) -> follow-up seeds -> confirm (k 3) against the v4.2 base replicates (top `controls`)."""
+    rule, e = OPTIMIZER, OPTIMIZER['endpoint']
+    ctl = control_runs(top)
+    p(f'  optimizer: rules {rule["source"]}')
+    ctl_s = [(lab, panel(d, a, e)[0]) for lab, d, a in ctl if panel(d, a, e)]
+    if len(ctl_s) < 2:
+        p(f'    PENDING: {len(ctl_s)}/{len(ctl)} control runs scored at {e}')
+        return dict(stage='pending')
+    cs = [v for _, v in ctl_s]
+    p(f'    control @{e} k {len(cs)}: ' + ', '.join(f'{lab} {v:.4f}' for lab, v in ctl_s)
+      + f'; mean {np.mean(cs):.4f} sd {np.std(cs, ddof=1):.4f} (per-run sd floor {rule["sd_floor"]})')
+    ctl_kh = [r['kh_pre'] for r in (regime(d, a, e) for _, d, a in ctl) if r]
+    groups = {}
+    for a in arms:
+        groups.setdefault(a['group'], []).append(a)
+    out, confirm = dict(stage='screen', followup=[], verdicts={}), {}
+    for g, members_ in groups.items():
+        done = [a for a in members_ if panel(data, a, e)]
+        if len(done) < len(members_):
+            p(f'    {g:<13} PENDING: {len(done)}/{len(members_)} runs scored at {e}')
+            out['stage'] = 'pending'
+            continue
+        s = [panel(data, a, e)[0] for a in done]
+        diff, se, df = pooled(s, cs, rule['sd_floor'])
+        kh = [r['kh_pre'] for r in (regime(data, a, e) for a in done) if r]
+        khr = np.mean(kh) / np.mean(ctl_kh) if kh and ctl_kh else float('nan')
+        sec = []
+        for x in ('raw', 'ema'):
+            xa = [panel(data, a, x)[0] for a in done if panel(data, a, x)]
+            xc = [panel(d, a, x)[0] for _, d, a in ctl if panel(d, a, x)]
+            if xa and xc:
+                sec.append(f'{x} {np.mean(xa) - np.mean(xc):+.4f}')
+        ff = [v for lab, v in ctl_s if lab.startswith('off1/')]
+        if ff:
+            sec.append(f'vs off1/ff-1 alone {np.mean(s) - np.mean(ff):+.4f}')
+        line = (f'    {g:<13} k {len(s)} [{" ".join(f"{x:.4f}" for x in s)}] diff {diff:+.4f} se {se:.4f} df {df} '
+                f'| KH_PRE x{khr:.3f} | secondary: {", ".join(sec)}')
+        if len(s) == 1:
+            if g in rule['switch']:
+                go = diff >= rule['screen_promote']
+                v = 'FOLLOW UP (+302, +303)' if go else 'drop: no evidence it beats Muon' + (
+                    ' (Muon better by >= 0.03)' if diff <= -0.03 else '')
+            elif g in rule['harmless']:
+                go = diff >= rule['screen_margin']
+                v = 'FOLLOW UP (+302, +303)' if go else 'drop: harmful at the screen (diff < -0.02)'
+            else:
+                go, v = False, 'no rule: report only'
+            if go:
+                out['followup'].append(g)
+            out['verdicts'][g] = v
+            p(line + f' -> screen: {v}')
+        else:
+            confirm[g] = (diff, se, df, khr)
+            p(line)
+    sw = {g: v for g, v in confirm.items() if g in rule['switch']}
+    if sw:
+        out['stage'] = 'confirm'
+        pv = {g: float(stats.t.sf(d / se, df)) for g, (d, se, df, _) in sw.items()}
+        holm, alive = {}, True
+        for i, g in enumerate(sorted(pv, key=pv.get)):
+            alive = alive and pv[g] <= rule['alpha'] / (len(pv) - i)
+            holm[g] = alive
+        passed = [g for g in sw if holm[g] and sw[g][0] >= rule['confirm_min'] and not sw[g][3] < rule['kh_veto']]
+        best = max(passed, key=lambda g: sw[g][0]) if passed else None
+        for g, (d, se, df, khr) in sw.items():
+            v = ('SWITCH to ' + g if g == best else 'passes, but another candidate is larger') if g in passed else \
+                'KH_PRE veto' if holm[g] and d >= rule['confirm_min'] else 'keep Muon'
+            out['verdicts'][g] = v
+            p(f'    confirm {g:<13} diff {d:+.4f} one-sided p {pv[g]:.4f} Holm {"pass" if holm[g] else "fail"} '
+              f'(m {len(pv)}) -> {v}')
+        out['switch'] = best
+    for g, (d, se, df, khr) in confirm.items():
+        if g in rule['harmless']:
+            out['stage'] = 'confirm'
+            lb = d - stats.t.ppf(1 - rule['alpha'], df) * se
+            ok = lb > rule['ni_margin'] and not khr < rule['kh_veto']
+            out['verdicts'][g] = v = 'ADOPT for the long run and the loop' if ok else 'do not adopt'
+            out['adopt_wd'] = ok
+            p(f'    confirm {g:<13} diff {d:+.4f} one-sided 95% LB {lb:+.4f} (margin {rule["ni_margin"]}) -> {v}')
+    if out['followup']:
+        p(f'    follow-up: arm.py train/research/arms/optimizer.toml --followup {",".join(out["followup"])}')
+    return out
+
+
+def exploit_pairs(path, subject):
+    """{seed: mean score} of one subject's games in an exploit_eval games.jsonl."""
+    pairs = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            g = json.loads(line)
+            if g['subject'] == subject:
+                pairs.setdefault(g['seed'], []).append(g['score'])
+    return {k: np.mean(v) for k, v in pairs.items() if len(v) == 2}
+
+
+def paired(a, b):
+    common = sorted(set(a) & set(b))
+    if len(common) < 2:
+        return None
+    d = np.array([a[s] - b[s] for s in common])
+    h = stats.t.ppf(0.975, len(d) - 1) * d.std(ddof=1) / math.sqrt(len(d))
+    return float(d.mean()), float(h), len(d)
+
+
+def x2d_report(data, arms, top, p):
+    """Stage 2d: tuned (1B) - base (step 0) vs me31 on the arm's own kit schedule decides; panel guard raw - raw0m."""
+    rule, out = X2D, dict(case='pending', stop_optimizer=False)
+    p(f'  x2d-drill: rules {rule["source"]}')
+    own = {}
+    for a in arms:
+        d = harness.path(top.get('out', 'native/artifacts/rl/research/x2d-drill')) / a['name']
+        base = {k: exploit_pairs(d / k / 'games.jsonl', 'base') for k in ('x2d-eval-final', 'x2d-eval-on-iid')}
+        r = {k: paired(exploit_pairs(d / k / 'games.jsonl', 'tuned'), base[k]) for k in base}
+        curve = [(f't{s}', paired(exploit_pairs(d / 'x2d-eval-curve' / 'games.jsonl', f't{s}'), base['x2d-eval-final']))
+                 for s in (250, 500, 750)]
+        g = (panel(data, a, 'raw'), panel(data, a, 'raw0m'))
+        guard = g[0][0] - g[1][0] if all(g) else None
+        if r['x2d-eval-final'] is None:
+            p(f'    {a["name"]:<7} PENDING: no matchup eval (x2d-drill.sh eval {a["name"]})')
+            continue
+        own[a['name']] = r['x2d-eval-final'][0]
+        bm = np.mean(list(base['x2d-eval-final'].values()))
+        fmt = lambda x: f'{x[0]:+.3f} ±{x[1]:.3f} (n {x[2]})' if x else '-'
+        p(f'    {a["name"]:<7} base {bm:.3f}; tuned - base own schedule {fmt(r["x2d-eval-final"])}, iid schedule '
+          f'{fmt(r["x2d-eval-on-iid"])}; curve ' + ', '.join(f'{k} {x[0]:+.3f}' if x else f'{k} -' for k, x in curve)
+          + (f'; guard panel raw - raw0m {guard:+.4f}' + (' -> CASE 4: overfitting costs general play' if guard < rule['guard'] else '')
+             if guard is not None else '; guard pending'))
+    m, i = own.get('mirror'), own.get('iid')
+    if m is not None:
+        if m < rule['defect']:
+            out.update(case='1 learner or observation defect on defence', stop_optimizer=True)
+        elif i is None:
+            out['case'] = 'pending (iid)'
+        elif m >= rule['learn'] and i >= rule['learn']:
+            out['case'] = '2 learnable; the league starves it'
+        elif m >= rule['learn'] and i <= rule['intrinsic']:
+            out['case'] = '3 a well-piloted drill beats random kits (run counter)'
+        else:
+            out['case'] = 'none of 1-3 (between thresholds): report, no stop'
+    p(f'    -> case {out["case"]}' + ('; STOP the optimizer program and debug (Section 3 case 1)' if out['stop_optimizer'] else ''))
+    return out
+
+
 # ---- power --------------------------------------------------------------------
 
 def mde_two_group(s2, ev_a, ka, ev_c, kc, alpha, sided=2):
@@ -729,7 +923,7 @@ def main(argv=None):
     power_report(comps, r_crn, data, arms, a.prior_sseed, lines.append)
     print('\n'.join(lines))
     if a.json:
-        a.json.write_text(json.dumps(dict(program=program, r_crn=r_crn, missing=data.missing,
+        a.json.write_text(json.dumps(dict(program=program, r_crn=r_crn, missing=data.missing, decisions=DECISIONS.get(program),
                                           components={f'{g}:{e}': c for (g, e), c in comps.items()}),
                                      indent=1, default=float) + '\n')
     return 0

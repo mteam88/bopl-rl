@@ -1,12 +1,18 @@
-# Stage 2d "overfit one matchup" (native/rl/research/EXPLOITER-GAPS-2026-10.md Section 3) for train/research/arm.py
-# (the arm-harness rift's harness). The same three arms as x2d-drill.sh, which is the reference command: the l2
-# main that l2-me31-drill-grenade-2000m beat, fine-tuned 1B learner steps against only that exploiter, with the
-# exploiter's own LR/pool and the roles swapped. Only the main's kit differs between arms.
+# Stage 2d "overfit one matchup" (native/rl/research/EXPLOITER-GAPS-2026-10.md Section 3; PLAN-2026-10.md
+# 2026-10-22 pre-registration): the l2 main that l2-me31-drill-grenade-2000m beat, fine-tuned 1B learner steps at
+# constant LR against only that frozen exploiter, with the exploiter's own LR/pool and the roles swapped. Only the
+# main's kit differs between arms. Stage 2d needs only mirror and iid (EXPLOITER-GAPS 2026-10-19); counter is
+# conditional on case 3 and stays in x2d-drill.sh.
 #
-# The harness's panel endpoints (all_combos vs the held-out panel) serve as the general-play guard. The decision
-# itself is the kit-scheduled matchup eval, which all_combos can't deal: run `x2d-drill.sh eval <arm>` on the
-# constant stage's last checkpoint. The anneal stage isn't part of 2d. Ignore its endpoint, or skip it if the
-# harness accepts anneal_steps = 0.
+# Base (2026-10-22): the program base (the l2 turn-100 command, arm.py `base`) on observation v4.2
+# (`v4-ablate 16`, adopted 2026-10-21), as off1's all-low run ff-1, plus the 2d overrides below. No trainer-fix
+# flags (off1's base has none). The held-out panel is not in the training opponents (me31 only).
+#
+# Endpoints: raw (1B) and raw0m, the step-0 checkpoint: l2-main-125336m's weights under the v4.2 writer, so the
+# guard and the decision compare like with like. 2000 panel games each (guard: raw - raw0m, se ~0.016).
+# The decision is the kit-scheduled matchup eval (all_combos can't deal a kit schedule):
+# `x2d-drill.sh eval <arm>` after training, tuned (1B) vs base (step 0) on the same 600 seed pairs; analyze.py
+# applies the rule.
 name = "x2d-drill"
 purpose = "screen"
 init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-125336092672.bin"   # l2-main-125336m, me31's target
@@ -14,9 +20,11 @@ constant_steps = 1_000_000_000
 checkpoint_every = 250_000_000
 anneal_steps = 0
 ema_decay = 0
-games = 1000
+raw_at = [0]
+games = 2000
 
 [flags]
+v4-ablate = 16
 opponents = "l2-me31-drill-grenade-2000m"
 historical-every = 1
 bank-groups = "league,league,league,league"
@@ -34,11 +42,6 @@ pinned-opponents = false
 seed = 5201
 flags = { "loadout-pool" = false, "loadout-learner-first" = true, "loadout-set" = "native/data/lineups-2d-drill-mirror.txt" }
 
-
 [arm.iid]
 seed = 5203
 flags = { "pinned-opponents" = "l2-me31-drill-grenade-2000m" }
-
-[arm.counter]
-seed = 5204
-flags = { "loadout-pool" = false, "loadout-learner-first" = true, "loadout-set" = "native/data/lineups-2d-drill-counter.txt" }

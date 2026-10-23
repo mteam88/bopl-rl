@@ -1,7 +1,7 @@
 """Research arms (native/rl/research/PLAN-2026-10.md, REVIEW-2026-10-cursor.md): one experiment is one TOML file.
 
     venv/bin/python train/research/arm.py train/research/arms/e0.toml [more.toml ...] [--dry-run] [--only NAME,...]
-        [--eval-only] [--eval-jobs N]
+        [--eval-only] [--eval-jobs N] [--followup GROUP,...]
 
 An arm warm-starts from `init` (a checkpoint, a league member, or a run directory whose status.json is
 complete; `{seed}` becomes the arm's seed), trains `constant_steps` learner steps at constant LR with
@@ -13,14 +13,17 @@ from the arm's --learning-rate), then scores its endpoints with league/all_combo
 raw, EMA and annealed, plus the raw checkpoints at `raw_at` learner steps. `constant_steps = 0` skips
 the constant stage: the anneal starts from `init` and only the annealed endpoint is scored (raw is
 `init`, scored by the program that made it). `anneal_floor_lr` equal to --learning-rate makes the
-anneal stage a constant-LR restart.
+anneal stage a constant-LR restart. `anneal_steps = 0` skips the anneal stage (no annealed endpoint);
+`raw_at = [0]` then scores the run's step-0 checkpoint, the init under the arm's flags (a writer change
+such as --v4-ablate applies), as endpoint raw0m.
 
 Training flags are the l2 main's turn-100 command (`base`, a command.txt) minus the flags an arm
 owns (OWNED) and minus the `exclude_opponents` members; `flags` adds or overrides (true = bare flag,
 false = removed); `env` sets environment variables of the training units only (a widened run's
 BOPL_LEAGUE_JSON: every training opponent must resolve there at the learner's --hidden, checked at
 load). Top-level keys are defaults, [arm.<name>] tables override them (`flags` and `env` merge);
-`seeds = [...]` expands an arm into replicate arms <name>-s<seed> of group <name>; `compare =
+`seeds = [...]` expands an arm into replicate arms <name>-s<seed> of group <name>; `followup_seeds = [...]`
+are added to the groups named by --followup (a pre-registered screen's second stage); `compare =
 "<group>"` names the control group the report tests it against on their common seeds; top-level `order = "interleave"` trains one arm of
 each group in turn (control s301, treatment s301, control s302, ...). A [factorial]
 table adds one arm per run of a two-level (fractional) factorial: [factorial.factors.<letter>] with
@@ -78,14 +81,14 @@ LEARNER_ROWS_PER_WORKER = 1.5   # learner rows per worker per tick at the l2 ban
 PANEL = ['final5-18666m', 'anneal20-26666m', 'team5b-6250m', 'g111-20b-26027m']
 OWNED = ('--output', '--steps', '--init-weights', '--anneal-lr', '--min-lr-ratio', '--seed', '--checkpoint-every',
          '--metrics-every', '--ema-decay', '--resume')
-PROGRAM_KEYS = ('name', 'out', 'purpose', 'seed_base', 'eval_workers', 'factorial', 'order')
+PROGRAM_KEYS = ('name', 'out', 'purpose', 'seed_base', 'eval_workers', 'factorial', 'order', 'controls')
 DEFAULTS = dict(
     purpose='screen', eval_workers=6, gpu_mib=9000,
     base='native/artifacts/rl/sweeps/l2-anneal-2/command.txt',
     init='native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin',
     constant_steps=6_000_000_000, anneal_steps=1_000_000_000, anneal_floor_lr=1.2e-5,
     ema_half_life=5_000_000_000, ema_decay=None,
-    checkpoint_every=None, raw_at=[], metrics_every=10_000_000, flags={}, env={}, exclude_opponents=[],
+    checkpoint_every=None, raw_at=[], metrics_every=10_000_000, flags={}, env={}, exclude_opponents=[], followup_seeds=[],
     resume_on_crash=False,
     panel=PANEL, games=4300, opponents={})
 NTFY = 'http://127.0.0.1:2586/bopl'
@@ -192,10 +195,11 @@ def factorial_arms(spec):
 
 
 def scored_endpoints(arm):
-    """The endpoints an arm scores: no raw, EMA or raw_at ones without a constant stage, no EMA without a decay."""
+    """The endpoints an arm scores: no raw, EMA or raw_at ones without a constant stage, no EMA without a decay,
+    no annealed one without an anneal stage."""
     ema = arm.get('ema_decay') or (arm.get('ema_decay') is None and arm.get('ema_half_life'))
     return [e for e in arm['endpoint_names']
-            if (arm['constant_steps'] or e == 'anneal') and (e != 'ema' or ema)]
+            if (arm['constant_steps'] or e == 'anneal') and (e != 'ema' or ema) and (e != 'anneal' or arm['anneal_steps'])]
 
 
 def evals(arm):
@@ -208,7 +212,17 @@ def evals(arm):
     return out
 
 
-def load_arms(config_file):
+def expand_seeds(name, table, cfg, followup=()):
+    """An arm table's seeds: `seeds`, plus `followup_seeds` when --followup names the group."""
+    seeds = list(cfg.get('seeds') or [cfg['seed']])
+    if table.get('group', name) in followup:
+        if 'seeds' not in table:   # replicate names (<name>-s<seed>) come only from an arm's own `seeds`
+            raise SystemExit(f'arm {name}: --followup needs `seeds` in the arm table')
+        seeds += [s for s in cfg.get('followup_seeds', []) if s not in seeds]
+    return seeds
+
+
+def load_arms(config_file, followup=()):
     raw = tomllib.loads(Path(config_file).read_text())
     program = raw['name']
     top = {**DEFAULTS, **{k: v for k, v in raw.items() if k not in ('arm', 'factorial')}}
@@ -221,7 +235,9 @@ def load_arms(config_file):
                'env': {**top['env'], **table.get('env', {})}}
         if bad := [k for k in PROGRAM_KEYS if k in table]:
             raise SystemExit(f'{config_file}: arm {name} sets program keys {bad}')
-        for seed in cfg.pop('seeds', None) or [cfg['seed']]:
+        seeds = expand_seeds(name, table, cfg, followup)
+        cfg.pop('seeds', None)
+        for seed in seeds:
             arm = dict(cfg, name=f'{name}-s{seed}' if 'seeds' in table else name, group=table.get('group', name),
                        seed=seed, program=program, init=str(cfg['init']).replace('{seed}', str(seed)))
             arm['dir'] = out / arm['name']
@@ -250,8 +266,10 @@ def load_arms(config_file):
                 per_step = LEARNER_ROWS_PER_WORKER * value('--workers', 16) * value('--horizon', 128) / (
                     value('--minibatch-div', 1) * value('--learner-passes', 1))
                 arm['ema_decay'] = round(0.5 ** (per_step / arm['ema_half_life']), 10)
+            if not (arm['constant_steps'] or arm['anneal_steps']):
+                raise SystemExit(f'{config_file}: arm {arm["name"]} trains nothing')
             arm['min_lr_ratio'] = arm['anneal_floor_lr'] / float(flags['--learning-rate'][0])
-            if not 0 < arm['min_lr_ratio'] <= 1:
+            if arm['anneal_steps'] and not 0 < arm['min_lr_ratio'] <= 1:
                 raise SystemExit(f'{config_file}: anneal_floor_lr is above the arm\'s --learning-rate')
             if arm['eval_workers'] > 6:
                 raise SystemExit(f'{config_file}: eval_workers is at most 6')
@@ -387,7 +405,7 @@ class Runner:
     def endpoints(self, arm, raw, annealed):
         if not arm['constant_steps']:
             return dict(anneal=annealed)
-        endpoints = dict(raw=raw, anneal=annealed)
+        endpoints = dict(raw=raw, anneal=annealed) if arm['anneal_steps'] else dict(raw=raw)
         if arm['ema_decay']:
             endpoints['ema'] = raw.with_name(f'{raw.stem}-ema.bin')
         saved = checkpoints(arm['dir'] / 'constant')
@@ -485,10 +503,11 @@ def main(argv=None):
     p.add_argument('--eval-only', action='store_true',
                    help='never train: score the arms whose stages are complete, skip the others')
     p.add_argument('--eval-jobs', type=int, default=1, help='arms evaluated at once (default 1)')
+    p.add_argument('--followup', default='', help='comma-separated groups that also run their followup_seeds')
     a = p.parse_args(argv)
     work = []
     for config in a.configs:
-        out, arms = load_arms(config)
+        out, arms = load_arms(config, tuple(filter(None, a.followup.split(','))))
         runner = Runner(out, a.dry_run)
         work += [(runner, arm) for arm in arms if not a.only or arm['name'] in a.only.split(',')]
     if not work:
@@ -523,14 +542,14 @@ def main(argv=None):
                 init = init_weights(arm['init'], a.dry_run)
                 if a.eval_only:
                     raw = Runner.finished(arm['dir'] / 'constant') if arm['constant_steps'] else init
-                    annealed = Runner.finished(arm['dir'] / 'anneal')
+                    annealed = Runner.finished(arm['dir'] / 'anneal') if arm['anneal_steps'] else raw
                     if not (raw and annealed):
                         log(f"{arm['name']}: not trained, skipped (--eval-only)")
                         skipped.append(arm['name'])
                         continue
                 else:
                     raw = runner.train(arm, 'constant', init) if arm['constant_steps'] else init
-                    annealed = runner.train(arm, 'anneal', raw)
+                    annealed = runner.train(arm, 'anneal', raw) if arm['anneal_steps'] else None
             except Exception as error:
                 log(f"{arm['name']} training failed: {error}")
                 failed.append(arm['name'])
