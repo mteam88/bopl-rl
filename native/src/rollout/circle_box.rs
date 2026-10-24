@@ -1143,6 +1143,10 @@ impl RolloutWorld {
             (Part::Shot(i), None) => &mut self.portal_shots[i].body,
             (Part::Missile(i), None) => &mut self.guided_missiles[i].body,
             (Part::Rock(i), None) => &mut self.players[i].rock.body,
+            // A Duplicator's Rock_noPlayer is a plain DPhysicsCircle on
+            // LethalTerrain, which a SpikeAttack's hitbox collides with:
+            // its own PhysicsBody takes the impulse (DPhysicsCircle.cs:377-392).
+            (Part::DuplicatedRock(i), None) => &mut self.duplicated_rocks[i].body,
             (Part::Cloud(i), None) => {
                 self.smoke_clouds[i].rest.forget();
                 &mut self.smoke_clouds[i].body
@@ -1153,6 +1157,9 @@ impl RolloutWorld {
         let body = *body;
         if let Part::Rock(i) = part {
             self.players[i].base.velocity = body.velocity;
+        }
+        if let Part::DuplicatedRock(i) = part {
+            self.sync_duplicated_rock_entity(i);
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_), Some(entity)) = (part, self.part_entity(part)) {
             let row = &mut self.entities[entity];

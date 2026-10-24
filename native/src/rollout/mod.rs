@@ -44615,6 +44615,49 @@ mod tests {
         assert!(casts_while_held > 0, "the held slime never cast a form");
     }
 
+    /// off1 ff-abcdef's crash (2026-10-23, map 40, Duplicator/Duplicator/Spike
+    /// vs Rock/Tack/Black hole): at tick 1152 player 0's SpikeAttack hitbox
+    /// (LethalTerrain) touches a Duplicator's Rock_noPlayer copy, also
+    /// LethalTerrain. SpikeAttack.OnCollide's AddForceAtPosition on that
+    /// DPhysicsCircle pushes the copy's own PhysicsBody (SpikeAttack.cs:131-134,
+    /// DPhysicsCircle.cs:377-392); the port had no Part::DuplicatedRock arm and
+    /// hit `unreachable!`.
+    #[test]
+    fn a_spike_attack_shoves_a_duplicated_rock() {
+        let raw = include_bytes!("../../fixtures/spike-shoves-duplicated-rock.rep");
+        let replay::Replay { config, ticks } = replay::decode(raw, 240, 10800).unwrap();
+        let mut world = RolloutWorld::new();
+        world.reset(&config).unwrap();
+        let (last, recorded) = ticks.split_last().unwrap();
+        for actions in &recorded[240..] {
+            world.step(actions, 1).unwrap();
+            assert!(!world.terminal, "the episode ended before the shove, at tick {}", world.tick);
+        }
+        let rock = world.duplicated_rocks[0];
+        assert!(rock.active, "the duplicated rock is gone before the shove");
+        assert!(world.spike_attacks.iter().any(|spike| spike.active), "no SpikeAttack before the shove");
+
+        // The impulse lands on the copy's own body, at the contact point's arm,
+        // and its observation row follows.
+        let mut probe = RolloutWorld::new();
+        probe.fork_from(&world);
+        let force = Vec2::new(Fix::from_int(30), Fix::from_int(-10));
+        let point = rock.position + Vec2::new(Fix::ONE, Fix::ONE);
+        probe.part_add_force_at(circle_box::Part::DuplicatedRock(0), force, point);
+        let mut want = rock.body;
+        want.apply_impulse(force, (point - rock.position).normalized_safe());
+        let got = probe.duplicated_rocks[0];
+        assert_eq!(got.body.velocity, want.velocity);
+        assert_eq!(got.body.angular_velocity, want.angular_velocity);
+        assert_eq!(got.position, rock.position);
+        let row = probe.entities[rock.entity.expect("a registered duplicated rock")];
+        assert_eq!((row.vx, row.vy), (want.velocity.x.raw(), want.velocity.y.raw()));
+        assert_eq!(row.angular_velocity, want.angular_velocity.raw());
+
+        // The recorded tick that panicked now steps.
+        world.step(last, 1).unwrap();
+    }
+
     #[test]
     fn magnet_firepoint_scale_telescopes_like_ability_component() {
         let mut world = RolloutWorld::new();
