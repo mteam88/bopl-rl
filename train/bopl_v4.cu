@@ -344,7 +344,9 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
     int best = 0;
     cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
     cudaStreamIsCapturing(stream, &capturing);
-    if (found > 1 && A && capturing == cudaStreamCaptureStatusNone) {   /* time the candidates once per shape (never under capture) */
+    /* BOPL_V4_LT_TUNE=0: the heuristic's first candidate, not the fastest by timing (which a busy GPU can flip between
+     * runs, moving results in the last bits): for bitwise A/B gates between builds. */
+    if (found > 1 && A && capturing == cudaStreamCaptureStatusNone && env_int("BOPL_V4_LT_TUNE", 1)) {   /* time the candidates once per shape (never under capture) */
         float alpha = 1.0f, beta = C ? 1.0f : 0.0f;
         cudaEvent_t t0, t1; cudaEventCreate(&t0); cudaEventCreate(&t1);
         float best_ms = 1e30f;
