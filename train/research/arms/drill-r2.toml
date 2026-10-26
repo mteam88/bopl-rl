@@ -1,0 +1,57 @@
+# Drill showcase specialist, round 2 (native/rl/research/DRILL-R2-2026-10.md Section 2; pre-registered there).
+# Round 1 (drill.toml) made a strong Drill/Dash/Dash bot (SO-s7121: P1 0.754) that barely burrows (P2 1.7% of
+# episodes with >= 1 s underground, goal 10%) because styles/drill_burrow.toml netted negative: drill_retreat
+# charged every air-phase retreat of a form that had touched the ground. Round 2 replaces the style with
+# styles/drill_burrow2.toml (no air charge; the form's first surfacing pays the run's length times how well it
+# is aimed at the opponent and how fast it leaves; the flight after it pays ground closed; a bigger burrow-kill
+# premium over the whole form) and continues training from round 1's annealed endpoints.
+#
+# Every arm: round 1's flags (ff-1's command, DDD lineups with Drill rotating over the slots, league minus the
+# held-out panel, PFSP p = 1, me31 pinned), 2B learner steps at constant LR plus the matched 0.5B anneal,
+# checkpoints every 500M, style on for the whole run (no fade).
+#
+#   K      v4.3 (bits 48), no style; init SO-s7121 anneal              seed 7201     the continued-training control
+#   R2     v4.3 + styles/drill_burrow2.toml; init SO-s7121 anneal      seeds 7211, 7212
+#   R2x2   v4.3 + styles/drill_burrow2_x2.toml (2x); init SO-s7121     seed 7221     dose response
+#   R2v42  v4.2 (bits 16) + drill_burrow2; init S-s7111 anneal          seed 7231     the obs ablation under a reward that pays burrowing
+# Trained interleaved: K, R2-s7211, R2x2, R2v42, R2-s7212. Decision eval: train/research/arms/drill-r2.sh eval <arm>
+# (the drill_look protocol, P1 vs main136 on random kits, P3 vs me31). Round 1's SO-s7121/SO-s7122 evals are the
+# "before" reference for every v4.3 arm (same seeds, maps and opponent kits).
+name = "drill-r2"
+purpose = "screen"
+# init names round 1's annealed endpoints directly (its status.json checkpoint), resolved from the checkout arm.py
+# runs in: research/drill/ exists only in the tp-spec rift, where round 1 trained and where drill-r2-queue.sh runs.
+init = "native/artifacts/rl/research/drill/SO-s7121/anneal/checkpoints/policy-666697728.bin"
+constant_steps = 2_000_000_000
+anneal_steps = 500_000_000
+checkpoint_every = 500_000_000
+games = 2000
+order = "interleave"
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+[flags]
+v4-ablate = 48
+pfsp-p = 1
+pinned-opponents = "l2-me31-drill-grenade-2000m"
+loadout-pool = false
+loadout-learner-first = true
+loadout-set = "native/data/lineups-drill-ddd.txt"
+
+[arm.K]
+seed = 7201
+
+[arm.R2]
+seeds = [7211, 7212]
+compare = "K"
+flags = { style = "styles/drill_burrow2.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+[arm.R2x2]
+seed = 7221
+compare = "R2"
+flags = { style = "styles/drill_burrow2_x2.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+[arm.R2v42]
+seed = 7231
+compare = "R2"
+init = "native/artifacts/rl/research/drill/S-s7111/anneal/checkpoints/policy-666697728.bin"
+flags = { v4-ablate = 16, style = "styles/drill_burrow2.toml", style-fade-steps = 1_000_000_000_000_000_000 }

@@ -1,0 +1,58 @@
+# Drill showcase specialist, round 2 (native/rl/research/DRILL-R2-2026-10.md, Section 2.1).
+# Pays an underground approach, an aimed launch out of the ground, the flight that closes on the opponent after
+# it, and a drill kill with underground time behind it. Never charges an air phase. Once per form, capped.
+name = "drill_burrow2"
+kits = [[26, 2, 2], [2, 26, 2], [2, 2, 26]]
+
+[let]
+ug = "any(entities where owner == self and underground == 1)"
+drilling = "form_ability(self) == ability.Drill"
+live = "header.sudden_death == 0 and alive(opp)"
+closer = "prev(min(dist(self, opp), 30)) - min(dist(self, opp), 30)"   # approach since the last decision, u
+surfaced = "drilling and not ug and prev(ug)"                            # the decision an underground run ends on
+run_ticks = "prev(since(not ug))"                                        # at a surfacing: the run that just ended, ticks
+no_surfacing_yet = "since(surfaced) >= since_form_entry(self)"           # this form has not surfaced (first run; >= so never == never holds)
+first_surfacing = "prev(since(surfaced)) >= since_form_entry(self)"      # this surfacing is the form's first
+surfaced_in_form = "since(surfaced) < since_form_entry(self)"            # a surfacing has happened in this form
+# exit velocity (u/s) from the player's position over the last decision: at a surfacing, the step that leaves the ground
+vx = "(self.x - prev(self.x)) * 60 / max(dt, 1)"
+vy = "(self.y - prev(self.y)) * 60 / max(dt, 1)"
+speed = "hypot(vx, vy)"
+aim = "(vx * (opp.x - self.x) + vy * (opp.y - self.y)) / (max(speed, 1) * max(dist(self, opp), 1))"   # cos(exit angle to the opponent)
+aimed = "clamp((aim - 0.5) / 0.366, 0, 1)"                               # 0 at 60 deg off the opponent, 1 within 30 deg
+fast = "clamp((speed - 15) / 20, 0, 1)"                                  # 0 at 15 u/s, 1 at 35 u/s (before the x1.5 exit boost)
+near = "clamp((16 - dist(self, opp)) / 10, 0, 1)"                        # 1 within 6 u of the opponent, 0 beyond 16 u
+launch = "aimed * max(near, fast)"                                       # a launch is aimed, and either fast or already there
+runmin = "-max_over(600, -min(dist(self, opp), 30))"                     # the closest the opponent has been in the last 10 s, u
+progress = "prev(runmin) - runmin"                                       # > 0 only on a decision that sets a new minimum
+ug_form = "min(count_over(360, ug), since_form_entry(self) / 4)"         # underground decisions in the last 6 s, none from an earlier form
+surf_run = "surfaced * run_ticks"                                        # the run just ended at a surfacing, else 0
+held = "min(max_over(600, surf_run) / 60, 2) / 2"                        # the longest run a surfacing ended in the last 10 s: 0.1 at 0.2 s, 1 at 2 s
+
+[[term]]   # dense: net underground approach in the first run of a form; gains <= 2 u a decision, losses in full
+name = "burrow_approach"
+when = "live and ug and prev(ug) and no_surfacing_yet"
+value = "0.006 * min(closer, 2)"   # <= 0.18 for a 30 u approach
+
+[[term]]   # escrow: the first surfacing of a form pays the run's length (0.075 per s, full at 2 s) times the launch quality
+name = "burrow_surface"
+when = "live and surfaced and first_surfacing"
+value = "0.075 * min(run_ticks / 60, 2) * launch"   # <= 0.15 per form
+
+[[term]]   # the flight after a surfacing: every u of new minimum distance to the opponent, in the air, at the approach rate
+           # times the burrow behind it (a 0.2 s clip's dive earns a tenth of the rate, a 2 s burrow's launch the full rate)
+name = "burrow_flight"
+when = "live and drilling and not ug and not surfaced and surfaced_in_form"
+value = "0.006 * clamp(progress, 0, 2) * held"   # <= 0.18 per 10 s; a loop in the air pays nothing and costs nothing
+
+[[term]]   # burrow-kill premium: drill kill with >= 0.5 s underground in this form in the last 6 s, full (0.2) at 2 s
+name = "burrow_kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self and ev.source_ability == ability.Drill and header.sudden_death == 0 and ug_form >= 8"
+value = "0.2 * min(1, ug_form / 30)"
+
+[[term]]   # unforced drill death (ring-out, self) costs extra
+name = "drill_unforced"
+on = "death"
+when = "ev.subject == self and form_ability(self) == ability.Drill and (ev.cause == death.RING_OUT or ev.cause == death.SELF)"
+value = "-0.08"

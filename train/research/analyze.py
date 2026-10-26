@@ -4,7 +4,7 @@
 
 --json also writes `decisions`: the pre-registered verdicts a queue script acts on (optimizer: `followup`, the
 groups to rerun with `arm.py optimizer.toml --followup ...`; x2d-drill: `case`, `stop_optimizer`; drill: `showcase`,
-`p1_pass`, `insanely_good`, `adopt_v43`).
+`p1_pass`, `insanely_good`, `adopt_v43`; drill-r2: `showcase`, `p1_pass`, `insanely_good`, `ridiculously_good`, `vetoes`, `d1`-`d4`).
 
 Reads train/research/arms/<program>.toml (or a path) for the expected arms, then every
 <out>/<arm>/{constant,anneal}/status.json and evals/*.games.jsonl. Only complete games files enter
@@ -341,6 +341,8 @@ def report(program, top, arms, data, prior, lines, ref=None, reference=None):
         DECISIONS['x2d-drill'] = x2d_report(data, arms, top, p)
     if program == 'drill':
         DECISIONS['drill'] = drill_report(arms, data.out, p)
+    if program == 'drill-r2':
+        DECISIONS['drill-r2'] = drill_r2_report(arms, data.out, p)
 
     # secondary opponents
     sec = [o for o in arms[0]['evals'] if o not in arms[0]['panel']]
@@ -843,23 +845,21 @@ def drill_pairs(d):
     return {k: float(np.mean(v)) for k, v in pairs.items() if len(v) == 2}
 
 
-def drill_report(arms, base, p):
-    """P1 (primary) and P2-P4 per run at the annealed endpoint (drill.sh eval: drill_look vs main136 on random kits
-    and vs me31 on its kits); the showcase is the styled run (S or SO) with the best P1 point; group contrasts on seed
-    means paired by seed pair: S - C and SO - C (the burrow style's strength cost, report only) and SO - S (v4.3)."""
-    rule, out = DRILL, dict(showcase=None, p1_pass=False, insanely_good=False, adopt_v43=None, runs={})
+def drill_runs(arms, base, p, rule, script, intent_mark=False):
+    """Per run at the annealed endpoint, from its `<script> eval` drill_look games: P1 (primary) vs main136 on random
+    kits, P2 and P4 on the same games, P3 vs me31 on its kits, intent. Prints one line per run; returns
+    (runs, {run: {pair: score}}, {group: [runs]}, {run: drill_look analysis of the P1 games})."""
     A = drill_look_analyze()
-    p(f'  drill: rules {rule["source"]}')
-    pairs, groups = {}, {}
+    runs, pairs, groups, looks = {}, {}, {}, {}
     for a in arms:
         d = base / a['name']
         main_p, me31_p = drill_pairs(d / 'drill-eval-main'), drill_pairs(d / 'drill-eval-me31')
         if main_p is None:
-            p(f'    {a["name"]:<9} PENDING: no complete P1 eval (train/research/arms/drill.sh eval {a["name"]})')
+            p(f'    {a["name"]:<9} PENDING: no complete P1 eval (train/research/arms/{script} eval {a["name"]})')
             continue
         m = A.analyze(d / 'drill-eval-main')
         m3 = A.analyze(d / 'drill-eval-me31') if me31_p is not None else None
-        pairs[a['name']] = main_p
+        pairs[a['name']], looks[a['name']] = main_p, m
         groups.setdefault(a['group'], []).append(a['name'])
         sc, k05, ug1, unf, sd, em = m['score'], m.get('drill_kills_after_ug05'), m.get('ep_ug_ge_1s'), \
             m.get('ep_death_unforced'), m['sd_share'], m.get('emerge_within_6u')
@@ -868,27 +868,40 @@ def drill_report(arms, base, p):
                  p3=m3['score'] if m3 else None, p3_pass=bool(m3 and m3['score'][0] >= rule['p3']),
                  p4_pass=bool(unf and unf[0] <= rule['p4_unforced'] and sd[0] <= rule['p4_sd']),
                  intent=em[0] if em else None, intent_pass=bool(em and em[0] >= rule['intent']),
-                 ug1s=ug1, kill05=k05, unforced=unf, sd=sd, group=a['group'])
+                 ug1s=ug1, kill05=k05, unforced=unf, sd=sd, group=a['group'], episodes=m.get('episodes', 0))
         r['all_pass'] = r['p1_pass'] and r['p2_pass'] and r['p3_pass'] and r['p4_pass']
-        out['runs'][a['name']] = r
+        runs[a['name']] = r
         f = lambda x: '-' if not x else f'{x[0]:.3f} [{x[1]:.3f},{x[2]:.3f}]'
+        mark = f' {"PASS" if r["intent_pass"] else "fail"}' if intent_mark else ''
         p(f'    {a["name"]:<9} P1 {f(sc)} {"PASS" if r["p1_pass"] else "fail"} | P2 ug>=1s {f(ug1)}, kills after 0.5 s ug '
           f'{f(k05)} {"PASS" if r["p2_pass"] else "fail"} | P3 {f(r["p3"])} {"PASS" if r["p3_pass"] else "fail" if m3 else "pending"} | '
-          f'P4 unforced {f(unf)}, SD {f(sd)} {"PASS" if r["p4_pass"] else "fail"} | intent {f(em)}')
+          f'P4 unforced {f(unf)}, SD {f(sd)} {"PASS" if r["p4_pass"] else "fail"} | intent {f(em)}{mark}')
+    return runs, pairs, groups, looks
+
+
+def drill_group_pairs(pairs, groups, g):
+    """A group's seed mean per eval seed pair (its runs' common pairs) and its number of runs."""
+    names = groups.get(g, [])
+    common = set.intersection(*(set(pairs[n]) for n in names)) if names else set()
+    return {k: float(np.mean([pairs[n][k] for n in names])) for k in common}, len(names)
+
+
+def drill_report(arms, base, p):
+    """P1 (primary) and P2-P4 per run at the annealed endpoint (drill.sh eval: drill_look vs main136 on random kits
+    and vs me31 on its kits); the showcase is the styled run (S or SO) with the best P1 point; group contrasts on seed
+    means paired by seed pair: S - C and SO - C (the burrow style's strength cost, report only) and SO - S (v4.3)."""
+    rule, out = DRILL, dict(showcase=None, p1_pass=False, insanely_good=False, adopt_v43=None, runs={})
+    p(f'  drill: rules {rule["source"]}')
+    out['runs'], pairs, groups, _ = drill_runs(arms, base, p, rule, 'drill.sh')
     styled = {n: r for n, r in out['runs'].items() if r['group'] in ('S', 'SO')}
     if styled:
         best = max(styled, key=lambda n: styled[n]['p1'][0])
         out.update(showcase=best, p1_pass=styled[best]['p1_pass'], insanely_good=styled[best]['all_pass'])
         p(f'    showcase (best styled run by P1 point, chosen after the fact among {len(styled)}): {best}: '
           f'P1 {"PASS" if out["p1_pass"] else "FAIL"}; "insanely good" (P1-P4) {"YES" if out["insanely_good"] else "NO"}')
-
-    def group_pairs(g):
-        names = groups.get(g, [])
-        common = set.intersection(*(set(pairs[n]) for n in names)) if names else set()
-        return {k: float(np.mean([pairs[n][k] for n in names])) for k in common}, len(names)
     for t, c, what in (('S', 'C', 'style strength cost, report only'), ('SO', 'C', 'style + v4.3 vs control, report only'),
                        ('SO', 'S', 'v4.3 effect on P1')):
-        (gt, kt), (gc, kc) = group_pairs(t), group_pairs(c)
+        (gt, kt), (gc, kc) = drill_group_pairs(pairs, groups, t), drill_group_pairs(pairs, groups, c)
         r = paired(gt, gc) if kt and kc else None
         if r is None:
             p(f'    {t} - {c} ({what}): pending')
@@ -902,6 +915,401 @@ def drill_report(arms, base, p):
             out['adopt_v43'] = r[0] >= rule['v43'] or (so_p2 and not s_p2)
             p(f'    -> v4.3 for the specialist: {"ADOPT" if out["adopt_v43"] else "no"} (SO - S >= +{rule["v43"]} on P1, '
               f'or SO passes P2 + intent where S does not)')
+    return out
+
+
+# ---- drill specialist round 2 (DRILL-R2-2026-10.md Section 2.4) ----------------------------------------------------
+
+DRILL_R2 = dict(
+    DRILL,   # P1-P4 and intent: the round-1 targets, unchanged (Section 2.4 table)
+    source='DRILL-R2-2026-10.md Section 2.4 (P1-P4 and intent unchanged from spec 6; L, D1-D4 and the hack vetoes), '
+           'pre-registered in PLAN-2026-10.md "2026-10-26 Drill round 2 pre-registration"',
+    control='K', design='R2', dose='R2x2', ablation='R2v42',
+    showcase_groups=('R2', 'R2x2'),   # "the styled v4.3 run with the best P1 point among the unvetoed, chosen after the fact"
+    l_share=0.10,                     # L: >= 10% of first surfacings are launches: run >= 8 decisions, last underground
+    l_run=8, l_speed=30.0, l_cos=0.866,   # step >= 30 u/s within 30 deg of the opponent (any distance); and the share of
+    l_kill_x=2.0,                     # drill kills after such a launch within the form >= 2 x its share at init
+    d1=-0.04,                         # D1: the style stays if R2 - K >= -0.04 (point), else rejected; "within noise" flag
+    d2_p1=-0.03,                      # D2: x2 only if R2x2 passes P2 where neither R2 seed does and P1 >= R2 mean - 0.03
+    d3_keep_p2=0.03, d3_keep_p1=0.03,   # D3 on the gains net of the inits: keep v4.3 if G_P2 >= +3 points or G_P1 >= +0.03;
+    d3_near_p2=0.015, d3_near_p1=0.03,  # "the senses are not the bottleneck" if |G_P2| <= 1.5 points and |G_P1| <= 0.03
+    tail=0.10,                        # training vetoes: telemetry over the last 10% of the constant stage
+    drill_id=26,                      # ability id of Drill (metrics ability_activations, drill_look's kills)
+    surface_term='burrow_surface',
+    veto_kpm=0.8,                     # kills per minute >= 0.8 x K's
+    veto_style_share=0.5,             # style net <= 50% of outcome + kill + death reward
+    veto_unforced=2.0,                # eval games: unforced drill deaths per drill episode <= 2 x K's
+    far_dist=16.0, veto_arrive=0.5)   # eval games: far launches (> 16 u, first air step >= 30 u/s within 30 deg) that
+                                      # reach 6 u or kill in the form >= 0.5 x the rate at init
+
+
+def train_tail(run, tail):
+    """Sums over the last `tail` (by learner steps) of a training stage's metrics.jsonl rows: learner decisions,
+    seconds and kills (behavior.totals), the outcome + kill + death reward, Drill slot presses (ability_activations)
+    and, per style term, paid and fires (style.terms; fires is a count per row). A row whose style read covers no
+    decisions is dropped (the last row of a run repeats the read), so the style and the outcome sums cover the same
+    updates. None if the stage is not complete."""
+    if stage_status(run) != 'complete' or not (run / 'metrics.jsonl').exists():
+        return None
+    rows = [json.loads(l) for l in (run / 'metrics.jsonl').read_text().splitlines() if l.strip()]
+    rows = [r for r in rows if (r.get('behavior') or {}).get('decisions')]
+    if not rows:
+        return None
+    lo, hi = rows[0]['learner_steps'], rows[-1]['learner_steps']
+    rows = [r for r in rows if r['learner_steps'] > lo + (1 - tail) * (hi - lo)
+            and ('style' not in r or (r['style'] or {}).get('decisions'))]
+    s = dict(rows=len(rows), decisions=0.0, seconds=0.0, kills=0.0, outcome=0.0, drill_presses=0.0,
+             style_decisions=0.0, terms={})
+    for r in rows:
+        b, t = r['behavior'], r['behavior']['totals']
+        s['decisions'] += b['decisions']
+        s['seconds'] += b['seconds']
+        s['kills'] += t['kills']
+        s['outcome'] += t['reward_outcome'] + t['reward_kills'] + t['reward_deaths']
+        s['drill_presses'] += (r.get('ability_activations') or {}).get(str(DRILL_R2['drill_id']), 0)
+        if r.get('style'):
+            s['style_decisions'] += r['style']['decisions']
+            for name, term in r['style']['terms'].items():
+                acc = s['terms'].setdefault(name, dict(paid=0.0, fires=0.0))
+                acc['paid'] += term['paid']
+                acc['fires'] += term['fires']
+    s['kpm'] = s['kills'] / (s['seconds'] / 60) if s['seconds'] else None
+    s['style_net'] = sum(t['paid'] for t in s['terms'].values()) if s['terms'] else None
+    return s
+
+
+def drill_surfacings(d):
+    """native/rl/research/drill-r2/launch_stats.py's per-surfacing pass, ported: per drill form (a run of consecutive
+    decisions of one game in a drill_look decisions.jsonl), every underground run (the logged undelayed SDF bit) and
+    the surfacing that ends it. Velocities are finite differences of the player position over one decision (4/60 s).
+    Returns (surfacings, drill kills by A). A surfacing has run (decisions underground), first (the form's first),
+    v_ug / cos_ug (the last underground step's speed and its cos to the bearing to the opponent: what the style
+    sees), v_air / cos_air (the first air step's), dist (to the living opponent at the surfacing, else nan), reach6
+    (the flight, until re-entry, comes within 6 u of the living opponent) and kills_form (A's drill kills from the
+    surfacing to the end of the form)."""
+    dt = 4 / 60.0
+    games = {g['g']: g for g in map(json.loads, (d / 'games.jsonl').read_text().splitlines())}
+    eps, cur = [], []
+    for r in map(json.loads, (d / 'decisions.jsonl').read_text().splitlines()):
+        if r['g'] not in games:
+            continue
+        if cur and (r['g'] != cur[-1]['g'] or r['d'] != cur[-1]['d'] + 1):
+            eps.append(cur)
+            cur = []
+        cur.append(r)
+    if cur:
+        eps.append(cur)
+    out, nkills = [], 0
+    for ep in eps:
+        g, d0, n = games[ep[0]['g']], ep[0]['d'], len(ep)
+        ug = [r['ug'] for r in ep]
+        P = np.array([(r['x'], r['y']) for r in ep], dtype=float)
+        O = np.array([(r['ox'], r['oy']) for r in ep], dtype=float)
+        alive = np.array([bool(r['oalive']) for r in ep])
+        V = np.diff(P, axis=0) / dt
+        dist = np.hypot(*(O - P).T)
+        kills = [x['d'] - d0 for x in g['deaths'] if x['victim'] == 'B' and x['killer'] == 'A'
+                 and x['ability'] == DRILL_R2['drill_id'] and d0 <= x['d'] <= d0 + n]
+        nkills += len(kills)
+        runs, m, start = [], 0, 0
+        for i, f in enumerate(ug):
+            if f:
+                start, m = (i, 1) if not m else (start, m + 1)
+            elif m:
+                runs.append((start, m))
+                m = 0
+        if m:
+            runs.append((start, m))
+        for ri, (s0, m) in enumerate(runs):
+            i = s0 + m
+            if i >= n or i == 0:
+                continue
+            bear = O[i] - P[i]
+            bd = float(math.hypot(*bear))
+
+            def cos(v):
+                nv = float(math.hypot(*v))
+                return float(v @ bear) / (nv * bd) if nv > 1e-6 and bd > 1e-6 else float('nan')
+            va = V[i] if i < n - 1 else V[i - 1]
+            j = i
+            while j < n and not ug[j]:
+                j += 1
+            k = min(j + 1, n)
+            span = alive[i:k]
+            mind = float(np.min(dist[i:k][span])) if span.any() else float('nan')
+            out.append(dict(run=m, first=ri == 0, v_ug=float(math.hypot(*V[i - 1])), cos_ug=cos(V[i - 1]),
+                            v_air=float(math.hypot(*va)), cos_air=cos(va), dist=bd if alive[i] else float('nan'),
+                            reach6=mind <= 6, kills_form=sum(1 for x in kills if x >= i)))
+    return out, nkills
+
+
+_LAUNCH = {}
+
+
+def drill_launch(d, rule):
+    """L and the launch-arrival rate of one drill_look P1 eval (DRILL-R2 Section 2.4), from drill_surfacings. L's
+    denominator is the first surfacings with a living opponent (launch_stats.py's launch_rate); a launch is a first
+    surfacing after a run >= l_run decisions whose last underground step is >= l_speed u/s within acos(l_cos) of the
+    opponent, any distance; its kill share counts A's drill kills from the launch to the end of the form over all
+    drill kills. Far launches (the veto's, launch_stats.py's table) are surfacings > far_dist u from the living
+    opponent whose first air step is >= l_speed u/s within acos(l_cos); arrive = they reach 6 u or kill in the form."""
+    key = (str(d), id(rule))
+    if key in _LAUNCH:
+        return _LAUNCH[key]
+    if not (d / 'decisions.jsonl').exists():
+        return None
+    S, nkills = drill_surfacings(d)
+    first = [s for s in S if s['first'] and np.isfinite(s['cos_ug']) and np.isfinite(s['dist'])]
+    launches = [s for s in first if s['run'] >= rule['l_run'] and s['v_ug'] >= rule['l_speed'] and s['cos_ug'] >= rule['l_cos']]
+    far = [s for s in S if np.isfinite(s['dist']) and s['dist'] > rule['far_dist'] and np.isfinite(s['cos_air'])
+           and s['cos_air'] >= rule['l_cos'] and s['v_air'] >= rule['l_speed']]
+    lk = sum(s['kills_form'] for s in launches)
+    frac = lambda xs: sum(xs) / len(far) if far else None
+    r = _LAUNCH[key] = dict(
+        first=len(first), launches=len(launches), share=len(launches) / len(first) if first else None,
+        drill_kills=nkills, launch_kills=lk, kill_share=lk / nkills if nkills else None, far=len(far),
+        far_arrive=frac([s['reach6'] or s['kills_form'] > 0 for s in far]),
+        far_reach6=frac([s['reach6'] for s in far]), far_kill=frac([s['kills_form'] > 0 for s in far]))
+    return r
+
+
+def drill_r2_vetoes(arm, k_tail, k_run, run, init_launch, rule, base):
+    """Section 2.4's hack vetoes for one styled run: training telemetry of its constant stage against K's (kills/min,
+    style share, burrow_surface fires <= Drill slot presses), and its P1 eval games (unforced drill deaths per drill
+    episode against K's, the far-launch arrival rate against its init's). Each check is (status, text), status
+    'pass', 'FAIL', 'pending' or 'not computable'."""
+    v = {}
+    tail = train_tail(base / arm['name'] / 'constant', rule['tail'])
+    if tail is None:
+        v['train'] = ('pending', 'constant stage not complete')
+    else:
+        terms, st = tail['terms'], rule['surface_term']
+        if st not in terms:
+            v['surface'] = ('not computable', f'{st} is not in this run\'s style.terms')
+        else:
+            n, presses = terms[st]['fires'], tail['drill_presses']
+            v['surface'] = ('pass' if n <= presses else 'FAIL',
+                            f'{st} fires {n:.0f} <= Drill slot presses {presses:.0f} (sanity check: presses >= forms)')
+        if k_tail is None or not k_tail['kpm']:
+            v['kpm'] = ('pending', 'K\'s constant stage not complete')
+        else:
+            v['kpm'] = ('pass' if tail['kpm'] >= rule['veto_kpm'] * k_tail['kpm'] else 'FAIL',
+                        f'kills/min {tail["kpm"]:.3f} >= {rule["veto_kpm"]} x K {k_tail["kpm"]:.3f}')
+        if tail['style_net'] is None:
+            v['share'] = ('not computable', 'no style.terms logged')
+        else:
+            v['share'] = ('pass' if tail['style_net'] <= rule['veto_style_share'] * tail['outcome'] else 'FAIL',
+                          f'style net {tail["style_net"]:+.1f} <= {rule["veto_style_share"]} x outcome+kill+death '
+                          f'{tail["outcome"]:+.1f}')
+    if run is None:
+        v['eval'] = ('pending', 'no complete P1 eval')
+        return tail, v
+    unf, k_unf = run['unforced'], k_run and k_run['unforced']
+    if not unf:
+        v['unforced'] = ('not computable', 'no drill episodes in the P1 eval')
+    elif not k_unf:
+        v['unforced'] = ('pending', 'no K P1 eval')
+    else:
+        v['unforced'] = ('pass' if unf[0] <= rule['veto_unforced'] * k_unf[0] else 'FAIL',
+                         f'eval unforced drill deaths/drill episode {unf[0]:.4f} <= {rule["veto_unforced"]} x K {k_unf[0]:.4f}')
+    L = run.get('launch')
+    if not L or L['far_arrive'] is None:
+        v['arrive'] = ('not computable', 'no far launches in the P1 eval')
+    elif not init_launch or init_launch['far_arrive'] is None:
+        v['arrive'] = ('not computable', 'no init P1 eval to set the rate')
+    else:
+        ok = L['far_arrive'] >= rule['veto_arrive'] * init_launch['far_arrive']
+        v['arrive'] = ('pass' if ok else 'FAIL',
+                       f'far launches reaching 6 u or killing in the form {L["far_arrive"]:.3f} (reach {L["far_reach6"]:.3f}, '
+                       f'kill {L["far_kill"]:.3f}, n {L["far"]}) >= {rule["veto_arrive"]} x init {run["init_run"]} '
+                       f'{init_launch["far_arrive"]:.3f}')
+    return tail, v
+
+
+def drill_r2_report(arms, base, p):
+    """DRILL-R2 Section 2.4: P1-P4, intent and L per run (drill-r2.sh eval), each run against its init's round-1 eval
+    (same seed pairs), the hack vetoes, the showcase ("insanely good" = P1-P4; "ridiculously good with drill" = P1-P4
+    plus intent or L), and decisions D1-D4."""
+    rule = DRILL_R2
+    K, R2, X2, V42 = rule['control'], rule['design'], rule['dose'], rule['ablation']
+    out = dict(showcase=None, p1_pass=False, insanely_good=False, ridiculously_good=False, vetoes={}, runs={},
+               d1=None, d2=None, d3=None, d4=None)
+    p(f'  drill-r2: rules {rule["source"]}')
+    out['runs'], pairs, groups, looks = drill_runs(arms, base, p, rule, 'drill-r2.sh', intent_mark=True)
+    runs = out['runs']
+    f3 = lambda x: '-' if x is None else f'{x:+.3f}'
+    pc = lambda x: '-' if x is None else f'{x:.3f}'
+
+    # Before -> after: each run against the round-1 run it was initialised from (same 600 seed pairs, maps, kits).
+    before, before_ug, init_launch = {}, {}, {}
+    for a in arms:
+        init = harness.path(a['init'])
+        src = next((q.parent for q in (init, *init.parents) if q.name == 'anneal'), None)
+        if src is None or a['name'] not in pairs:
+            continue
+        runs[a['name']]['init_run'] = src.name
+        bp = drill_pairs(src / 'drill-eval-main')
+        if bp is None:
+            p(f'    {a["name"]:<9} vs init {src.name}: no complete round-1 P1 eval at {src / "drill-eval-main"}')
+            continue
+        before[a['name']] = bp
+        if src.name not in before_ug:
+            before_ug[src.name] = drill_look_analyze().analyze(src / 'drill-eval-main').get('ep_ug_ge_1s')
+        init_launch[a['name']] = drill_launch(src / 'drill-eval-main', rule)
+        b_ug = before_ug[src.name]
+        r = paired(pairs[a['name']], bp)
+        ug = runs[a['name']]['ug1s']
+        p(f'    {a["name"]:<9} - init {src.name} (round 1): P1 {f3(r and r[0])} ±{r[1] if r else 0:.3f} over '
+          f'{r[2] if r else 0} seed pairs; P2 ug>=1s {b_ug[0] if b_ug else float("nan"):.3f} -> '
+          f'{ug[0] if ug else float("nan"):.3f}')
+        runs[a['name']].update(p1_vs_init=r and r[0], ug1s_init=b_ug and b_ug[0])
+
+    # L (launch intent), from the P1 eval's per-surfacing pass; its kill-share bar is 2 x the run's own init's.
+    p(f'  L (launch intent): >= {rule["l_share"]:.0%} of first surfacings are launches (run >= {rule["l_run"]} decisions, '
+      f'last underground step >= {rule["l_speed"]:.0f} u/s within 30 deg of the opponent) and their drill-kill share '
+      f'>= {rule["l_kill_x"]:.0f} x the init\'s')
+    for n, r in runs.items():
+        L = r['launch'] = drill_launch(base / n / 'drill-eval-main', rule)
+        I = init_launch.get(n)
+        if L is None or L['share'] is None:
+            r['l_pass'] = False
+            p(f'    {n:<9} not computable (no decisions.jsonl or no first surfacings)')
+            continue
+        c1 = L['share'] >= rule['l_share']
+        bar = rule['l_kill_x'] * I['kill_share'] if I and I['kill_share'] is not None else None
+        c2 = bar is not None and L['kill_share'] is not None and L['kill_share'] >= bar
+        r.update(l_share=L['share'], l_kill_share=L['kill_share'], l_pass=c1 and c2)
+        p(f'    {n:<9} launches {L["launches"]}/{L["first"]} first surfacings = {L["share"]:.3f} '
+          f'{"pass" if c1 else "fail"}; kill share {L["launch_kills"]}/{L["drill_kills"]} = {pc(L["kill_share"])} vs '
+          + (f'{rule["l_kill_x"]:.0f} x init {r.get("init_run")} {I["kill_share"]:.3f} = {bar:.3f} {"pass" if c2 else "fail"}'
+             if bar is not None else 'init not computable') + f' -> L {"PASS" if r["l_pass"] else "fail"}')
+
+    # Hack vetoes (any one FAIL fails the run as a showcase; "not computable" does not veto).
+    p(f'  hack vetoes (training: metrics.jsonl over the last {rule["tail"]:.0%} of the constant stage vs {K}; eval: the '
+      f'P1 games vs {K} and vs the init; any FAIL fails the run as a showcase; "not computable" does not veto)')
+    k_arm = next((a for a in arms if a['group'] == K), None)
+    k_tail = train_tail(base / k_arm['name'] / 'constant', rule['tail']) if k_arm else None
+    k_run = runs.get(k_arm['name']) if k_arm else None
+    if k_tail:
+        p(f'    {K:<9} kills/min {k_tail["kpm"]:.3f} over {k_tail["rows"]} rows, {k_tail["decisions"]:.0f} learner decisions')
+    for a in arms:
+        if a['group'] == K:
+            continue
+        _, v = drill_r2_vetoes(a, k_tail, k_run, runs.get(a['name']), init_launch.get(a['name']), rule, base)
+        out['vetoes'][a['name']] = {c: s for c, (s, _) in v.items()}
+        p(f'    {a["name"]:<9} ' + ' | '.join(f'{c} {s}: {t}' for c, (s, t) in v.items()))
+    vetoed = {n for n, v in out['vetoes'].items() if 'FAIL' in v.values()}
+    pending = {n for n, v in out['vetoes'].items() if 'pending' in v.values()}
+
+    # Showcase: the styled v4.3 run with the best P1 point among the unvetoed.
+    styled = {n: r for n, r in runs.items() if r['group'] in rule['showcase_groups']}
+    eligible = {n: r for n, r in styled.items() if n not in vetoed and n not in pending}
+    if eligible:
+        best = max(eligible, key=lambda n: eligible[n]['p1'][0])
+        b = eligible[best]
+        out.update(showcase=best, p1_pass=b['p1_pass'], insanely_good=b['all_pass'],
+                   ridiculously_good=b['all_pass'] and (b['intent_pass'] or b['l_pass']))
+        p(f'    showcase (best styled v4.3 run by P1 point, chosen after the fact among {len(eligible)} unvetoed of '
+          f'{len(styled)}): {best}: P1 {"PASS" if out["p1_pass"] else "FAIL"}; "insanely good" (P1-P4) '
+          f'{"YES" if out["insanely_good"] else "NO"}; "ridiculously good with drill" (P1-P4 + intent or L) '
+          f'{"YES" if out["ridiculously_good"] else "NO"} (intent {"pass" if b["intent_pass"] else "fail"}, '
+          f'L {"pass" if b["l_pass"] else "fail"})'
+          + (f'; vetoed: {", ".join(sorted(vetoed & set(styled)))}' if vetoed & set(styled) else ''))
+    elif styled:
+        p(f'    showcase: none (styled v4.3 runs {", ".join(sorted(styled))}: vetoed or vetoes pending)')
+
+    def contrast(t, c):
+        (gt, kt), (gc, kc) = drill_group_pairs(pairs, groups, t), drill_group_pairs(pairs, groups, c)
+        r = paired(gt, gc) if kt and kc else None
+        return r, kt, kc
+
+    def show(t, c, what, r, kt, kc):
+        p(f'    {t} - {c} ({what}): ' + ('pending' if r is None else
+          f'{r[0]:+.3f} ±{r[1]:.3f} (eval-only 95% over {r[2]} seed pairs; seeds {kt} vs {kc}, seed variance not in the interval)'))
+
+    p('  decisions (seed means paired by seed pair)')
+    # D1: the style's strength cost, a veto on the point.
+    r, kt, kc = contrast(R2, K)
+    show(R2, K, 'D1, style strength cost', r, kt, kc)
+    rejected = False
+    if r is not None:
+        rejected = r[0] < rule['d1']
+        noise = abs(r[0]) <= r[1]
+        verdict = 'REJECTED (R2x2 and R2v42 informational only)' if rejected else 'stays'
+        out['d1'] = dict(diff=r[0], half_width=r[1], verdict=verdict, rejected=rejected, within_noise=noise)
+        p(f'    -> D1: the style {verdict} (stays if R2 - K >= {rule["d1"]} on the point)'
+          + ('; within noise (the eval-only interval contains 0)' if noise else ''))
+    info = ' [informational only: D1 rejected the style]' if rejected else ''
+    r2_runs, x2_runs, v42_runs = groups.get(R2, []), groups.get(X2, []), groups.get(V42, [])
+
+    # D2: dose.
+    if r2_runs and x2_runs:
+        r2_mean = float(np.mean([runs[n]['p1'][0] for n in r2_runs]))
+        x2 = runs[x2_runs[0]]
+        adopt = x2['p2_pass'] and not any(runs[n]['p2_pass'] for n in r2_runs) and x2['p1'][0] >= r2_mean + rule['d2_p1']
+        out['d2'] = dict(adopt_x2=adopt, r2_p1_mean=r2_mean, x2_p1=x2['p1'][0], x2_p2=x2['p2_pass'],
+                         r2_p2=[runs[n]['p2_pass'] for n in r2_runs])
+        p(f'    -> D2: {"ADOPT the x2 scale" if adopt else "base scale"}{info} ({X2} P2 {"PASS" if x2["p2_pass"] else "fail"}, '
+          f'{R2} seeds P2 {"/".join("PASS" if runs[n]["p2_pass"] else "fail" for n in r2_runs)}; {X2} P1 {x2["p1"][0]:.3f} vs '
+          f'{R2} mean {r2_mean:.3f} {rule["d2_p1"]:+.2f})')
+    else:
+        p('    -> D2: pending')
+
+    # D3: the senses, on the paired gains net of each arm's init (R2 from SO-s7121, R2v42 from S-s7111).
+    r, kt, kc = contrast(R2, V42)
+    show(R2, V42, 'raw contrast, report only: carries the init gap', r, kt, kc)
+    d_r2, d_v = [n for n in r2_runs if n in before], [n for n in v42_runs if n in before]
+    if d_r2 and d_v:
+        common = set.intersection(*(set(pairs[n]) & set(before[n]) for n in d_r2 + d_v))
+        delta = lambda names: {k: float(np.mean([pairs[n][k] - before[n][k] for n in names])) for k in common}
+        dd = paired(delta(d_r2), delta(d_v))
+        ug = lambda n: (runs[n]['ug1s'] or (float('nan'),))[0] - (runs[n].get('ug1s_init') if runs[n].get('ug1s_init') is not None else float('nan'))
+        g2 = float(np.mean([ug(n) for n in d_r2])) - float(np.mean([ug(n) for n in d_v]))
+        g1 = dd[0] if dd else float('nan')
+        keep = g2 >= rule['d3_keep_p2'] or g1 >= rule['d3_keep_p1']
+        not_bn = not keep and abs(g2) <= rule['d3_near_p2'] and abs(g1) <= rule['d3_near_p1']
+        verdict = ('v4.3 KEPT for the specialist' if keep else
+                   'the senses are not the bottleneck (report; v4.3 stays for the main-bot program)' if not_bn else
+                   'undecided: round 3 carries both obs')
+        out['d3'] = dict(g_p1=g1, g_p1_half_width=dd and dd[1], g_p2=g2, raw=r and r[0], keep_v43=keep,
+                         senses_not_bottleneck=not_bn, verdict=verdict)
+        p(f'    G_P1 = (R2 - init) - (R2v42 - init) on P1: {g1:+.3f} ±{dd[1] if dd else 0:.3f} over {dd[2] if dd else 0} '
+          f'seed pairs (winner\'s curse: biased about -0.01, against keeping); G_P2 (P2 ug>=1s fraction): {g2:+.4f}')
+        p(f'    -> D3: {verdict}{info} (keep if G_P2 >= +{rule["d3_keep_p2"]} or G_P1 >= +{rule["d3_keep_p1"]}; not the '
+          f'bottleneck if |G_P2| <= {rule["d3_near_p2"]} and |G_P1| <= {rule["d3_near_p1"]})')
+    else:
+        p('    -> D3: pending (needs R2 and R2v42 P1 evals and their inits\' round-1 P1 evals)')
+
+    # D4: what round 3 is (P2's >= 1 s fraction; binomial se over drill episodes); L's first clause alongside.
+    pt = lambda n: runs[n]['ug1s'][0] if runs[n]['ug1s'] else float('nan')
+    se2 = lambda n: pt(n) * (1 - pt(n)) / max(1, runs[n]['episodes'])
+    k_runs = groups.get(K, [])
+    if k_runs and r2_runs and x2_runs:
+        k_ug, x_ug = pt(k_runs[0]), pt(x2_runs[0])
+        r2_ug = float(np.mean([pt(n) for n in r2_runs]))
+        diff = x_ug - r2_ug
+        half = 1.96 * math.sqrt(se2(x2_runs[0]) + sum(se2(n) for n in r2_runs) / len(r2_runs) ** 2)
+        above = diff - half > 0
+        if not above:
+            case = ('the dose is not the lever: round 3 is the sense in Section 2.2 under bit 64 against v4.3 with the '
+                    'same reward' if k_ug < r2_ug else
+                    f'the dose is not the lever and {R2} is not above {K}: the admission in Section 1.3')
+        elif x_ug >= rule['p2_ug1s']:
+            case = f'{X2} above {R2} but reaches {rule["p2_ug1s"]:.0%}: no dose-sweep case (the dose reaches the P2 bar)'
+        elif k_ug < r2_ug:
+            case = 'the reward is the lever: round 3 is a dose sweep (x4) with the same hack tests'
+        else:
+            case = f'no D4 case fires ({X2} above {R2} but {K} >= {R2})'
+        ls = lambda names: [runs[n].get('l_share') for n in names]
+        lk, lr, lx = ls(k_runs), ls(r2_runs), ls(x2_runs)
+        l_r2 = float(np.mean(lr)) if lr and None not in lr else None
+        out['d4'] = dict(case=case, k=k_ug, r2=r2_ug, x2=x_ug, x2_minus_r2=diff, half_width=half,
+                         l_share=dict(k=lk[0], r2=l_r2, x2=lx[0]))
+        p(f'    -> D4: P2 ug>=1s {K} {k_ug:.3f}, {R2} {r2_ug:.3f}, {X2} {x_ug:.3f}; {X2} - {R2} {diff:+.3f} ±{half:.3f} '
+          f'(binomial over drill episodes; "above" = interval excludes 0): {case}; L launch share alongside: '
+          f'{K} {pc(lk[0])}, {R2} {pc(l_r2)}, {X2} {pc(lx[0])}')
+    else:
+        p('    -> D4: pending')
     return out
 
 
