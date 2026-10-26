@@ -240,6 +240,39 @@ class PoolGrowth(PoolHarness):
                          ['snapshot', 'armed', 'armed'])
 
 
+    def test_prune_deletes_only_evicted_snapshots_no_bank_uses(self):
+        # max_size is 4: eleven snapshots leave four candidates (the bootstrap
+        # and the newest three) and seven evicted files on disk.
+        for step in range(1, 12):
+            self.trainer.global_step = step * 1000
+            native_selfplay._snapshot(self.trainer, self.backend, self.pool)
+        evicted = sorted(set(self.backend.saved) - {e['path'] for e in self.pool['pool']})
+        playing, loading = evicted[0], evicted[1]
+        self.pool['banks'][0]['cur_opp_path'] = playing
+        self.pool['banks'][1]['pending_opp_path'] = loading
+        stray = self.pool_dir / 'momentum-000000001.bin'
+        stray.write_bytes(b'w')
+        deleted = native_selfplay.prune(self.pool)
+        self.assertEqual(deleted, evicted[2:])
+        self.assertFalse(any(Path(path).exists() for path in deleted))
+        for entry in self.pool['pool']:
+            self.assertTrue(Path(entry['path']).exists(), f"candidate {entry['name']} kept")
+        self.assertTrue(Path(playing).exists() and Path(loading).exists(), 'a file a bank uses waits')
+        self.assertTrue(Path(self.bootstrap).exists() and stray.exists(), 'only snapshot files are pruned')
+        self.pool['banks'][0]['cur_opp_path'] = self.pool['banks'][1]['pending_opp_path'] = None
+        self.assertEqual(native_selfplay.prune(self.pool), [playing, loading])
+        self.assertEqual(native_selfplay.prune(self.pool), [])
+
+    def test_prune_matches_files_by_name(self):
+        # A resume may spell the run directory differently from the run that
+        # recorded the candidates' paths; a live snapshot is still live.
+        self.trainer.global_step = 1000
+        path = native_selfplay._snapshot(self.trainer, self.backend, self.pool)
+        self.pool['pool'][-1]['path'] = '/elsewhere/pool/' + Path(path).name
+        self.assertEqual(native_selfplay.prune(self.pool), [])
+        self.assertTrue(Path(path).exists())
+
+
 class Saturation(PoolHarness):
     banks = 4
 

@@ -31,6 +31,7 @@ the previous swap). The environment therefore drops a match whose opponent
 changed mid-match from the pool's per-bank statistics (see bopl_puffer.h).
 """
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -49,6 +50,8 @@ HOPELESS = 0.3
 _NEW = dict(step=None, learner_steps=None, games=0, wins=0, draws=0, name='?')
 # A run snapshot's candidate name. League members bring their own.
 SELF = 'self@%d'
+# A run snapshot's file name in pool_dir (_snapshot).
+SNAPSHOT = re.compile(r'[0-9]{16}\.bin')
 
 
 def _thin(entries, max_size):
@@ -305,6 +308,29 @@ def _snapshot(trainer, backend, pool):
         pool['pool'] = _thin(pool['pool'], pool['max_size'])
     pool['last_snapshot_step'] = int(trainer.global_step)
     return path
+
+
+def prune(pool):
+    """Delete this run's snapshot files the pool no longer uses; returns their paths.
+
+    Eviction only thins the candidate list, so without this every snapshot a
+    run ever took stayed on disk (2026-10-24: a run that kept outgrowing one
+    frozen opponent wrote 7,252 of them, 31 GB in 24 minutes). Call it right
+    after pool/state.json is written: --resume restores the pool from that
+    file, so a snapshot is safe to delete once neither the saved candidates
+    nor a bank (playing it or about to load it) refer to it. Only snapshot
+    files in pool_dir are touched: the bootstrap is the run's step-0
+    checkpoint, and league members live elsewhere. Files are matched by name,
+    so a resume that spells the run directory differently keeps them all.
+    """
+    live = [entry['path'] for entry in pool['pool']]
+    live += [bank[key] for bank in pool['banks'] for key in ('cur_opp_path', 'pending_opp_path')]
+    live = {os.path.basename(path) for path in live if path}
+    dead = sorted(str(path) for path in Path(pool['pool_dir']).iterdir()
+                  if SNAPSHOT.fullmatch(path.name) and path.name not in live)
+    for path in dead:
+        os.unlink(path)
+    return dead
 
 
 def step(trainer, backend, pool, ledger, epoch):

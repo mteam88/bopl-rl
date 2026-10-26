@@ -1242,6 +1242,7 @@ def main():
                 for old in [*(output/'pool').glob('momentum-*.bin'), *(output/'pool').glob('ema-*.bin')]:
                     if old not in (momentum, ema):
                         old.unlink()
+                native_selfplay.prune(pool)
                 persist_roster()
             return saved[step]
         training_started = time.monotonic()
@@ -1274,6 +1275,9 @@ def main():
                 config['native']['train'].update(**({'ema_decay': a.ema_decay} if a.ema_decay else {}))
             trainer.global_step = resume['global_step']
             pool, ledger = load_pool_state(resume)
+            # This run's own pool directory, not the recorded one: a copied run dir resumed
+            # elsewhere must not write or prune (native_selfplay.prune) the original's snapshots.
+            pool['pool_dir'] = str(output/'pool')
             if len(pool['banks']) != policy_banks:
                 raise SystemExit(f"--resume: the pool manages {len(pool['banks'])} banks but "
                                  f'--banks/--scripted-bots now leave {policy_banks} policy banks')
