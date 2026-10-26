@@ -15,7 +15,9 @@
  * around rays 20 and 28) carry the aim ray and the line of sight instead.
  * BOPL4_ABLATE_OBSFIX is layout v4.2, not an ablation either: creators as
  * owners, smoke out of the rays and last in the rows, Spike's spikes lethal
- * walls (bopl_rows_v4.h). */
+ * walls (bopl_rows_v4.h). BOPL4_ABLATE_LINE is layout v4.4: the -45 degree
+ * slot carries the line to the enemy (bopl_rays_v4.h bopl4f_line), so it
+ * cannot go with v4.1 (bopl4_ablation_valid; a row with both aborts). */
 static int bopl4_ablation_value=-1;
 /* The process default (BOPL4_ABLATE, read once): every row of a training run. */
 static void bopl4_set_ablation(int bits) { bopl4_ablation_value=bits; }
@@ -29,8 +31,15 @@ static int bopl4_ablation_default(void) {
  * are written one at a time per thread (the env pool's workers, the research
  * environment, the shim). */
 static __thread int bopl4_row_ablation=-1;
+static void bopl4_ablation_fail(int bits) {
+    fprintf(stderr, "bopl: v4 writer bits %d are not a valid mask (bopl_rows_v4.h bopl4_ablation_valid: bits below 128, "
+                    "and 64, layout v4.4's line to the enemy, never with 8, v4.1's aim and line of sight, which use its slot)\n", bits);
+    abort();
+}
 static int bopl4_ablation(void) {
-    return bopl4_row_ablation>=0?bopl4_row_ablation:bopl4_ablation_default();
+    int bits=bopl4_row_ablation>=0?bopl4_row_ablation:bopl4_ablation_default();
+    if (!bopl4_ablation_valid(bits)) bopl4_ablation_fail(bits);
+    return bits;
 }
 
 /* sinf and cosf of a slime's rotation (zero for none): the body block's and
@@ -327,6 +336,9 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
         bopl4_scene_fill(scene?scene:&local, state, nearest, count, nearby_slimes, slime_count, self, ablation,
                          self_x, self_y, self_vx, self_vy, env->applied[a], &enemy);
         if (!scene) bopl4f_write(&local, bopl4_dirs(), obs+BOPL4_OBS_TERRAIN_OFFSET);
+#ifdef BOPL4_SCENE_TAP
+        BOPL4_SCENE_TAP(env, a, scene?scene:&local, obs);   /* a debugging tool's look at the scene (never defined in a build that trains) */
+#endif
     }
 
     uint32_t player_count=state->header.player_count<BOPL4_PLAYERS?state->header.player_count:BOPL4_PLAYERS;

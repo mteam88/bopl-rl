@@ -74,6 +74,12 @@ enum {
      * duplicate around rays 20 and 28 and carry the aim ray and the line of
      * sight instead (bopl_rays_v4.h). */
     BOPL4_AIM_RAY=BOPL4_RAYS_AROUND+0, BOPL4_LOS_RAY=BOPL4_RAYS_AROUND+3,
+    /* Layout v4.4 (BOPL4_ABLATE_LINE, never with v4.1): the -45 degree down
+     * ray's slot (floats 484-491) carries the line to the primary enemy
+     * instead: the air before the first wall along it, the fraction of the
+     * segment in the ground and the clear run-in at the enemy's end
+     * (bopl_rays_v4.h bopl4f_line). */
+    BOPL4_LINE_RAY=BOPL4_RAYS_AROUND+3,
     /* Row memory of every observation buffer shared by the layouts. */
     BOPL_OBS_STRIDE=BOPL4_OBS_SIZE>BOPL_OBS_SIZE?BOPL4_OBS_SIZE:BOPL_OBS_SIZE
 };

@@ -340,9 +340,9 @@ int bopl_bank_kits_install(int bank, const int *rows, int count) {
 }
 /* The writer bits (bopl_obs_v4.h BOPL4_ABLATE_*) of the member just loaded
  * into frozen bank `bank`, or -1 for the run's own (bopl_bank_ablate).
- * Returns 0, or -1 for a bad bank or mask. */
+ * Returns 0, or -1 for a bad bank or mask (bopl4_ablation_valid). */
 int bopl_bank_ablate_install(int bank, int mask) {
-    if (bank<0 || bank>=BOPL_MAX_BANKS || mask<-1 || mask>63) return -1;
+    if (bank<0 || bank>=BOPL_MAX_BANKS || mask<-1 || (mask>=0 && !bopl4_ablation_valid(mask))) return -1;
     __atomic_store_n(&bopl_bank_ablate[bank], mask+1, __ATOMIC_RELAXED);
     return 0;
 }

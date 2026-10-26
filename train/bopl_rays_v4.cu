@@ -22,7 +22,7 @@
 //   warp 7     the single SDFs (edge walls, the body's SDF and gradient, the
 //              lethal distance), the drop and ceiling probes (16 lanes a
 //              probe) once the fan's reach is in, then the aim and line of
-//              sight
+//              sight, or layout v4.4's line to the enemy (br4_line)
 // (the edge probes ran after a join of the whole block, behind the fan's
 // slowest warp, which no longer waits for them). Exact: a group's
 // reach and each step's SDF are minima / maxima of floats that are never NaN
@@ -1014,6 +1014,43 @@ __device__ static void br4_aim_rays(Br4Shared& sh, int gt, float (*out)[BOPL4_RA
     if (active) br4_finish(sh, lane, dx, dy, best, cls, closing, wall, out[ray]);
 }
 
+// Layout v4.4's line to the enemy (bopl4f_line) by warp 7 (gt its lane) into
+// its slot: the walls-only cast by the whole warp, a group of one (culled at
+// its own reach as bopl4f_march_group culls it), sample k by lane k (br4_sdf
+// over every wall is bopl4f_sdf over bopl4f_all: a minimum in any order), a
+// ballot, lane 0 writing.
+// BR4_LINE_NEG (the negative controls of eval/encode_check.c, never in a
+// build that trains): 1 casts without the exit march, 2 samples half a step
+// early.
+#ifndef BR4_LINE_NEG
+#define BR4_LINE_NEG 0
+#endif
+__device__ static void br4_line(Br4Shared& sh, int gt, float* out) {
+    const Bopl4Scene* s = &sh.s;
+    float dx = 0.0f, dy = 0.0f, len = 0.0f;
+    if (!bopl4f_enemy_line(s, &dx, &dy, &len)) {
+        if (gt < BOPL4_RAY_FEATURES) out[gt] = 0.0f;
+        return;
+    }
+    const int walls = s->axis_count + s->rot_count;
+    const float max = (float)BOPL4_RAY_LENGTH;
+    float t = max;
+    if (walls) {
+        float reach = 0.0f;
+        const float r = bopl4f_reach(s, s->x, s->y, max, max);
+        reach = r > reach ? r : reach;
+        t = br4_marches<32>(sh, br4_culled(sh, reach + 0.1f), gt, true, s->x, s->y, dx, dy, max, max,
+                            BR4_LINE_NEG != 1 && (s->flags & BOPL4F_INSIDE) != 0);
+    }
+    float x, y;
+    bopl4f_line_point(s, dx, dy, len, gt, &x, &y);
+#if BR4_LINE_NEG == 2
+    { const float tk = len * ((float)gt * 0.03125f); x = s->x + dx * tk; y = s->y + dy * tk; }
+#endif
+    const unsigned ground = __ballot_sync(0xffffffffu, br4_sdf(sh, walls, false, x, y) < 0.0f);
+    if (gt == 0) bopl4f_line_finish(t, len, ground, out);
+}
+
 // The terrain block (bopl4f_terrain) by the dash warps (gt their thread),
 // given the probes, the dash's landing and warp 7's SDFs: the edge probes,
 // ray e side 0's steps 1 .. first_wall[0]-1, then side 1's, then thread 0
@@ -1093,12 +1130,15 @@ __device__ static void br4_rays(const float* __restrict__ packed, float* __restr
     if (i < BR4_FAN_THREADS) {
         // The fan (every other around ray under BOPL4F_HALF), the drop and ceiling probes counting
         // toward its reach. Under BOPL4F_AIM warp 7 writes the aim and line-of-sight slots, so the fan
-        // leaves them alone (it wrote them first, then the block's join ordered warp 7's after).
+        // leaves them alone (it wrote them first, then the block's join ordered warp 7's after); under
+        // BOPL4F_LINE (never with BOPL4F_AIM) warp 7 writes the line's slot, and the fan's ray there is
+        // still cast (it counts toward the fan's reach) but not written.
         const int half = (s.flags & BOPL4F_HALF) != 0, n = half ? BOPL4_RAYS_AROUND / 2 : BOPL4_RAYS;
-        const int aimed = (s.flags & BOPL4F_AIM) != 0;
+        const int aimed = (s.flags & BOPL4F_AIM) != 0, lined = !aimed && (s.flags & BOPL4F_LINE);
         if (half) for (int k = i; k < BOPL4_RAYS * BOPL4_RAY_FEATURES; k += BR4_FAN_THREADS) {
             const int ray = k / BOPL4_RAY_FEATURES;
-            if ((ray >= BOPL4_RAYS_AROUND || (ray & 1)) && !(aimed && (ray == BOPL4_AIM_RAY || ray == BOPL4_LOS_RAY))) rays[k] = 0.0f;
+            if ((ray >= BOPL4_RAYS_AROUND || (ray & 1)) && !(aimed && (ray == BOPL4_AIM_RAY || ray == BOPL4_LOS_RAY))
+                && !(lined && ray == BOPL4_LINE_RAY)) rays[k] = 0.0f;
         }
         const int ray = i / BR4_LANES, lane = i % BR4_LANES, k = half ? 2 * ray : ray;
         float dx = 0.0f, dy = 0.0f, best = 0.0f, closing = 0.0f, max = 0.0f, limit = 0.0f;
@@ -1112,7 +1152,8 @@ __device__ static void br4_rays(const float* __restrict__ packed, float* __restr
         }
         const float wall = br4_group(sh, BR4_FAN, BR4_FAN_THREADS, i, ray < n + 2, ray < n, x, y, dx, dy, max, limit,
                                      (s.flags & BOPL4F_INSIDE) && ray < n);
-        if (ray < n && !(aimed && (k == BOPL4_AIM_RAY || k == BOPL4_LOS_RAY))) br4_finish(sh, lane, dx, dy, best, cls, closing, wall, rays + k * BOPL4_RAY_FEATURES);
+        if (ray < n && !(aimed && (k == BOPL4_AIM_RAY || k == BOPL4_LOS_RAY)) && !(lined && k == BOPL4_LINE_RAY))
+            br4_finish(sh, lane, dx, dy, best, cls, closing, wall, rays + k * BOPL4_RAY_FEATURES);
     } else if (i < BR4_MISC) {
         // Ground within one dash (bopl4f_terrain), needed when the drop probe is over 4.
         const int gt = i - BR4_FAN_THREADS, ray = gt / BR4_LANES;
@@ -1164,6 +1205,7 @@ __device__ static void br4_rays(const float* __restrict__ packed, float* __restr
         if (gt % 16 == 0) sh.probes[gt / 16] = probe;
         br4_arrive(BR4_EDGE, BR4_DASH_THREADS + 32);
         if (s.flags & BOPL4F_AIM) br4_aim_rays(sh, gt, sh.aim_out);
+        else if (s.flags & BOPL4F_LINE) br4_line(sh, gt, rays + BOPL4_LINE_RAY * BOPL4_RAY_FEATURES);
         __syncwarp();
         if ((s.flags & BOPL4F_AIM) && gt < 2 * BOPL4_RAY_FEATURES)
             (gt < BOPL4_RAY_FEATURES ? aim : los)[gt % BOPL4_RAY_FEATURES] = sh.aim_out[gt / BOPL4_RAY_FEATURES][gt % BOPL4_RAY_FEATURES];

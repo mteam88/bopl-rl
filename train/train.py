@@ -320,7 +320,7 @@ V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNE
                 flat_dim=('BOPL4_FLAT_DIM', 'flat_dim'), ffn_dim=('BOPL4_FFN_DIM', 'ffn_dim'),
                 critic_dim=('BOPL4_CRITIC_DIM', 'critic_dim'), critic_privileged=('BOPL4_CRITIC_PRIVILEGED', 'critic_privileged'),
                 critic_detach=('BOPL4_CRITIC_DETACH', 'critic_detach'), mean_pool=('BOPL4_MEAN_POOL', 'mean_pool'),
-                ablate=('BOPL4_ABLATE', 'ablate'))   # writer bitmask: 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes + Missile/Spike kill credit, 32 layout v4.3 drill body + rays from inside the ground
+                ablate=('BOPL4_ABLATE', 'ablate'))   # writer bitmask: 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes + Missile/Spike kill credit, 32 layout v4.3 drill body + rays from inside the ground, 64 layout v4.4 line to the enemy (not with 8; layout.check_writer_bits)
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -794,6 +794,11 @@ def main():
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()
                for key, path in reference.player_sources(game).items() if path.exists()}
     a.v4_shape = {key: getattr(a, 'v4_' + name) for name, (_, key) in V4_SHAPE.items()} if a.encoder == 'v4' else None
+    if a.v4_shape is not None:
+        try:
+            layout.check_writer_bits(a.v4_shape['ablate'])
+        except ValueError as error:
+            raise SystemExit(f'--v4-ablate: {error}')
     resume = None
     if a.resume:
         resume = json.loads((output/'pool/state.json').read_text())
@@ -911,6 +916,7 @@ def main():
     puffer_dir = ROOT/'train'
     sources = [puffer_dir/name for name in ('bopl_puffer.h', 'bopl_style.h', 'binding.c', 'bopl_rollout.cu', 'bopl_set_encoder.cu',
                                            'bopl_aim.h', 'bopl_layout.h', 'bopl_v4.cu', 'bopl_obs_v4.h', 'bopl_layout_v4.h',
+                                           'bopl_rows_v4.h', 'bopl_rays_v4.h', 'bopl_rays_v4.cu', 'bopl_obs_pack.h',
                                            'pufferlib-bopl.patch')] + [ROOT/'sim/abi/bopl_rl.c']
     stale = [path.name for path in sources if path.exists() and path.stat().st_mtime > binding.stat().st_mtime]
     if stale:

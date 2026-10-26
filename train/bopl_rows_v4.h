@@ -39,12 +39,18 @@
 #define BOPL4_ZERO(p, n) memset(__builtin_assume_aligned((p), 4), 0, (size_t)(n)*sizeof(float))
 #define BOPL4_COPY(d, s, n) memcpy(__builtin_assume_aligned((d), 4), __builtin_assume_aligned((s), 4), (size_t)(n)*sizeof(float))
 
-/* Writer ablations (bopl_obs_v4.h). AIM and OBSFIX are layout revisions,
- * not ablations: v4.1 the aim and line-of-sight rays, v4.2 the entity fixes
- * below. Neither changes a width, so a net trained without one fine-tunes
- * with it. */
+/* Writer ablations (bopl_obs_v4.h). AIM, OBSFIX, DRILL and LINE are layout
+ * revisions, not ablations: v4.1 the aim and line-of-sight rays, v4.2 the
+ * entity fixes below, v4.3 the Drill form's body and rays from inside the
+ * ground, v4.4 the line to the enemy (bopl_rays_v4.h bopl4f_line). None
+ * changes a width, so a net trained without one fine-tunes with it. */
 enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8,
-       BOPL4_ABLATE_OBSFIX=16, BOPL4_ABLATE_DRILL=32 };
+       BOPL4_ABLATE_OBSFIX=16, BOPL4_ABLATE_DRILL=32, BOPL4_ABLATE_LINE=64, BOPL4_ABLATE_BITS=127 };
+/* Whether a mask is one the writer takes: known bits only, and not LINE with
+ * AIM, which write the same ray slot (bopl_layout_v4.h BOPL4_LINE_RAY). */
+BOPL4D_FN int bopl4_ablation_valid(int bits) {
+    return !(bits&~BOPL4_ABLATE_BITS) && (bits&(BOPL4_ABLATE_AIM|BOPL4_ABLATE_LINE))!=(BOPL4_ABLATE_AIM|BOPL4_ABLATE_LINE);
+}
 #define BOPL4_SLIME_RADIUS 0.76   /* bopl_bots.h BOT_SLIME_RADIUS */
 #define BOPL4_LETHAL_LAYER 16     /* LethalTerrain */
 #define BOPL4_SMOKE_LAYER 22      /* Smoke: the Smoke ability's clouds (FlammableSmoke) */
@@ -736,7 +742,7 @@ BOPL4D_FN void bopl4_slime_row(float *out, const BoplRlState *state, const BoplR
 BOPL4D_FN void bopl4_scene_head(Bopl4Scene *s, int ablation, double x, double y, double svx, double svy,
                                 int aimed, float aim_dx, float aim_dy, const Bopl4Enemy *enemy) {
     s->flags=(ablation&BOPL4_ABLATE_RAYS?0:BOPL4F_FAN)|(ablation&BOPL4_ABLATE_RAYS16?BOPL4F_HALF:0)|(ablation&BOPL4_ABLATE_AIM?BOPL4F_AIM:0)
-            |(ablation&BOPL4_ABLATE_DRILL?BOPL4F_INSIDE:0);
+            |(ablation&BOPL4_ABLATE_DRILL?BOPL4F_INSIDE:0)|((ablation&BOPL4_ABLATE_LINE) && !(ablation&BOPL4_ABLATE_AIM)?BOPL4F_LINE:0);
     s->x=(float)x; s->y=(float)y; s->svx=(float)svx; s->svy=(float)svy;
     s->aim_dx=s->aim_dy=0.0f;
     if (aimed) { s->flags|=BOPL4F_AIMED; s->aim_dx=aim_dx; s->aim_dy=aim_dy; }

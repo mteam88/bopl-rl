@@ -1060,6 +1060,7 @@ static int bopl4_encode_state(BoplPuffer *env, const BoplRlState *state, int a, 
     memset(head, 0, sizeof(*head));
     head->mode=BOPL4_PACK_MODE_STATE; head->player=(uint32_t)a;
     head->ablation=(uint32_t)(ablation>=0?ablation:bopl4_ablation_default());
+    if (!bopl4_ablation_valid((int)head->ablation)) bopl4_ablation_fail((int)head->ablation);
     head->flags=bopl_map_selected(BOPL_SPACE_MAPS, env->config.map)?BOPL4_STATE_SPACE:0;
     if (env->applied[a].angle) {
         pthread_once(&bopl_aim_table_once, bopl_aim_table_init);
