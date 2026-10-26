@@ -42,6 +42,7 @@
  * with three styles). The payouts fold into style_hash, outside the timer.
  *
  *   env_bench <libbopl_sim.so> <corpus_dir> [max_games=0 (all)] [warmup=240] [limit=10800]
+ *   BOPL_ENV_BENCH_ABLATE=<bits> (default 0): the writers' bits (lite: 10 | bits)
  *
  * Pin and nice it (taskset -c 11 nice -n 19). Build: make env-bench. */
 #define _GNU_SOURCE
@@ -180,9 +181,15 @@ int main(int argc, char **argv) {
     static float pack_out[PLAYERS*BOPL4_PACK_P], pack_train[PLAYERS*BOPL4_PACK_P];
     static unsigned char masks_lite[PLAYERS][BOPL_LOGITS], masks_full[PLAYERS][BOPL_LOGITS], masks_train[PLAYERS][BOPL_LOGITS];
     BoplPuffer *lite=calloc(1, sizeof(BoplPuffer)), *full=calloc(1, sizeof(BoplPuffer)), *train=calloc(1, sizeof(BoplPuffer));
-    env_init(lite, world, scratch_lite, pack_out, masks_lite, 10);
-    env_init(full, world, scratch_full, pack_out, masks_full, 0);
-    env_init(train, world, scratch_train, pack_train, masks_train, 0);
+    /* BOPL_ENV_BENCH_ABLATE=<bits>: the full and train writers at these
+     * writer bits (default 0), the lite one at them with the terrain and rays
+     * off and the aim casts on (10 | bits), so a writer revision's bit-off
+     * gate covers rows written with the other revisions on (16, 48). */
+    const char *ablate_env=getenv("BOPL_ENV_BENCH_ABLATE");
+    int bits=ablate_env&&ablate_env[0]?atoi(ablate_env):0;
+    env_init(lite, world, scratch_lite, pack_out, masks_lite, 10|bits);
+    env_init(full, world, scratch_full, pack_out, masks_full, bits);
+    env_init(train, world, scratch_train, pack_train, masks_train, bits);
     BoplStateCopy delayed[2]={0}, sample={0};
 
     /* BOPL_ENV_BENCH_EVICT_KB: between decisions, outside the timers, sweep
