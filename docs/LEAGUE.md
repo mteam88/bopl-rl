@@ -207,8 +207,8 @@ its own kit and 0.22-0.48 against the seven playing a foreign one, and PFSP puts
 its largest weight on `drill-throw-magnet`. `v4_shape.ablate` is part of the
 comparison: it is a writer bitmask, so a member trained with features ablated
 would otherwise be fed features it has never seen. The exception is a writer
-*revision* (`registry.WRITER_REVISIONS`, today bits 16 and 32, layouts v4.2 and
-v4.3): it changes what some fields hold but not the row's shape or what a field
+*revision* (`registry.WRITER_REVISIONS`, today bits 16, 32 and 64, layouts v4.2,
+v4.3 and v4.4): it changes what some fields hold but not the row's shape or what a field
 means, so it is masked out of the comparison. A v4.2 run (`--v4-ablate 24`) can
 start from a v4.1 checkpoint and load v4.1 members, and each frozen bank writes
 its member's own rows (`bank_kits.WriterBackend`, `bopl_bank_ablate`). Layout
@@ -217,7 +217,14 @@ body velocity and heading in the body blocks, casts rays from inside the
 ground to where they leave it, and no longer also draws a floating platform as
 an object circle (train/bopl_obs_v4.h, bopl_rows_v4.h). It needs the sim's Drill
 form export (`BOPL_RL_FORM_BODY=1`, which train.py and `native_policy` set
-when a run or a loaded member has the bit).
+when a run or a loaded member has the bit). Layout v4.4 (bit 64, e.g.
+`--v4-ablate 112` on a v4.3 net) writes the line to the primary enemy into the
+-45 degree down ray's slot (floats 484-491, a duplicate of around ray 28): the
+walls-only cast toward the enemy capped at its distance (from inside the ground
+with bit 32, the exit distance), the fraction of 32 samples along the segment
+in the ground, and the clear run-in at the enemy's end (train/bopl_rays_v4.h
+`bopl4f_line`). That slot is v4.1's line of sight, so bit 64 with bit 8 is
+rejected (`layout.check_writer_bits`, `bopl4_ablation_valid`).
 
 The practical consequence is that the eight seeded specialists pin any run that
 wants to train against them to their shape (`--encoder v4 --hidden 256

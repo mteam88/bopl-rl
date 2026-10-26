@@ -11,7 +11,12 @@
  *
  *   encode_check <libbopl_sim.so> <corpus_dir> [max_games=0 (all)] [ablations=0,2,8,10,1,4]
  *
- * Exit 0 only with zero mismatches. Build: make encode-check. */
+ * Exit 0 only with zero mismatches. Build: make encode-check.
+ * Under writer bit 64 (layout v4.4) a line per such ablation counts what the
+ * line to the enemy's slot (BOPL4_LINE_RAY) covered in the CPU rows: rows
+ * with an enemy, rows from inside the ground (the terrain block's SDF < 0),
+ * rows whose line crosses ground, both, and rows whose enemy end is in
+ * ground; bad_line_slot counts the mismatched floats in that slot. */
 #define ENV_BENCH_NO_MAIN
 #include "env_bench.c"
 #include <cuda_runtime_api.h>
@@ -26,7 +31,24 @@ static RowInfo batch_info[BATCH];
 static int batch_n;
 static uint64_t rows_checked, rows_mismatched, floats_mismatched, rows_fallback, launches;
 static double kernel_ms;
-static long region_bad[6];
+static long region_bad[6], line_bad;
+enum { LINE_SLOT=BOPL4_OBS_RAY_OFFSET+BOPL4_LINE_RAY*BOPL4_RAY_FEATURES };
+static struct { int ablation; uint64_t rows, enemy, inside, ground, inside_ground, end_in_ground; } line_cover[MAX_ABLATIONS];
+static int line_covers;
+/* The line slot's coverage of one CPU row (writer bits with BOPL4_ABLATE_LINE). */
+static void line_count(int ablation, const float *row) {
+    int k=0;
+    while (k<line_covers && line_cover[k].ablation!=ablation) k++;
+    if (k==line_covers) { line_cover[k].ablation=ablation; line_covers++; }
+    const float *line=row+LINE_SLOT;
+    int inside=row[BOPL4_OBS_TERRAIN_OFFSET+9]<0.0f, enemy=line[0]>0.0f || line[1]>0.0f || line[2]>0.0f;
+    line_cover[k].rows++;
+    line_cover[k].enemy+=enemy;
+    line_cover[k].inside+=enemy && inside;
+    line_cover[k].ground+=line[1]>0.0f;
+    line_cover[k].inside_ground+=inside && line[1]>0.0f;
+    line_cover[k].end_in_ground+=enemy && line[2]==0.0f;
+}
 
 static const char *region_name(int i) {
     if (i<BOPL4_OBS_OPPONENT_OFFSET) return i<BOPL4_OBS_SELF_OFFSET?"global":"self";
@@ -68,9 +90,10 @@ static void flush(char **names) {
                         names[batch_info[r].game], batch_info[r].decision, batch_info[r].ablation, batch_info[r].player,
                         i, region_name(i), g, got[i], w, want[i]);
             }
-            bad++; region_bad[region_index(i)]++;
+            bad++; region_bad[region_index(i)]++; line_bad+=i>=LINE_SLOT && i<LINE_SLOT+BOPL4_RAY_FEATURES;
         }
         rows_checked++;
+        if (batch_info[r].ablation&BOPL4_ABLATE_LINE) line_count(batch_info[r].ablation, batch_ref+(size_t)r*BOPL4_OBS_SIZE);
         if (bad) { rows_mismatched++; floats_mismatched+=(uint64_t)bad; }
     }
     batch_n=0;
@@ -213,7 +236,11 @@ int main(int argc, char **argv) {
            n, na, rows_checked, rows_mismatched, floats_mismatched, rows_fallback, BATCH, launches?kernel_ms*1e3/(double)launches:0.0,
            cpu_ref*1e6/(double)(encodes?encodes:1), cpu_state*1e6/(double)(encodes?encodes:1));
     if (floats_mismatched)
-        printf("{\"bad_global_self\": %ld, \"bad_opponent\": %ld, \"bad_previous\": %ld, \"bad_terrain_rays\": %ld, \"bad_sets\": %ld, \"bad_privileged\": %ld}\n",
-               region_bad[0], region_bad[1], region_bad[2], region_bad[3], region_bad[4], region_bad[5]);
+        printf("{\"bad_global_self\": %ld, \"bad_opponent\": %ld, \"bad_previous\": %ld, \"bad_terrain_rays\": %ld, \"bad_sets\": %ld, \"bad_privileged\": %ld, \"bad_line_slot\": %ld}\n",
+               region_bad[0], region_bad[1], region_bad[2], region_bad[3], region_bad[4], region_bad[5], line_bad);
+    for (int k=0; k<line_covers; k++)
+        printf("{\"line_ablation\": %d, \"rows\": %"PRIu64", \"enemy\": %"PRIu64", \"inside\": %"PRIu64", \"ground\": %"PRIu64", \"inside_ground\": %"PRIu64", \"end_in_ground\": %"PRIu64"}\n",
+               line_cover[k].ablation, line_cover[k].rows, line_cover[k].enemy, line_cover[k].inside, line_cover[k].ground, line_cover[k].inside_ground,
+               line_cover[k].end_in_ground);
     return failures || rows_mismatched ? 1 : 0;
 }

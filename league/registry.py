@@ -379,10 +379,12 @@ POLICY_SHAPE = ('architecture', 'obs_size', 'hidden', 'num_layers', 'aim_fourier
 # Writer revisions: v4 ablate bits that change what the row writer puts in a
 # field but never the row's shape or what a field means (16: layout v4.2, the
 # observation fixes in train/bopl_rows_v4.h; 32: layout v4.3, the Drill form's
-# body and rays from inside the ground, train/bopl_obs_v4.h). Weights load
-# across them, so a v4.1 net can be fine-tuned on v4.2 rows; a frozen bank
-# writes its member's own rows (train/bank_kits.py WriterBackend).
-WRITER_REVISIONS = 16 | 32
+# body and rays from inside the ground, train/bopl_obs_v4.h; 64: layout v4.4,
+# the line to the enemy in the -45 degree ray's slot, train/bopl_rays_v4.h
+# bopl4f_line). Weights load across them, so a v4.1 net can be fine-tuned on
+# v4.2 rows and a v4.3 net on v4.4 rows; a frozen bank writes its member's own
+# rows (train/bank_kits.py WriterBackend).
+WRITER_REVISIONS = 16 | 32 | 64
 
 
 def shape_differs(theirs, ours):

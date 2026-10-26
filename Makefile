@@ -288,6 +288,17 @@ $(OUT)/encode_check: eval/encode_check.c eval/env_bench.c train/bopl_rays_v4.cu 
 	g++-15 $(OUT)/encode_check.o $(OUT)/encode_check_rl.o $(OUT)/encode_check_rays.o \
 	  $(abspath $(CUDA_HOME))/lib/libcudart.so.13 -Wl,-rpath,$(abspath $(CUDA_HOME))/lib -lm -lpthread -ldl -o $@
 
+# Its negative controls for layout v4.4's line to the enemy (bopl_rays_v4.cu
+# BR4_LINE_NEG): encode_check_neg1 casts the line without the exit march,
+# encode_check_neg2 samples it half a step early. Each must mismatch at writer
+# bits 112, in the line's slot alone (native/rl/research/drill-sense/sense-gate.sh).
+encode-check-neg: $(OUT)/encode_check_neg1 $(OUT)/encode_check_neg2
+
+$(OUT)/encode_check_neg%: $(OUT)/encode_check
+	$(CUDA_HOME)/bin/nvcc -O3 -std=c++17 -arch=sm_120 -fmad=false -ccbin g++-15 -DBR4_LINE_NEG=$* $(INCLUDES) -c train/bopl_rays_v4.cu -o $(OUT)/encode_check_rays_neg$*.o
+	g++-15 $(OUT)/encode_check.o $(OUT)/encode_check_rl.o $(OUT)/encode_check_rays_neg$*.o \
+	  $(abspath $(CUDA_HOME))/lib/libcudart.so.13 -Wl,-rpath,$(abspath $(CUDA_HOME))/lib -lm -lpthread -ldl -o $@
+
 # The policy v4 rollout forward of one buffer step on dumped trainer steps
 # (train/fwd_bench.cu): bit-exactness against the trainer and between builds,
 # and the step's latency on 1 and 4 streams. Built against the trainer's
@@ -420,7 +431,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: shim-search-check divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check fwd-bench agent agent-mac agent-shadow-lib agent-shadow-lib-mac shadow-replay check-reward check-routing check-learner-first check-bank-kits style-check style-score style-rates style-rates-check
+.PHONY: shim-search-check divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench env-bench env-interleave env-ilv-train encode-check encode-check-neg fwd-bench agent agent-mac agent-shadow-lib agent-shadow-lib-mac shadow-replay check-reward check-routing check-learner-first check-bank-kits style-check style-score style-rates style-rates-check
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.

@@ -183,11 +183,12 @@ int main(int argc, char **argv) {
     BoplPuffer *lite=calloc(1, sizeof(BoplPuffer)), *full=calloc(1, sizeof(BoplPuffer)), *train=calloc(1, sizeof(BoplPuffer));
     /* BOPL_ENV_BENCH_ABLATE=<bits>: the full and train writers at these
      * writer bits (default 0), the lite one at them with the terrain and rays
-     * off and the aim casts on (10 | bits), so a writer revision's bit-off
-     * gate covers rows written with the other revisions on (16, 48). */
+     * off and the aim casts on (10 | bits; 2 | bits under BOPL4_ABLATE_LINE,
+     * which excludes the aim's slot), so a writer revision's bit-off gate
+     * covers rows written with the other revisions on (16, 48). */
     const char *ablate_env=getenv("BOPL_ENV_BENCH_ABLATE");
     int bits=ablate_env&&ablate_env[0]?atoi(ablate_env):0;
-    env_init(lite, world, scratch_lite, pack_out, masks_lite, 10|bits);
+    env_init(lite, world, scratch_lite, pack_out, masks_lite, (bits&BOPL4_ABLATE_LINE?2:10)|bits);
     env_init(full, world, scratch_full, pack_out, masks_full, bits);
     env_init(train, world, scratch_train, pack_train, masks_train, bits);
     BoplStateCopy delayed[2]={0}, sample={0};

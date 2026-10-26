@@ -125,7 +125,21 @@ V4_SETS = (("player", V4_PLAYER_OFFSET, V4_PLAYERS, V4_PLAYER_FEATURES, None),
            ("slime", V4_SLIME_OFFSET, V4_SLIMES, V4_SLIME_FEATURES, None))
 V4_DEFAULTS = dict(set_dim=128, set_inner=128, flat_dim=256, ffn_dim=512, critic_dim=512,
                    critic_privileged=1, critic_detach=0, mean_pool=1,
-                   ablate=0)   # writer bitmask (bopl_obs_v4.h): 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes, 32 layout v4.3 drill body + rays from inside
+                   ablate=0)   # writer bitmask (bopl_obs_v4.h): 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays, 16 layout v4.2 observation fixes, 32 layout v4.3 drill body + rays from inside, 64 layout v4.4 line to the enemy (not with 8)
+V4_WRITER_BITS = 127   # every v4 writer bit (train/bopl_rows_v4.h BOPL4_ABLATE_BITS)
+
+
+def check_writer_bits(bits):
+    """bits if the v4 row writer takes them (train/bopl_rows_v4.h bopl4_ablation_valid), else ValueError:
+    an unknown bit, or 64 (layout v4.4, the line to the enemy) with 8 (layout v4.1, the aim and
+    line-of-sight rays), which write the same ray slot."""
+    bits = int(bits)
+    if bits < 0 or bits & ~V4_WRITER_BITS:
+        raise ValueError(f'v4 writer bits {bits}: only bits below {V4_WRITER_BITS + 1} exist')
+    if bits & 8 and bits & 64:
+        raise ValueError(f'v4 writer bits {bits}: 64 (layout v4.4, line to the enemy) and 8 (layout v4.1, aim and '
+                         'line of sight) share a ray slot')
+    return bits
 
 
 def obs_size_of(layout_version):

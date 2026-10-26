@@ -38,8 +38,10 @@ enum { BOPL4F_WALLS=48, BOPL4F_CIRCLES=BOPL4_ENTITIES+BOPL4_SLIMES, BOPL4F_GROUP
  * other around ray only (BOPL4_ABLATE_RAYS16), the aim and line-of-sight
  * slots (BOPL4_ABLATE_AIM), water present, a decision with an aim applied,
  * the primary enemy's position known, rays from inside the ground march to
- * where they leave it (BOPL4_ABLATE_DRILL, bopl4f_march). */
-enum { BOPL4F_FAN=1, BOPL4F_HALF=2, BOPL4F_AIM=4, BOPL4F_WATER=8, BOPL4F_AIMED=16, BOPL4F_ENEMY=32, BOPL4F_INSIDE=64 };
+ * where they leave it (BOPL4_ABLATE_DRILL, bopl4f_march), the line to the
+ * enemy in its slot (BOPL4_ABLATE_LINE, bopl4f_line; never with the aim's). */
+enum { BOPL4F_FAN=1, BOPL4F_HALF=2, BOPL4F_AIM=4, BOPL4F_WATER=8, BOPL4F_AIMED=16, BOPL4F_ENEMY=32, BOPL4F_INSIDE=64,
+       BOPL4F_LINE=128 };
 #define BOPL4F_BLAST_X 131.25f   /* bopl_bots.h BOT_BLAST_X, BOT_BLAST_Y */
 #define BOPL4F_BLAST_Y 72.5f
 
@@ -234,6 +236,40 @@ BOPL4F_FN int bopl4f_los(const Bopl4Scene *s, float *dx, float *dy) {
     *dx=bopl4f_div(ex, len); *dy=bopl4f_div(ey, len);
     return 1;
 }
+/* Layout v4.4 (BOPL4F_LINE), shared by both writers: the segment from the
+ * body to the enemy's centre (bopl4f_los's), its direction and length; 0
+ * when the enemy is unknown or on the body. */
+BOPL4F_FN int bopl4f_enemy_line(const Bopl4Scene *s, float *dx, float *dy, float *len) {
+    if (!(s->flags&BOPL4F_ENEMY)) return 0;
+    float ex=s->enemy_x-s->x, ey=s->enemy_y-s->y, l=bopl4f_sqrt(ex*ex+ey*ey);
+    if (!(l>1e-9f)) return 0;
+    *dx=bopl4f_div(ex, l); *dy=bopl4f_div(ey, l); *len=l;
+    return 1;
+}
+/* Its ground sample k of BOPL4F_LINE_SAMPLES: the point at t = len * ((k +
+ * 0.5) / 32) from the body, the product and the sum two operations each. */
+enum { BOPL4F_LINE_SAMPLES=32 };
+BOPL4F_FN void bopl4f_line_point(const Bopl4Scene *s, float dx, float dy, float len, int k, float *x, float *y) {
+    float t=len*(((float)k+0.5f)*0.03125f);
+    *x=s->x+dx*t; *y=s->y+dy*t;
+}
+/* The slot's 8 fields from the walls-only cast t along the line and the
+ * ground samples (bit k: sample k's SDF over every wall < 0): [0] the cast
+ * capped at the enemy, over the ray length; [1] the fraction of samples in
+ * the ground; [2] the fraction after the last one in the ground (1 clear, 0
+ * when the enemy's end is in the ground); the rest 0. */
+BOPL4F_FN void bopl4f_line_finish(float t, float len, uint32_t ground, float *out) {
+#ifdef __CUDA_ARCH__
+    int count=__popc(ground), after=__clz(ground);
+#else
+    int count=__builtin_popcount(ground), after=ground?__builtin_clz(ground):32;
+#endif
+    out[0]=bopl4f_div(t<len?t:len, (float)BOPL4_RAY_LENGTH);
+    out[1]=(float)count*0.03125f;
+    out[2]=(float)after*0.03125f;
+    for (int c=3; c<BOPL4_RAY_FEATURES; c++) out[c]=0.0f;
+}
+
 /* The scene as shipped in a packed slot (bopl_obs_pack.h): BOPL4F_SCENE_HEAD
  * words (flags, the three counts, the 9 scalars, the three masks as low/high
  * words), then each array cut to its count: the aligned walls' 5, the rotated
@@ -379,8 +415,31 @@ static void bopl4f_aim_rays(const Bopl4Scene *s, const Bopl4Anchor *a, float *ra
     if (bopl4f_los(s, &dx[n], &dy[n])) out[n++]=los;
     if (n) bopl4f_cast_group(s, a, n, dx, dy, out, NULL);
 }
+/* Layout v4.4 (BOPL4F_LINE): in ray slot BOPL4_LINE_RAY the line to the
+ * primary enemy's centre (zero when it is unknown or on the body): the walls
+ * along it cast from the body as a group of its own, max and limit the ray
+ * length, from inside the ground to where the cast leaves it under
+ * BOPL4F_INSIDE (v4.1's line-of-sight cast without its circles and planes),
+ * and 32 samples of the full terrain SDF along the segment
+ * (bopl4f_line_finish). */
+static void bopl4f_line(const Bopl4Scene *s, const Bopl4Anchor *a, float *out) {
+    float dx, dy, len;
+    memset(out, 0, BOPL4_RAY_FEATURES*sizeof(float));
+    if (!bopl4f_enemy_line(s, &dx, &dy, &len)) return;
+    float ox=s->x, oy=s->y, max=(float)BOPL4_RAY_LENGTH, t;
+    bopl4f_march_group(s, a, 1, &ox, &oy, &dx, &dy, &max, &max, &t, (s->flags&BOPL4F_INSIDE)?1:0);
+    Bopl4Mask all=bopl4f_all(s);
+    uint32_t ground=0;
+    for (int k=0; k<BOPL4F_LINE_SAMPLES; k++) {
+        float x, y;
+        bopl4f_line_point(s, dx, dy, len, k, &x, &y);
+        if (bopl4f_sdf(s, all, x, y)<0.0f) ground|=1u<<k;
+    }
+    bopl4f_line_finish(t, len, ground, out);
+}
 /* The terrain block and the rays (BOPL4_TERRAIN + BOPL4_RAYS*BOPL4_RAY_FEATURES
- * floats from obs+BOPL4_OBS_TERRAIN_OFFSET). */
+ * floats from obs+BOPL4_OBS_TERRAIN_OFFSET). Without the fan (BOPL4_ABLATE_RAYS)
+ * the line's slot stays zero. */
 static void bopl4f_write(const Bopl4Scene *s, const Bopl4Dirs *dirs, float *region) {
     float *rays=region+BOPL4_TERRAIN;
     Bopl4Anchor anchor;
@@ -400,6 +459,7 @@ static void bopl4f_write(const Bopl4Scene *s, const Bopl4Dirs *dirs, float *regi
     bopl4f_cast_group(s, &anchor, n, dx, dy, out, probes);
     bopl4f_terrain(s, dirs, &anchor, probes, region);
     if (s->flags&BOPL4F_AIM) bopl4f_aim_rays(s, &anchor, rays);
+    else if (s->flags&BOPL4F_LINE) bopl4f_line(s, &anchor, rays+(size_t)BOPL4_LINE_RAY*BOPL4_RAY_FEATURES);
 }
 #endif
 
