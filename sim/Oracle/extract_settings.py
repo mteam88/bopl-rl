@@ -2,10 +2,10 @@
 """Extract ProjectSettings needed by the .NET sim into sim/Export/settings.json.
 
 Sources (Unity text-serialized YAML, all relative to the project root):
-  ProjectSettings/TagManager.asset        tags, 32 layer names
-  ProjectSettings/Physics2DSettings.asset m_LayerCollisionMatrix, 2D gravity
-  ProjectSettings/TimeManager.asset       Fixed Timestep, m_TimeScale
-  ProjectSettings/DynamicsManager.asset   3D gravity (completeness only)
+  game/ProjectSettings/TagManager.asset        tags, 32 layer names
+  game/ProjectSettings/Physics2DSettings.asset m_LayerCollisionMatrix, 2D gravity
+  game/ProjectSettings/TimeManager.asset       Fixed Timestep, m_TimeScale
+  game/ProjectSettings/DynamicsManager.asset   3D gravity (completeness only)
 
 m_LayerCollisionMatrix encoding
 -------------------------------
@@ -110,16 +110,16 @@ def verify_against_build(rows: list[int]) -> str:
 
 
 def main() -> None:
-    tag_mgr = load_unity_yaml(ROOT / "ProjectSettings" / "TagManager.asset")
-    time_mgr = load_unity_yaml(ROOT / "ProjectSettings" / "TimeManager.asset")
-    dyn_mgr = load_unity_yaml(ROOT / "ProjectSettings" / "DynamicsManager.asset")
+    tag_mgr = load_unity_yaml(ROOT / "game" / "ProjectSettings" / "TagManager.asset")
+    time_mgr = load_unity_yaml(ROOT / "game" / "ProjectSettings" / "TimeManager.asset")
+    dyn_mgr = load_unity_yaml(ROOT / "game" / "ProjectSettings" / "DynamicsManager.asset")
 
     layers = [l if l is not None else "" for l in tag_mgr["layers"]]
     assert len(layers) == 32, f"expected 32 layers, got {len(layers)}"
     tags = list(tag_mgr["tags"])
 
     # PyYAML would mis-split the matrix token on '/': grab it verbatim instead.
-    p2d_path = ROOT / "ProjectSettings" / "Physics2DSettings.asset"
+    p2d_path = ROOT / "game" / "ProjectSettings" / "Physics2DSettings.asset"
     p2d_text = p2d_path.read_text()
     matrix_raw = re.search(r"m_LayerCollisionMatrix: (\S+)", p2d_text).group(1)
     matrix = decode_collision_matrix(matrix_raw)

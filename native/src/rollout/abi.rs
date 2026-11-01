@@ -430,6 +430,7 @@ mod tests {
     use crate::rollout::CPlayerConfig;
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn a_panicking_step_writes_the_episode_and_invalidates_the_world() {
         let dir = std::env::temp_dir().join(format!("bopl-crash-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

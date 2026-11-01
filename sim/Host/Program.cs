@@ -67,7 +67,7 @@ namespace BoplSim.Host
 			var db = ExportDatabase.Load(
 				Path.Combine(repoRoot, "native", "reference-export"),
 				Path.Combine(repoRoot, "sim", "Export", "settings.json"),
-				repoRoot);
+				Path.Combine(repoRoot, "game"));
 			db.Install();
 			var host = Bootstrap(db);
 

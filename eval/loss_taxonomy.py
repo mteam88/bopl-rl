@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE))
 from evaluation_protocol import SCRIPTED_KINDS as BOTS  # noqa: E402  kind name -> id (v1 and v2 kinds)
 from map_catalogue import IDENTITY, normalize_record, parse_map_ids  # noqa: E402
 HARD = 2
-# Death geometry, Assets/Scripts/Assembly-CSharp/SceneBounds.cs + DestroyIfOutsideSceneBounds.UpdateSim
+# Death geometry, game/Assets/Scripts/Assembly-CSharp/SceneBounds.cs + DestroyIfOutsideSceneBounds.UpdateSim
 WATER_Y = -11.3
 BLAST_X = 131.25
 BLAST_Y = 72.5

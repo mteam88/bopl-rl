@@ -62,7 +62,7 @@ directly, and Rust only stores the hitstop). While the agent is active the
 clock now stays put (`RlAgent.FreezesHitstopClock`); `BOPL_AGENT_HITSTOP_TIME=1`
 restores the stock clock. In this game version the fix is inert:
 `DeathEffect2` is the only `Updater.HitStop` caller, and its one prefab
-(`Assets/GameObject/deathEffect.prefab`) has `hitStopFrames: 0`. The live A/B
+(`game/Assets/GameObject/deathEffect.prefab`) has `hitStopFrames: 0`. The live A/B
 confirms this: with the stock clock, a round with 3 deaths stayed in sync. The
 guard stays in case a hitstop is ever non-zero.
 

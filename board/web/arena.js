@@ -1,7 +1,7 @@
 "use strict";
 (() => {
 const colors = ["#f4d93f","#b99be8","#ffca6a","#80c7e0","#d9afee","#ef9e70"];
-// Survivable area, from Assets/Scripts/Assembly-CSharp/SceneBounds.cs and the
+// Survivable area, from game/Assets/Scripts/Assembly-CSharp/SceneBounds.cs and the
 // death tests in DestroyIfOutsideSceneBounds.UpdateSim: the blast zone kills at
 // |x| > 131.25 and y > 72.5 on every level; the bottom is WaterHeight (-11.3)
 // on grass/snow levels and Camera_YMin (-26) on space levels. The first frame

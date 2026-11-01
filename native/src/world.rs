@@ -265,19 +265,21 @@ pub struct World {
 
 impl World {
     pub fn level1() -> Self {
-        serde_json::from_str(include_str!("../data/level1-movement.json"))
+        let reset = include_str!(env!("BOPL_DATA_LEVEL1"));
+        serde_json::from_str(crate::game_data::require(reset, "data/level1-movement.json"))
             .expect("validated embedded reset")
     }
     pub fn level1_with_players(players: usize) -> Option<Self> {
         let reset = match players {
-            1 => include_str!("../data/level1-movement-1.json"),
+            1 => include_str!(env!("BOPL_DATA_LEVEL1_P1")),
             2 => return Some(Self::level1()),
-            3 => include_str!("../data/level1-movement-3.json"),
-            4 => include_str!("../data/level1-movement-4.json"),
-            5 => include_str!("../data/level1-movement-5.json"),
-            6 => include_str!("../data/level1-movement-6.json"),
+            3 => include_str!(env!("BOPL_DATA_LEVEL1_P3")),
+            4 => include_str!(env!("BOPL_DATA_LEVEL1_P4")),
+            5 => include_str!(env!("BOPL_DATA_LEVEL1_P5")),
+            6 => include_str!(env!("BOPL_DATA_LEVEL1_P6")),
             _ => return None,
         };
+        let reset = crate::game_data::require(reset, "data/level1-movement-N.json");
         Some(serde_json::from_str(reset).expect("validated embedded multiplayer reset"))
     }
     pub fn terminal(&self) -> bool {

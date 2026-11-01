@@ -237,7 +237,7 @@ mean on the Mac), so it is the Mac budget:
   mapping, fallback and timing.
 - `train/bopl_puffer.h`: `BOPL_PUFFER_RECOVER`, the Apple thread stack.
 - `train/bopl_shadow.{h,c}`: `bopl_shadow_packets` (the last applied packets).
-- `Assets/Scripts/Assembly-CSharp/RlAgent.cs`: env, attach, map, timing,
+- `bridge/RlAgent.cs`: env, attach, map, timing,
   JSONL. `Player.cs`: the jump-edge fix.
 - `eval/shim_search_check.c`: the equivalence harness. The Makefile has
   `-march=native` / `-mcpu=native` and `-ffast-math` (`AGENT_EVAL_FAST`) for the shim's

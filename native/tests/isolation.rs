@@ -12,6 +12,7 @@ fn run(actions: &[Action; 2], steps: usize) -> String {
 }
 
 #[test]
+#[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
 fn worlds_are_independent_when_interleaved_and_threaded() {
     let a = [
         Action {
@@ -50,6 +51,7 @@ fn worlds_are_independent_when_interleaved_and_threaded() {
 }
 
 #[test]
+#[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
 fn invalid_actions_leave_world_unchanged() {
     let mut world = World::level1();
     let before = serde_json::to_string(&world).unwrap();

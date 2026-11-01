@@ -12,7 +12,7 @@ using Microsoft.CodeAnalysis.Operations;
 // Analyze the immutable source pin, not the growing reference instrumentation.
 // This is conservative type reachability, not a proof of runtime reachability.
 if (args.Length != 2)
-    throw new ArgumentException("source-audit <Unity project root> <output.json>");
+    throw new ArgumentException("source-audit <bopl-rl checkout root (with the game/ submodule)> <output.json>");
 var root = Path.GetFullPath(args[0]);
 using var pin = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "native/data/full-reference.json")));
 var revision = pin.RootElement.GetProperty("commit").GetString()!;
@@ -21,7 +21,7 @@ var serializedPaths = sourceHashes.EnumerateObject().Select(x => x.Name)
     .Where(x => x.EndsWith(".prefab", StringComparison.Ordinal) || x.EndsWith(".unity", StringComparison.Ordinal)
         || x.EndsWith(".asset", StringComparison.Ordinal)).OrderBy(x => x, StringComparer.Ordinal).ToArray();
 var start = new ProcessStartInfo("git") {
-    WorkingDirectory = root, RedirectStandardOutput = true, RedirectStandardError = true
+    WorkingDirectory = Path.Combine(root, "game"), RedirectStandardOutput = true, RedirectStandardError = true
 };
 foreach (var arg in new[] { "archive", "--format=zip", revision, "Assets/Scripts" })
     start.ArgumentList.Add(arg);
@@ -49,7 +49,7 @@ foreach (var entry in archive.Entries.Where(x => x.FullName.EndsWith(".cs", Stri
     var text = Encoding.UTF8.GetString(content).TrimStart('\uFEFF');
     trees.Add(CSharpSyntaxTree.ParseText(text, new CSharpParseOptions(LanguageVersion.CSharp9), entry.FullName));
 }
-var managed = Path.Combine(root, "Builds/Linux/BoplBattle_Data/Managed");
+var managed = Path.Combine(root, "game/Builds/Linux/BoplBattle_Data/Managed");
 var assemblies = Directory.GetFiles(managed, "*.dll")
     .Where(x => Path.GetFileName(x) != "Assembly-CSharp.dll")
     .OrderBy(x => x, StringComparer.Ordinal).ToArray();

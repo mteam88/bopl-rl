@@ -17,13 +17,18 @@ pub enum MathError {
     Overflow,
 }
 
-const SIN: &[u8; 205887 * 8] = include_bytes!("../data/sinlut.bin");
-const TAN: &[u8; 205887 * 8] = include_bytes!("../data/tanlut.bin");
+// 205,887 little-endian i64 entries each; empty when built without game data (build.rs).
+const SIN: &[u8] = include_bytes!(env!("BOPL_DATA_SINLUT"));
+const TAN: &[u8] = include_bytes!(env!("BOPL_DATA_TANLUT"));
 
 fn lookup(table: &[u8], index: usize) -> Fix {
-    Fix(i64::from_le_bytes(
-        table[index * 8..index * 8 + 8].try_into().unwrap(),
-    ))
+    let Some(bytes) = table.get(index * 8..index * 8 + 8) else {
+        if table.is_empty() {
+            crate::game_data::missing("the Q32.32 sin/tan lookup table (data/sinlut.bin, data/tanlut.bin)");
+        }
+        panic!("lookup table index {index} out of range");
+    };
+    Fix(i64::from_le_bytes(bytes.try_into().unwrap()))
 }
 
 impl Fix {

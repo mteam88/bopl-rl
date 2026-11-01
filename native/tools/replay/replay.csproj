@@ -4,6 +4,6 @@
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="../../../Builds/Linux/BoplBattle_Data/Managed/*.dll" />
+    <Reference Include="../../../game/Builds/Linux/BoplBattle_Data/Managed/*.dll" />
   </ItemGroup>
 </Project>

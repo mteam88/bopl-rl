@@ -1,4 +1,5 @@
 pub mod ability;
+pub mod game_data;
 pub mod ability_routing;
 pub mod actor_bounds;
 pub mod actor_clone;

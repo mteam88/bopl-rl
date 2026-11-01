@@ -14,9 +14,9 @@ def main():
     parser.add_argument('--commit',required=True)
     parser.add_argument('--verify',action='store_true')
     args=parser.parse_args()
-    commit=subprocess.check_output(['git','rev-parse',args.commit+'^{commit}'],cwd=ROOT,text=True).strip()
+    commit=subprocess.check_output(['git','rev-parse',args.commit+'^{commit}'],cwd=ROOT/'game',text=True).strip()
     files={}
-    with subprocess.Popen(['git','archive',commit,'Assets','ProjectSettings','Packages'],cwd=ROOT,stdout=subprocess.PIPE) as process:
+    with subprocess.Popen(['git','archive',commit,'Assets','ProjectSettings','Packages'],cwd=ROOT/'game',stdout=subprocess.PIPE) as process:
         with tarfile.open(fileobj=process.stdout,mode='r|') as archive:
             for entry in archive:
                 if entry.isfile():files[entry.name]=hashlib.sha256(archive.extractfile(entry).read()).hexdigest()
@@ -26,10 +26,10 @@ def main():
     path=ROOT/'native/data/full-reference.json'
     if args.verify:
         if json.loads(path.read_text())!=manifest:raise ValueError('Committed pin does not match Git source')
-        if (ROOT/'Assets/Resources/SimulationReference.txt').read_text().strip()!=manifest['content_sha256']:raise ValueError('Runtime pin differs')
+        if (ROOT/'game/Assets/Resources/SimulationReference.txt').read_text().strip()!=manifest['content_sha256']:raise ValueError('Runtime pin differs')
     else:
         path.write_text(json.dumps(manifest,indent=2)+'\n')
-        (ROOT/'Assets/Resources/SimulationReference.txt').write_text(manifest['content_sha256']+'\n')
+        (ROOT/'game/Assets/Resources/SimulationReference.txt').write_text(manifest['content_sha256']+'\n')
     print(json.dumps({'reference':commit,'files':len(files),'sha256':manifest['content_sha256'],'verified':args.verify}))
 
 if __name__=='__main__':main()

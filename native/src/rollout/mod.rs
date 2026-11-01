@@ -43424,6 +43424,7 @@ mod tests {
     /// authored spawns and fans out the players sharing one, so a team id past
     /// the spawn count (the bot picker's teal, 5) is not `team % spawns`.
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn unspawned_slimes_land_on_their_team_rank_spawn() {
         for teams in [&[0u32, 1, 5][..], &[1, 4, 0], &[0, 4, 3, 1], &[5, 5, 2, 2]] {
             let mut config = test_config();
@@ -43451,6 +43452,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn spawned_platform_uses_authored_rotation_spring() {
         let platform = &data::get().platform;
         assert_eq!(platform.spawn_rotation_speed.raw(), 171_798_691_840);
@@ -43458,6 +43460,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn local_double_fix_literals_keep_csharp_q32_precision() {
         assert_eq!(Fix::from_f64(1.3).raw(), 5_583_457_484);
         assert_ne!(Fix::from_f64(1.3), Fix::from_f32(1.3));
@@ -43475,6 +43478,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn resizing_platform_does_not_rederive_body_rotation() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43504,6 +43508,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn scaled_resizable_platform_recomputes_mass_and_inertia() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43538,6 +43543,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn a_centre_on_a_corner_arc_depenetrates_without_dividing_by_zero() {
         // The crash geometry itself, constructed rather than replayed: a
         // centre exactly on a corner's rounding arc is outside the collider,
@@ -43579,6 +43585,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn rewind_capture_replays_to_the_end_with_rewind_running() {
         // Provenance: the any-3 crash capture of 2026-09-20 (Rewind/Missile/
         // Magnet mirror, map 2). On its last tick a rewind arrived with its
@@ -43615,7 +43622,8 @@ mod tests {
         // three-ability episode replays end to end without panicking, and
         // that the Rewind machinery under test actually ran. Both are
         // build-independent.
-        let raw = include_bytes!("../../fixtures/rewind-arrival-on-corner-arc.rep");
+        let raw = include_bytes!(env!("BOPL_FIXTURE_REWIND_ARC"));
+        let raw = crate::game_data::require(raw, "fixtures/rewind-arrival-on-corner-arc.rep");
         let replay::Replay { config, ticks } = replay::decode(raw, 240, 7200).unwrap();
         let mut world = RolloutWorld::new();
         world.reset(&config).unwrap();
@@ -43651,6 +43659,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn jump_from_a_deactivated_retained_ground_reads_its_normal() {
         // Blink/Teleport deactivate the platform under a still-grounded
         // player; the next jump used to unwrap an active-only lookup and
@@ -43676,6 +43685,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn dash_from_a_deactivated_retained_ground_reads_its_surface() {
         // The same deactivated ground under a Dash entry: readyDash's
         // UnGround read it through an active-only lookup and stopped the
@@ -43700,6 +43710,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn dash_after_a_refused_form_kill_finds_the_frozen_ground_destroyed() {
         // A ground destroyed under a form strands only the form's body. The
         // slime's PlayerPhysics froze grounded on it, and a form killed while
@@ -43755,6 +43766,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn charging_roll_runs_zero_input_ground_move() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43770,6 +43782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn grounded_roll_exit_uses_body_velocity_magnitude() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43785,6 +43798,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn push_entry_preserves_grounded_speed() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -43813,6 +43827,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn grounded_spike_entry_clears_self_imposed_velocity() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -43839,6 +43854,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn drill_platform_velocity_uses_root_transform_position() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43854,6 +43870,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn push_runs_zero_input_ground_move() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43876,6 +43893,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn ray_guns_self_hit_at_scene_water_height() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43894,6 +43912,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicator_self_clones_below_scene_water_height() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43913,6 +43932,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn ray_point_query_uses_last_overlapping_rounded_rect() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43943,6 +43963,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn generic_scale_changers_share_live_entity_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43975,6 +43996,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn raycast_to_closest_rounded_rect_can_exclude_held_boulder_platform() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -43993,6 +44015,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicate_tiny_platform_uses_world_axes_for_spawn() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44015,6 +44038,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn platform_removal_reindexes_pending_duplicate_source() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44031,6 +44055,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn platform_removal_runs_tesla_partner_disconnect() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44061,6 +44086,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicate_effect_decays_source_scale_and_recomputes_spawn() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44099,6 +44125,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicate_effect_pool_grows_past_thirty_two() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44125,6 +44152,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn protected_mine_only_hovers_during_time_stop() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44158,6 +44186,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn player_physics_landing_precedes_missile_steering() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44204,6 +44233,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn rope_attached_rock_skips_player_bounce_impulse() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44239,6 +44269,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn poke_ball_captures_abilityless_clone() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44276,6 +44307,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn portal_shot_reasserts_fire_velocity_on_first_update() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44291,6 +44323,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn portal_clocks_apply_fractional_time_scale_once() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44311,6 +44344,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn platform_enter_animation_finishes_inside_blink_tunnel() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44328,6 +44362,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn grounded_blink_release_counts_inactive_blockers() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44356,6 +44391,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn frozen_solid_shatters_when_victim_leaves_play() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44378,6 +44414,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn smoke_cloud_ring_is_shared_by_ability_instance() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44423,6 +44460,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn death_removes_active_blink_hurtbox() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -44438,6 +44476,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn scale_ray_changes_teleport_area_not_marker_collider() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44474,6 +44513,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn generic_scale_bounds_follow_target_prefabs() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44514,6 +44554,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn magnet_steal_exits_form_at_firepoint() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44538,6 +44579,7 @@ mod tests {
     /// Platform has no PlayerPhysics, and gravity then divided by its zero
     /// maxFallSpeed.
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn magnet_drops_a_held_slime_that_casts_a_form() {
         let data = data::get();
         let held = MagnetHeld::Player(Slime::Player(1));
@@ -44585,8 +44627,10 @@ mod tests {
     /// kept holding it, ragdolled the Drill body, and at tick 1126 the ragdoll
     /// pass's gravity divided by the Drill's zero maxFallSpeed.
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn a_magnet_held_slime_casting_drill_replays_without_dividing_by_zero() {
-        let raw = include_bytes!("../../fixtures/magnet-held-slime-casts-drill.rep");
+        let raw = include_bytes!(env!("BOPL_FIXTURE_MAGNET_DRILL"));
+        let raw = crate::game_data::require(raw, "fixtures/magnet-held-slime-casts-drill.rep");
         let replay::Replay { config, ticks } = replay::decode(raw, 240, 10800).unwrap();
         let mut world = RolloutWorld::new();
         world.reset(&config).unwrap();
@@ -44623,8 +44667,10 @@ mod tests {
     /// DPhysicsCircle.cs:377-392); the port had no Part::DuplicatedRock arm and
     /// hit `unreachable!`.
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn a_spike_attack_shoves_a_duplicated_rock() {
-        let raw = include_bytes!("../../fixtures/spike-shoves-duplicated-rock.rep");
+        let raw = include_bytes!(env!("BOPL_FIXTURE_SPIKE_ROCK"));
+        let raw = crate::game_data::require(raw, "fixtures/spike-shoves-duplicated-rock.rep");
         let replay::Replay { config, ticks } = replay::decode(raw, 240, 10800).unwrap();
         let mut world = RolloutWorld::new();
         world.reset(&config).unwrap();
@@ -44659,6 +44705,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn magnet_firepoint_scale_telescopes_like_ability_component() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44685,6 +44732,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn magnet_pulls_holds_and_fires_spell_markers() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -44742,6 +44790,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn blink_routes_abilityless_clone_through_player_tunnel() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44788,6 +44837,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicated_engine_moves_seven_units_along_platform() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44813,6 +44863,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicated_black_hole_uses_explicit_lifespan() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44829,6 +44880,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicate_shake_rng_follows_global_newest_first_order() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44865,6 +44917,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn grounded_throw_exits_after_losing_ground() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44880,6 +44933,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn airborne_mine_entry_uses_live_ground_on_landing_fire() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44902,6 +44956,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn duplicated_black_hole_runs_init_target_size() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44921,6 +44976,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn equal_black_holes_use_creation_order_after_pool_reuse() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -44950,6 +45006,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     #[cfg(feature = "q32")]
     fn circle_scale_ratio_preserves_source_fix_grouping() {
         let radius = Fix::from_raw(5_302_428_003);
@@ -44964,6 +45021,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn match_result_consumes_deaths_on_the_following_tick() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -44988,6 +45046,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn solo_session_ends_with_the_dead_player_as_winner() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -45003,6 +45062,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn destroyed_revival_marker_still_revives() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -45028,6 +45088,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn collision_kill_latch_suppresses_second_callback_after_revival() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -45048,6 +45109,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn grounded_time_stop_can_cancel_during_entry_animation() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45062,6 +45124,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn frozen_airborne_quick_spell_does_not_gain_gravity() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45079,6 +45142,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn frozen_engine_animations_do_not_advance() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45099,6 +45163,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn stopped_engine_checks_curve_end_before_time_gate() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45118,6 +45183,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn composite_rebuild_drops_retired_combined_force() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45129,6 +45195,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn engine_ignites_first_registered_overlapping_smoke() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45182,6 +45249,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn gust_grounded_drill_uses_player_body_force_branch() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -45211,6 +45279,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn time_stop_exit_offset_uses_player_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45234,6 +45303,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn expired_time_stop_does_not_teardown_after_game_end() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45256,6 +45326,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn time_stop_effects_do_not_reuse_older_vector_slots() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45278,6 +45349,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn gust_retains_and_pushes_smoke_cloud_bodies() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45317,6 +45389,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn gust_applies_activation_force_to_duplicated_lethal_rock() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45357,6 +45430,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn gust_player_circle_hits_consume_the_shared_fifty_hit_buffer() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45387,6 +45461,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn gust_shortlist_reads_live_platform_collider() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45410,6 +45485,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn grounded_rock_retains_pre_entry_velocity_for_first_rope_force() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -45449,6 +45525,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn planted_object_exit_enters_stop_for_reversed_ground_input() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45468,6 +45545,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn instant_ability_cast_freezes_the_state_machine_for_its_tick() {
         let mut world = RolloutWorld::new();
         let mut config = test_config();
@@ -45504,6 +45582,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn fifth_engine_cast_uses_temporary_five_child_mass() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45546,6 +45625,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn thrown_item_fire_uses_caster_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45578,6 +45658,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn mine_spawn_offset_uses_caster_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45601,6 +45682,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn guided_missile_spawn_uses_caster_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45619,6 +45701,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn meteor_smear_width_uses_caster_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45633,6 +45716,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn meteor_smear_observes_explosion_not_projectile_component() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45647,6 +45731,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn teleport_marker_hurtbox_does_not_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45668,6 +45753,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn freeze_exit_restores_scaled_slime_radius() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45686,6 +45772,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn tesla_offsets_use_raw_scale_while_collider_clamps() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45703,6 +45790,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn rope_icon_override_keeps_the_death_drop() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45723,6 +45811,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn one_pickup_callback_reaches_every_overlapping_slime() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -45770,6 +45859,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(bopl_game_data), ignore = "needs game-derived data from the game/ submodule")]
     fn destroyed_platform_detaches_rider_on_its_next_update() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();

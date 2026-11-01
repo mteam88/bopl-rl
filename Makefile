@@ -330,7 +330,7 @@ $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_search.h train/polic
 
 # In-game agent shim (train/bopl_agent.h): the training decision loop fed by
 # a running game, plus the CPU policy evaluator. Loaded by the Unity build
-# (Assets/Scripts/Assembly-CSharp/RlAgent.cs) and eval/agent_shim.py.
+# (bridge/RlAgent.cs, compiled into the game through game/Assets/Bridge) and eval/agent_shim.py.
 PUFFERLIB ?= $(OUT)/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9/src
 # The policy evaluator is built for the machine that runs the game, like the
 # research library's: -ffast-math plus the host's vector ISA turns ~800 us

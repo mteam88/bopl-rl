@@ -138,10 +138,10 @@ verify-math: build
     python3 native/tools/verify_math.py
 
 unity-build:
-    "{{unity_editor}}" -batchmode -nographics -quit -projectPath "$PWD" -executeMethod BuildScript.BuildLinux -logFile "$PWD/native-unity-build.log"
+    "{{unity_editor}}" -batchmode -nographics -quit -projectPath "$PWD/game" -executeMethod BuildScript.BuildLinux -logFile "$PWD/native-unity-build.log"
 
 export-assets:
-    "{{unity_editor}}" -batchmode -nographics -quit -projectPath "$PWD" -executeMethod ReferenceExport.Export -logFile "$PWD/native-export.log"
+    "{{unity_editor}}" -batchmode -nographics -quit -projectPath "$PWD/game" -executeMethod ReferenceExport.Export -logFile "$PWD/native-export.log"
 
 verify-geometry: build
     python3 native/tools/verify_geometry.py --cases 2000

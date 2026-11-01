@@ -58,7 +58,7 @@ namespace BoplSim.Export
 		}
 
 		private readonly string exportDir;
-		private readonly string projectDir;   // Unity project root, for Assets/Resources text files
+		private readonly string projectDir;   // Unity project root (the game/ submodule), for Assets/Resources text files
 
 		internal readonly List<MapEntry> Maps = new List<MapEntry>();
 		// Non-level scenes from scenes.json (v3 export): boot MainMenu (0) and

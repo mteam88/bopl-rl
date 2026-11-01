@@ -6,6 +6,6 @@
     <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../../Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs" Link="Fix.cs" />
+    <Compile Include="../../../game/Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs" Link="Fix.cs" />
   </ItemGroup>
 </Project>

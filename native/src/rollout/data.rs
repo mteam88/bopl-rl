@@ -2697,7 +2697,7 @@ impl RolloutData {
     }
 }
 
-/// `Assets/GameObject/Name.prefab` -> `Name`.
+/// `game/Assets/GameObject/Name.prefab` -> `Name`.
 fn prefab_stem(path: &str) -> &str {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.strip_suffix(".prefab").unwrap_or(name)
@@ -2728,7 +2728,8 @@ impl RolloutData {
 pub fn get() -> &'static RolloutData {
     static DATA: OnceLock<RolloutData> = OnceLock::new();
     DATA.get_or_init(|| {
-        let raw: RawRollout = serde_json::from_str(include_str!("../../data/rollout.json"))
+        let raw = include_str!(env!("BOPL_DATA_ROLLOUT"));
+        let raw: RawRollout = serde_json::from_str(crate::game_data::require(raw, "data/rollout.json"))
             .expect("validated embedded rollout data");
         let bow = &raw.prefabs.bow;
         let mut load_frame_ticks = Vec::new();

@@ -1,6 +1,6 @@
 //! The game's number type, represented as an IEEE `f64` behind the Q32.32 API.
 //!
-//! Unity's BoplFixedMath (`Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs`)
+//! Unity's BoplFixedMath (`game/Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs`)
 //! is a Q32.32 fixed-point type chosen for lockstep multiplayer determinism.
 //! The rollout backend only needs determinism within one binary, which IEEE
 //! doubles on one machine already provide, so this module keeps every method

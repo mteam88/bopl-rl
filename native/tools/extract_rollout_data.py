@@ -65,7 +65,7 @@ def updater_count(prefab):
 # position: SuperStar (Gold mushroom, hierarchyNumber 2, SuperStar.cs:18-21) and
 # HookshotInstant (Grappling hook, hierarchyNumber 2). Both derive from
 # MonoUpdatable, both are enabled, and neither ever reaches the Updater.
-CSHARP = ROOT.parent / "Assets" / "Scripts" / "Assembly-CSharp"
+CSHARP = ROOT.parent / "game" / "Assets" / "Scripts" / "Assembly-CSharp"
 
 
 def _class_table():

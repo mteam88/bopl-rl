@@ -142,8 +142,11 @@ tree - see "What does not move" below for why.
   file. Folding the port into `sim/` is stage 2, once stage 1 is green.
 - `native/data/`, `native/fixtures/`, `native/reference-export/`,
   `native/tools/`, `native/justfile` stay in stage 1.
-- `Assets/`, `ProjectSettings/`, `Packages/`, `Tools/`, `UserSettings/` are the
-  decompiled Unity project, not our code. Never touch them.
+- `Assets/`, `ProjectSettings/`, `Packages/`, `UserSettings/` are the decompiled
+  Unity project, not our code. Never touch them. (Since 2026-11-01 they live in
+  the private `game/` submodule; `native/data/*`, `native/fixtures`,
+  `native/reference-export`, `sim/Gameplay` and `sim/Oracle/fixtures` are
+  symlinks into it.)
 
 ## Order of work
 

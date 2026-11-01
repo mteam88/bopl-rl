@@ -10,7 +10,9 @@
     <NoWarn>CS0067;CS0649;CS0414;CS0169;CS0168;CS0219;CS8019;CS0162</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../../Assets/Scripts/**/*.cs" />
-    <Reference Include="../../../Builds/Linux/BoplBattle_Data/Managed/*.dll" Exclude="../../../Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll" />
+    <!-- The game scripts (private submodule) and the RL bridge (this repo) compile into one Assembly-CSharp, as in Unity. -->
+    <Compile Include="../../../game/Assets/Scripts/**/*.cs" />
+    <Compile Include="../../../bridge/*.cs" />  <!-- not bridge/Editor: those need UnityEditor -->
+    <Reference Include="../../../game/Builds/Linux/BoplBattle_Data/Managed/*.dll" Exclude="../../../game/Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll" />
   </ItemGroup>
 </Project>

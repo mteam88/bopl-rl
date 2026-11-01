@@ -192,7 +192,7 @@ directory alongside `artifacts/rl`, and keep an unattributable name in every run
 
 ## Commands
 
-Run from the Unity project root, the directory containing `Assets/` and `native/`.
+Run from the repository root, the directory containing `native/` and the `game/` submodule (the Unity project).
 
 ```sh
 python3 train/setup.py

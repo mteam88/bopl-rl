@@ -100,7 +100,7 @@ namespace BoplSim.Host
 				var db = ExportDatabase.Load(
 					Path.Combine(repoRoot, "native", "reference-export"),
 					Path.Combine(repoRoot, "sim", "Export", "settings.json"),
-					repoRoot);
+					Path.Combine(repoRoot, "game"));
 				db.Install();
 				// Every reset loads a fresh level. Disable its spawner as soon as
 				// scene construction completes, before Starts or warmup ticks run.
