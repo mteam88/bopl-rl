@@ -1,0 +1,76 @@
+# Main-bot round 2 confirm (MAIN-R2-2026-11.md Section 3.3): 8 fresh arm seeds vs 6 controls on the confirm seed base
+# 221001. Fill in at decision point 1 from analyze.py main-r2's `long_run_flags`: keep the one arm group that matches
+# the winning configuration (dx, d or x) and delete the other two, then run
+#     arm.py train/research/arms/main-r2-confirm.toml
+# after symlinking round 2's all-low runs into this program's out directory as ctl-s601 and ctl-s605:
+#     for s in 601:ff-1-r0 605:ff-1-r1; do mkdir -p RL/research/main-r2-confirm/ctl-s${s%%:*};
+#       for st in constant anneal; do ln -s ../../main-r2/${s##*:}/$st RL/research/main-r2-confirm/ctl-s${s%%:*}/$st; done; done
+# (arm.py finds their status.json complete and only scores them on 221001). The rule is round 2's for that factor
+# at 8 vs 6: eval/kill_rate.py <arm dirs> --control <ctl dirs> (KH_PRE ratio, panel NI > -0.02, vetoes) and, for X,
+# analyze.py's generic compare report on R2-s7212-kit. The arm is adopted into the long run only if it passes again.
+name = "main-r2-confirm"
+purpose = "confirm"
+init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
+constant_steps = 6_000_000_000
+anneal_steps = 1_000_000_000
+checkpoint_every = 2_000_000_000
+games = 4300
+flags = { v4-ablate = 16, weight-decay = 1.5e-4 }
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+order = "interleave"
+
+[opponents.x2-drill-kit]
+path = "x2-drill-1500m"
+pinned = true
+slot = 8
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-kit]
+path = "x2-missile-1500m"
+pinned = true
+slot = 9
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-kit]
+path = "x2-blinkplat-1500m"
+pinned = true
+slot = 10
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-kit]
+path = "l2-me32-trap-2000m"
+pinned = true
+slot = 11
+games = 400
+endpoints = ["anneal"]
+
+[opponents.R2-s7212-kit]
+path = "R2-s7212"
+pinned = true
+slot = 12
+games = 800
+endpoints = ["anneal"]
+
+# The base: I1 at 0.5 + wd. Seeds 601 and 605 are round 2's ff-1-r0/r1 (symlinked stages, see above).
+[arm.ctl]
+seeds = [601, 605, 611, 612, 613, 614]
+flags = { style = "styles/offense_kill_05.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+# Keep exactly one of the three arm groups below.
+[arm.dx]
+seeds = [621, 622, 623, 624, 625, 626, 627, 628]
+compare = "ctl"
+flags = { style = "styles/offense_kill_10.toml", style-fade-steps = 1_000_000_000_000_000_000, add-opponents = "R2-s7211,R2x2", bank-groups = "all,all,pinned,forgotten", pinned-bank = "R2-s7211,R2x2,l2-me31-drill-grenade-2000m,x2-drill-1500m" }
+
+[arm.d]
+seeds = [621, 622, 623, 624, 625, 626, 627, 628]
+compare = "ctl"
+flags = { style = "styles/offense_kill_10.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+[arm.x]
+seeds = [621, 622, 623, 624, 625, 626, 627, 628]
+compare = "ctl"
+flags = { style = "styles/offense_kill_05.toml", style-fade-steps = 1_000_000_000_000_000_000, add-opponents = "R2-s7211,R2x2", bank-groups = "all,all,pinned,forgotten", pinned-bank = "R2-s7211,R2x2,l2-me31-drill-grenade-2000m,x2-drill-1500m" }

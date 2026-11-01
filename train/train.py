@@ -581,6 +581,11 @@ def arguments():
                         'in those games. With a bank of group `pinned` only such banks draw them (their '
                         'share of the games is those banks\' share); without one they are ordinary '
                         'candidates of every group, pinned wherever drawn. May change on --resume')
+    p.add_argument('--pinned-bank', default='',
+                   help='Comma list, a sub-list of the pinned members, that the `pinned` banks draw from instead '
+                        'of every pinned member; only these leave the other groups. The rest of the pinned members '
+                        'stay ordinary candidates everywhere, on their own kits (native_selfplay.candidates). '
+                        'Needs a `pinned` entry in --bank-groups. May change on --resume')
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
                    help='Comma-separated bot kinds that take over the last banks. Without '
                         '--scripted-roster each kind is a one-entry roster at --scripted-level; '
@@ -738,6 +743,11 @@ def arguments():
         p.error('--pinned-opponents names a member twice')
     if 'auto' in a.pinned_opponents and a.pinned_opponents != ['auto']:
         p.error('--pinned-opponents auto stands alone')
+    a.pinned_bank = [s for s in a.pinned_bank.split(',') if s]
+    if a.pinned_bank and not a.pinned_opponents:
+        p.error('--pinned-bank needs --pinned-opponents')
+    if len(set(a.pinned_bank)) != len(a.pinned_bank):
+        p.error('--pinned-bank names a member twice')
     try:
         a.scripted_elo = {name: float(elo) for name, _, elo in
                           (item.partition('=') for item in a.scripted_elo.split(',') if item)}
@@ -1037,7 +1047,7 @@ def main():
                   scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,
                   scripted_share_min=a.scripted_share_min, scripted_share_max=a.scripted_share_max,
                   scripted_banks=a.n_scripted,
-                  **(dict(bank_kits=dict(pinned_opponents=a.pinned_opponents, bot_kit=a.bot_kit,
+                  **(dict(bank_kits=dict(pinned_opponents=a.pinned_opponents, pinned_bank=a.pinned_bank, bot_kit=a.bot_kit,
                                          scripted_elo=a.scripted_elo)) if a.bank_kits else {}),
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
@@ -1160,8 +1170,15 @@ def main():
         pinned_paths = {member['path'] for member in pinned}
         if any((registry.writer_ablate(o['path']) or 0) & 32 for o in league_opponents + pinned):
             os.environ['BOPL_RL_FORM_BODY'] = '1'   # a layout v4.3 member writes its rows from the Drill form export
+        if a.pinned_bank:
+            if 'pinned' not in bank_groups:
+                raise SystemExit('--pinned-bank needs a `pinned` entry in --bank-groups')
+            names = {member['name'] for member in pinned}
+            if unknown := [n for n in a.pinned_bank if n not in names]:
+                raise SystemExit(f'--pinned-bank: not pinned members of this run: {unknown}')
         league_opponents = [o for o in league_opponents if o['path'] not in pinned_paths] + \
-                           [dict(member, pinned=True) for member in pinned]
+                           [dict(member, pinned=True, **(dict(pinned_bank=True) if member['name'] in a.pinned_bank else {}))
+                            for member in pinned]
     for flag, checkpoint in (('--init-weights', None if resume else a.init_weights), ('--kl-reference', a.kl_reference)):
         if not checkpoint:
             continue
@@ -1176,7 +1193,8 @@ def main():
         if differs:
             raise SystemExit(f'{flag} {checkpoint}: architecture differs from the run: {differs}')
     print(f'league opponents: {len(league_opponents)}'
-          + (' (' + ', '.join(o['name'] + ('[pinned]' if o.get('pinned') else '') for o in league_opponents) + ')'
+          + (' (' + ', '.join(o['name'] + ('[pinned bank]' if o.get('pinned_bank') else '[pinned]' if o.get('pinned') else '')
+                              for o in league_opponents) + ')'
              if league_opponents else ''),
           flush=True)
     if a.bank_kits:

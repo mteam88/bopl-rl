@@ -7989,6 +7989,156 @@
    },
    "path": "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin",
    "metadata_sha256": "44a8d8150108968c6a07659275e360d5f7a2a14190e3f77ae322163321fb44f3"
+  },
+  {
+   "id": "73df1a5a270786d78d347422422810e4a14ba41f5f55d506e2a1c6587599c900",
+   "name": "R2-s7211",
+   "kind": "exploiter",
+   "parent": null,
+   "target": "l2-main-136002m",
+   "origin": {
+    "run": "native/artifacts/rl/research/drill-r2/R2-s7211/anneal",
+    "step": 666697728
+   },
+   "sim": "42c087e0d473c2f29b8485b45326bcbdf4066845c5e45a63e48b37dd4bfd416d",
+   "reward": {
+    "tag": "binding-3bcb380e",
+    "binding_sha256": "3bcb380e64aee35d52473ba0e8149b23ac711232a6f15da2da595d0e7c1089ef",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      26
+     ],
+     [
+      2,
+      26,
+      2
+     ],
+     [
+      26,
+      2,
+      2
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-11-01",
+    "rule": "drill round 2 (DRILL-R2-2026-10.md): styled v4.3 Drill/Dash/Dash specialist, annealed endpoint; main-r2 league mix (MAIN-R2-2026-11.md)"
+   },
+   "path": "native/artifacts/rl/research/drill-r2/R2-s7211/anneal/checkpoints/policy-666697728.bin",
+   "metadata_sha256": "9d08b4ba566df96ee0207ecf66298d34833f4467d2f075e47070e12345403e3f"
+  },
+  {
+   "id": "9ad67763509b667887d300fe7e37e2a31abdbfd4cc47776d5c6150f23e42de6f",
+   "name": "R2x2",
+   "kind": "exploiter",
+   "parent": null,
+   "target": "l2-main-136002m",
+   "origin": {
+    "run": "native/artifacts/rl/research/drill-r2/R2x2/anneal",
+    "step": 666697728
+   },
+   "sim": "42c087e0d473c2f29b8485b45326bcbdf4066845c5e45a63e48b37dd4bfd416d",
+   "reward": {
+    "tag": "binding-3bcb380e",
+    "binding_sha256": "3bcb380e64aee35d52473ba0e8149b23ac711232a6f15da2da595d0e7c1089ef",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      26
+     ],
+     [
+      2,
+      26,
+      2
+     ],
+     [
+      26,
+      2,
+      2
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-11-01",
+    "rule": "drill round 2 (DRILL-R2-2026-10.md): styled v4.3 Drill/Dash/Dash specialist, annealed endpoint; main-r2 league mix (MAIN-R2-2026-11.md)"
+   },
+   "path": "native/artifacts/rl/research/drill-r2/R2x2/anneal/checkpoints/policy-666697728.bin",
+   "metadata_sha256": "21b4914d57c0e8c68c5d164f089595161f201ff311f3122b722b9f07fe63052e"
+  },
+  {
+   "id": "47f6c37647db518fe7fe7aa34528fbb5c232dfb25b125f4a3efd835620a86aaf",
+   "name": "R2-s7212",
+   "kind": "exploiter",
+   "parent": null,
+   "target": "l2-main-136002m",
+   "origin": {
+    "run": "native/artifacts/rl/research/drill-r2/R2-s7212/anneal",
+    "step": 666697728
+   },
+   "sim": "42c087e0d473c2f29b8485b45326bcbdf4066845c5e45a63e48b37dd4bfd416d",
+   "reward": {
+    "tag": "binding-3bcb380e",
+    "binding_sha256": "3bcb380e64aee35d52473ba0e8149b23ac711232a6f15da2da595d0e7c1089ef",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292,
+     "self_death": -0.0
+    }
+   },
+   "loadouts": {
+    "mode": "set",
+    "kits": [
+     [
+      2,
+      2,
+      26
+     ],
+     [
+      2,
+      26,
+      2
+     ],
+     [
+      26,
+      2,
+      2
+     ]
+    ]
+   },
+   "added": {
+    "date": "2026-11-01",
+    "rule": "drill round 2 (DRILL-R2-2026-10.md): styled v4.3 Drill/Dash/Dash specialist, annealed endpoint; main-r2 league mix (MAIN-R2-2026-11.md)"
+   },
+   "path": "native/artifacts/rl/research/drill-r2/R2-s7212/anneal/checkpoints/policy-666697728.bin",
+   "metadata_sha256": "3f47aa2388dfdbc5cdc65fee4be61af6f6af3174e66f363451d20bd61df685ee"
   }
  ],
  "conditions": {
@@ -9022,5 +9172,5 @@
    "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
- "league_sha256": "0aa15f0dd50d84f4166af87da5cc86d66d3387143f548d7967a669189f12bf4d"
+ "league_sha256": "864c3757c534ed6a4617aa2db44e7ec62cb124ab0b1fa25b7104d2d096ae3489"
 }

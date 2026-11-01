@@ -19,7 +19,8 @@ such as --v4-ablate applies), as endpoint raw0m.
 
 Training flags are the l2 main's turn-100 command (`base`, a command.txt) minus the flags an arm
 owns (OWNED) and minus the `exclude_opponents` members; `flags` adds or overrides (true = bare flag,
-false = removed); `env` sets environment variables of the training units only (a widened run's
+false = removed; the pseudo-flag `add-opponents = "a,b"` appends members to the base's --opponents, so
+a factor level can widen the league); `env` sets environment variables of the training units only (a widened run's
 BOPL_LEAGUE_JSON: every training opponent must resolve there at the learner's --hidden, checked at
 load). Top-level keys are defaults, [arm.<name>] tables override them (`flags` and `env` merge);
 `seeds = [...]` expands an arm into replicate arms <name>-s<seed> of group <name>; `followup_seeds = [...]`
@@ -243,8 +244,12 @@ def load_arms(config_file, followup=()):
             arm['dir'] = out / arm['name']
             arm['checkpoint_every'] = arm['checkpoint_every'] or arm['constant_steps']
             flags = base_flags(arm['base'])
+            added = []   # `add-opponents` is a pseudo-flag: members appended to the base's --opponents (a factor level can set it)
             for key, value in arm['flags'].items():
                 flag = '--' + key.removeprefix('--')
+                if flag == '--add-opponents':
+                    added += [o for o in str(value).split(',') if o]
+                    continue
                 if flag in OWNED:
                     raise SystemExit(f'{config_file}: {flag} is set by the arm keys, not flags')
                 if value is False:
@@ -252,7 +257,8 @@ def load_arms(config_file, followup=()):
                 else:
                     flags[flag] = [] if value is True else [str(v) for v in (value if isinstance(value, list) else [value])]
             opponents = [o for o in ','.join(flags.get('--opponents', [])).split(',') if o not in arm['exclude_opponents']]
-            if '--opponents' in flags:
+            opponents += [o for o in added if o not in opponents]
+            if '--opponents' in flags or added:
                 flags['--opponents'] = [','.join(opponents)]
             if leaked := set(arm['panel']) & set(opponents):
                 raise SystemExit(f'{config_file}: arm {arm["name"]} trains against panel members {sorted(leaked)}; '

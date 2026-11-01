@@ -1,0 +1,13 @@
+# Offense: early kill premium at 1.0 (double the adopted offense_kill_05.toml premium: the dose level of
+# the main-r2 round-2 factorial, factor D, MAIN-R2-2026-11.md). Paid to the killer only, never mirrored as a death penalty, for each
+# credited kill before sudden death (episode tick 6960): 1.0 at 0 s falling linearly to 0 at sudden
+# death. With reward_kill 0.288 a credited win at kickoff is worth up to 2.29 instead of 1.29; a win by
+# the opponent's own fall stays 1.0. Permanent: train with --style-fade-steps 1000000000000000000.
+name = "offense_kill_10"
+fade = { start = 0.999, end = 1.0 }
+
+[[term]]
+name = "early_kill"
+on = "death"
+when = "ev.actor == self and ev.subject != self"
+value = "1.0 * max(0, 1 - now / 6960)"

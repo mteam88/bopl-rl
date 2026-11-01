@@ -133,7 +133,14 @@ def _league_entry(m):
     entry = dict(path=str(m['path']), name=str(m['name']), permanent=True, kind=m.get('kind'))
     if m.get('pinned'):
         entry['pinned'] = True
+    if m.get('pinned_bank'):
+        entry['pinned_bank'] = True
     return entry
+
+
+def _exclusive_key(pool):
+    """The entry key a `pinned` bank owns exclusively: pinned_bank when any entry carries it, else pinned."""
+    return 'pinned_bank' if any(entry.get('pinned_bank') for entry in pool['pool']) else 'pinned'
 
 
 # A bank's GROUP says which candidates it draws from:
@@ -161,6 +168,11 @@ def _league_entry(m):
 #               members that beat us. Without a pinned bank, pinned members are
 #               ordinary candidates of every group (still on their own kits). No
 #               fallback: train.py refuses a pinned bank without pinned members.
+#               With train.py --pinned-bank NAMES (a sub-list of the pinned
+#               members) the pinned banks draw only those, and only those are
+#               exclusive to them: the other pinned members stay ordinary
+#               candidates of every group, on their own kits (how a main gets a
+#               fixed dose of a few specialists without unpinning the rest).
 GROUPS = ('all', 'league', 'exploiters', 'forgotten', 'pinned')
 FORGOTTEN = 0.5
 
@@ -176,10 +188,11 @@ def groups(pool, spec=None):
 
 def candidates(pool, group, table=None):
     """The pool entries a bank of `group` draws from (`forgotten` reads the scores `table`)."""
+    key = _exclusive_key(pool)
     if group == 'pinned':
-        return [entry for entry in pool['pool'] if entry.get('pinned')]
+        return [entry for entry in pool['pool'] if entry.get(key)]
     exclusive = any(bank.get('group') == 'pinned' for bank in pool['banks'])
-    entries = [entry for entry in pool['pool'] if not (exclusive and entry.get('pinned'))]
+    entries = [entry for entry in pool['pool'] if not (exclusive and entry.get(key))]
     if group == 'forgotten':
         chosen = [entry for entry in entries if entry.get('kind') == 'exploiter'
                   or (table is not None and table.get(entry['path'], 0.5) < FORGOTTEN)]
@@ -218,7 +231,8 @@ def reconcile(pool, ledger, league):
         elif entry['path'] in by_path:
             entry['kind'] = by_path[entry['path']]['kind']
             entry.pop('pinned', None)
-            entry.update({k: v for k, v in by_path[entry['path']].items() if k == 'pinned'})
+            entry.pop('pinned_bank', None)
+            entry.update({k: v for k, v in by_path[entry['path']].items() if k in ('pinned', 'pinned_bank')})
             kept.append(entry)
         else:
             dropped.append(entry['name'])

@@ -331,6 +331,8 @@ def report(program, top, arms, data, prior, lines, ref=None, reference=None):
     fac = [a for a in arms if a.get('factors')]
     if fac and program == 'off1':
         offense_factorial_report(data, fac, reference, p)
+    elif fac and program == 'main-r2':
+        DECISIONS['main-r2'] = main_r2_report(data, fac, p)
     elif fac:
         factorial_report(data, fac, ref or {}, prior, p)
     if program == 'anneal-ctl':
@@ -623,6 +625,104 @@ def factorial_report(data, fac, ctl, prior, p):
     for name in cols:
         if len(name) == 2 and effect[name] >= 0.02 and abs(effect[name] / se) >= 2:
             p(f'    interaction {name} {effect[name]:+.4f} (|z| {abs(effect[name] / se):.1f}) -> adopt pair jointly')
+
+
+# ---- main-bot round 2 (PLAN-2026-10.md 2026-11-01 pre-registration; MAIN-R2-2026-11.md) ------------------------
+
+MAIN_R2 = dict(
+    source='PLAN-2026-10.md 2026-11-01 "pre-registration: main-bot round 2" (MAIN-R2-2026-11.md Section 3)',
+    endpoint='anneal', drill='R2-s7212-kit',
+    d_ratio=1.10,          # D (I1 premium 1.0): KH_PRE high / low >= 1.10 with the seed-bootstrap 95% CI above 1
+    x_gain=0.05, alpha=0.05,   # X (drill bank): score vs the held-out drill specialist, high - low >= +0.05, one-sided pooled t
+    x_kh=0.90,             # X: KH_PRE high / low >= 0.90 on the point (offence must not pay for defence)
+    ni_margin=-0.02,       # both: held-out panel one-sided 95% Welch lower bound > -0.02 (kill_rate.MARGIN)
+    strength_null=0.02,    # E8 trigger: both panel main effects (high - low) below +0.02
+    drill_sd_floor=0.018)  # per-run sd floor on the drill score: eval se at 800 games (binomial 0.0177)
+
+
+def cell_score(data, a, e, o):
+    pairs = data.cells.get((a['name'], e, o))
+    return float(np.mean([x for v in pairs.values() for x in v])) if pairs else None
+
+
+def main_r2_report(data, fac, p):
+    """main-r2: a 2^2 x 2 factorial. D (I1 dose) is judged on KH_PRE high vs low, X (drill bank) on the held-out drill
+    specialist's score high vs low; both carry the panel non-inferiority guard and kill_rate.py's vetoes. The all-low
+    cell is the long run's base; the verdict names the long run's flags."""
+    rule, e, kr = MAIN_R2, MAIN_R2['endpoint'], harness.kill_rate()
+    out = dict(stage='pending', source=rule['source'])
+    p(f'  main-r2: rules {rule["source"]}')
+    results = {a['name']: as_result(data, a, e) for a in fac}
+    done = [a for a in fac if results[a['name']] and cell_score(data, a, e, rule['drill']) is not None]
+    p(f'    {len(done)}/{len(fac)} runs with an annealed panel and the {rule["drill"]} cell')
+    rows = {a['name']: regime(data, a, e) for a in done}
+    p(f'    {"run":<10}{"D":>3}{"X":>3}{"seed":>6}{"panel":>8}{"kh_pre":>8}{"sd":>7}{"drill":>7}{"x2dk":>7}{"me31k":>7}{"r2k":>7}')
+    for a in sorted(done, key=lambda a: (a['factors']['D'], a['factors']['X'], a['seed'])):
+        r = rows[a['name']]
+        cells = [cell_score(data, a, e, o) for o in (rule['drill'], 'x2-drill-kit', 'l2-me31-kit', 'R2-s7211-kit')]
+        p(f'    {a["name"]:<10}{a["factors"]["D"]:>+3}{a["factors"]["X"]:>+3}{a["seed"]:>6}{r["panel"]:>8.4f}{r["kh_pre"]:>8.4f}'
+          f'{r["sd"]:>7.3f}' + ''.join(f'{c:>7.3f}' if c is not None else f'{"-":>7}' for c in cells))
+    if len(done) < len(fac):
+        p('    PENDING: the rules need the full balanced design')
+        return out
+    hi = {f: [results[a['name']] for a in done if a['factors'][f] > 0] for f in 'DX'}
+    lo = {f: [results[a['name']] for a in done if a['factors'][f] < 0] for f in 'DX'}
+    v = {f: kr.rule({f: hi[f]}, lo[f])[f] for f in 'DX'}
+    panel_eff = {f: float(np.mean([r['endpoints'][e]['panel']['score'] for r in hi[f]])
+                          - np.mean([r['endpoints'][e]['panel']['score'] for r in lo[f]])) for f in 'DX'}
+    veto = {f: v[f]['vetoes']['ckpm_b_up_50pct'] or v[f]['vetoes']['env_loss_up'] for f in 'DX'}
+    ni = {f: v[f]['noninferiority']['lower95'] > rule['ni_margin'] for f in 'DX'}
+    # D: the I1 dose on KH_PRE.
+    d = v['D']
+    d_pass = d['ratio'] >= rule['d_ratio'] and d['ratio_ci'][0] > 1.0 and ni['D'] and not veto['D']
+    p(f'    D I1 premium 1.0 vs 0.5 (4 vs 4): KH_PRE {d["kh_pre"]:.4f} vs {d["kh_pre_control"]:.4f}, ratio {d["ratio"]:.3f} '
+      f'[{d["ratio_ci"][0]:.3f}, {d["ratio_ci"][1]:.3f}] (need >= {rule["d_ratio"]}, CI > 1) | panel {panel_eff["D"]:+.4f} '
+      f'LB {d["noninferiority"]["lower95"]:+.4f} (need > {rule["ni_margin"]}) | ckpm_b x{d["ckpm_b_ratio"]:.2f} env_loss '
+      f'{d["env_loss_diff"]:+.3f}{" VETO" if veto["D"] else ""} | sd {d["sd"]:.3f} vs {d["sd_control"]:.3f} '
+      f'-> {"ADOPT premium 1.0" if d_pass else "keep premium 0.5"}')
+    # X: the drill bank on the held-out drill specialist.
+    xs = {a['name']: cell_score(data, a, e, rule['drill']) for a in done}
+    xh = [xs[a['name']] for a in done if a['factors']['X'] > 0]
+    xl = [xs[a['name']] for a in done if a['factors']['X'] < 0]
+    diff, se, df = pooled(xh, xl, rule['drill_sd_floor'])
+    pv = float(stats.t.sf(diff / se, df))
+    x = v['X']
+    x_pass = diff >= rule['x_gain'] and pv < rule['alpha'] and ni['X'] and x['ratio'] >= rule['x_kh'] and not veto['X']
+    p(f'    X drill bank vs none (4 vs 4): {rule["drill"]} {np.mean(xh):.3f} vs {np.mean(xl):.3f}, diff {diff:+.4f} se {se:.4f} '
+      f'one-sided p {pv:.4f} (need >= +{rule["x_gain"]}, p < {rule["alpha"]}) | panel {panel_eff["X"]:+.4f} LB '
+      f'{x["noninferiority"]["lower95"]:+.4f} (need > {rule["ni_margin"]}) | KH_PRE x{x["ratio"]:.3f} (need >= {rule["x_kh"]}) '
+      f'| ckpm_b x{x["ckpm_b_ratio"]:.2f} env_loss {x["env_loss_diff"]:+.3f}{" VETO" if veto["X"] else ""} '
+      f'-> {"ADOPT the drill bank" if x_pass else "no drill bank"}')
+    for o in ('x2-drill-kit', 'l2-me31-kit', 'R2-s7211-kit'):
+        oh = [cell_score(data, a, e, o) for a in done if a['factors']['X'] > 0]
+        ol = [cell_score(data, a, e, o) for a in done if a['factors']['X'] < 0]
+        if all(c is not None for c in oh + ol):
+            p(f'      X on {o:<14} {np.mean(oh):.3f} vs {np.mean(ol):.3f} ({np.mean(oh) - np.mean(ol):+.4f}; in-distribution, report only)')
+    # Interaction from the replicate pure error (2 runs per cell, df 4).
+    cells = {}
+    for a in done:
+        cells.setdefault((a['factors']['D'], a['factors']['X']), []).append(a)
+    for label, value in (('panel', lambda a: rows[a['name']]['panel']), ('log KH_PRE', lambda a: math.log(max(rows[a['name']]['kh_pre'], 1e-6)))):
+        y = {k: [value(a) for a in g] for k, g in cells.items()}
+        pe = float(np.mean([np.var(vals, ddof=1) for vals in y.values() if len(vals) >= 2]))
+        means = {k: float(np.mean(vals)) for k, vals in y.items()}
+        inter = (means[1, 1] - means[1, -1] - means[-1, 1] + means[-1, -1]) / 2
+        se_i = math.sqrt(pe / 2)
+        p(f'    interaction DX on {label}: {inter:+.4f} (pure-error se {se_i:.4f}, df 4, |t| {abs(inter) / se_i if se_i else float("nan"):.1f}; report only)')
+    e8 = all(panel_eff[f] < rule['strength_null'] for f in 'DX')
+    p(f'    strength: panel main effects D {panel_eff["D"]:+.4f}, X {panel_eff["X"]:+.4f} -> '
+      f'{"null on strength: E8 runs after the confirm" if e8 else "a strength effect: E8 is skipped"}')
+    style = 'styles/offense_kill_10.toml' if d_pass else 'styles/offense_kill_05.toml'
+    flags = {'style': style, 'style-fade-steps': 1_000_000_000_000_000_000, 'weight-decay': 1.5e-4, 'v4-ablate': 16}
+    if x_pass:
+        flags |= {'add-opponents': 'R2-s7211,R2x2', 'bank-groups': 'all,all,pinned,forgotten',
+                  'pinned-bank': 'R2-s7211,R2x2,l2-me31-drill-grenade-2000m,x2-drill-1500m'}
+    winners = [f for f, ok in (('D', d_pass), ('X', x_pass)) if ok]
+    p(f'    -> long-run flags: {json.dumps(flags)}; confirm 8 vs 6 on 221001 for {winners or "nothing (skip the confirm)"}')
+    out.update(stage='final', d_adopt=d_pass, x_adopt=x_pass, e8=e8, winners=winners, long_run_flags=flags,
+               d=dict(ratio=d['ratio'], ratio_ci=d['ratio_ci'], panel=panel_eff['D'], lower95=d['noninferiority']['lower95']),
+               x=dict(diff=diff, se=se, p=pv, panel=panel_eff['X'], lower95=x['noninferiority']['lower95'], kh_ratio=x['ratio']))
+    return out
 
 
 # ---- recipe stage 3 optimizer screen and stage 2d (PLAN-2026-10.md 2026-10-22 pre-registration) ----------------

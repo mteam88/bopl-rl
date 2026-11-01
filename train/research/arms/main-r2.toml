@@ -1,0 +1,96 @@
+# Main-bot round 2 (native/rl/research/MAIN-R2-2026-11.md; pre-registered in PLAN-2026-10.md's 2026-11-01
+# entry; analyze.py's MAIN_R2 rule implements exactly that). A 2^2 factorial with 2 replicates, 8 runs in
+# shuffled order, each at E0's lengths from l2-main-136002m: 6B constant LR with the 5B half-life EMA, then the
+# matched 1B anneal to 1.2e-5. 4300 panel games per endpoint on E0/off1's setups (base 211001).
+#
+# Base = the long run's base: off1's all-low run ff-1 (the l2 turn-100 command on observation v4.2, held-out
+# panel excluded) plus the two adopted changes: I1 at premium 0.5 (off1 2026-10-26) and Muon weight decay
+# 1.5e-4 (optimizer confirm 2026-10-27). The all-low cell ff-1 (seeds 601, 605) IS that base: its two runs are
+# the first replicates of the long run's configuration and the controls of the confirm stage.
+#
+# Factors (each main effect is 4 runs vs 4):
+#   D  I1 dose: premium 0.5 (styles/offense_kill_05.toml, adopted) -> 1.0 (styles/offense_kill_10.toml).
+#      Primary: KH_PRE (eval/kill_rate.py, game credit) at the annealed endpoint, high / low.
+#   X  drill exposure: a `pinned` bank (bank 3 of 4, about a quarter of the historical games) that draws only
+#      the four strongest drill opponents on their own kits (train.py --pinned-bank, new): the round-2 drill
+#      specialists R2-s7211 and R2x2 (DRILL-R2-2026-10.md, P1 0.805 / 0.797 vs l2-main-136002m; league members
+#      since 2026-11-01), l2-me31-drill-grenade-2000m and x2-drill-1500m. Every other pinned exploiter stays
+#      an ordinary PFSP candidate on its own kit, so the rest of the mix is the base's. x2d-drill (2026-10-27)
+#      found the matchup learnable (+0.40 iid, +0.66 mirror) but a 100% dose costs the panel -0.10 to -0.17;
+#      this is the dose the league can afford to test. Primary: score vs the held-out drill specialist
+#      R2-s7212 (never trained against, seed 7212 of the same arm) on its kits, high - low.
+# Guard on both: held-out panel non-inferiority, one-sided 95% Welch lower bound > -0.02 (4 vs 4), plus
+# kill_rate.py's vetoes; X also needs KH_PRE >= 0.90 x the low runs' (offense must not pay for defence).
+name = "main-r2"
+purpose = "screen"
+init = "native/artifacts/rl/league-loops/l2/main/checkpoints/policy-136002994176.bin"
+constant_steps = 6_000_000_000
+anneal_steps = 1_000_000_000
+checkpoint_every = 2_000_000_000
+games = 4300
+flags = { v4-ablate = 16, weight-decay = 1.5e-4 }
+exclude_opponents = ["final5-18666m", "anneal20-26666m", "team5b-6250m", "g111-20b-26027m"]
+
+# The exploiters on their declared kits, in e0/off1's slots, at the annealed endpoint (report only).
+[opponents.x2-drill-kit]
+path = "x2-drill-1500m"
+pinned = true
+slot = 8
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-missile-kit]
+path = "x2-missile-1500m"
+pinned = true
+slot = 9
+games = 400
+endpoints = ["anneal"]
+
+[opponents.x2-blinkplat-kit]
+path = "x2-blinkplat-1500m"
+pinned = true
+slot = 10
+games = 400
+endpoints = ["anneal"]
+
+[opponents.l2-me32-trap-kit]
+path = "l2-me32-trap-2000m"
+pinned = true
+slot = 11
+games = 400
+endpoints = ["anneal"]
+
+# Factor X's primary: the held-out drill specialist on its Drill/Dash/Dash kits (800 games, se ~0.018).
+[opponents.R2-s7212-kit]
+path = "R2-s7212"
+pinned = true
+slot = 12
+games = 800
+endpoints = ["anneal"]
+
+# In-distribution drill opponents (both levels train against them; X-high in the bank): report only.
+[opponents.l2-me31-kit]
+path = "l2-me31-drill-grenade-2000m"
+pinned = true
+slot = 13
+games = 400
+endpoints = ["anneal"]
+
+[opponents.R2-s7211-kit]
+path = "R2-s7211"
+pinned = true
+slot = 14
+games = 400
+endpoints = ["anneal"]
+
+[factorial]
+seed = 601
+replicates = 2
+order_seed = 2
+
+[factorial.factors.D]   # I1 early-kill premium: 0.5 (adopted) -> 1.0
+low = { style = "styles/offense_kill_05.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+high = { style = "styles/offense_kill_10.toml", style-fade-steps = 1_000_000_000_000_000_000 }
+
+[factorial.factors.X]   # drill exposure: a pinned bank of the four strongest drill opponents
+high = { add-opponents = "R2-s7211,R2x2", bank-groups = "all,all,pinned,forgotten", pinned-bank = "R2-s7211,R2x2,l2-me31-drill-grenade-2000m,x2-drill-1500m" }

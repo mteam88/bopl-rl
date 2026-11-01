@@ -436,6 +436,23 @@ class BankGroups(PoolHarness):
         for group in ('all', 'league', 'exploiters'):
             self.assertNotIn(pinned, [e['path'] for e in native_selfplay.candidates(self.pool, group)])
 
+    def test_a_pinned_bank_sub_list_leaves_the_other_pinned_members_everywhere(self):
+        # train.py --pinned-bank: the pinned bank draws the sub-list only; the other pinned members stay
+        # ordinary candidates of every group (the main-r2 drill dose, MAIN-R2-2026-11.md).
+        native_selfplay.groups(self.pool, ['all', 'all', 'pinned', 'forgotten'])
+        drill = self.add_member('drill.bin', games=10, wins=1, permanent=True, kind='exploiter')
+        self.pool['pool'][-1].update(pinned=True, pinned_bank=True)
+        missile = self.add_member('missile.bin', games=10, wins=1, permanent=True, kind='exploiter')
+        self.pool['pool'][-1]['pinned'] = True
+        self.assertEqual([e['path'] for e in native_selfplay.candidates(self.pool, 'pinned')], [drill])
+        for group in ('all', 'league', 'exploiters', 'forgotten'):
+            paths = [e['path'] for e in native_selfplay.candidates(self.pool, group)]
+            self.assertNotIn(drill, paths, group)
+            self.assertIn(missile, paths, group)
+        entry = native_selfplay._league_entry(dict(path='drill.bin', name='drill', kind='exploiter', pinned=True, pinned_bank=True))
+        self.assertTrue(entry['pinned'] and entry['pinned_bank'])
+        self.assertNotIn('pinned_bank', native_selfplay._league_entry(dict(path='m.bin', name='m', kind='exploiter', pinned=True)))
+
     def test_without_a_pinned_bank_pinned_members_are_ordinary_candidates(self):
         native_selfplay.groups(self.pool, ['all', 'all', 'all', 'exploiters'])
         pinned = self.add_member('camper.bin', permanent=True, kind='exploiter')
