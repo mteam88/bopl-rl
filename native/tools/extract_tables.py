@@ -32,7 +32,7 @@ def main():
         "reference_commit": subprocess.check_output(["git", "rev-parse", REFERENCE], cwd=ROOT / "game", text=True).strip(),
         "reference_tree": subprocess.check_output(["git", "rev-parse", f"{REFERENCE}^{{tree}}"], cwd=ROOT / "game", text=True).strip(),
         "unity_version": "2022.3.60f1",
-        "math_source": SOURCE,
+        "math_source": "game/" + SOURCE,
         "math_source_sha256": hashlib.sha256(source).hexdigest(),
         "tables": tables,
     }
