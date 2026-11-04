@@ -59,18 +59,9 @@ endpoints = ["anneal"]
 seeds = [601, 605, 611, 612, 613, 614]
 flags = { style = "styles/offense_kill_05.toml", style-fade-steps = 1_000_000_000_000_000_000 }
 
-# Keep exactly one of the three arm groups below.
+# Decision point 1 (2026-11-03): D and X both won round 2, so the arm group is dx.
 [arm.dx]
 seeds = [621, 622, 623, 624, 625, 626, 627, 628]
 compare = "ctl"
 flags = { style = "styles/offense_kill_10.toml", style-fade-steps = 1_000_000_000_000_000_000, add-opponents = "R2-s7211,R2x2", bank-groups = "all,all,pinned,forgotten", pinned-bank = "R2-s7211,R2x2,l2-me31-drill-grenade-2000m,x2-drill-1500m" }
 
-[arm.d]
-seeds = [621, 622, 623, 624, 625, 626, 627, 628]
-compare = "ctl"
-flags = { style = "styles/offense_kill_10.toml", style-fade-steps = 1_000_000_000_000_000_000 }
-
-[arm.x]
-seeds = [621, 622, 623, 624, 625, 626, 627, 628]
-compare = "ctl"
-flags = { style = "styles/offense_kill_05.toml", style-fade-steps = 1_000_000_000_000_000_000, add-opponents = "R2-s7211,R2x2", bank-groups = "all,all,pinned,forgotten", pinned-bank = "R2-s7211,R2x2,l2-me31-drill-grenade-2000m,x2-drill-1500m" }
